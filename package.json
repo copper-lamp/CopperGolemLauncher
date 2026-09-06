@@ -1,0 +1,17 @@
+{
+  "name": "copper-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "铜傀儡启动器 · 铜核心项目入口（转发到 frontend/，Rust 后端在 src-tauri/）",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

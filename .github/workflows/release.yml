@@ -1,0 +1,42 @@
+name: release
+
+# 发布版本：自动触发（push tags v*）与手动触发（需填写 tag 前缀）。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本 tag 名称（如 v0.1.0），仅作为发布名，需先 push 对应标签'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装前端依赖并构建发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path: .
+          tagName: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
+          releaseName: '铜傀儡 ${{ inputs.tag || github.ref_name }}'
+          releaseBody: '自动生成的发布。'
+          releaseDraft: true
+          prerelease: false
