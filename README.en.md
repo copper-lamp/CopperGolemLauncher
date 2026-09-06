@@ -1,106 +1,54 @@
-# CopperGolem Launcher · CopperCore
+# CopperGolem
 
-**CopperGolem** is a pluggable, modular launcher for Minecraft Bedrock Edition (MCBE).
-**CopperCore** is its kernel — the skeleton and host of the launcher, responsible for module loading, capability services, the Shell UI, and inter-module coordination.
+> Download the game. Manage your account. Install content. All in one place.
 
-> The project is in early development. This repository hosts the core (`CopperCore`). The launcher ships with three built-in modules (**Home**, **Game Download**, **Content Download**); additional modules (Agent / MCP) are loaded dynamically.
+![CopperGolem Launcher](https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=modern%20Minecraft%20Bedrock%20game%20launcher%20desktop%20app%20dark%20glassmorphism%20UI%20with%20left%20navigation%20bar%20and%20content%20cards%20for%20game%20versions%20and%20mods%20clean%20futuristic%20design%20high%20detail&image_size=landscape_16_9)
 
----
+CopperGolem is a modern launcher built for **Minecraft Bedrock Edition**. It brings **version download, account sign-in, and game content** together in one clean, fast entry point — the way a launcher should be.
 
-## Features
+## Why CopperGolem
 
-- **Modular kernel**: built-in and additional modules are unified as "homogeneous frontend + backend plugins"; they are pluggable, isolated from each other, and coordinate only through the kernel.
-- **Capability services**: i18n, theme tokens, SQLite persistence, download queue, MCBE account, software updater, filesystem abstraction.
-- **Coordination mediator**: event bus (broadcast) + intent registry (request/response) for decoupled inter-module collaboration.
-- **Shell UI**: custom frameless title bar, left navigation, content area, settings page, floating download dashboard.
-- **Platform abstraction**: filesystem / download / storage capabilities are not tied to Windows, keeping a boundary for future Android support.
+- **Everything in one place** — manage game versions, accounts, and launching from a single entry; no more bouncing between tools.
+- **A home for content** — maps, shaders, resources, and mods: browse, install, and play.
+- **Light and fast** — quick to start, low overhead, keeping resources where they matter: your game.
+- **Open and extendable** — a modular architecture you can grow with; install what you need, and let the community build together.
 
-## Tech Stack
+## Design Philosophy
 
-| Layer | Choice |
-|---|---|
-| Desktop shell | Tauri v2 (Rust backend + system WebView) |
-| Backend | Rust (tokio async runtime) |
-| Frontend | Vue 3 + TypeScript + Vite |
-| Persistence | SQLite (rusqlite wrapper, versioned migrations) |
-| Download engine | standalone Rust crate `copper-downloader` |
+We believe: **hide the complexity, keep the good stuff.**
 
-## Architecture
+CopperGolem is designed to be restrained, modern, and human-centered. Nearly every action gives clear feedback, animations stay smooth, and the interface theme shifts with your night or daylight. It doesn't shout — but it can be trusted.
 
-The launcher runs as a single desktop process, split into four layers:
+## Made For
 
-1. **CopperCore** — the single Tauri app, infrastructure and host.
-2. **Capability services** — globally unique facilities: i18n, theme tokens, database, download queue, account, updater, filesystem abstraction.
-3. **Plugin registry** (with event bus / intent registry) — module loading and coordination.
-4. **Module layer** — built-in modules compiled statically into the kernel; additional modules loaded dynamically.
+- **Players** — download the game, sign in to your account, and start in one click while managing multiple versions and content with ease.
+- **Creators** — share your work through a unified content center and reach a wider audience.
+- **Developers** — extend the launcher through an open module system without touching the core; build your own way to play.
 
-Detailed design lives under the project `docs/` directory (architecture overview, CopperCore design, and per-module design docs).
+## Get Started
 
-## Directory Layout
+Download the latest version and dive in: **[Releases][releases]**
 
-```
-CopperCore/
-├─ frontend/        # Vue 3 Shell + frontend packages of built-in modules
-├─ src-tauri/       # Rust backend (services / registry / modules mount points)
-│   ├─ src/
-│   ├─ capabilities/
-│   ├─ icons/
-│   ├─ Cargo.toml
-│   └─ tauri.conf.json
-├─ .github/workflows/   # build / release workflows
-├─ LICENSE               # GPL-3.0
-└─ package.json          # root entrypoint (forwards to frontend, hosts tauri CLI)
-```
+To build from source or contribute, see [CONTRIBUTING][contributing].
 
-## Quick Start (Development)
+## Roadmap
 
-Prerequisites: Node.js ≥ 20, Rust stable toolchain, Windows 10 / 11.
+- **In progress** — core capabilities and the modular desktop interface
+- **Planned** — the download engine, a content center, and more built-in and additional modules
 
-```bash
-cd CopperCore
-npm install                    # root dependencies (incl. tauri CLI)
-npm --prefix frontend install  # frontend dependencies
-```
+## Shaped Together
 
-| Command | Description |
-|---|---|
-| `npm run dev` | Frontend only (Vite HMR, port 1420) |
-| `npm run tauri:dev` | Full app development (frontend + Rust) |
-| `npm run build` | Build frontend only |
-| `npm run tauri:build` | Build the full app |
-| `cargo build --release --manifest-path src-tauri/Cargo.toml` | Build the Rust backend (release) only |
+CopperGolem is shaped by its community. Report issues, share ideas, or jump into development:
 
-Testing:
-
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml   # Rust unit / integration tests
-```
-
-> The full build & test pipeline is executed by CI (the `build` workflow) — see "Continuous Integration".
-
-## Continuous Integration (GitHub Actions)
-
-- **`build` workflow**: triggered on commits / pull requests — installs frontend deps, builds the frontend, and builds Rust (release) to keep the project buildable.
-- **`release` workflow**: triggered when releasing a version — two ways:
-  - **Automatic**: pushing a tag matching `v*`;
-  - **Manual**: run from the Actions tab and fill in the version tag.
-  It bundles Windows installers via `tauri-action` and creates a GitHub Release.
-
-Versioning follows semver conventions; see [CHANGE.md](./CHANGE.md).
-
-## i18n
-
-Multilingual support is provided by the kernel capability service. Modules merge language packs under the `module.<module-name>.*` namespace; a missing key falls back to `en`, then to the key itself. Do not hardcode UI strings when developing modules.
-
-## Theme Tokens
-
-A unified set of CSS design tokens `var(--copper-*)` is provided, supporting dark / light / auto and applying globally in real time. Consume these tokens instead of hardcoding colors and spacing to keep a consistent style.
+- Report problems / give feedback: GitHub [Issues][issues]
+- Contribute: [Contributing guide][contributing]
+- Dive into architecture & design: the architecture overview and per-module design under `docs/`
 
 ## License
 
-This program is licensed under the [GPL-3.0](./LICENSE).
-copyright © 2026 copper-lamp.
+Licensed under the [GPL-3.0][license]. copyright © 2026 copper-lamp.
 
-## Documentation
-
-Architecture and per-module design documents are maintained under the project root `docs/` (development plan, architecture overview, CopperCore design, built-in & additional module designs). See the Requirements / Architecture / Notes sections of each document.
+[releases]: https://github.com/copper-lamp/CopperGolemLauncher/releases
+[issues]: https://github.com/copper-lamp/CopperGolemLauncher/issues
+[contributing]: .github/CONTRIBUTING.md
+[license]: ./LICENSE
