@@ -2,7 +2,7 @@
 // 版本详情页：展示版本元数据与实时任务状态（下载进度 / 解包 / 结果），
 // 提供投递 / 取消 / 重试操作。数据来自模块单例（`useGameDownload`）。
 
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ArrowLeft,

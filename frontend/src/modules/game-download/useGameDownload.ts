@@ -22,7 +22,6 @@ import {
   gameDetail,
   gameEnqueue,
   gameManifest,
-  gameRefreshSource,
   progressRatio,
   type GameManifestView,
   type GameTaskView,
@@ -61,7 +60,7 @@ export async function initGameDownload(): Promise<void> {
   await Promise.all([
     onDownload("progress", upsertLive),
     onDownload("status", upsertLive),
-    onGameDownloadEnqueued(({ id, taskId }) => {
+    onGameDownloadEnqueued(({ id }) => {
       // 入队即开始回填状态；随后 progress/status 事件驱动实时进度。
       void refreshState(id);
     }),

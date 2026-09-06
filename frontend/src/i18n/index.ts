@@ -17,12 +17,15 @@ import homeZhCN from "../modules/home/locales/zh-CN.json";
 import homeEnUS from "../modules/home/locales/en-US.json";
 import contentDownloadZhCN from "../modules/content-download/locales/zh-CN.json";
 import contentDownloadEnUS from "../modules/content-download/locales/en-US.json";
+import gameDownloadZhCN from "../modules/game-download/locales/zh-CN.json";
+import gameDownloadEnUS from "../modules/game-download/locales/en-US.json";
 
 const FALLBACK_LOCALE = "en-US";
 
 const MODULE_LOCALES: Record<string, Record<string, JsonValue>> = {
   home: { "zh-CN": homeZhCN, "en-US": homeEnUS },
   "content-download": { "zh-CN": contentDownloadZhCN, "en-US": contentDownloadEnUS },
+  "game-download": { "zh-CN": gameDownloadZhCN, "en-US": gameDownloadEnUS },
 };
 
 function withModulePacks(
