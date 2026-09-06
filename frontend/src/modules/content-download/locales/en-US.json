@@ -1,0 +1,20 @@
+{
+  "contentDownload": {
+    "navTitle": "Content",
+    "searchPlaceholder": "Search behavior packs · texture packs · shaders · LL mods",
+    "search": "Search",
+    "refreshing": "Refreshing",
+    "noResult": "No matching content found",
+    "loadError": "Failed to load content, please retry later",
+    "sourceAll": "All sources",
+    "sourceCurseforge": "CurseForge",
+    "sourceLip": "LL mods (LIP)",
+    "typeAll": "All types",
+    "typeBehaviorPack": "Behavior Pack",
+    "typeTexturePack": "Texture Pack",
+    "typeShader": "Shader",
+    "typeLlMod": "LL Mod",
+    "downloadCount": "Downloads",
+    "empty": "No content available yet"
+  }
+}

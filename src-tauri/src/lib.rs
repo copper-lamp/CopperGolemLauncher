@@ -1,13 +1,15 @@
 // 铜内核入口：装配全部内核服务与中介，注册命令并启动 Tauri 应用。
 //
-// 内核阶段不包含内置模块：事件订阅、意图声明、模块生命周期、路径访问器等
-// 公共 API 是面向模块开发阶段的契约，当前未消费属预期，故允许 dead_code；
-// 模块开发启动后应移除本声明并让编译器帮助收敛死代码。
+// 内置模块开发阶段（开始页已接入）：部分内核公共 API（db / i18n.t /
+// paths.data_dir / 模块生命周期 stop / shutdown 等）仍待后续模块（游戏下载、
+// 内容下载、账户、更新）消费，暂允许 dead_code；全部内置模块落地后应移除
+// 本声明并让编译器帮助收敛死代码。
 
 #![allow(dead_code)]
 
 mod commands;
 mod error;
+mod modules;
 mod registry;
 mod services;
 mod state;
@@ -91,7 +93,13 @@ pub fn run() {
                 modules,
             );
 
-            // 装载模块。内核阶段暂无内置模块；模块开发阶段在此注册各模块实例。
+            // 装载模块。当前内置模块：开始页（home）、内容下载（content-download）。
+            kernel
+                .modules()
+                .register(Arc::new(modules::home::HomeModule::default()));
+            kernel
+                .modules()
+                .register(Arc::new(modules::content_download::ContentDownloadModule::default()));
             kernel.modules().boot(&kernel);
 
             app.manage(kernel);
@@ -134,6 +142,25 @@ pub fn run() {
             commands::modules::modules_set_enabled,
             commands::intents::intents_request,
             commands::intents::intents_declared,
+            // 内容下载模块（content-download）
+            commands::content_download::content_download_list,
+            commands::content_download::content_download_detail,
+            commands::content_download::content_download_readme,
+            commands::content_download::content_download_download,
+            commands::content_download::content_download_lip_env,
+            commands::content_download::content_download_lip_install,
+            // 开始页模块（home）
+            commands::home::home_versions_list,
+            commands::home::home_version_get,
+            commands::home::home_version_save_meta,
+            commands::home::home_version_rename,
+            commands::home::home_version_delete,
+            commands::home::home_launch,
+            commands::home::home_logo_set,
+            commands::home::home_logo_remove,
+            commands::home::home_content_list,
+            commands::home::home_content_set_enabled,
+            commands::home::home_content_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

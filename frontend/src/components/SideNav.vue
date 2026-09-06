@@ -6,23 +6,34 @@ import { RouterLink } from "vue-router";
 import { Settings, ArrowDownToLine } from "@lucide/vue";
 
 import { useI18n } from "../i18n";
+import { getModuleNav } from "../modules/registry";
 
 const { t } = useI18n();
+const moduleNav = getModuleNav();
 </script>
 
 <template>
   <nav class="side-nav">
     <div class="side-nav__top">
-      <div class="side-nav__logo" :title="t('app.name')">
+      <RouterLink to="/" class="side-nav__logo" :title="t('app.name')">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
           <path
             d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm3 8h8v2H8v-2Zm0 4h5v2H8v-2Zm0-8h8v2H8V7Z"
             fill="currentColor"
           />
         </svg>
-      </div>
+      </RouterLink>
     </div>
     <div class="side-nav__bottom">
+      <RouterLink
+        v-for="item in moduleNav"
+        :key="item.id"
+        :to="item.path"
+        class="side-nav__item"
+        :title="t(item.titleKey)"
+      >
+        <component :is="item.icon" :size="20" />
+      </RouterLink>
       <RouterLink
         to="/downloads"
         class="side-nav__item"
@@ -69,6 +80,14 @@ const { t } = useI18n();
   border-radius: var(--copper-radius-md);
   color: var(--copper-accent);
   background: color-mix(in srgb, var(--copper-accent) 12%, transparent);
+  text-decoration: none;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.side-nav__logo:hover {
+  background: color-mix(in srgb, var(--copper-accent) 20%, transparent);
 }
 
 .side-nav__bottom {

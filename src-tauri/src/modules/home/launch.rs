@@ -13,16 +13,37 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::error::KernelError;
+use crate::registry::events::EventBus;
+use crate::services::paths::Paths;
 use crate::state::KernelContext;
 
 use super::meta::{resolve_version_dir, VersionMeta};
 
 /// 游戏主程序文件名。
-const GAME_EXE: &str = "Minecraft.Windows.exe";
+pub const GAME_EXE: &str = "Minecraft.Windows.exe";
 /// 启动后确认游戏进程运行的最长等待（秒）。
 const LAUNCH_CONFIRM_TIMEOUT_SECS: u64 = 90;
 /// 进程状态轮询间隔（毫秒）。
 const POLL_INTERVAL_MS: u64 = 800;
+
+/// 启动所需的内核能力集（意图处理器等 `'static` 场景捕获用）。
+#[derive(Clone)]
+pub struct LaunchCtx {
+    pub paths: Arc<Paths>,
+    pub runtime: tokio::runtime::Handle,
+    pub events: Arc<EventBus>,
+}
+
+impl LaunchCtx {
+    /// 从内核上下文提取（克隆内部 Arc，可安全跨 'static 捕获）。
+    pub fn from_kernel(kernel: &KernelContext) -> Self {
+        Self {
+            paths: kernel.paths().clone(),
+            runtime: kernel.runtime().clone(),
+            events: kernel.events().clone(),
+        }
+    }
+}
 
 /// 启动结果（供前端反馈）。
 #[derive(Debug, Clone, Serialize)]
@@ -35,8 +56,8 @@ pub enum LaunchOutcome {
 }
 
 /// 校验启动名并解析版本目录（复用 meta 的防逃逸逻辑）。
-fn resolve_launch_dir(kernel: &KernelContext, name: &str) -> Result<PathBuf, KernelError> {
-    resolve_version_dir(kernel.paths().versions_dir(), name)
+fn resolve_launch_dir(paths: &Paths, name: &str) -> Result<PathBuf, KernelError> {
+    resolve_version_dir(paths.versions_dir(), name)
 }
 
 /// 检测某路径下是否有游戏进程在运行（Windows 进程枚举，路径归一化比对）。
@@ -48,7 +69,8 @@ pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
         TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     let target = normalize_path(exe_path);
@@ -64,15 +86,15 @@ pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut has_entry = Process32FirstW(snapshot, &mut entry).is_ok();
         while has_entry {
-            let exe_name = windows::core::PWSTR(entry.szExeFile.as_ptr());
-            let name = unsafe { exe_name.to_string().unwrap_or_default() };
+            let exe_name = windows::core::PWSTR(entry.szExeFile.as_ptr() as *mut u16);
+            let name = exe_name.to_string().unwrap_or_default();
             if name.eq_ignore_ascii_case(GAME_EXE) {
                 if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, entry.th32ProcessID) {
                     let mut buf = [0u16; 1024];
                     let mut size = buf.len() as u32;
                     let ok = QueryFullProcessImageNameW(
                         handle,
-                        0,
+                        PROCESS_NAME_WIN32,
                         windows::core::PWSTR(buf.as_mut_ptr()),
                         &mut size,
                     )
@@ -157,11 +179,11 @@ fn parse_env_vars(input: &str) -> Vec<(String, String)> {
 
 /// 启动游戏。`check_running` 为 true 时，若该版本已在运行则返回错误。
 pub fn launch_game(
-    kernel: &KernelContext,
+    ctx: &LaunchCtx,
     name: &str,
     check_running: bool,
 ) -> Result<LaunchOutcome, KernelError> {
-    let dir = resolve_launch_dir(kernel, name)?;
+    let dir = resolve_launch_dir(&ctx.paths, name)?;
     let meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
     let exe = dir.join(GAME_EXE);
@@ -188,7 +210,7 @@ pub fn launch_game(
             protocol.to_string()
         };
         spawn_protocol(&url)?;
-        monitor_after_launch(kernel, name, dir.clone());
+        monitor_after_launch(&ctx.events, &ctx.runtime, name, dir.clone());
         return Ok(LaunchOutcome::Protocol);
     }
 
@@ -215,7 +237,7 @@ pub fn launch_game(
         KernelError::InvalidArgument(format!("启动游戏失败: {e}"))
     })?;
 
-    monitor_after_launch(kernel, name, dir);
+    monitor_after_launch(&ctx.events, &ctx.runtime, name, dir);
     Ok(LaunchOutcome::Spawned)
 }
 
@@ -241,10 +263,15 @@ fn spawn_protocol(url: &str) -> Result<(), KernelError> {
 
 /// 后台监控：轮询游戏进程，确认运行后广播 `game.launched`。
 /// 之后持续观察直到进程退出（释放监控任务）。
-fn monitor_after_launch(kernel: &Arc<KernelContext>, name: &str, dir: PathBuf) {
-    let kernel = kernel.clone();
+fn monitor_after_launch(
+    events: &Arc<EventBus>,
+    runtime: &tokio::runtime::Handle,
+    name: &str,
+    dir: PathBuf,
+) {
+    let events = events.clone();
     let name = name.to_string();
-    kernel.runtime().spawn(async move {
+    runtime.spawn(async move {
         let exe = dir.join(GAME_EXE);
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(LAUNCH_CONFIRM_TIMEOUT_SECS);
@@ -254,10 +281,7 @@ fn monitor_after_launch(kernel: &Arc<KernelContext>, name: &str, dir: PathBuf) {
             if is_process_running_at_path(&exe) {
                 if !confirmed {
                     confirmed = true;
-                    kernel.events().publish(
-                        "game.launched",
-                        serde_json::json!({ "name": name }),
-                    );
+                    events.publish("game.launched", serde_json::json!({ "name": name }));
                 }
                 break;
             }

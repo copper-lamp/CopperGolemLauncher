@@ -203,7 +203,7 @@ pub fn now_rfc3339() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let days = secs.div_euclid(86_400) as i64;
-    let rem = secs.rem_euclid(86_400) as u64;
+    let rem = secs.rem_euclid(86_400);
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     // civil_from_days: 天数 → 公历日期。
     let z = days + 719_468;

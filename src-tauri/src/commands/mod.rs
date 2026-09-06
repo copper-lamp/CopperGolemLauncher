@@ -5,7 +5,9 @@
 //! 由事件总线自动桥接到前端，前端经 `@tauri-apps/api/event` 监听同名事件。
 
 pub mod account;
+pub mod content_download;
 pub mod download;
+pub mod home;
 pub mod i18n;
 pub mod intents;
 pub mod kernel;

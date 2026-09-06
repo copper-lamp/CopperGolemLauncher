@@ -1,0 +1,20 @@
+{
+  "contentDownload": {
+    "navTitle": "内容下载",
+    "searchPlaceholder": "搜索行为包 / 材质包 / 光影包 / LL 模组",
+    "search": "搜索",
+    "refreshing": "刷新中",
+    "noResult": "未找到相关内容",
+    "loadError": "内容加载失败，请稍后重试",
+    "sourceAll": "全部来源",
+    "sourceCurseforge": "CurseForge",
+    "sourceLip": "LL 模组 (LIP)",
+    "typeAll": "全部类型",
+    "typeBehaviorPack": "行为包",
+    "typeTexturePack": "材质包",
+    "typeShader": "光影包",
+    "typeLlMod": "LL 模组",
+    "downloadCount": "下载",
+    "empty": "暂时还没有可用内容"
+  }
+}

@@ -21,7 +21,7 @@ const mode = computed({
   set: (value: string) => void set("theme.mode", value),
 });
 
-const accent = ref(get<string>("theme.accent", "#3b82f6"));
+const accent = ref(get<string>("theme.accent", "#c97b3d"));
 
 const localeOptions = supportedLocales().map((code) => ({ value: code, label: code }));
 
@@ -32,14 +32,16 @@ const modeOptions = [
 ];
 
 const presets = [
-  "#3b82f6",
-  "#10b981",
-  "#f59e0b",
-  "#ef4444",
-  "#8b5cf6",
-  "#ec4899",
-  "#0ea5e9",
-  "#14b8a6",
+  "#c97b3d",
+  "#b87333",
+  "#d9a05b",
+  "#e8b36a",
+  "#a8542a",
+  "#58a6ff",
+  "#3fb950",
+  "#d29922",
+  "#f85149",
+  "#8957e5",
 ];
 
 async function changeLocale(code: string) {

@@ -1,31 +1,33 @@
 /* 铜主题令牌：全站唯一视觉变量来源。
- * 语义命名 var(--copper-*)。默认深色主题（:root），浅色经 html[data-theme="light"] 覆盖；
- * 强调色 var(--copper-accent) 由主题服务下发（#RRGGBB）。
- * 业务组件禁止直接写颜色字面量，必须引用令牌。 */
+ * 语义命名 var(--copper-*)。默认深色主题（:root），浅色经 html[data-theme="light"] 覆盖。
+ * 设计基调：现代化中性蓝黑灰阶（深色）/ 冷白灰阶（浅色），
+ * 品牌强调色 --copper-accent 为铜色，由主题服务下发（#RRGGBB）可运行时覆盖；
+ * 语义色齐全（success / warning / danger / info），业务组件禁止写颜色字面量，必须引用令牌。 */
 
 :root {
-  /* 强调色（运行时由主题服务覆盖） */
-  --copper-accent: #3b82f6;
+  /* 强调色（默认铜色；运行时由主题服务覆盖） */
+  --copper-accent: #c97b3d;
   --copper-accent-foreground: #ffffff;
 
-  /* 语义色（默认深色主题）
-   * 主页面 --copper-bg 为近黑；导航栏 / 卡片 --copper-surface 比主页面浅一档。 */
-  --copper-bg: #0b0d10;
-  --copper-surface: #1a1d22;
-  --copper-surface-2: #232730;
-  --copper-surface-3: #2c323c;
-  --copper-border: #333a45;
-  --copper-text: #e6e9ee;
-  --copper-text-secondary: #9aa3b0;
-  --copper-text-disabled: #5f6773;
+  /* 语义色（深色） */
+  --copper-success: #3fb950;
+  --copper-warning: #d29922;
+  --copper-danger: #f85149;
+  --copper-info: #58a6ff;
+
+  /* 中性灰阶（深色）：主页面 --copper-bg 最深，surface 逐级提亮一档 */
+  --copper-bg: #0d1117;
+  --copper-surface: #161b22;
+  --copper-surface-2: #1c2129;
+  --copper-surface-3: #222830;
+  --copper-border: #30363d;
+  --copper-text: #e6edf3;
+  --copper-text-secondary: #8b949e;
+  --copper-text-disabled: #484f58;
   --copper-hover: rgba(255, 255, 255, 0.06);
   --copper-active: rgba(255, 255, 255, 0.1);
   --copper-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
-  --copper-overlay: rgba(0, 0, 0, 0.55);
-
-  --copper-success: #22c55e;
-  --copper-warning: #f59e0b;
-  --copper-danger: #ef4444;
+  --copper-overlay: rgba(0, 0, 0, 0.6);
 
   /* 圆角 */
   --copper-radius-sm: 6px;
@@ -66,20 +68,21 @@
 }
 
 html[data-theme="light"] {
-  --copper-bg: #f4f5f7;
+  --copper-bg: #f6f7f9;
   --copper-surface: #ffffff;
-  --copper-surface-2: #eef0f3;
-  --copper-surface-3: #e4e7ec;
-  --copper-border: #d9dde3;
-  --copper-text: #1c2330;
-  --copper-text-secondary: #6b7280;
-  --copper-text-disabled: #9ca3af;
+  --copper-surface-2: #eceff2;
+  --copper-surface-3: #e1e5ea;
+  --copper-border: #d4dae1;
+  --copper-text: #1f2328;
+  --copper-text-secondary: #59636e;
+  --copper-text-disabled: #8c959f;
   --copper-hover: rgba(0, 0, 0, 0.05);
   --copper-active: rgba(0, 0, 0, 0.09);
-  --copper-shadow: 0 4px 16px rgba(16, 24, 40, 0.12);
-  --copper-overlay: rgba(16, 24, 40, 0.45);
+  --copper-shadow: 0 4px 16px rgba(31, 35, 40, 0.12);
+  --copper-overlay: rgba(31, 35, 40, 0.45);
 
-  --copper-success: #16a34a;
-  --copper-warning: #d97706;
-  --copper-danger: #dc2626;
+  --copper-success: #1a7f37;
+  --copper-warning: #9a6700;
+  --copper-danger: #d1242f;
+  --copper-info: #0969da;
 }

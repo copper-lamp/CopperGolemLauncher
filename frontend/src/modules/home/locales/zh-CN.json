@@ -1,0 +1,75 @@
+{
+  "home": {
+    "title": "开始",
+    "hero_title": "创造你的世界",
+    "subtitle": "选择版本开始游戏",
+    "empty": "还没有安装任何版本，前往游戏下载模块安装",
+    "install_hint": "版本将由游戏下载模块安装，此处管理已安装版本",
+    "play": "开始游戏",
+    "playing": "启动中",
+    "mode": {
+      "simple": "简洁",
+      "default": "默认",
+      "default_placeholder": "默认模式开发中，敬请期待"
+    },
+    "rename": "重命名",
+    "delete": "删除",
+    "delete_confirm": "确定删除版本「{name}」吗？此操作不可恢复。",
+    "delete_running": "游戏运行中，无法删除",
+    "settings": "版本设置",
+    "back": "返回",
+    "open_folder": "版本文件夹",
+    "rename_placeholder": "输入新版本名",
+    "type": {
+      "release": "正式版",
+      "preview": "预览版",
+      "beta": "测试版"
+    },
+    "meta": {
+      "game_version": "游戏版本",
+      "registered": "已注册启动",
+      "isolation": "版本隔离",
+      "editor_mode": "编辑器模式",
+      "render_dragon": "RenderDragon",
+      "console": "调试控制台",
+      "ctrl_r_reload": "Ctrl+R 重载资源",
+      "launch_args": "启动参数",
+      "env_vars": "环境变量"
+    },
+    "logo": {
+      "set": "设置封面",
+      "remove": "移除封面",
+      "changed": "封面已更新",
+      "removed": "封面已移除",
+      "upload": "上传自定义图片",
+      "save": "保存封面",
+      "crop_hint": "将自动裁剪为 256×256 方形",
+      "preset_todo": "官方预设图标待接入"
+    },
+    "content": {
+      "title": "内容管理",
+      "empty": "该版本暂无附加内容",
+      "load_failed": "内容目录不可用",
+      "search_placeholder": "搜索内容…",
+      "all": "全部",
+      "types": {
+        "resources": "资源包",
+        "behavior": "行为包",
+        "worlds": "世界"
+      },
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "enable": "启用",
+      "disable": "停用",
+      "remove": "删除",
+      "remove_confirm": "确定删除内容「{name}」吗？"
+    },
+    "toast": {
+      "launch_started": "正在启动游戏…",
+      "launch_failed": "启动失败：{message}",
+      "deleted": "版本已删除",
+      "renamed": "版本已重命名",
+      "saved": "设置已保存"
+    }
+  }
+}

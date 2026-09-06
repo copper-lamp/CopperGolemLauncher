@@ -47,6 +47,24 @@ export function onSettingsChanged(
   );
 }
 
+/** 订阅版本安装事件（游戏下载模块发布，开始页据此刷新清单）。 */
+export function onVersionInstalled(
+  handler: (name: string) => void,
+): Promise<Unlisten> {
+  return listen<{ name: string }>("version.installed", (e) =>
+    handler(e.payload.name),
+  );
+}
+
+/** 订阅版本删除事件（开始页据此刷新清单）。 */
+export function onVersionRemoved(
+  handler: (name: string) => void,
+): Promise<Unlisten> {
+  return listen<{ name: string }>("version.removed", (e) =>
+    handler(e.payload.name),
+  );
+}
+
 /** 订阅更新状态。 */
 export function onUpdateStatus(handler: (status: UpdateStatus) => void): Promise<Unlisten> {
   return listen<UpdateStatus>("update.status", (e) => handler(e.payload));
