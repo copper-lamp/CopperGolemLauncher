@@ -259,8 +259,7 @@ impl AccountService {
                 rusqlite::params![account.id, account.gamertag, account.xuid, now_ms],
             )?;
             Ok(())
-        })
-        .map_err(KernelError::Database)?;
+        })?;
         self.events.publish("account.changed", json!({ "account": account.clone() }));
         Ok(account)
     }

@@ -92,7 +92,7 @@ fn load_once() -> Result<XalSymbols, String> {
     for name in ["vcruntime140_1.dll", "libHttpClient.dll", "launcher_core.dll"] {
         let path = dir.join(name);
         let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain([0]).collect();
-        unsafe {
+        let _ = unsafe {
             windows::Win32::System::LibraryLoader::LoadLibraryW(
                 windows::core::PCWSTR(wide.as_ptr()),
             )
