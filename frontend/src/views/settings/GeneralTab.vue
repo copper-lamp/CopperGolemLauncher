@@ -1,27 +1,30 @@
 <script setup lang="ts">
 // 通用 Tab：语言、外观深浅色、强调色（预设 / 自定义）。
 
-import { ref, computed } from "vue";
+import { computed } from "vue";
 
 import SettingSection from "./SettingSection.vue";
 import SettingRow from "./SettingRow.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
-import { useSettings } from "../../composables/useSettings";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
-import { themeSetAccent } from "../../api/theme";
+import { themeState, setThemeMode, setAccent, type ThemeMode } from "../../theme";
 
 const { t, locale, setLocale, supportedLocales } = useI18n();
-const { get, set } = useSettings();
 
 const mode = computed({
-  get: () => get<string>("theme.mode", "auto"),
-  set: (value: string) => void set("theme.mode", value),
+  get: () => themeState.mode,
+  set: (value: string) => void setThemeMode(value as ThemeMode),
 });
 
-const accent = ref(get<string>("theme.accent", "#c97b3d"));
+const accent = computed({
+  get: () => themeState.accent,
+  set: (value: string) => {
+    themeState.accent = value;
+  },
+});
 
 const localeOptions = supportedLocales().map((code) => ({ value: code, label: code }));
 
@@ -55,18 +58,13 @@ async function applyAccent(hex: string) {
     showToast(t("toast.error", { message: hex }), "error");
     return;
   }
-  accent.value = hex;
-  try {
-    await themeSetAccent(hex);
-  } catch (e) {
-    showToast(String(e), "error");
-  }
+  await setAccent(hex);
 }
 </script>
 
 <template>
   <div class="general-tab">
-    <SettingSection title-key="settings.general">
+    <SettingSection title-key="settings.tabs.general">
       <SettingRow label-key="settings.general.language" hint-key="settings.general.language_hint">
         <CoSelect
           :model-value="locale"
@@ -75,7 +73,7 @@ async function applyAccent(hex: string) {
         />
       </SettingRow>
       <SettingRow label-key="settings.general.theme_mode">
-        <CoSegmented :model-value="mode" :options="modeOptions" @update:model-value="mode = $event" />
+        <CoSegmented :model-value="mode" :options="modeOptions" @update:model-value="mode = $event as ThemeMode" />
       </SettingRow>
     </SettingSection>
 

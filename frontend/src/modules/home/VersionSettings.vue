@@ -116,7 +116,7 @@ async function saveName() {
   }
   try {
     const updated = await homeVersionRename(target.name, newName);
-    showToast(t("home.toast.renamed"), "success");
+    showToast(t("module.home.toast.renamed"), "success");
     await refresh();
     void router.replace({ path: "/version-settings", query: { name: updated.name } });
   } catch (e) {
@@ -148,10 +148,10 @@ function openFolder() {
 async function deleteVersion() {
   const target = current.value;
   if (!target) return;
-  if (!window.confirm(t("home.delete_confirm", { name: target.name }))) return;
+  if (!window.confirm(t("module.home.delete_confirm", { name: target.name }))) return;
   try {
     await homeVersionDelete(target.name);
-    showToast(t("home.toast.deleted"), "success");
+    showToast(t("module.home.toast.deleted"), "success");
     const remaining = versions.value.filter((v) => v.name !== target.name);
     if (remaining.length === 0) {
       void router.push("/");
@@ -186,7 +186,7 @@ function typeLabel(type: string): string {
         <button class="version-settings__back" :title="t('home.back')" @click="goBack">
           <ChevronLeft :size="18" />
         </button>
-        <span class="version-settings__tabs-title">{{ t("home.settings") }}</span>
+        <span class="version-settings__tabs-title">{{ t("module.home.settings") }}</span>
       </header>
 
       <div v-if="loading" class="version-settings__state">
@@ -194,7 +194,7 @@ function typeLabel(type: string): string {
       </div>
       <div v-else-if="versions.length === 0" class="version-settings__state">
         <Gamepad2 :size="26" :stroke-width="1.5" />
-        <span>{{ t("home.empty") }}</span>
+        <span>{{ t("module.home.empty") }}</span>
       </div>
 
       <div v-else class="version-settings__tabs-list">
@@ -241,7 +241,7 @@ function typeLabel(type: string): string {
           <p class="version-settings__meta">
             {{ typeLabel(current.version_type) }} · {{ current.game_version }}
             <span v-if="current.registered" class="version-settings__registered">
-              · {{ t("home.meta.registered") }}
+              · {{ t("module.home.meta.registered") }}
             </span>
           </p>
         </div>
@@ -250,17 +250,17 @@ function typeLabel(type: string): string {
       <div class="version-settings__controls">
         <CoButton variant="secondary" size="sm" @click="openFolder">
           <FolderOpen :size="14" />
-          <span>{{ t("home.open_folder") }}</span>
+          <span>{{ t("module.home.open_folder") }}</span>
         </CoButton>
         <label class="version-settings__toggle">
-          <span>{{ t("home.meta.render_dragon") }}</span>
+          <span>{{ t("module.home.meta.render_dragon") }}</span>
           <CoSwitch
             :model-value="current.enable_render_dragon"
             @update:model-value="(v: boolean) => void saveMeta({ enable_render_dragon: v })"
           />
         </label>
         <label class="version-settings__toggle">
-          <span>{{ t("home.meta.editor_mode") }}</span>
+          <span>{{ t("module.home.meta.editor_mode") }}</span>
           <CoSwitch
             :model-value="current.enable_editor_mode"
             @update:model-value="(v: boolean) => void saveMeta({ enable_editor_mode: v })"
@@ -268,7 +268,7 @@ function typeLabel(type: string): string {
         </label>
         <CoButton variant="danger" size="sm" @click="deleteVersion">
           <Trash2 :size="14" />
-          <span>{{ t("home.delete") }}</span>
+          <span>{{ t("module.home.delete") }}</span>
         </CoButton>
       </div>
 
@@ -276,8 +276,8 @@ function typeLabel(type: string): string {
     </section>
 
     <section v-else class="version-settings__detail version-settings__detail--empty">
-      <p>{{ t("home.empty") }}</p>
-      <p class="version-settings__hint">{{ t("home.install_hint") }}</p>
+      <p>{{ t("module.home.empty") }}</p>
+      <p class="version-settings__hint">{{ t("module.home.install_hint") }}</p>
     </section>
 
     <IconEditDialog

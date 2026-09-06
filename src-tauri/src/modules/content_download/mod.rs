@@ -109,10 +109,12 @@ impl ContentDownloadModule {
         std::fs::create_dir_all(&dir)?;
         let dest = dir.join(sanitize_filename(&file.filename));
 
-        let mut opts = DownloadOptions::default();
-        opts.filename = Some(file.filename.clone());
-        opts.resume = true;
-        opts.expected_sha256 = file.sha256.clone();
+        let opts = DownloadOptions {
+            filename: file.filename.clone().into(),
+            resume: true,
+            expected_sha256: file.sha256.clone(),
+            ..Default::default()
+        };
 
         let task_id = kernel.download().enqueue(&file.download_url, &dest, opts)?;
         record_download(
@@ -259,7 +261,7 @@ fn sanitize_filename(name: &str) -> String {
             c => c,
         })
         .collect();
-    let cleaned = cleaned.trim().trim_start_matches('.').to_string();
+    let cleaned = cleaned.trim().to_string();
     if cleaned.is_empty() {
         "download.bin".to_string()
     } else {

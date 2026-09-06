@@ -13,5 +13,5 @@ import "./home/register";
 // 内容下载模块前端包。
 import "./content-download/register";
 
-// 其它内置模块（游戏下载）在各自开发过程中在此追加：
-// import "./game-download/register";
+// 游戏下载模块前端包。
+import "./game-download/register";

@@ -33,10 +33,10 @@ const loading = ref(false);
 const unavailable = ref(false);
 
 const kindOptions = computed(() => [
-  { value: "all", label: t("home.content.all") },
-  { value: "resources", label: t("home.content.types.resources") },
-  { value: "behavior", label: t("home.content.types.behavior") },
-  { value: "worlds", label: t("home.content.types.worlds") },
+  { value: "all", label: t("module.home.content.all") },
+  { value: "resources", label: t("module.home.content.types.resources") },
+  { value: "behavior", label: t("module.home.content.types.behavior") },
+  { value: "worlds", label: t("module.home.content.types.worlds") },
 ]);
 
 const filtered = computed(() => {
@@ -88,7 +88,7 @@ async function toggleEnabled() {
 async function removeSelected() {
   const item = selected.value;
   if (!item) return;
-  if (!window.confirm(t("home.content.remove_confirm", { name: item.name }))) return;
+  if (!window.confirm(t("module.home.content.remove_confirm", { name: item.name }))) return;
   try {
     await homeContentRemove(props.versionName, item.id);
     await refresh();
@@ -98,14 +98,14 @@ async function removeSelected() {
 }
 
 function kindLabel(kind: ContentKind): string {
-  return t(`home.content.types.${kind}`);
+  return t(`module.home.content.types.${kind}`);
 }
 </script>
 
 <template>
   <section class="content-panel">
     <header class="content-panel__header">
-      <h3 class="content-panel__title">{{ t("home.content.title") }}</h3>
+      <h3 class="content-panel__title">{{ t("module.home.content.title") }}</h3>
       <div class="content-panel__tools">
         <div class="content-panel__search">
           <Search :size="14" class="content-panel__search-icon" />
@@ -134,11 +134,11 @@ function kindLabel(kind: ContentKind): string {
       {{ t("common.loading") }}
     </div>
     <div v-else-if="unavailable" class="content-panel__state">
-      {{ t("home.content.load_failed") }}
+      {{ t("module.home.content.load_failed") }}
     </div>
     <div v-else-if="filtered.length === 0" class="content-panel__state">
       <Package :size="22" :stroke-width="1.5" />
-      <span>{{ t("home.content.empty") }}</span>
+      <span>{{ t("module.home.content.empty") }}</span>
     </div>
 
     <ul v-else class="content-panel__list">
@@ -163,7 +163,7 @@ function kindLabel(kind: ContentKind): string {
               : 'content-panel__item-state--off',
           ]"
         >
-          {{ item.enabled ? t("home.content.enabled") : t("home.content.disabled") }}
+          {{ item.enabled ? t("module.home.content.enabled") : t("module.home.content.disabled") }}
         </span>
       </li>
     </ul>
@@ -178,14 +178,14 @@ function kindLabel(kind: ContentKind): string {
           <span>
             {{
               selected.enabled
-                ? t("home.content.disable")
-                : t("home.content.enable")
+                ? t("module.home.content.disable")
+                : t("module.home.content.enable")
             }}
           </span>
         </CoButton>
         <CoButton variant="danger" size="sm" @click="removeSelected">
           <Trash2 :size="14" />
-          <span>{{ t("home.content.remove") }}</span>
+          <span>{{ t("module.home.content.remove") }}</span>
         </CoButton>
       </div>
     </footer>

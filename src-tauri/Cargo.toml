@@ -36,11 +36,15 @@ keyring = "3"
 self-replace = "1"
 base64 = "0.21"
 async-trait = "0.1"
+md-5 = "0.10"
+libloading = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 copper-downloader = { path = "../copper-downloader" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }

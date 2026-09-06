@@ -365,7 +365,7 @@ fn infer_project_url(identifier: &str) -> Option<String> {
     if parts.len() == 2 && !parts[0].contains('.') && !parts[0].contains(':') {
         Some(format!("https://github.com/{}/{}", parts[0], parts[1]))
     } else {
-        Some(format!("https://{id}")).filter(|_| id.contains('.'))
+        id.contains('.').then_some(format!("https://{id}"))
     }
 }
 
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(parse_semver("v1.2"), Some((1, 2, 0)));
         assert_eq!(parse_semver("1.3.0-beta.1"), Some((1, 3, 0)));
         assert_eq!(parse_semver("abc"), None);
-        assert_eq!(cmp_versions("1.3.0", "1.2.0"), std::cmp::Ordering::Less);
+        assert_eq!(cmp_versions("1.3.0", "1.2.0"), std::cmp::Ordering::Greater);
     }
 
     #[test]

@@ -10,11 +10,35 @@ import type { JsonValue } from "../api/types";
 import zhCN from "../locales/zh-CN.json";
 import enUS from "../locales/en-US.json";
 
+// 模块语言包（与后端 `I18nService` 的 `module.<id>.*` 命名空间一致）：
+// 内核 catalog 不可用（启动早期 / 浏览器调试）时前端本地兜底，
+// 文件仍为单一数据源 —— 后端经 include_str 注册同一批文件。
+import homeZhCN from "../modules/home/locales/zh-CN.json";
+import homeEnUS from "../modules/home/locales/en-US.json";
+import contentDownloadZhCN from "../modules/content-download/locales/zh-CN.json";
+import contentDownloadEnUS from "../modules/content-download/locales/en-US.json";
+
 const FALLBACK_LOCALE = "en-US";
 
+const MODULE_LOCALES: Record<string, Record<string, JsonValue>> = {
+  home: { "zh-CN": homeZhCN, "en-US": homeEnUS },
+  "content-download": { "zh-CN": contentDownloadZhCN, "en-US": contentDownloadEnUS },
+};
+
+function withModulePacks(
+  locale: string,
+  base: Record<string, JsonValue>,
+): Record<string, JsonValue> {
+  const packs: Record<string, JsonValue> = {};
+  for (const [moduleId, packByLocale] of Object.entries(MODULE_LOCALES)) {
+    packs[moduleId] = packByLocale[locale] ?? packByLocale[FALLBACK_LOCALE];
+  }
+  return { ...base, module: packs };
+}
+
 const LOCAL_CATALOGS: Record<string, Record<string, JsonValue>> = {
-  "zh-CN": zhCN as unknown as Record<string, JsonValue>,
-  "en-US": enUS as unknown as Record<string, JsonValue>,
+  "zh-CN": withModulePacks("zh-CN", zhCN as unknown as Record<string, JsonValue>),
+  "en-US": withModulePacks("en-US", enUS as unknown as Record<string, JsonValue>),
 };
 
 const currentLocale = ref<string>(FALLBACK_LOCALE);

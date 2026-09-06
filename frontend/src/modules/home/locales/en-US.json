@@ -1,75 +1,73 @@
 {
-  "home": {
-    "title": "Home",
-    "hero_title": "Create your world",
-    "subtitle": "Pick a version to play",
-    "empty": "No versions installed yet. Install one from the Game Downloads module",
-    "install_hint": "Versions are installed by the Game Downloads module; manage installed versions here",
-    "play": "Play",
-    "playing": "Launching",
-    "mode": {
-      "simple": "Simple",
-      "default": "Default",
-      "default_placeholder": "Default mode is under development"
+  "title": "Home",
+  "hero_title": "Create your world",
+  "subtitle": "Pick a version to play",
+  "empty": "No versions installed yet. Install one from the Game Downloads module",
+  "install_hint": "Versions are installed by the Game Downloads module; manage installed versions here",
+  "play": "Play",
+  "playing": "Launching",
+  "mode": {
+    "simple": "Simple",
+    "default": "Default",
+    "default_placeholder": "Default mode is under development"
+  },
+  "rename": "Rename",
+  "delete": "Delete",
+  "delete_confirm": "Delete version \"{name}\"? This cannot be undone.",
+  "delete_running": "Game is running, cannot delete",
+  "settings": "Version settings",
+  "back": "Back",
+  "open_folder": "Version folder",
+  "rename_placeholder": "Enter a new version name",
+  "type": {
+    "release": "Release",
+    "preview": "Preview",
+    "beta": "Beta"
+  },
+  "meta": {
+    "game_version": "Game version",
+    "registered": "Registered for launch",
+    "isolation": "Version isolation",
+    "editor_mode": "Editor mode",
+    "render_dragon": "RenderDragon",
+    "console": "Debug console",
+    "ctrl_r_reload": "Ctrl+R reload resources",
+    "launch_args": "Launch args",
+    "env_vars": "Environment variables"
+  },
+  "logo": {
+    "set": "Set cover",
+    "remove": "Remove cover",
+    "changed": "Cover updated",
+    "removed": "Cover removed",
+    "upload": "Upload custom image",
+    "save": "Save cover",
+    "crop_hint": "Auto-cropped to a 256×256 square",
+    "preset_todo": "Official preset icons coming soon"
+  },
+  "content": {
+    "title": "Content",
+    "empty": "No content for this version",
+    "load_failed": "Content directory unavailable",
+    "search_placeholder": "Search content…",
+    "all": "All",
+    "types": {
+      "resources": "Resource Packs",
+      "behavior": "Behavior Packs",
+      "worlds": "Worlds"
     },
-    "rename": "Rename",
-    "delete": "Delete",
-    "delete_confirm": "Delete version \"{name}\"? This cannot be undone.",
-    "delete_running": "Game is running, cannot delete",
-    "settings": "Version settings",
-    "back": "Back",
-    "open_folder": "Version folder",
-    "rename_placeholder": "Enter a new version name",
-    "type": {
-      "release": "Release",
-      "preview": "Preview",
-      "beta": "Beta"
-    },
-    "meta": {
-      "game_version": "Game version",
-      "registered": "Registered for launch",
-      "isolation": "Version isolation",
-      "editor_mode": "Editor mode",
-      "render_dragon": "RenderDragon",
-      "console": "Debug console",
-      "ctrl_r_reload": "Ctrl+R reload resources",
-      "launch_args": "Launch args",
-      "env_vars": "Environment variables"
-    },
-    "logo": {
-      "set": "Set cover",
-      "remove": "Remove cover",
-      "changed": "Cover updated",
-      "removed": "Cover removed",
-      "upload": "Upload custom image",
-      "save": "Save cover",
-      "crop_hint": "Auto-cropped to a 256×256 square",
-      "preset_todo": "Official preset icons coming soon"
-    },
-    "content": {
-      "title": "Content",
-      "empty": "No content for this version",
-      "load_failed": "Content directory unavailable",
-      "search_placeholder": "Search content…",
-      "all": "All",
-      "types": {
-        "resources": "Resource Packs",
-        "behavior": "Behavior Packs",
-        "worlds": "Worlds"
-      },
-      "enabled": "Enabled",
-      "disabled": "Disabled",
-      "enable": "Enable",
-      "disable": "Disable",
-      "remove": "Remove",
-      "remove_confirm": "Remove content \"{name}\"? "
-    },
-    "toast": {
-      "launch_started": "Launching game…",
-      "launch_failed": "Launch failed: {message}",
-      "deleted": "Version deleted",
-      "renamed": "Version renamed",
-      "saved": "Settings saved"
-    }
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "enable": "Enable",
+    "disable": "Disable",
+    "remove": "Remove",
+    "remove_confirm": "Remove content \"{name}\"? "
+  },
+  "toast": {
+    "launch_started": "Launching game…",
+    "launch_failed": "Launch failed: {message}",
+    "deleted": "Version deleted",
+    "renamed": "Version renamed",
+    "saved": "Settings saved"
   }
 }

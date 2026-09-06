@@ -1,0 +1,70 @@
+{
+  "navTitle": "游戏下载",
+  "listTitle": "游戏下载",
+  "detailTitle": "版本详情",
+  "title": "游戏下载",
+  "detail": "版本详情",
+  "latest_release": "最新正式版",
+  "latest_preview": "最新预览版",
+  "categories": "全部版本",
+  "versionsCount": "{n} 个版本",
+  "installed": "已安装",
+  "downloaded": "已下载",
+  "latest": "最新",
+  "kind": {
+    "release": "正式版",
+    "preview": "预览版"
+  },
+  "actions": {
+    "download": "下载",
+    "reinstall": "重新下载",
+    "retry": "重试",
+    "installed": "已安装",
+    "refresh": "刷新列表",
+    "back": "返回",
+    "cancel": "取消",
+    "open": "打开",
+    "task": "复制任务链接"
+  },
+  "state": {
+    "downloading": "下载中",
+    "extracting": "解包中",
+    "queued": "排队中",
+    "verifying": "校验中",
+    "installed": "已安装",
+    "failed": "失败"
+  },
+  "meta": {
+    "game_version": "游戏版本",
+    "kind": "类型",
+    "md5": "MD5",
+    "size": "大小"
+  },
+  "error": {
+    "already_installed": "该版本已安装",
+    "no_url": "该版本没有可用的下载链接",
+    "no_manifest": "版本清单获取失败，请检查网络后重试",
+    "md5_mismatch": "下载文件校验不通过，请重试",
+    "dll_missing": "缺少解包组件，请安装 Microsoft Visual C++ 运行库",
+    "not_extractable": "该版本需要 Store 版本授权后才能解包",
+    "success": "解包成功",
+    "exception": "解包出现异常",
+    "invalid_params": "解包参数错误",
+    "key_not_found": "缺少解包密钥（请确认已安装 Store 版 Minecraft）",
+    "unauthorized": "授权校验失败（请确认拥有 Store 版授权）",
+    "pipe_open_failed": "解包管道打开失败",
+    "input_not_found": "找不到待解包文件",
+    "output_dir_invalid": "解包输出目录无效",
+    "parse_failed": "游戏包解析失败",
+    "extract_failed": "游戏包解包失败",
+    "unknown": "未知解包错误"
+  },
+  "toast": {
+    "enqueued": "已加入下载队列",
+    "installed": "下载并安装完成",
+    "failed": "下载失败",
+    "cancelled": "已取消",
+    "refresh_ok": "清单已刷新"
+  },
+  "empty": "暂无可下载的版本"
+}

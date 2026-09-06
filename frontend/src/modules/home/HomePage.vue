@@ -32,8 +32,8 @@ const launching = ref(false);
 const loading = ref(true);
 
 const modeOptions = computed(() => [
-  { value: "simple", label: t("home.mode.simple") },
-  { value: "default", label: t("home.mode.default") },
+  { value: "simple", label: t("module.home.mode.simple") },
+  { value: "default", label: t("module.home.mode.default") },
 ]);
 
 /** 当前版本（多版本时可经选择器切换）。 */
@@ -82,9 +82,9 @@ async function launch() {
   launching.value = true;
   try {
     await homeLaunch(current.value.name);
-    showToast(t("home.toast.launch_started"), "success");
+    showToast(t("module.home.toast.launch_started"), "success");
   } catch (e) {
-    showToast(t("home.toast.launch_failed", { message: String(e) }), "error");
+    showToast(t("module.home.toast.launch_failed", { message: String(e) }), "error");
   } finally {
     launching.value = false;
   }
@@ -108,7 +108,7 @@ function openVersionSettings() {
     <!-- 默认模式占位（后续阶段实现） -->
     <div v-if="mode === 'default'" class="home-page__default-placeholder">
       <Gamepad2 :size="40" :stroke-width="1.5" />
-      <p>{{ t("home.mode.default_placeholder") }}</p>
+      <p>{{ t("module.home.mode.default_placeholder") }}</p>
     </div>
 
     <!-- 简洁模式 -->
@@ -119,12 +119,12 @@ function openVersionSettings() {
 
       <template v-else-if="!current">
         <Gamepad2 :size="56" :stroke-width="1.4" class="home-page__empty-icon" />
-        <p class="home-page__empty">{{ t("home.empty") }}</p>
-        <p class="home-page__hint">{{ t("home.install_hint") }}</p>
+        <p class="home-page__empty">{{ t("module.home.empty") }}</p>
+        <p class="home-page__hint">{{ t("module.home.install_hint") }}</p>
       </template>
 
       <template v-else>
-        <h1 class="home-page__hero">{{ t("home.hero_title") }}</h1>
+        <h1 class="home-page__hero">{{ t("module.home.hero_title") }}</h1>
         <div class="home-page__version">
           <CoSelect
             v-if="versionOptions.length > 1"
@@ -137,10 +137,10 @@ function openVersionSettings() {
         <div class="home-page__actions">
           <CoButton variant="primary" size="md" :disabled="launching" @click="launch">
             <Play :size="16" />
-            <span>{{ launching ? t("home.playing") : t("home.play") }}</span>
+            <span>{{ launching ? t("module.home.playing") : t("module.home.play") }}</span>
           </CoButton>
           <CoButton variant="ghost" size="md" @click="openVersionSettings">
-            {{ t("home.settings") }}
+            {{ t("module.home.settings") }}
           </CoButton>
         </div>
       </template>

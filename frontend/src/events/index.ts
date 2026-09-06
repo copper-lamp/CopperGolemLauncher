@@ -16,7 +16,7 @@ export function onDownload(
   event: "created" | "progress" | "status",
   handler: (task: DownloadTask) => void,
 ): Promise<Unlisten> {
-  return listen<DownloadTask>(`download.${event}`, (e) => handler(e.payload));
+  return listen<DownloadTask>(`download-${event}`, (e) => handler(e.payload));
 }
 
 /** 订阅账户登录流程状态。 */
@@ -24,7 +24,7 @@ export function onAccountLoginState(
   handler: (state: LoginState, reason: string | null) => void,
 ): Promise<Unlisten> {
   return listen<{ state: LoginState; reason: string | null }>(
-    "account.login.state",
+    "account-login-state",
     (e) => handler(e.payload.state, e.payload.reason),
   );
 }
@@ -33,7 +33,7 @@ export function onAccountLoginState(
 export function onAccountChanged(
   handler: (account: AccountInfo | null) => void,
 ): Promise<Unlisten> {
-  return listen<{ account: AccountInfo | null }>("account.changed", (e) =>
+  return listen<{ account: AccountInfo | null }>("account-changed", (e) =>
     handler(e.payload.account),
   );
 }
@@ -42,7 +42,7 @@ export function onAccountChanged(
 export function onSettingsChanged(
   handler: (changed: Record<string, JsonValue>) => void,
 ): Promise<Unlisten> {
-  return listen<Record<string, JsonValue>>("settings.changed", (e) =>
+  return listen<Record<string, JsonValue>>("settings-changed", (e) =>
     handler(e.payload),
   );
 }
@@ -51,7 +51,7 @@ export function onSettingsChanged(
 export function onVersionInstalled(
   handler: (name: string) => void,
 ): Promise<Unlisten> {
-  return listen<{ name: string }>("version.installed", (e) =>
+  return listen<{ name: string }>("version-installed", (e) =>
     handler(e.payload.name),
   );
 }
@@ -60,12 +60,48 @@ export function onVersionInstalled(
 export function onVersionRemoved(
   handler: (name: string) => void,
 ): Promise<Unlisten> {
-  return listen<{ name: string }>("version.removed", (e) =>
+  return listen<{ name: string }>("version-removed", (e) =>
     handler(e.payload.name),
+  );
+}
+
+/** 游戏下载模块：任务已投递（负载 `{ id, taskId }`）。 */
+export function onGameDownloadEnqueued(
+  handler: (payload: { id: string; taskId: number }) => void,
+): Promise<Unlisten> {
+  return listen<{ id: string; taskId: number }>("game-download-enqueued", (e) =>
+    handler(e.payload),
+  );
+}
+
+/** 游戏下载模块：版本安装完成（负载 `id`）。 */
+export function onGameDownloadInstalled(
+  handler: (id: string) => void,
+): Promise<Unlisten> {
+  return listen<{ id: string }>("game-download-installed", (e) =>
+    handler(e.payload.id),
+  );
+}
+
+/** 游戏下载模块：任务失败（负载 `{ id, error }`）。 */
+export function onGameDownloadFailed(
+  handler: (payload: { id: string; error: string }) => void,
+): Promise<Unlisten> {
+  return listen<{ id: string; error: string }>("game-download-failed", (e) =>
+    handler(e.payload),
+  );
+}
+
+/** 游戏下载模块：任务取消（负载 `id`）。 */
+export function onGameDownloadCancelled(
+  handler: (id: string) => void,
+): Promise<Unlisten> {
+  return listen<{ id: string }>("game-download-cancelled", (e) =>
+    handler(e.payload.id),
   );
 }
 
 /** 订阅更新状态。 */
 export function onUpdateStatus(handler: (status: UpdateStatus) => void): Promise<Unlisten> {
-  return listen<UpdateStatus>("update.status", (e) => handler(e.payload));
+  return listen<UpdateStatus>("update-status", (e) => handler(e.payload));
 }

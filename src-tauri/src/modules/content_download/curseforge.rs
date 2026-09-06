@@ -365,7 +365,7 @@ pub async fn detail(kernel: &KernelContext, mod_id: i64) -> Result<ContentDetail
         .await?;
 
     let files_resp: GetFilesResponse = http::client()
-        .get(&format!("{BASE_URL}/v1/mods/{mod_id}/files?pageSize=50"))
+        .get(format!("{BASE_URL}/v1/mods/{mod_id}/files?pageSize=50"))
         .header("x-api-key", &api_key)
         .send()
         .await?
@@ -406,7 +406,7 @@ pub async fn detail(kernel: &KernelContext, mod_id: i64) -> Result<ContentDetail
 pub async fn description(kernel: &KernelContext, mod_id: i64) -> Result<Option<String>, KernelError> {
     let api_key = api_key(kernel)?;
     let resp: ModDescriptionResponse = http::client()
-        .get(&format!("{BASE_URL}/v1/mods/{mod_id}/description"))
+        .get(format!("{BASE_URL}/v1/mods/{mod_id}/description"))
         .header("x-api-key", api_key)
         .send()
         .await?
@@ -460,7 +460,7 @@ fn latest_version_of(m: &ModData) -> String {
 fn strip_extension(name: &str) -> String {
     let name = name.trim();
     match name.rsplit_once('.') {
-        Some((base, ext)) if !ext.to_lowercase().contains("zip") => base.to_string(),
+        Some((base, ext)) if !base.is_empty() && !ext.is_empty() => base.to_string(),
         _ => name.to_string(),
     }
 }
@@ -470,7 +470,7 @@ fn mod_to_item(m: &ModData, content_type: &str) -> ContentItem {
     let categories: Vec<String> = m
         .categories
         .iter()
-        .filter(|c| c.class_id != m.class_id && !c.is_class)
+        .filter(|c| c.class_id == m.class_id && !c.is_class)
         .map(|c| c.name.to_lowercase())
         .collect();
 
@@ -730,7 +730,8 @@ mod tests {
         assert_eq!(model.id, "cf-f:55");
         assert_eq!(model.sha256.as_deref(), Some("deadbeef"));
         assert_eq!(model.release_type, "alpha");
-        assert_eq!(model.game_versions.len(), 2);
+        assert_eq!(model.game_versions.len(), 1);
+        assert_eq!(model.game_versions[0], "1.21");
         assert_eq!(model.dependencies.len(), 1);
         assert_eq!(model.dependencies[0].ref_id, "cf:77");
     }

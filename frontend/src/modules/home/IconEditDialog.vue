@@ -100,7 +100,7 @@ async function save() {
   saving.value = true;
   try {
     await homeLogoSet(props.versionName, preview.value);
-    showToast(t("home.logo.changed"), "success");
+    showToast(t("module.home.logo.changed"), "success");
     emit("saved");
     emit("update:open", false);
   } catch (e) {
@@ -115,7 +115,7 @@ async function remove() {
   saving.value = true;
   try {
     await homeLogoRemove(props.versionName);
-    showToast(t("home.logo.removed"), "success");
+    showToast(t("module.home.logo.removed"), "success");
     emit("saved");
     emit("update:open", false);
   } catch (e) {
@@ -137,7 +137,7 @@ async function remove() {
     >
       <div class="icon-dialog__card">
         <header class="icon-dialog__header">
-          <h2 class="icon-dialog__title">{{ t("home.logo.set") }}</h2>
+          <h2 class="icon-dialog__title">{{ t("module.home.logo.set") }}</h2>
           <button class="icon-dialog__close" :title="t('common.close')" @click="close">
             <X :size="16" />
           </button>
@@ -153,12 +153,12 @@ async function remove() {
             <ImageIcon v-else :size="40" :stroke-width="1.4" />
           </div>
 
-          <p class="icon-dialog__hint">{{ t("home.logo.crop_hint") }}</p>
+          <p class="icon-dialog__hint">{{ t("module.home.logo.crop_hint") }}</p>
 
           <div class="icon-dialog__actions">
             <CoButton variant="secondary" @click="pickFile">
               <Upload :size="15" />
-              <span>{{ t("home.logo.upload") }}</span>
+              <span>{{ t("module.home.logo.upload") }}</span>
             </CoButton>
             <CoButton
               v-if="currentLogo || preview"
@@ -167,7 +167,7 @@ async function remove() {
               @click="remove"
             >
               <Trash2 :size="15" />
-              <span>{{ t("home.logo.remove") }}</span>
+              <span>{{ t("module.home.logo.remove") }}</span>
             </CoButton>
           </div>
         </div>
@@ -179,7 +179,7 @@ async function remove() {
             :disabled="!preview || saving"
             @click="save"
           >
-            {{ t("home.logo.save") }}
+            {{ t("module.home.logo.save") }}
           </CoButton>
         </footer>
 

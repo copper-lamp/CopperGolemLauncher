@@ -93,13 +93,14 @@ pub fn run() {
                 modules,
             );
 
-            // 装载模块。当前内置模块：开始页（home）、内容下载（content-download）。
+            // 装载模块。当前内置模块：开始页（home）、内容下载（content-download）、游戏下载（game-download）。
             kernel
                 .modules()
                 .register(Arc::new(modules::home::HomeModule::default()));
+            kernel.modules().register(Arc::new(modules::content_download::ContentDownloadModule));
             kernel
                 .modules()
-                .register(Arc::new(modules::content_download::ContentDownloadModule::default()));
+                .register(Arc::new(modules::game_download::GameDownloadModule::default()));
             kernel.modules().boot(&kernel);
 
             app.manage(kernel);
@@ -161,6 +162,13 @@ pub fn run() {
             commands::home::home_content_list,
             commands::home::home_content_set_enabled,
             commands::home::home_content_remove,
+            // 游戏下载模块（game-download）
+            commands::game_download::game_download_manifest,
+            commands::game_download::game_download_detail,
+            commands::game_download::game_download_enqueue,
+            commands::game_download::game_download_refresh_source,
+            commands::game_download::game_download_cancel,
+            commands::game_download::game_download_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

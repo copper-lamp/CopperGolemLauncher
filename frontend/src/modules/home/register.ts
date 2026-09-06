@@ -24,13 +24,13 @@ registerModule({
       path: "/",
       name: "home",
       component: () => import("./HomePage.vue"),
-      meta: { titleKey: "home.title" },
+      meta: { titleKey: "module.home.title" },
     },
     {
       path: "/version-settings",
       name: "version-settings",
       component: () => import("./VersionSettings.vue"),
-      meta: { titleKey: "home.settings" },
+      meta: { titleKey: "module.home.settings" },
     },
   ],
 });

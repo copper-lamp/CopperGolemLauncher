@@ -362,8 +362,8 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&base);
         let cm = base.join("games").join("com.mojang");
-        fs::create_dir_all(&cm.join("resource_packs")).unwrap();
-        fs::create_dir_all(&cm.join("behavior_packs")).unwrap();
+        fs::create_dir_all(cm.join("resource_packs")).unwrap();
+        fs::create_dir_all(cm.join("behavior_packs")).unwrap();
         base
     }
 

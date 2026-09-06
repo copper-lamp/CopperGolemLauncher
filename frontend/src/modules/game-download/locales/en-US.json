@@ -1,0 +1,70 @@
+{
+  "navTitle": "Game Download",
+  "listTitle": "Game Download",
+  "detailTitle": "Version Details",
+  "title": "Game Download",
+  "detail": "Version Details",
+  "latest_release": "Latest Release",
+  "latest_preview": "Latest Preview",
+  "categories": "All Versions",
+  "versionsCount": "{n} versions",
+  "installed": "Installed",
+  "downloaded": "Downloaded",
+  "latest": "Latest",
+  "kind": {
+    "release": "Release",
+    "preview": "Preview"
+  },
+  "actions": {
+    "download": "Download",
+    "reinstall": "Re-download",
+    "retry": "Retry",
+    "installed": "Installed",
+    "refresh": "Refresh",
+    "back": "Back",
+    "cancel": "Cancel",
+    "open": "Open",
+    "task": "Copy task link"
+  },
+  "state": {
+    "downloading": "Downloading",
+    "extracting": "Extracting",
+    "queued": "Queued",
+    "verifying": "Verifying",
+    "installed": "Installed",
+    "failed": "Failed"
+  },
+  "meta": {
+    "game_version": "Game version",
+    "kind": "Type",
+    "md5": "MD5",
+    "size": "Size"
+  },
+  "error": {
+    "already_installed": "This version is already installed",
+    "no_url": "No download link available for this version",
+    "no_manifest": "Failed to fetch version list, check your network and retry",
+    "md5_mismatch": "Download verification failed, please retry",
+    "dll_missing": "Extraction component missing, please install Microsoft Visual C++ Runtime",
+    "not_extractable": "This version requires a Store license to extract",
+    "success": "Extraction succeeded",
+    "exception": "Extraction exception",
+    "invalid_params": "Invalid extraction parameters",
+    "key_not_found": "Extraction key missing (install the Store version of Minecraft)",
+    "unauthorized": "Authorization failed (require a Store license)",
+    "pipe_open_failed": "Failed to open extraction pipe",
+    "input_not_found": "Package file not found",
+    "output_dir_invalid": "Invalid output directory",
+    "parse_failed": "Failed to parse game package",
+    "extract_failed": "Failed to extract game package",
+    "unknown": "Unknown extraction error"
+  },
+  "toast": {
+    "enqueued": "Added to download queue",
+    "installed": "Downloaded and installed",
+    "failed": "Download failed",
+    "cancelled": "Cancelled",
+    "refresh_ok": "List refreshed"
+  },
+  "empty": "No downloadable versions"
+}

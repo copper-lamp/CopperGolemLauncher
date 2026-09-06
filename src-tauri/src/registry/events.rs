@@ -115,7 +115,11 @@ impl EventBus {
         }
 
         if let Some(app) = self.app.lock().as_ref() {
-            let _ = app.emit(name, &payload);
+            // Tauri 事件名不允许 `.`（仅 [a-zA-Z0-9-/: _]），桥接前端时统一映射为连字符。
+            let frontend_name = name.replace('.', "-");
+            if let Err(e) = app.emit(&frontend_name, &payload) {
+                eprintln!("[events] failed to bridge `{frontend_name}` to frontend: {e}");
+            }
         }
     }
 }

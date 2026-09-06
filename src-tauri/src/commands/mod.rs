@@ -7,6 +7,7 @@
 pub mod account;
 pub mod content_download;
 pub mod download;
+pub mod game_download;
 pub mod home;
 pub mod i18n;
 pub mod intents;

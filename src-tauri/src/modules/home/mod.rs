@@ -281,9 +281,11 @@ mod tests {
 
     #[test]
     fn update_meta_mutates_only_given_fields() {
-        let mut update = VersionMetaUpdate::default();
-        update.enable_render_dragon = Some(true);
-        update.launch_args = Some("-x".into());
+        let update = VersionMetaUpdate {
+            enable_render_dragon: Some(true),
+            launch_args: Some("-x".into()),
+            ..Default::default()
+        };
         let mut meta = VersionMeta {
             name: "t".into(),
             enable_editor_mode: true,
