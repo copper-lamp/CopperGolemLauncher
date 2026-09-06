@@ -1,0 +1,144 @@
+{
+  "app": {
+    "name": "铜傀儡",
+    "tagline": "铜傀儡启动器"
+  },
+  "common": {
+    "confirm": "确定",
+    "cancel": "取消",
+    "close": "关闭",
+    "ok": "好的",
+    "retry": "重试",
+    "delete": "删除",
+    "search": "搜索",
+    "loading": "加载中",
+    "empty": "暂无内容",
+    "error": "出错啦",
+    "success": "操作成功",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "enable": "启用",
+    "disable": "停用",
+    "version": "版本",
+    "open_folder": "打开文件夹",
+    "copy": "复制",
+    "copied": "已复制",
+    "unknown": "未知"
+  },
+  "titlebar": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭"
+  },
+  "nav": {
+    "settings": "设置",
+    "downloads": "下载"
+  },
+  "settings": {
+    "title": "设置",
+    "tabs": {
+      "general": "通用",
+      "launch": "启动",
+      "appearance": "个性",
+      "modules": "模块",
+      "about": "关于"
+    },
+    "general": {
+      "language": "语言",
+      "language_hint": "切换后立即生效",
+      "theme_mode": "外观",
+      "theme_mode_dark": "深色",
+      "theme_mode_light": "浅色",
+      "theme_mode_auto": "跟随系统",
+      "accent_color": "强调色",
+      "accent_preset": "预设"
+    },
+    "launch": {
+      "default_version": "默认启动版本",
+      "default_version_hint": "未选择时启动页将要求选择版本",
+      "memory": "内存分配",
+      "memory_hint": "为游戏分配的可用内存",
+      "args": "启动参数",
+      "args_placeholder": "附加 JVM / 游戏启动参数",
+      "show_logs": "显示日志 / 调试输出",
+      "after_launch": "启动后行为",
+      "after_launch_keep": "保持窗口",
+      "after_launch_minimize": "最小化到托盘",
+      "after_launch_hide": "隐藏窗口"
+    },
+    "appearance": {
+      "list_density": "列表密度",
+      "list_density_comfortable": "舒适",
+      "list_density_compact": "紧凑",
+      "list_density_cozy": "宽松",
+      "animations": "动画效果",
+      "download_overlay_auto_hide": "下载悬浮窗自动隐藏",
+      "render": "渲染性能偏好",
+      "render_balanced": "均衡",
+      "render_performance": "性能优先",
+      "render_quality": "画质优先"
+    },
+    "modules": {
+      "module_list": "模块列表",
+      "builtin": "内置模块",
+      "additional": "附加模块",
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "no_modules": "暂无模块",
+      "refresh": "刷新"
+    },
+    "about": {
+      "app_info": "关于本软件",
+      "version": "当前版本",
+      "check_update": "检查更新",
+      "checking": "检查中",
+      "up_to_date": "已是最新版本",
+      "update_available": "发现新版本",
+      "update_install": "下载并安装",
+      "updating": "更新中",
+      "license": "许可证",
+      "license_text": "铜傀儡启动器遵循 GPL-3.0 开源许可证发布。",
+      "open_source": "开源信息"
+    }
+  },
+  "download": {
+    "title": "下载",
+    "empty": "没有正在进行的下载",
+    "all_pause": "全部暂停",
+    "all_resume": "全部继续",
+    "status": {
+      "queued": "排队中",
+      "downloading": "下载中",
+      "paused": "已暂停",
+      "cancelled": "已取消",
+      "failed": "失败",
+      "done": "已完成"
+    },
+    "actions": {
+      "pause": "暂停",
+      "resume": "继续",
+      "cancel": "取消",
+      "retry": "重试",
+      "remove": "移除"
+    },
+    "speed": "{speed}/s",
+    "unknown_size": "未知大小"
+  },
+  "account": {
+    "login": "登录",
+    "login_microsoft": "登录正版（Microsoft）",
+    "logout": "退出登录",
+    "logged_in_as": "已登录：{name}",
+    "not_logged_in": "未登录",
+    "login_begin_hint": "请在打开的浏览器中完成微软账户授权，然后回到本窗口等待。",
+    "login_waiting": "等待授权完成…",
+    "login_failed": "登录失败：{reason}",
+    "token_expired": "登录状态已过期，请重新登录"
+  },
+  "toast": {
+    "settings_saved": "设置已保存",
+    "copied": "已复制到剪贴板",
+    "error": "{message}"
+  }
+}

@@ -1,0 +1,15 @@
+[workspace]
+members = ["src-tauri", "copper-downloader"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0"
+
+# 生产构建优化：更小的体积与更高运行性能
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

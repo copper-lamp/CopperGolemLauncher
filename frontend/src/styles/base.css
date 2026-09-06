@@ -1,0 +1,141 @@
+/* 全局基础样式：重置 + 排版 + 滚动条 + 通用工具类。 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+}
+
+html {
+  font-family: var(--copper-font-family);
+  font-size: var(--copper-font-size-md);
+  color: var(--copper-text);
+  background-color: var(--copper-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  user-select: none;
+}
+
+body {
+  line-height: 1.5;
+}
+
+/* 应用区域默认透明以显示无边框窗口圆角 */
+#app {
+  background: transparent;
+}
+
+.app-shell {
+  height: 100%;
+  display: flex;
+  background: var(--copper-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* 统一滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--copper-surface-3);
+  border-radius: var(--copper-radius-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--copper-text-disabled);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 可输入区域允许选择文本 */
+input,
+textarea {
+  user-select: text;
+}
+
+/* 通用工具类 */
+.text-secondary {
+  color: var(--copper-text-secondary);
+}
+
+.text-disabled {
+  color: var(--copper-text-disabled);
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.gap-1 {
+  gap: var(--copper-space-1);
+}
+
+.gap-2 {
+  gap: var(--copper-space-2);
+}
+
+.gap-3 {
+  gap: var(--copper-space-3);
+}
+
+.gap-4 {
+  gap: var(--copper-space-4);
+}
+
+/* 按钮 / 控件基础按压反馈 */
+button {
+  font-family: inherit;
+}
+
+/* 视图切换过渡 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--copper-duration) var(--copper-easing);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* 悬浮窗弹出过渡 */
+.pop-enter-active,
+.pop-leave-active {
+  transition:
+    opacity var(--copper-duration) var(--copper-easing),
+    transform var(--copper-duration) var(--copper-easing);
+}
+
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+}

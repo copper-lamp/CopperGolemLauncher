@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "copper-core",
+  "productName": "CopperGolem",
   "version": "0.1.0",
-  "identifier": "com.administrator.copper-core",
+  "identifier": "com.copperlamp.coppergolem",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,9 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "copper-core",
-        "width": 800,
-        "height": 600
+        "title": "铜傀儡启动器",
+        "width": 1000,
+        "height": 680,
+        "minWidth": 860,
+        "minHeight": 560,
+        "decorations": false,
+        "transparent": true,
+        "center": true
       }
     ],
     "security": {

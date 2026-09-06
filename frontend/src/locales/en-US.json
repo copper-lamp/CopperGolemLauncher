@@ -1,0 +1,144 @@
+{
+  "app": {
+    "name": "Copper Golem",
+    "tagline": "Copper Golem Launcher"
+  },
+  "common": {
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "close": "Close",
+    "ok": "OK",
+    "retry": "Retry",
+    "delete": "Delete",
+    "search": "Search",
+    "loading": "Loading",
+    "empty": "Nothing here",
+    "error": "Something went wrong",
+    "success": "Success",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "enable": "Enable",
+    "disable": "Disable",
+    "version": "Version",
+    "open_folder": "Open folder",
+    "copy": "Copy",
+    "copied": "Copied",
+    "unknown": "Unknown"
+  },
+  "titlebar": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close"
+  },
+  "nav": {
+    "settings": "Settings",
+    "downloads": "Downloads"
+  },
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "general": "General",
+      "launch": "Launch",
+      "appearance": "Appearance",
+      "modules": "Modules",
+      "about": "About"
+    },
+    "general": {
+      "language": "Language",
+      "language_hint": "Takes effect immediately",
+      "theme_mode": "Appearance",
+      "theme_mode_dark": "Dark",
+      "theme_mode_light": "Light",
+      "theme_mode_auto": "Follow system",
+      "accent_color": "Accent color",
+      "accent_preset": "Presets"
+    },
+    "launch": {
+      "default_version": "Default version",
+      "default_version_hint": "When unset, the home page will ask you to pick a version",
+      "memory": "Memory allocation",
+      "memory_hint": "Memory available for the game",
+      "args": "Launch arguments",
+      "args_placeholder": "Extra JVM / game arguments",
+      "show_logs": "Show logs / debug output",
+      "after_launch": "After launch",
+      "after_launch_keep": "Keep window",
+      "after_launch_minimize": "Minimize to tray",
+      "after_launch_hide": "Hide window"
+    },
+    "appearance": {
+      "list_density": "List density",
+      "list_density_comfortable": "Comfortable",
+      "list_density_compact": "Compact",
+      "list_density_cozy": "Cozy",
+      "animations": "Animations",
+      "download_overlay_auto_hide": "Auto-hide download overlay",
+      "render": "Rendering preference",
+      "render_balanced": "Balanced",
+      "render_performance": "Performance",
+      "render_quality": "Quality"
+    },
+    "modules": {
+      "module_list": "Modules",
+      "builtin": "Built-in",
+      "additional": "Additional",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "no_modules": "No modules",
+      "refresh": "Refresh"
+    },
+    "about": {
+      "app_info": "About",
+      "version": "Current version",
+      "check_update": "Check for updates",
+      "checking": "Checking",
+      "up_to_date": "You are up to date",
+      "update_available": "Update available",
+      "update_install": "Download & install",
+      "updating": "Updating",
+      "license": "License",
+      "license_text": "Copper Golem Launcher is released under the GPL-3.0 license.",
+      "open_source": "Open source"
+    }
+  },
+  "download": {
+    "title": "Downloads",
+    "empty": "No active downloads",
+    "all_pause": "Pause all",
+    "all_resume": "Resume all",
+    "status": {
+      "queued": "Queued",
+      "downloading": "Downloading",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "done": "Done"
+    },
+    "actions": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "cancel": "Cancel",
+      "retry": "Retry",
+      "remove": "Remove"
+    },
+    "speed": "{speed}/s",
+    "unknown_size": "Unknown size"
+  },
+  "account": {
+    "login": "Sign in",
+    "login_microsoft": "Sign in (Microsoft)",
+    "logout": "Sign out",
+    "logged_in_as": "Signed in as {name}",
+    "not_logged_in": "Not signed in",
+    "login_begin_hint": "Complete the Microsoft authorization in the opened browser, then come back here.",
+    "login_waiting": "Waiting for authorization…",
+    "login_failed": "Sign-in failed: {reason}",
+    "token_expired": "Your sign-in has expired, please sign in again"
+  },
+  "toast": {
+    "settings_saved": "Settings saved",
+    "copied": "Copied to clipboard",
+    "error": "{message}"
+  }
+}

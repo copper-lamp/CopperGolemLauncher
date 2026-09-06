@@ -1,0 +1,26 @@
+[package]
+name = "copper-downloader"
+version = "0.1.0"
+description = "铜傀儡启动器独立下载引擎：并发队列、断点续传、暂停/取消/恢复、真实进度、失败重试、校验"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "fs", "rt", "macros", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+log = "0.4"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server", "tokio", "http1"] }
+http-body-util = "0.1"
+bytes = "1"
+tempfile = "3"
