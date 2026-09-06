@@ -1,0 +1,58 @@
+name: 缺陷报告（Bug Report）
+description: 报告缺陷，帮助我们改进铜傀儡启动器
+title: "[bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请确认已运行最新版，并搜索过既有 issue，避免重复。请勿在公开 issue 中提交安全漏洞（请走 SECURITY.md）。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 触发问题的版本号（可从设置页「关于」或 CHANGE.md 获取）
+      placeholder: 例如 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 请用最简步骤描述如何复现该问题。
+      placeholder: |
+        1. 打开…
+        2. 点击…
+        3. 观察到…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+      placeholder: 我期望…
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      placeholder: 实际却发生…
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: 粘贴相关日志或截图，便于定位。
+      render: shell
