@@ -67,16 +67,30 @@ export async function initI18n(): Promise<void> {
 
 /** 加载某语言目录（本地兜底 + 内核覆盖）。 */
 async function loadCatalog(locale: string): Promise<void> {
-  const merged: Record<string, JsonValue> = {
+  const base: Record<string, JsonValue> = {
     ...(LOCAL_CATALOGS[locale] ?? LOCAL_CATALOGS[FALLBACK_LOCALE]),
   };
   try {
     const remote = await i18nCatalog(locale);
-    Object.assign(merged, remote);
+    const merged: Record<string, JsonValue> = { ...base };
+    // `module` 命名空间按模块深度合并：内核缺失某模块包时保留本地包，
+    // 避免远程 module 整体覆盖导致模块文案丢失（回退英文）。
+    const remoteModule = remote?.module;
+    if (remoteModule && typeof remoteModule === "object") {
+      merged.module = {
+        ...(base.module && typeof base.module === "object" ? base.module : {}),
+        ...(remoteModule as Record<string, JsonValue>),
+      };
+    }
+    // 其余顶层键用内核目录覆盖。
+    for (const key of Object.keys(remote)) {
+      if (key !== "module") merged[key] = remote[key];
+    }
+    catalog.value = merged;
   } catch {
     // 内核不可用时用本地语言包。
+    catalog.value = base;
   }
-  catalog.value = merged;
 }
 
 /** 切换语言并持久化。 */

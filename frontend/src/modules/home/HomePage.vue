@@ -6,7 +6,7 @@
 
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { Play, Gamepad2 } from "@lucide/vue";
+import { Play, Gamepad2, Download } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -97,6 +97,10 @@ function openVersionSettings() {
     query: { name: current.value.name },
   });
 }
+
+function goDownload() {
+  void router.push("/game-download");
+}
 </script>
 
 <template>
@@ -118,9 +122,15 @@ function openVersionSettings() {
       </template>
 
       <template v-else-if="!current">
-        <Gamepad2 :size="56" :stroke-width="1.4" class="home-page__empty-icon" />
+        <h1 class="home-page__hero">{{ t("module.home.hero_title") }}</h1>
         <p class="home-page__empty">{{ t("module.home.empty") }}</p>
         <p class="home-page__hint">{{ t("module.home.install_hint") }}</p>
+        <div class="home-page__actions">
+          <CoButton variant="primary" size="md" @click="goDownload">
+            <Download :size="16" />
+            <span>{{ t("module.home.go_download") }}</span>
+          </CoButton>
+        </div>
       </template>
 
       <template v-else>

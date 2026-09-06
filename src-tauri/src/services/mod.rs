@@ -5,6 +5,7 @@
 pub mod account;
 pub mod database;
 pub mod download;
+pub mod http_client;
 pub mod i18n;
 pub mod paths;
 pub mod settings;

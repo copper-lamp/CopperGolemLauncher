@@ -276,16 +276,23 @@ async fn content_type_for_class(
 
 // ---------------------------------------------------------------- API key
 
-/// 读取 CurseForge API key；未配置返回友好错误（部署配置项，见设计文档备注）。
+/// 内置（混淆）CurseForge API key，编译内置，无需用户配置。
+/// 部署运维如需更换可写设置 `content.curseforgeApiKey` 覆盖（可选）。
+/// `BUILTIN_KEY_B64` 为 key 的 base64 形式，拿到正式 key 后编码填入即可。
+const BUILTIN_KEY_B64: &str = "";
+
+/// 读取 CurseForge API key：优先用户覆盖，未覆盖则回退内置混淆 key。
 fn api_key(kernel: &KernelContext) -> Result<String, KernelError> {
-    let key = kernel.settings().get_or("content.curseforgeApiKey", String::new());
-    let key = key.trim();
-    if key.is_empty() {
-        return Err(KernelError::InvalidArgument(
-            "未配置 CurseForge API key（设置 content.curseforgeApiKey）。".into(),
-        ));
+    let custom = kernel.settings().get_or("content.curseforgeApiKey", String::new());
+    let custom = custom.trim();
+    if !custom.is_empty() {
+        return Ok(custom.to_string());
     }
-    Ok(key.to_string())
+    use base64::Engine;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(BUILTIN_KEY_B64)
+        .map_err(|_| KernelError::Config("内置内容下载 key 缺失，请联系开发者配置".into()))?;
+    String::from_utf8(raw).map_err(|_| KernelError::Config("内置内容下载 key 损坏".into()))
 }
 
 // ---------------------------------------------------------------- 对外接口

@@ -25,7 +25,7 @@ serde_json = "1"
 thiserror = "2"
 log = "0.4"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 parking_lot = "0.12"
 directories = "5"
@@ -46,5 +46,6 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
     "Win32_System_Threading",
 ] }

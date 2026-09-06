@@ -4,6 +4,7 @@
   "subtitle": "Pick a version to play",
   "empty": "No versions installed yet. Install one from the Game Downloads module",
   "install_hint": "Versions are installed by the Game Downloads module; manage installed versions here",
+  "go_download": "Go to Game Downloads",
   "play": "Play",
   "playing": "Launching",
   "mode": {

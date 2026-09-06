@@ -43,6 +43,9 @@ pub fn run() {
         .setup(|app| {
             let runtime = tauri::async_runtime::handle().inner().clone();
 
+            // 启动早期注入系统代理到环境变量，使只读 env 的下游（下载引擎等）一并走代理。
+            services::http_client::inject_system_proxy_env();
+
             // 路径体系 + 数据库（含内核自身 schema 迁移）。
             let paths = Arc::new(
                 Paths::new().map_err(|e| KernelError::Config(e.to_string()))?,

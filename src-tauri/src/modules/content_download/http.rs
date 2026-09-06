@@ -18,9 +18,8 @@ const USER_AGENT: &str = concat!(
 pub fn client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        Client::builder()
+        crate::services::http_client::client_builder(std::time::Duration::from_secs(30))
             .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("构建内容下载 HTTP 客户端失败")
     })

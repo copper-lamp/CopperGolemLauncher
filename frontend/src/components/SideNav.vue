@@ -23,8 +23,6 @@ const moduleNav = getModuleNav();
           />
         </svg>
       </RouterLink>
-    </div>
-    <div class="side-nav__bottom">
       <RouterLink
         v-for="item in moduleNav"
         :key="item.id"
@@ -34,6 +32,8 @@ const moduleNav = getModuleNav();
       >
         <component :is="item.icon" :size="20" />
       </RouterLink>
+    </div>
+    <div class="side-nav__bottom">
       <RouterLink
         to="/downloads"
         class="side-nav__item"

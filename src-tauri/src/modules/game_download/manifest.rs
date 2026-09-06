@@ -13,10 +13,15 @@ use crate::error::KernelError;
 use crate::modules::home::meta;
 use super::installer::Ctx;
 
-/// 三条 CDN 镜像源（与 LeviLauncher `FetchHistoricalVersions` 对齐）。
-const MANIFEST_URLS: [&str; 3] = [
+/// 版本库镜像源，按下标顺序依次尝试，前面可达即成功。
+/// 已实测（2026-09-06）可达：fastly.jsdelivr、gh-proxy.com、cdn.jsdelivr、ghproxy.cn。
+/// 不可达（勿排前）：github 直连（被墙）、gitcode（raw 域名已失效）、github.bibk.top（404）。
+const MANIFEST_URLS: [&str; 6] = [
+    "https://fastly.jsdelivr.net/gh/LiteLDev/minecraft-windows-gdk-version-db@main/historical_versions.json",
+    "https://gh-proxy.com/https://raw.githubusercontent.com/LiteLDev/minecraft-windows-gdk-version-db/refs/heads/main/historical_versions.json",
+    "https://cdn.jsdelivr.net/gh/LiteLDev/minecraft-windows-gdk-version-db@main/historical_versions.json",
+    "https://ghproxy.cn/https://raw.githubusercontent.com/LiteLDev/minecraft-windows-gdk-version-db/refs/heads/main/historical_versions.json",
     "https://raw.githubusercontent.com/LiteLDev/minecraft-windows-gdk-version-db/refs/heads/main/historical_versions.json",
-    "https://github.bibk.top/LiteLDev/minecraft-windows-gdk-version-db/raw/refs/heads/main/historical_versions.json",
     "https://raw.gitcode.com/dreamguxiang/minecraft-windows-gdk-version-db/raw/main/historical_versions.json",
 ];
 
@@ -32,6 +37,8 @@ pub enum VersionKind {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoricalVersions {
+    /// 源顶层键为下划线 `file_version`（其余字段 camelCase），故加 alias 兼容。
+    #[serde(alias = "file_version")]
     pub file_version: i32,
     #[serde(default)]
     pub preview_versions: Vec<VersionEntry>,
@@ -211,23 +218,18 @@ pub async fn load_manifest(ctx: &Ctx, refresh: bool) -> Result<HistoricalVersion
     }
 }
 
-/// 网络拉取清单（三镜像，5s 超时）。
+/// 网络拉取清单（多镜像，内置换序）。
 pub async fn fetch_manifest(ctx: &Ctx) -> Result<HistoricalVersions, KernelError> {
-    let mirror = ctx
+    // 统一按内置 order 顺序尝试，镜像间自动 fallback。
+    let _mirror = ctx
         .settings
-        .get_or("download.mirror", "github".to_string());
-    let mut order: Vec<usize> = match mirror.as_str() {
-        "gitcode" => vec![2, 1, 0],
-        "proxy" => vec![1, 0, 2],
-        _ => vec![0, 1, 2],
-    };
+        .get_or("download.mirror", "auto".to_string());
+    let mut order: Vec<usize> = (0..MANIFEST_URLS.len()).collect();
     if order.is_empty() {
-        order = vec![0, 1, 2];
+        order = vec![0, 1, 2, 3, 4, 5];
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = crate::services::http_client::client_builder(Duration::from_secs(15)).build()?;
 
     let mut last_err: Option<KernelError> = None;
     for idx in order {
@@ -253,6 +255,7 @@ pub async fn fetch_manifest(ctx: &Ctx) -> Result<HistoricalVersions, KernelError
                 last_err = Some(KernelError::Config(format!("清单源 HTTP {}", resp.status())));
             }
             Err(e) => {
+                log::error!("清单源 <{}> 请求失败, 完整错误: {:?}", url, e);
                 last_err = Some(e.into());
             }
         }

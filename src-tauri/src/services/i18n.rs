@@ -99,6 +99,8 @@ impl I18nService {
     }
 
     /// 取某语言完整目录（基准 + 模块语言包），供前端一次性加载。
+    ///
+    /// 模块语言包优先取目标语言，缺失时才回退 en-US，避免回退包覆盖目标包。
     pub fn catalog(&self, locale: &str) -> Value {
         let mut merged = self
             .base
@@ -106,13 +108,24 @@ impl I18nService {
             .cloned()
             .unwrap_or_else(|| self.base[FALLBACK_LOCALE].clone());
         let packs = self.module_packs.read().clone();
+
         let mut module_root = serde_json::Map::new();
-        for ((module, loc), pack) in packs {
-            if loc == locale || loc == FALLBACK_LOCALE {
+        // 第一遍：目标语言包（en-US 即目标语言时也在此覆盖）。
+        for ((module, loc), pack) in &packs {
+            if loc == locale {
                 // 模块内容挂到 `module.<名>` 命名空间下。
-                module_root.insert(module, pack.clone());
+                module_root.insert(module.clone(), pack.clone());
             }
         }
+        // 第二遍：仅补缺失模块的 en-US 回退包，不回退已有目标包。
+        if locale != FALLBACK_LOCALE {
+            for ((module, loc), pack) in &packs {
+                if loc == FALLBACK_LOCALE && !module_root.contains_key(module) {
+                    module_root.insert(module.clone(), pack.clone());
+                }
+            }
+        }
+
         if !module_root.is_empty() {
             if let Some(obj) = merged.as_object_mut() {
                 obj.insert("module".to_string(), Value::Object(module_root));

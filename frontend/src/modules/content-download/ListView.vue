@@ -44,7 +44,7 @@ const TYPES: Array<{ value: ContentType | ""; label: string }> = [
 ];
 
 const searchInput = ref("");
-const source = ref<ContentSource | "">("");
+const source = ref<ContentSource | "">("lip");
 const contentType = ref<ContentType | "">("");
 const page = ref(0);
 

@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use reqwest::Client;
+
+use crate::services::http_client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -77,10 +79,7 @@ impl AccountService {
         events: Arc<EventBus>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("failed to build reqwest client");
+        let client = http_client::build_client(Duration::from_secs(30));
         Self {
             db,
             events,
