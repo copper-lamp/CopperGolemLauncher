@@ -1,18 +1,13 @@
 <script setup lang="ts">
-// 左导航栏：顶部软件图标，底部固定设置入口，其上方为下载悬浮窗入口。
-// 单 icon 无文字，不展开。
+// 左导航栏：顶部软件图标，底部设置入口，其上方为下载入口。
+// 单 icon 无文字，不展开。下载为全量列表页（/downloads），无悬浮窗。
 
 import { RouterLink } from "vue-router";
 import { Settings, ArrowDownToLine } from "@lucide/vue";
 
-import DownloadOverlay from "./DownloadOverlay.vue";
 import { useI18n } from "../i18n";
 
 const { t } = useI18n();
-
-const navItems = [
-  { to: "/downloads", icon: ArrowDownToLine, label: "nav.downloads" },
-] as const;
 </script>
 
 <template>
@@ -26,20 +21,15 @@ const navItems = [
           />
         </svg>
       </div>
-      <div class="side-nav__items">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.to"
-          :to="item.to"
-          class="side-nav__item"
-          :title="t(item.label)"
-        >
-          <component :is="item.icon" :size="20" />
-        </RouterLink>
-      </div>
     </div>
     <div class="side-nav__bottom">
-      <DownloadOverlay />
+      <RouterLink
+        to="/downloads"
+        class="side-nav__item"
+        :title="t('nav.downloads')"
+      >
+        <ArrowDownToLine :size="20" />
+      </RouterLink>
       <RouterLink
         to="/settings"
         class="side-nav__item"
@@ -79,13 +69,6 @@ const navItems = [
   border-radius: var(--copper-radius-md);
   color: var(--copper-accent);
   background: color-mix(in srgb, var(--copper-accent) 12%, transparent);
-}
-
-.side-nav__items {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--copper-space-2);
 }
 
 .side-nav__bottom {

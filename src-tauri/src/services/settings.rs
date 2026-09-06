@@ -134,7 +134,7 @@ pub fn defaults() -> HashMap<String, Value> {
     let mut m = HashMap::new();
     // 通用
     m.insert("locale".into(), Value::String("zh-CN".into()));
-    m.insert("theme.mode".into(), Value::String("auto".into()));
+    m.insert("theme.mode".into(), Value::String("dark".into()));
     m.insert("theme.accent".into(), Value::String("#3b82f6".into()));
     // 启动
     m.insert("launch.default_version".into(), Value::String(String::new()));
@@ -145,7 +145,6 @@ pub fn defaults() -> HashMap<String, Value> {
     // 个性
     m.insert("appearance.list_density".into(), Value::String("comfortable".into()));
     m.insert("appearance.animations".into(), Value::Bool(true));
-    m.insert("download_overlay.auto_hide".into(), Value::Bool(true));
     m.insert("performance.render".into(), Value::String("balanced".into()));
     m
 }

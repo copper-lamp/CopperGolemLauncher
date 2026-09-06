@@ -23,11 +23,6 @@ const animations = computed({
   set: (value: boolean) => void set("appearance.animations", value),
 });
 
-const overlayAutoHide = computed({
-  get: () => get<boolean>("download_overlay.auto_hide", true),
-  set: (value: boolean) => void set("download_overlay.auto_hide", value),
-});
-
 const render = computed({
   get: () => get<string>("performance.render", "balanced"),
   set: (value: string) => void set("performance.render", value),
@@ -54,9 +49,6 @@ const renderOptions = [
       </SettingRow>
       <SettingRow label-key="settings.appearance.animations">
         <CoSwitch :model-value="animations" @update:model-value="animations = $event" />
-      </SettingRow>
-      <SettingRow label-key="settings.appearance.download_overlay_auto_hide">
-        <CoSwitch :model-value="overlayAutoHide" @update:model-value="overlayAutoHide = $event" />
       </SettingRow>
       <SettingRow label-key="settings.appearance.render">
         <CoSegmented :model-value="render" :options="renderOptions" @update:model-value="render = $event" />

@@ -125,17 +125,3 @@ button {
 .fade-leave-to {
   opacity: 0;
 }
-
-/* 悬浮窗弹出过渡 */
-.pop-enter-active,
-.pop-leave-active {
-  transition:
-    opacity var(--copper-duration) var(--copper-easing),
-    transform var(--copper-duration) var(--copper-easing);
-}
-
-.pop-enter-from,
-.pop-leave-to {
-  opacity: 0;
-  transform: translateY(6px) scale(0.98);
-}

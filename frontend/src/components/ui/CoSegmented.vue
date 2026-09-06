@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 分段选择器：互斥选项（外观模式、列表密度等）。
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     modelValue: string;
     options: Array<{ value: string; label: string }>;
@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>();
 
 function select(value: string) {
-  if (value === "modelValue") return;
+  if (value === props.modelValue) return;
   emit("update:modelValue", value);
 }
 </script>

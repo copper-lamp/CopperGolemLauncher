@@ -35,6 +35,7 @@ function applyAccent(accent: string) {
 
 /** 应用一份主题快照。 */
 export function applyTheme(mode: ThemeMode, accent: string) {
+  root.dataset.themeMode = mode;
   applyMode(mode);
   applyAccent(accent);
 }

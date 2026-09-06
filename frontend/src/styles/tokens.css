@@ -1,5 +1,5 @@
 /* 铜主题令牌：全站唯一视觉变量来源。
- * 语义命名 var(--copper-*)，深浅色经 html[data-theme] 切换；
+ * 语义命名 var(--copper-*)。默认深色主题（:root），浅色经 html[data-theme="light"] 覆盖；
  * 强调色 var(--copper-accent) 由主题服务下发（#RRGGBB）。
  * 业务组件禁止直接写颜色字面量，必须引用令牌。 */
 
@@ -8,23 +8,24 @@
   --copper-accent: #3b82f6;
   --copper-accent-foreground: #ffffff;
 
-  /* 语义色（浅色主题） */
-  --copper-bg: #f4f5f7;
-  --copper-surface: #ffffff;
-  --copper-surface-2: #eef0f3;
-  --copper-surface-3: #e4e7ec;
-  --copper-border: #d9dde3;
-  --copper-text: #1c2330;
-  --copper-text-secondary: #6b7280;
-  --copper-text-disabled: #9ca3af;
-  --copper-hover: rgba(0, 0, 0, 0.05);
-  --copper-active: rgba(0, 0, 0, 0.09);
-  --copper-shadow: 0 4px 16px rgba(16, 24, 40, 0.12);
-  --copper-overlay: rgba(16, 24, 40, 0.45);
+  /* 语义色（默认深色主题）
+   * 主页面 --copper-bg 为近黑；导航栏 / 卡片 --copper-surface 比主页面浅一档。 */
+  --copper-bg: #0b0d10;
+  --copper-surface: #1a1d22;
+  --copper-surface-2: #232730;
+  --copper-surface-3: #2c323c;
+  --copper-border: #333a45;
+  --copper-text: #e6e9ee;
+  --copper-text-secondary: #9aa3b0;
+  --copper-text-disabled: #5f6773;
+  --copper-hover: rgba(255, 255, 255, 0.06);
+  --copper-active: rgba(255, 255, 255, 0.1);
+  --copper-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  --copper-overlay: rgba(0, 0, 0, 0.55);
 
-  --copper-success: #16a34a;
-  --copper-warning: #d97706;
-  --copper-danger: #dc2626;
+  --copper-success: #22c55e;
+  --copper-warning: #f59e0b;
+  --copper-danger: #ef4444;
 
   /* 圆角 */
   --copper-radius-sm: 6px;
@@ -64,21 +65,21 @@
   --copper-easing: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
-html[data-theme="dark"] {
-  --copper-bg: #14171c;
-  --copper-surface: #1d2128;
-  --copper-surface-2: #262b34;
-  --copper-surface-3: #2f3540;
-  --copper-border: #333a46;
-  --copper-text: #e6e9ee;
-  --copper-text-secondary: #9aa3b0;
-  --copper-text-disabled: #5f6773;
-  --copper-hover: rgba(255, 255, 255, 0.06);
-  --copper-active: rgba(255, 255, 255, 0.1);
-  --copper-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
-  --copper-overlay: rgba(0, 0, 0, 0.55);
+html[data-theme="light"] {
+  --copper-bg: #f4f5f7;
+  --copper-surface: #ffffff;
+  --copper-surface-2: #eef0f3;
+  --copper-surface-3: #e4e7ec;
+  --copper-border: #d9dde3;
+  --copper-text: #1c2330;
+  --copper-text-secondary: #6b7280;
+  --copper-text-disabled: #9ca3af;
+  --copper-hover: rgba(0, 0, 0, 0.05);
+  --copper-active: rgba(0, 0, 0, 0.09);
+  --copper-shadow: 0 4px 16px rgba(16, 24, 40, 0.12);
+  --copper-overlay: rgba(16, 24, 40, 0.45);
 
-  --copper-success: #22c55e;
-  --copper-warning: #f59e0b;
-  --copper-danger: #ef4444;
+  --copper-success: #16a34a;
+  --copper-warning: #d97706;
+  --copper-danger: #dc2626;
 }
