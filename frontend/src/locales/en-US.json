@@ -127,6 +127,7 @@
   "account": {
     "login": "Sign in",
     "login_microsoft": "Sign in (Microsoft)",
+    "login_gdk": "Sign in (Local Xbox)",
     "logout": "Sign out",
     "logged_in_as": "Signed in as {name}",
     "not_logged_in": "Not signed in",

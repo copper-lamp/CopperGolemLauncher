@@ -120,10 +120,14 @@ impl VersionEntry {
         }
     }
 
-    /// 首选下载直链（取镜像列表第一条；无法解析则以首个可用 URL 兜底）。
+    /// 首选下载直链。`urls` 中含多条 CDN，优先取国内可达的 `.xboxlive.cn`
+    /// 域名（assets1.cn / d1.cn 等），海外 `.xboxlive.com` 在部分网络被墙，仅兜底。
     pub fn primary_url(&self) -> Option<String> {
-        // "http://assets1.xboxlive.com/..." 取 asset/d 前缀的第一条即足够。
-        self.urls.first().cloned()
+        self.urls
+            .iter()
+            .find(|u| u.contains("xboxlive.cn"))
+            .or_else(|| self.urls.first())
+            .cloned()
     }
 }
 
@@ -147,8 +151,9 @@ fn parse_numeric(s: &str) -> Option<(u32, u32, u32, u32)> {
 // ------------------------------------------------------------------ 视图
 
 /// 前端清单视图：顶部最新正式 / 最新快照 + 按大版本分组。
+/// 输出 snake_case，与前端 `GameManifestView` 等类型一致。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct ManifestView {
     pub latest_release: Option<VersionView>,
     pub latest_preview: Option<VersionView>,
@@ -157,7 +162,7 @@ pub struct ManifestView {
 
 /// 一个大版本分组卡片。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct VersionGroupView {
     pub major: String,
     /// 组内是否含该组最新版本（供前端高亮）。
@@ -167,7 +172,7 @@ pub struct VersionGroupView {
 
 /// 单版本行视图。
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct VersionView {
     /// 唯一键（=版本目录名）。
     pub id: String,

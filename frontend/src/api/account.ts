@@ -34,6 +34,11 @@ export function accountBeginLogin(): Promise<DeviceCodeInfo> {
   return call<DeviceCodeInfo>("account_begin_login");
 }
 
+/** GDK（XAL）一键登录：读取本机已登录的 Xbox 账户，返回账户信息。 */
+export function accountBeginXalLogin(): Promise<AccountInfo> {
+  return call<AccountInfo>("account_begin_xal_login");
+}
+
 /** 退出登录。 */
 export function accountLogout(): Promise<void> {
   return call<void>("account_logout");

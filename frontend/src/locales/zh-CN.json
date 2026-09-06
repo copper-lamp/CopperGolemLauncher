@@ -127,6 +127,7 @@
   "account": {
     "login": "登录",
     "login_microsoft": "登录正版（Microsoft）",
+    "login_gdk": "登录（本机 Xbox）",
     "logout": "退出登录",
     "logged_in_as": "已登录：{name}",
     "not_logged_in": "未登录",

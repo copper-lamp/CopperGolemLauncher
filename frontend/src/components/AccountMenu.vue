@@ -2,13 +2,13 @@
 // 账户菜单：头像入口，弹出登录 / 账户信息 / 退出。
 
 import { ref, computed } from "vue";
-import { UserRound, LogIn, LogOut, LoaderCircle } from "@lucide/vue";
+import { UserRound, LogIn, LogOut, LoaderCircle, Gamepad2 } from "@lucide/vue";
 
 import { useAccount } from "../composables/useAccount";
 import { useI18n } from "../i18n";
 
 const { t } = useI18n();
-const { account, loginWaiting, beginLogin, logout } = useAccount();
+const { account, loginWaiting, beginLogin, beginXalLogin, logout } = useAccount();
 
 const open = ref(false);
 
@@ -26,6 +26,11 @@ function toggle() {
 async function handleLogin() {
   open.value = false;
   await beginLogin();
+}
+
+async function handleXalLogin() {
+  open.value = false;
+  await beginXalLogin();
 }
 
 async function handleLogout() {
@@ -64,6 +69,10 @@ async function handleLogout() {
           <div class="account-menu__info">
             <div class="account-menu__name">{{ t("account.not_logged_in") }}</div>
           </div>
+          <button class="account-menu__action" @click="handleXalLogin">
+            <Gamepad2 :size="15" />
+            <span>{{ t("account.login_gdk") }}</span>
+          </button>
           <button class="account-menu__action" @click="handleLogin">
             <LogIn :size="15" />
             <span>{{ t("account.login_microsoft") }}</span>

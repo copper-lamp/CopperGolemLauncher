@@ -11,3 +11,4 @@ pub mod paths;
 pub mod settings;
 pub mod theme;
 pub mod updater;
+pub mod xal;

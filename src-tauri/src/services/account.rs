@@ -181,6 +181,16 @@ impl AccountService {
         Ok(info)
     }
 
+    /// GDK（XAL）一键登录：读取本机已登录的 Xbox 账户后入库并广播。
+    /// 不弹浏览器、不依赖微软授权网络，前提是本机已登录 Xbox。
+    pub fn login_via_xal(&self) -> Result<AccountInfo, KernelError> {
+        let profile = crate::services::xal::local_profile()
+            .map_err(|e| KernelError::Account(e))?;
+        let account = self.save_account(profile.gamertag, Some(profile.xuid.to_string()))?;
+        self.publish_login_state(LoginState::Done, None);
+        Ok(account)
+    }
+
     /// 退出登录：清除密钥环与数据库记录。
     pub fn logout(&self) -> Result<(), KernelError> {
         if let Some(account) = self.current() {
@@ -229,6 +239,30 @@ impl AccountService {
             "account.login.state",
             json!({ "state": state, "reason": reason }),
         );
+    }
+
+    /// 写入账户记录并广播 `account.changed`（供 XAL 登录等本地身份完成时复用）。
+    fn save_account(&self, gamertag: String, xuid: Option<String>) -> Result<AccountInfo, KernelError> {
+        let account = AccountInfo {
+            id: Uuid::new_v4().to_string(),
+            gamertag,
+            xuid,
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO core_account (id, gamertag, xuid, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                rusqlite::params![account.id, account.gamertag, account.xuid, now_ms],
+            )?;
+            Ok(())
+        })
+        .map_err(KernelError::Database)?;
+        self.events.publish("account.changed", json!({ "account": account.clone() }));
+        Ok(account)
     }
 
     fn load_ms_token(&self, account: &AccountInfo) -> Result<String, KernelError> {

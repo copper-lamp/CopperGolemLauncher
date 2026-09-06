@@ -1,7 +1,7 @@
 // 游戏下载模块 API：版本清单 / 详情 / 投递下载 / 刷新源 / 取消 / 状态。
 //
 // 后端命令均为异步、错误经 `KernelApiError` 抛出；模型字段与后端
-// Rust `ManifestView` / `TaskView` 保持 camelCase 同构。
+// Rust `ManifestView` / `TaskView` 保持 snake_case 同构。
 
 import { call } from "../../api/core";
 

@@ -7,6 +7,7 @@ import { readonly, ref } from "vue";
 
 import {
   accountBeginLogin,
+  accountBeginXalLogin,
   accountCurrent,
   accountLogout,
   type AccountInfo,
@@ -58,6 +59,16 @@ export function useAccount() {
     }
   }
 
+  async function beginXalLogin() {
+    if (loginWaiting.value) return;
+    try {
+      account.value = await accountBeginXalLogin();
+      showToast(t("common.success"), "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
   async function logout() {
     try {
       await accountLogout();
@@ -71,6 +82,7 @@ export function useAccount() {
     account: readonly(account),
     loginWaiting: readonly(loginWaiting),
     beginLogin,
+    beginXalLogin,
     logout,
   };
 }

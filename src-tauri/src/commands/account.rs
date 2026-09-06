@@ -22,6 +22,12 @@ pub async fn account_begin_login(
     kernel.account().begin_login().await.map_err(into_command_error)
 }
 
+/// GDK（XAL）一键登录：读取本机已登录的 Xbox 账户（不进浏览器授权）。
+#[tauri::command]
+pub fn account_begin_xal_login(kernel: State<'_, KernelContext>) -> CommandResult<AccountInfo> {
+    kernel.account().login_via_xal().map_err(into_command_error)
+}
+
 /// 退出登录（清除密钥环与数据库记录）。
 #[tauri::command]
 pub fn account_logout(kernel: State<'_, KernelContext>) -> CommandResult<()> {
