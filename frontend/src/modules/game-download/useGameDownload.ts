@@ -49,8 +49,37 @@ function upsertLive(task: DownloadTask) {
   liveTasks.value = { ...liveTasks.value, [id]: task };
 }
 
+/** 移除某个版本的实时下载项（终态 / 取消时调用，避免行内残留“下载中”）。 */
+function removeLive(id: string) {
+  if (!(id in liveTasks.value)) return;
+  const next = { ...liveTasks.value };
+  delete next[id];
+  liveTasks.value = next;
+}
+
+/** 移除某个版本的全部任务状态（实时 + 事务视图）。 */
+function clearTask(id: string) {
+  removeLive(id);
+  if (id in taskStates.value) {
+    const next = { ...taskStates.value };
+    delete next[id];
+    taskStates.value = next;
+  }
+}
+
 function setTaskState(state: GameTaskView) {
   taskStates.value = { ...taskStates.value, [state.version_id]: state };
+}
+
+/** 订阅状态事件：仅保留非终态为“下载中”；done / cancelled 及时清理实时项。 */
+function handleStatus(task: DownloadTask) {
+  const id = versionIdOf(task);
+  if (!id) return;
+  if (task.status === "done" || task.status === "cancelled") {
+    removeLive(id);
+  } else {
+    upsertLive(task);
+  }
 }
 
 /** 初始化：订阅一次全局下载 + 模块事件。 */
@@ -59,7 +88,7 @@ export async function initGameDownload(): Promise<void> {
   initialized.value = true;
   await Promise.all([
     onDownload("progress", upsertLive),
-    onDownload("status", upsertLive),
+    onDownload("status", handleStatus),
     onGameDownloadEnqueued(({ id }) => {
       // 入队即开始回填状态；随后 progress/status 事件驱动实时进度。
       void refreshState(id);
@@ -68,12 +97,16 @@ export async function initGameDownload(): Promise<void> {
       showToast(t("module.game-download.toast.installed"), "success");
       void loadManifest(false);
     }),
-    onGameDownloadFailed(({ error }) => {
+    onGameDownloadFailed(({ id, error }) => {
       showToast(error || t("module.game-download.toast.failed"), "error");
+      removeLive(id);
+      void refreshState(id);
       void loadManifest(false);
     }),
-    onGameDownloadCancelled(() => {
+    onGameDownloadCancelled((id) => {
       showToast(t("module.game-download.toast.cancelled"), "info");
+      // 取消即放弃安装：清空状态，行/详情回退为“可下载”。
+      clearTask(id);
       void loadManifest(false);
     }),
   ]);

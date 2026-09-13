@@ -195,6 +195,17 @@ fn set_state(ctx: &Ctx, version_id: &str, state: &str, error: Option<&str>) -> R
     })
 }
 
+/// 删除任务记录（放弃安装 / 显式取消）。
+fn delete_record(ctx: &Ctx, version_id: &str) -> Result<(), KernelError> {
+    ctx.db.with_conn(|conn| -> Result<(), KernelError> {
+        conn.execute(
+            "DELETE FROM module_game_download_task WHERE version_id = ?1",
+            rusqlite::params![version_id],
+        )?;
+        Ok(())
+    })
+}
+
 // ---------------------------------------------------------------- 命令核心
 
 /// 投递下载：查已安装幂等拒绝 → 定目录 → upsert 记录 → 投递全局下载队列 → 回填 task_id → 广播。
@@ -278,18 +289,30 @@ pub fn status(ctx: &Ctx, id: &str) -> Result<Option<TaskView>, KernelError> {
     }))
 }
 
-/// 取消任务（下载中取消；解包阶段不可中断则标失败）。
+/// 取消任务（下载中取消 → 放弃安装）。
+///
+/// 语义：下载中取消即“放弃该版本安装”，取消引擎任务并删除数据库记录，
+/// 从而确保：
+/// - 临时文件被清理（引擎 `remove_on_cancel`）；
+/// - 前端行/详情页状态回退为“可下载”；
+/// - `start` 重启后 `resume_pending` 不再续传（无记录）。
 pub fn cancel(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
     let Some(rec) = get_record(ctx, id)? else {
         return Err(KernelError::InvalidArgument(format!("无任务 `{id}`")));
     };
+    // 仅“下载中”可取消；解包中不可中断，其它终态无可取消内容。
+    if rec.state != "downloading" {
+        return Ok(());
+    }
+    // 先置中间态，避免引擎 `download.status(Cancelled)` 被误判为失败并回写 failed。
+    set_state(ctx, id, "cancelling", Some("已取消"))?;
+    // 取消引擎任务并清理 `.part`。容错：任务可能已不在队列（如已移除）。
     if let Some(task_id) = rec.task_id {
-        ctx.download.cancel(task_id)?;
+        let _ = ctx.download.cancel(task_id);
     }
-    if rec.state == "downloading" {
-        set_state(ctx, id, "failed", Some("已取消"))?;
-        ctx.events.publish("game-download.cancelled", serde_json::json!({ "id": id }));
-    }
+    // 删除记录 → 前端回退为“可下载”，重启后 `resume_pending` 不会续传。
+    delete_record(ctx, id)?;
+    ctx.events.publish("game-download.cancelled", serde_json::json!({ "id": id }));
     Ok(())
 }
 
@@ -324,13 +347,26 @@ pub fn handle_status(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>, payload: &Va
                 }
             });
         }
-        DownloadStatus::Failed | DownloadStatus::Cancelled => {
+        DownloadStatus::Failed => {
             let msg = payload
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("下载失败")
                 .to_string();
             mark_failed(ctx, &rec.version_id, &msg);
+        }
+        DownloadStatus::Cancelled => {
+            // “cancelling”为版本页主动取消的中间态，清理由 cancel() 完成后继续，此处不重复。
+            if rec.state == "cancelling" {
+                return;
+            }
+            // 非版本页主动取消（如全局下载列表取消）→ 同样“放弃安装”：
+            // 删除记录，避免 `resume_pending` 在重启时续传已取消的下载。
+            let _ = delete_record(ctx, &rec.version_id);
+            ctx.events.publish(
+                "game-download.cancelled",
+                serde_json::json!({ "id": rec.version_id }),
+            );
         }
         _ => {}
     }
