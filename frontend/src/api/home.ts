@@ -53,6 +53,11 @@ export function homeVersionsList(): Promise<VersionView[]> {
   return call<VersionView[]>("home_versions_list");
 }
 
+/** 当前解析的游戏（版本）根目录（含自定义 `game.directory`）。 */
+export function homeVersionsRoot(): Promise<string> {
+  return call<string>("home_versions_root");
+}
+
 /** 单个版本信息。 */
 export function homeVersionGet(name: string): Promise<VersionView> {
   return call<VersionView>("home_version_get", { name });

@@ -67,14 +67,14 @@ async function handleRemove(id: number) {
 
 <template>
   <div class="downloads">
-    <header class="downloads__header">
-      <h1 class="downloads__title">{{ t("download.title") }}</h1>
+    <!-- 全部暂停/恢复按钮注入全局标题栏操作区 -->
+    <Teleport to="#copper-titlebar-actions">
       <button class="downloads__toggle" @click="toggleAll">
         <Pause v-if="hasAnyActive" :size="15" />
         <Play v-else :size="15" />
         <span>{{ hasAnyActive ? t("download.all_pause") : t("download.all_resume") }}</span>
       </button>
-    </header>
+    </Teleport>
 
     <div v-if="sorted.length === 0" class="downloads__empty">
       {{ t("download.empty") }}
@@ -152,18 +152,6 @@ async function handleRemove(id: number) {
   height: 100%;
   padding: var(--copper-space-5);
   overflow-y: auto;
-}
-
-.downloads__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--copper-space-4);
-}
-
-.downloads__title {
-  font-size: var(--copper-font-size-xl);
-  font-weight: 700;
 }
 
 .downloads__toggle {

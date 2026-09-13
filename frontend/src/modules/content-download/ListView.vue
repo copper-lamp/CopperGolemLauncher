@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 内容下载列表页：搜索 / 来源与类型过滤 / 分页 / 卡片徽标。
 
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   Search,
@@ -23,6 +23,19 @@ import {
   type ContentSource,
   type ContentType,
 } from "./api";
+import {
+  contentType,
+  error,
+  hasMore,
+  items,
+  loading,
+  PAGE_SIZE,
+  page,
+  scrollTop,
+  searchInput,
+  source,
+  total,
+} from "./listStore";
 
 const { t } = useI18n();
 const router = useRouter();
@@ -43,16 +56,10 @@ const TYPES: Array<{ value: ContentType | ""; label: string }> = [
   { value: "ll_mod", label: `${MB_KEY}.typeLlMod` },
 ];
 
-const searchInput = ref("");
-const source = ref<ContentSource | "">("lip");
-const contentType = ref<ContentType | "">("");
-const page = ref(0);
-
-const items = ref<ContentItem[]>([]);
-const hasMore = ref(false);
-const loading = ref(false);
-const error = ref<string | null>(null);
 let loadSeq = 0;
+
+/** 总页数（total 缺失或不确定时可退化为仅按 hasMore 累计）。 */
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
 /** 内容类型对应的图标。 */
 function typeIcon(ct: ContentType) {
@@ -91,8 +98,8 @@ function sourceLabel(src: ContentSource): string {
 
 /** 适配游戏版本范围展示（最低～最高）。 */
 function versionRange(item: ContentItem): string {
-  const lo = item.min_game_version;
-  const hi = item.max_game_version;
+  const lo = item.minGameVersion;
+  const hi = item.maxGameVersion;
   if (lo && hi && lo !== hi) return `${lo}–${hi}`;
   return lo || hi || t(`${MB_KEY}.unknownVersion`);
 }
@@ -104,13 +111,14 @@ async function fetchPage() {
   try {
     const result = await contentDownloadList({
       source: source.value || undefined,
-      content_type: contentType.value || undefined,
+      contentType: contentType.value || undefined,
       search: searchInput.value.trim() || undefined,
       page: page.value,
     });
     if (seq !== loadSeq) return; // 丢弃过期响应
     items.value = result.items;
-    hasMore.value = result.has_more;
+    hasMore.value = result.hasMore;
+    total.value = result.total;
   } catch (e) {
     if (seq !== loadSeq) return;
     error.value = String(e);
@@ -133,36 +141,46 @@ function changePage(delta: number) {
 }
 
 function openDetail(item: ContentItem) {
+  const scroller = scrollerEl.value;
+  if (scroller) scrollTop.value = scroller.scrollTop;
   void router.push(`/content/${encodeURIComponent(item.id)}`);
 }
 
-// 来源/类型/搜索词变化即回到第一页并重新加载。
+// 来源/类型变化即回到第一页并重新加载；返回列表时保留此前的数据与页码。
 watch([source, contentType], () => {
   page.value = 0;
   void fetchPage();
 });
 
+const scrollerEl = ref<HTMLElement | null>(null);
+
 onMounted(() => {
-  void fetchPage();
+  // 从详情页返回时数据已在 store 中，无需重新拉取；仅恢复滚动位置。
+  if (items.value.length === 0) {
+    void fetchPage();
+  } else {
+    requestAnimationFrame(() => {
+      if (scrollerEl.value) scrollerEl.value.scrollTop = scrollTop.value;
+    });
+  }
 });
 </script>
 
 <template>
-  <div class="content-list">
-    <header class="content-list__header">
-      <div class="content-list__heading">
-        <h1 class="content-list__title">{{ t(`${MB_KEY}.listTitle`) }}</h1>
-        <button
-          class="content-list__refresh"
-          title="t(`${MB_KEY}.refresh`)"
-          :disabled="loading"
-          @click="search"
-        >
-          <RefreshCw :size="15" :class="{ spin: loading }" />
-        </button>
-      </div>
+  <div ref="scrollerEl" class="content-list">
+    <!-- 刷新按钮注入全局标题栏操作区 -->
+    <Teleport to="#copper-titlebar-actions">
+      <button
+        class="content-list__refresh"
+        title="t(`${MB_KEY}.refresh`)"
+        :disabled="loading"
+        @click="search"
+      >
+        <RefreshCw :size="15" :class="{ spin: loading }" />
+      </button>
+    </Teleport>
 
-      <div class="content-list__toolbar">
+    <div class="content-list__toolbar">
         <div class="content-list__search">
           <Search :size="15" class="content-list__search-icon" />
           <input
@@ -207,7 +225,6 @@ onMounted(() => {
           </div>
         </div>
       </div>
-    </header>
 
     <!-- 加载骨架 -->
     <div v-if="loading && items.length === 0" class="content-list__grid">
@@ -240,8 +257,8 @@ onMounted(() => {
         @click="openDetail(item)"
       >
         <div class="content-card__thumb">
-          <img v-if="item.icon_url" :src="item.icon_url" :alt="item.name" loading="lazy" />
-          <component :is="typeIcon(item.content_type)" v-else :size="26" class="content-card__thumb-fallback" />
+          <img v-if="item.iconUrl" :src="item.iconUrl" :alt="item.name" loading="lazy" />
+          <component :is="typeIcon(item.contentType)" v-else :size="26" class="content-card__thumb-fallback" />
         </div>
         <div class="content-card__body">
           <div class="content-card__name" :title="item.name">{{ item.name }}</div>
@@ -254,10 +271,10 @@ onMounted(() => {
               {{ sourceLabel(item.source) }}
             </span>
             <span class="content-card__badge">
-              {{ typeLabel(item.content_type) }}
+              {{ typeLabel(item.contentType) }}
             </span>
-            <span class="content-card__badge" v-if="item.latest_version">
-              {{ item.latest_version }}
+            <span class="content-card__badge" v-if="item.latestVersion">
+              {{ item.latestVersion }}
             </span>
             <span class="content-card__badge" v-if="versionRange(item) !== t(`${MB_KEY}.unknownVersion`)">
               {{ versionRange(item) }}
@@ -267,7 +284,7 @@ onMounted(() => {
         <div class="content-card__meta">
           <span class="content-card__downloads">
             <Download :size="13" />
-            {{ item.download_count.toLocaleString() }}
+            {{ item.downloadCount.toLocaleString() }}
           </span>
         </div>
       </button>
@@ -285,7 +302,10 @@ onMounted(() => {
       </button>
       <span class="content-list__pager-state">
         <LoaderCircle v-if="loading" :size="14" class="spin" />
-        <template v-else>{{ hasMore ? t(`${MB_KEY}.hasMore`) : t(`${MB_KEY}.noMore`) }}</template>
+        <template v-else>
+          <span class="content-list__page-no">{{ t(`${MB_KEY}.pageInfo`, { current: page + 1, total: totalPages }) }}</span>
+          <span class="content-list__pager-status">{{ hasMore ? t(`${MB_KEY}.hasMore`) : t(`${MB_KEY}.noMore`) }}</span>
+        </template>
       </span>
       <button
         class="content-list__pager-btn"
@@ -306,22 +326,6 @@ onMounted(() => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-}
-
-.content-list__header {
-  margin-bottom: var(--copper-space-4);
-}
-
-.content-list__heading {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-2);
-  margin-bottom: var(--copper-space-3);
-}
-
-.content-list__title {
-  font-size: var(--copper-font-size-xl);
-  font-weight: 700;
 }
 
 .content-list__refresh {
@@ -631,11 +635,17 @@ onMounted(() => {
 .content-list__pager-state {
   display: flex;
   align-items: center;
-  gap: var(--copper-space-1);
+  flex-direction: column;
+  gap: var(--copper-space-0-5);
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
-  min-width: 90px;
+  min-width: 130px;
   justify-content: center;
+}
+
+.content-list__page-no {
+  font-weight: 600;
+  color: var(--copper-text-primary);
 }
 
 .spin {

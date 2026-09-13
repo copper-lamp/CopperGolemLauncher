@@ -26,6 +26,7 @@
     "unknown": "Unknown"
   },
   "titlebar": {
+    "back": "Back",
     "minimize": "Minimize",
     "maximize": "Maximize",
     "restore": "Restore",
@@ -39,6 +40,7 @@
     "title": "Settings",
     "tabs": {
       "general": "General",
+      "version": "Versions",
       "launch": "Launch",
       "appearance": "Appearance",
       "modules": "Modules",
@@ -53,6 +55,19 @@
       "theme_mode_auto": "Follow system",
       "accent_color": "Accent color",
       "accent_preset": "Presets"
+    },
+    "version": {
+      "game_dir": "Game directory",
+      "game_dir_label": "Versions root",
+      "game_dir_hint": "All installed versions live here. Leave empty to use the default directory. Compatible with LeviLauncher's install dir.",
+      "game_dir_default": "Use default directory",
+      "browse": "Browse",
+      "reset": "Reset",
+      "resolved": "Resolved to: {path}",
+      "content_target": "Content install target",
+      "target_label": "Install to version",
+      "target_hint": "Downloads are installed to this version. When a single version is set, resources are auto-placed into the correct folders.",
+      "target_none": "Download only"
     },
     "launch": {
       "default_version": "Default version",

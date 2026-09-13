@@ -19,29 +19,29 @@ export type ContentType =
 export interface ContentItem {
   id: string;
   source: ContentSource;
-  content_type: ContentType;
+  contentType: ContentType;
   name: string;
   description: string;
   author: string | null;
-  icon_url?: string | null;
+  iconUrl?: string | null;
   categories: string[];
-  min_game_version: string | null;
-  max_game_version: string | null;
-  latest_version: string;
-  download_count: number;
+  minGameVersion: string | null;
+  maxGameVersion: string | null;
+  latestVersion: string;
+  downloadCount: number;
 }
 
 /** 列表返回（与后端 `ContentListPage` 同构）。 */
 export interface ContentListPage {
   items: ContentItem[];
-  has_more: boolean;
+  hasMore: boolean;
   total: number;
 }
 
-/** 列表查询参数（camelCase）。 */
+/** 列表查询参数（camelCase，与后端 `ContentListQuery` 序列化名一致）。 */
 export interface ContentListQuery {
   source?: ContentSource;
-  content_type?: ContentType;
+  contentType?: ContentType;
   search?: string;
   page?: number;
 }
@@ -51,17 +51,17 @@ export interface ContentFile {
   id: string;
   version: string;
   filename: string;
-  download_url: string;
+  downloadUrl: string;
   size: number;
   sha256?: string | null;
-  game_versions: string[];
+  gameVersions: string[];
   dependencies: ContentDependency[];
-  release_type: string;
+  releaseType: string;
 }
 
 /** 依赖（与后端 `ContentDependency` 同构）。 */
 export interface ContentDependency {
-  ref_id: string;
+  refId: string;
   name: string;
   kind: "required" | "optional";
 }
@@ -69,16 +69,16 @@ export interface ContentDependency {
 /** 内容详情（与后端 `ContentDetail` 同构）。 */
 export interface ContentDetail {
   item: ContentItem;
-  project_url: string | null;
-  repo_url: string | null;
+  projectUrl: string | null;
+  repoUrl: string | null;
   authors: string[];
   files: ContentFile[];
-  game_versions: string[];
+  gameVersions: string[];
 }
 
 /** lip 环境探测结果。 */
 export interface LipEnv {
-  lip_available: boolean;
+  lipAvailable: boolean;
   message: string | null;
 }
 

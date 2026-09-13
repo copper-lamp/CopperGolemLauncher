@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
+use super::settings::SettingsService;
+
 /// 路径体系。
 ///
 /// 布局（以 Windows 为例，`<AppData>` 为 `%APPDATA%`）：
@@ -65,6 +67,17 @@ impl Paths {
     /// 已安装游戏版本目录。
     pub fn versions_dir(&self) -> &PathBuf {
         &self.versions_dir
+    }
+
+    /// 解析当前游戏（版本）根目录：优先 `settings.game.directory`（非空），否则默认版本目录。
+    ///
+    /// 是版本根目录的**唯一**解析入口；新增自定义根时由调用方负责 `create_dir_all`。
+    pub fn versions_root(&self, settings: &SettingsService) -> PathBuf {
+        settings
+            .get::<String>("game.directory")
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| PathBuf::from(s.trim()))
+            .unwrap_or_else(|| self.versions_dir.clone())
     }
 
     /// 附加模块目录。

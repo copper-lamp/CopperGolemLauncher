@@ -1,6 +1,7 @@
 {
   "navTitle": "Content",
   "listTitle": "Content Download",
+  "detailTitle": "Content Detail",
   "searchPlaceholder": "Search behavior packs / texture packs / shaders / LL mods",
   "search": "Search",
   "refresh": "Refresh",
@@ -27,6 +28,7 @@
   "downloads": "{count} downloads",
   "prev": "Previous",
   "next": "Next",
+  "pageInfo": "Page {current} / {total}",
   "hasMore": "More",
   "noMore": "No more",
   "detail": {

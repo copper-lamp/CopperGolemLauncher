@@ -67,19 +67,17 @@ watch(gd.manifest, () => (loadError.value = null));
 
 <template>
   <div class="gd-page">
-    <header class="gd-page__header">
-      <div class="gd-page__heading">
-        <h1 class="gd-page__title">{{ t(`${MB_KEY}.listTitle`) }}</h1>
-        <button
-          class="gd-page__refresh"
-          :title="t(`${MB_KEY}.actions.refresh`)"
-          :disabled="localLoading || gd.loading.value"
-          @click="refresh"
-        >
-          <RefreshCw :size="15" :class="{ spin: localLoading || gd.loading.value }" />
-        </button>
-      </div>
-    </header>
+    <!-- 刷新按钮注入全局标题栏操作区 -->
+    <Teleport to="#copper-titlebar-actions">
+      <button
+        class="gd-page__refresh"
+        :title="t(`${MB_KEY}.actions.refresh`)"
+        :disabled="localLoading || gd.loading.value"
+        @click="refresh"
+      >
+        <RefreshCw :size="15" :class="{ spin: localLoading || gd.loading.value }" />
+      </button>
+    </Teleport>
 
     <!-- 骨架 -->
     <div v-if="gd.loading.value && !gd.manifest.value" class="gd-page__scope">
@@ -160,21 +158,6 @@ watch(gd.manifest, () => (loadError.value = null));
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-}
-
-.gd-page__header {
-  margin-bottom: var(--copper-space-4);
-}
-
-.gd-page__heading {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-2);
-}
-
-.gd-page__title {
-  font-size: var(--copper-font-size-xl);
-  font-weight: 700;
 }
 
 .gd-page__refresh {

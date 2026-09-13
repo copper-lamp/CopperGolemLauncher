@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate::error::KernelError;
 use crate::registry::events::EventBus;
 use crate::services::paths::Paths;
+use crate::services::settings::SettingsService;
 use crate::state::KernelContext;
 
 use super::meta::{resolve_version_dir, VersionMeta};
@@ -30,6 +31,7 @@ const POLL_INTERVAL_MS: u64 = 800;
 #[derive(Clone)]
 pub struct LaunchCtx {
     pub paths: Arc<Paths>,
+    pub settings: Arc<SettingsService>,
     pub runtime: tokio::runtime::Handle,
     pub events: Arc<EventBus>,
 }
@@ -39,6 +41,7 @@ impl LaunchCtx {
     pub fn from_kernel(kernel: &KernelContext) -> Self {
         Self {
             paths: kernel.paths().clone(),
+            settings: kernel.settings().clone(),
             runtime: kernel.runtime().clone(),
             events: kernel.events().clone(),
         }
@@ -56,8 +59,8 @@ pub enum LaunchOutcome {
 }
 
 /// 校验启动名并解析版本目录（复用 meta 的防逃逸逻辑）。
-fn resolve_launch_dir(paths: &Paths, name: &str) -> Result<PathBuf, KernelError> {
-    resolve_version_dir(paths.versions_dir(), name)
+fn resolve_launch_dir(paths: &Paths, settings: &SettingsService, name: &str) -> Result<PathBuf, KernelError> {
+    resolve_version_dir(&paths.versions_root(settings), name)
 }
 
 /// 检测某路径下是否有游戏进程在运行（Windows 进程枚举，路径归一化比对）。
@@ -183,7 +186,7 @@ pub fn launch_game(
     name: &str,
     check_running: bool,
 ) -> Result<LaunchOutcome, KernelError> {
-    let dir = resolve_launch_dir(&ctx.paths, name)?;
+    let dir = resolve_launch_dir(&ctx.paths, &ctx.settings, name)?;
     let meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
     let exe = dir.join(GAME_EXE);

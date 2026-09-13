@@ -18,7 +18,7 @@ import {
   homeVersionsList,
   type VersionView,
 } from "../../api/home";
-import { onVersionInstalled, onVersionRemoved } from "../../events";
+import { onVersionInstalled, onVersionRemoved, onVersionsChanged } from "../../events";
 
 type HomeMode = "simple" | "default";
 
@@ -54,6 +54,7 @@ onMounted(async () => {
   unlisten = [
     await onVersionInstalled(() => void refresh()),
     await onVersionRemoved(() => void refresh()),
+    await onVersionsChanged(() => void refresh()),
   ];
 });
 
@@ -105,9 +106,10 @@ function goDownload() {
 
 <template>
   <div class="home-page">
-    <div class="home-page__mode">
+    <!-- 模式切换注入全局标题栏操作区 -->
+    <Teleport to="#copper-titlebar-actions">
       <CoSegmented v-model="mode" :options="modeOptions" />
-    </div>
+    </Teleport>
 
     <!-- 默认模式占位（后续阶段实现） -->
     <div v-if="mode === 'default'" class="home-page__default-placeholder">
@@ -160,19 +162,12 @@ function goDownload() {
 
 <style scoped>
 .home-page {
-  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   overflow-y: auto;
-}
-
-.home-page__mode {
-  position: absolute;
-  top: var(--copper-space-4);
-  left: var(--copper-space-4);
 }
 
 .home-page__simple {

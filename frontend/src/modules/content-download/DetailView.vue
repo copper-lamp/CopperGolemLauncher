@@ -3,9 +3,8 @@
 // 下载确认时带"飞入下载"抛物线动画反馈。
 
 import { computed, onMounted, ref } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import {
-  ArrowLeft,
   ExternalLink,
   ImageIcon,
   Layers,
@@ -37,7 +36,6 @@ const MB_KEY = "module.content-download";
 const KB = `${MB_KEY}.detail`;
 
 const route = useRoute();
-const router = useRouter();
 const { t } = useI18n();
 
 const detail = ref<ContentDetail | null>(null);
@@ -93,18 +91,14 @@ function groups():
   | null {
   const d = detail.value;
   if (!d) return null;
-  const categories = d.game_versions.filter(Boolean);
+  const categories = d.gameVersions.filter(Boolean);
   if (categories.length === 0) {
     return [{ category: t(`${MB_KEY}.typeAll`), files: d.files }];
   }
   return categories.map((gv) => ({
     category: gv,
-    files: d.files.filter((f) => f.game_versions.includes(gv)),
+    files: d.files.filter((f) => f.gameVersions.includes(gv)),
   }));
-}
-
-function goBack() {
-  void router.back();
 }
 
 async function load() {
@@ -180,7 +174,7 @@ async function downloadFile(file: ContentFile, el?: Element) {
 
 /** 打开 lip 安装确认弹窗。 */
 function openInstall(file: ContentFile) {
-  if (!lipEnv.value?.lip_available) {
+  if (!lipEnv.value?.lipAvailable) {
     showToast(t(`${KB}.lipNotFound`), "error");
     return;
   }
@@ -214,11 +208,6 @@ onMounted(load);
 
 <template>
   <div class="cd-detail">
-    <button class="cd-detail__back" @click="goBack">
-      <ArrowLeft :size="15" />
-      {{ t(`${KB}.back`) }}
-    </button>
-
     <template v-if="loading">
       <div class="cd-detail__skeleton">
         <div class="cd-detail__skeleton-hero" />
@@ -235,13 +224,13 @@ onMounted(load);
       <!-- 头部 -->
       <header class="cd-detail__header">
         <div class="cd-detail__thumb">
-          <img v-if="detail.item.icon_url" :src="detail.item.icon_url" :alt="detail.item.name" />
-          <component :is="typeIcon(detail.item.content_type)" v-else :size="34" class="cd-detail__thumb-fallback" />
+          <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
+          <component :is="typeIcon(detail.item.contentType)" v-else :size="34" class="cd-detail__thumb-fallback" />
         </div>
         <div class="cd-detail__info">
           <div class="cd-detail__badges">
             <span class="cd-detail__badge cd-detail__badge--source">{{ sourceLabel(detail.item.source) }}</span>
-            <span class="cd-detail__badge">{{ typeLabel(detail.item.content_type) }}</span>
+            <span class="cd-detail__badge">{{ typeLabel(detail.item.contentType) }}</span>
           </div>
           <h1 class="cd-detail__name">{{ detail.item.name }}</h1>
           <p class="cd-detail__desc">{{ detail.item.description }}</p>
@@ -250,9 +239,9 @@ onMounted(load);
               {{ t(`${KB}.author`) }}：{{ detail.authors[0] }}
             </span>
             <a
-              v-if="detail.project_url"
+              v-if="detail.projectUrl"
               class="cd-detail__link"
-              :href="detail.project_url"
+              :href="detail.projectUrl"
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -264,10 +253,10 @@ onMounted(load);
       </header>
 
       <!-- 适配版本 -->
-      <section v-if="detail.game_versions.length" class="cd-detail__section">
+      <section v-if="detail.gameVersions.length" class="cd-detail__section">
         <h2 class="cd-detail__section-title">{{ t(`${KB}.compatibleVersions`) }}</h2>
         <div class="cd-detail__chips">
-          <span v-for="gv in detail.game_versions" :key="gv" class="cd-detail__chip">{{ gv }}</span>
+          <span v-for="gv in detail.gameVersions" :key="gv" class="cd-detail__chip">{{ gv }}</span>
         </div>
       </section>
 
@@ -285,7 +274,7 @@ onMounted(load);
               <div class="cd-detail__file-main">
                 <div class="cd-detail__file-row">
                   <span class="cd-detail__file-version">{{ file.version }}</span>
-                  <span class="cd-detail__file-version-meta">{{ releaseLabel(file.release_type) }}</span>
+                  <span class="cd-detail__file-version-meta">{{ releaseLabel(file.releaseType) }}</span>
                   <span v-if="file.size > 0" class="cd-detail__file-version-meta">
                     {{ formatBytes(file.size) }}
                   </span>
@@ -294,11 +283,11 @@ onMounted(load);
                   <Link2 :size="12" class="cd-detail__deps-icon" />
                   <span
                     v-for="dep in file.dependencies"
-                    :key="dep.ref_id"
+                    :key="dep.refId"
                     class="cd-detail__dep"
                     :class="`is-${dep.kind}`"
                   >
-                    {{ dep.name || dep.ref_id }}
+                    {{ dep.name || dep.refId }}
                   </span>
                 </div>
               </div>
@@ -393,28 +382,6 @@ onMounted(load);
   height: 100%;
   padding: var(--copper-space-5);
   overflow-y: auto;
-}
-
-.cd-detail__back {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--copper-space-1);
-  margin-bottom: var(--copper-space-3);
-  padding: 4px 10px;
-  border: none;
-  border-radius: var(--copper-radius-sm);
-  background: transparent;
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-sm);
-  cursor: pointer;
-  transition:
-    background-color var(--copper-duration-fast) var(--copper-easing),
-    color var(--copper-duration-fast) var(--copper-easing);
-}
-
-.cd-detail__back:hover {
-  background: var(--copper-hover);
-  color: var(--copper-text);
 }
 
 .cd-detail__header {

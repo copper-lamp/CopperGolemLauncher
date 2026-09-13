@@ -28,7 +28,7 @@ import {
   homeVersionsList,
   type VersionView,
 } from "../../api/home";
-import { onVersionInstalled, onVersionRemoved } from "../../events";
+import { onVersionInstalled, onVersionRemoved, onVersionsChanged } from "../../events";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -59,6 +59,7 @@ onMounted(async () => {
   unlisten = [
     await onVersionInstalled(() => void refresh()),
     await onVersionRemoved(() => void refresh()),
+    await onVersionsChanged(() => void refresh()),
   ];
   dispose = unlisten;
 });

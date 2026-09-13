@@ -1,14 +1,37 @@
 <script setup lang="ts">
-// 自定义标题栏：拖拽区域 + 窗口控制按钮 + 账户头像（紧贴控制按钮左侧）。
+// 自定义标题栏：左侧为「返回按钮 + 当前页面标题」，中部拖拽区，右侧为页面注入的操作区
+// + 账户头像 + 窗口控制按钮。标题/返回来自当前路由 meta，操作区由各页面经 Teleport 注入。
 
-import { ref, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X } from "@lucide/vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
+import { Minus, Square, Copy, X, ArrowLeft } from "@lucide/vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useRoute, useRouter } from "vue-router";
 
 import AccountMenu from "./AccountMenu.vue";
 import { useI18n } from "../i18n";
 
 const { t } = useI18n();
+const route = useRoute();
+const router = useRouter();
+
+/** 当前路由标题（i18n）与返回目标路径。 */
+const title = computed(() => {
+  const key = route.meta.titleKey;
+  return typeof key === "string" ? t(key) : "";
+});
+const backPath = computed(() =>
+  typeof route.meta.backPath === "string" ? route.meta.backPath : null,
+);
+
+/** 有可退历史时优先 router.back()（保留内容列表滚动位置），否则回退到 backPath。 */
+function goBack() {
+  const canBack = router.options.history.state.back != null;
+  if (canBack) {
+    void router.back();
+  } else if (backPath.value) {
+    void router.replace(backPath.value);
+  }
+}
 
 const maximized = ref(false);
 let unlistenMaximize: (() => void) | null = null;
@@ -44,8 +67,21 @@ function close() {
 </script>
 
 <template>
-  <header class="titlebar" data-tauri-drag-region>
+  <header class="titlebar">
+    <div class="titlebar__left">
+      <button
+        v-if="backPath"
+        class="titlebar__back"
+        :title="t('titlebar.back')"
+        @click="goBack"
+      >
+        <ArrowLeft :size="15" />
+      </button>
+      <h1 v-if="title" class="titlebar__title">{{ title }}</h1>
+    </div>
     <div class="titlebar__spacer" data-tauri-drag-region />
+    <!-- 页面注入操作区：各模块经 <Teleport to="#copper-titlebar-actions"> 放置按钮/切换。 -->
+    <div class="titlebar__actions" id="copper-titlebar-actions" />
     <div class="titlebar__right">
       <AccountMenu />
       <div class="titlebar__sep" />
@@ -81,15 +117,60 @@ function close() {
 .titlebar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   height: var(--copper-titlebar-h);
   flex-shrink: 0;
+  padding-left: var(--copper-space-3);
   background: var(--copper-bg);
+}
+
+.titlebar__left {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  height: 100%;
+  min-width: 0;
+}
+
+.titlebar__back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--copper-radius-sm);
+  background: transparent;
+  color: var(--copper-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.titlebar__back:hover {
+  background: var(--copper-hover);
+  color: var(--copper-text);
+}
+
+.titlebar__title {
+  font-size: var(--copper-font-size-md);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .titlebar__spacer {
   flex: 1;
   height: 100%;
+}
+
+.titlebar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  height: 100%;
+  padding: 0 var(--copper-space-2);
 }
 
 .titlebar__right {

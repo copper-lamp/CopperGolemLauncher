@@ -136,6 +136,8 @@ pub fn defaults() -> HashMap<String, Value> {
     m.insert("locale".into(), Value::String("zh-CN".into()));
     m.insert("theme.mode".into(), Value::String("dark".into()));
     m.insert("theme.accent".into(), Value::String("#c97b3d".into()));
+    // 游戏目录（版本根；空 = 使用默认 %APPDATA%/.../versions）
+    m.insert("game.directory".into(), Value::String(String::new()));
     // 启动
     m.insert("launch.default_version".into(), Value::String(String::new()));
     m.insert("launch.memory_mb".into(), Value::Number(4096.into()));

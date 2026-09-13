@@ -74,23 +74,23 @@ impl HomeModule {
 
     /// 版本清单（实时扫描；`version.installed` / `version.removed` 事件直达前端触发刷新）。
     pub fn list_versions(kernel: &KernelContext) -> Vec<VersionView> {
-        let root = kernel.paths().versions_dir();
-        let mut metas = meta::scan_versions(root);
+        let root = kernel.versions_root();
+        let mut metas = meta::scan_versions(&root);
         metas.sort_by(|a, b| {
             b.created_at
                 .cmp(&a.created_at)
                 .then_with(|| a.name.cmp(&b.name))
         });
-        metas.into_iter().map(|m| to_view(root, m)).collect()
+        metas.into_iter().map(|m| to_view(&root, m)).collect()
     }
 
     /// 单个版本视图。
     pub fn get_version(kernel: &KernelContext, name: &str) -> Result<VersionView, KernelError> {
-        let root = kernel.paths().versions_dir();
-        let dir = meta::resolve_version_dir(root, name)?;
+        let root = kernel.versions_root();
+        let dir = meta::resolve_version_dir(&root, name)?;
         let meta = VersionMeta::read(&dir)
             .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 不存在")))?;
-        Ok(to_view(root, meta))
+        Ok(to_view(&root, meta))
     }
 
     /// 部分更新版本设置。
@@ -99,8 +99,8 @@ impl HomeModule {
         name: &str,
         update: &VersionMetaUpdate,
     ) -> Result<VersionView, KernelError> {
-        let root = kernel.paths().versions_dir();
-        let dir = meta::resolve_version_dir(root, name)?;
+        let root = kernel.versions_root();
+        let dir = meta::resolve_version_dir(&root, name)?;
         let mut meta = VersionMeta::read(&dir)
             .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 不存在")))?;
         if let Some(v) = update.enable_editor_mode {
@@ -122,7 +122,7 @@ impl HomeModule {
             meta.env_vars = v.clone();
         }
         VersionMeta::write(&dir, &meta)?;
-        Ok(to_view(root, meta))
+        Ok(to_view(&root, meta))
     }
 
     /// 重命名版本（目录 + 元数据）。
@@ -131,14 +131,14 @@ impl HomeModule {
         old_name: &str,
         new_name: &str,
     ) -> Result<VersionView, KernelError> {
-        let root = kernel.paths().versions_dir();
-        let old_dir = meta::resolve_version_dir(root, old_name)?;
+        let root = kernel.versions_root();
+        let old_dir = meta::resolve_version_dir(&root, old_name)?;
         let new_name = new_name.trim();
         if new_name.is_empty() {
             return Err(KernelError::InvalidArgument("版本名不能为空".into()));
         }
         if !new_name.eq_ignore_ascii_case(old_name) {
-            meta::validate_version_name(root, new_name)?;
+            meta::validate_version_name(&root, new_name)?;
         }
         let new_dir = root.join(new_name);
         if new_dir.exists() && new_dir != old_dir {
@@ -151,13 +151,13 @@ impl HomeModule {
         }
         meta.name = new_name.to_string();
         VersionMeta::write(&new_dir, &meta)?;
-        Ok(to_view(root, meta))
+        Ok(to_view(&root, meta))
     }
 
     /// 删除版本（游戏运行中拒绝；成功后广播 `version.removed`）。
     pub fn delete_version(kernel: &KernelContext, name: &str) -> Result<(), KernelError> {
-        let root = kernel.paths().versions_dir();
-        let dir = meta::resolve_version_dir(root, name)?;
+        let root = kernel.versions_root();
+        let dir = meta::resolve_version_dir(&root, name)?;
         if !dir.exists() {
             return Err(KernelError::InvalidArgument(format!("版本 `{name}` 不存在")));
         }
@@ -221,8 +221,9 @@ impl Module for HomeModule {
 
         // 意图：expose.version —— 向其他模块提供版本列表。
         let paths = kernel.paths().clone();
+        let settings = kernel.settings().clone();
         let expose_handler: IntentHandler = Arc::new(move |_payload| {
-            let metas = meta::scan_versions(paths.versions_dir());
+            let metas = meta::scan_versions(&paths.versions_root(&settings));
             let list: Vec<Value> = metas
                 .iter()
                 .map(|m| {
@@ -258,7 +259,17 @@ impl Module for HomeModule {
         let sub_b = kernel.events().subscribe("version.removed", |name, payload| {
             log::info!("[home] event {name}: {payload}");
         });
-        *self.subs.lock().unwrap() = vec![sub_a, sub_b];
+        // 游戏目录变更 → 广播版本清单变更，前端各版本页据此重扫。
+        let events = kernel.events().clone();
+        let sub_c = kernel.events().subscribe("settings.changed", move |_name, payload| {
+            if let Some(v) = payload.get("game.directory") {
+                events.publish(
+                    "versions.changed",
+                    serde_json::json!({ "gameDirectory": v }),
+                );
+            }
+        });
+        *self.subs.lock().unwrap() = vec![sub_a, sub_b, sub_c];
         Ok(())
     }
 

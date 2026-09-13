@@ -17,6 +17,16 @@ pub fn home_versions_list(kernel: State<'_, KernelContext>) -> CommandResult<Vec
     Ok(crate::modules::home::HomeModule::list_versions(kernel.inner()))
 }
 
+/// 当前解析的版本根目录（供前端显示实际游戏目录）。
+#[tauri::command]
+pub fn home_versions_root(kernel: State<'_, KernelContext>) -> CommandResult<String> {
+    Ok(kernel
+        .inner()
+        .versions_root()
+        .to_string_lossy()
+        .into_owned())
+}
+
 /// 单个版本信息。
 #[tauri::command]
 pub fn home_version_get(
@@ -69,16 +79,14 @@ pub fn home_logo_set(
     name: String,
     data_url: String,
 ) -> CommandResult<()> {
-    let root = kernel.inner().paths().versions_dir();
-    let dir = meta::resolve_version_dir(root, &name).map_err(into_command_error)?;
+    let dir = meta::resolve_version_dir(&kernel.inner().versions_root(), &name).map_err(into_command_error)?;
     meta::save_logo(&dir, &data_url).map_err(into_command_error)
 }
 
 /// 移除版本图标。
 #[tauri::command]
 pub fn home_logo_remove(kernel: State<'_, KernelContext>, name: String) -> CommandResult<()> {
-    let root = kernel.inner().paths().versions_dir();
-    let dir = meta::resolve_version_dir(root, &name).map_err(into_command_error)?;
+    let dir = meta::resolve_version_dir(&kernel.inner().versions_root(), &name).map_err(into_command_error)?;
     meta::remove_logo(&dir).map_err(into_command_error)
 }
 

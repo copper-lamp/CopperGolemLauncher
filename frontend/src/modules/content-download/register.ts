@@ -33,7 +33,7 @@ registerModule({
       path: "/content/:id",
       name: "content-detail",
       component: () => import("./DetailView.vue"),
-      meta: { titleKey: "module.content-download.listTitle" },
+      meta: { titleKey: "module.content-download.detailTitle", backPath: "/content" },
     },
   ],
 });

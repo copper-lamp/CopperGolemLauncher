@@ -5,7 +5,6 @@
 import { computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
-  ArrowLeft,
   CheckCircle2,
   Download,
   FileKey,
@@ -63,6 +62,7 @@ async function onCancel() {
   await gd.cancel(id.value);
 }
 
+/** 返回列表（未找到版本等兜底引导）。 */
 function goBack() {
   void router.push("/game-download");
 }
@@ -80,11 +80,6 @@ watch(id, () => {
 
 <template>
   <div class="gd-detail">
-    <button class="gd-detail__back" @click="goBack">
-      <ArrowLeft :size="15" />
-      {{ t(`${MB_KEY}.actions.back`) }}
-    </button>
-
     <!-- 未找到版本 -->
     <div v-if="!version" class="gd-detail__state">
       <p class="gd-detail__state-text">{{ t(`${MB_KEY}.error.no_url`) }}</p>
@@ -214,24 +209,6 @@ watch(id, () => {
   gap: var(--copper-space-4);
   max-width: 720px;
   margin: 0 auto;
-}
-
-.gd-detail__back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-sm);
-  cursor: pointer;
-  transition: color var(--copper-duration-fast) var(--copper-easing);
-}
-
-.gd-detail__back:hover {
-  color: var(--copper-text);
 }
 
 .gd-detail__state {

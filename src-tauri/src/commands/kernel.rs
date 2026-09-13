@@ -24,3 +24,14 @@ pub fn kernel_info(kernel: State<'_, KernelContext>) -> CommandResult<Value> {
 pub fn paths_snapshot(kernel: State<'_, KernelContext>) -> CommandResult<Value> {
     Ok(kernel.inner().paths().snapshot())
 }
+
+/// 前端调试日志转发（临时诊断用：把 render / console 错误打到内核日志）。
+#[tauri::command]
+pub fn debug_log(level: String, message: String) -> CommandResult<()> {
+    match level.as_str() {
+        "error" => log::error!("[frontend] {message}"),
+        "warn" => log::warn!("[frontend] {message}"),
+        _ => log::info!("[frontend] {message}"),
+    }
+    Ok(())
+}

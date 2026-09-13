@@ -58,8 +58,9 @@ struct ModResponse {
     data: ModData,
 }
 
-/// 单个项目（mod）。
+/// 单个项目（mod）。CurseForge API 字段均为 camelCase，统一反序列化别名。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ModData {
     #[serde(default)]
     id: i64,
@@ -86,12 +87,14 @@ struct ModData {
 
 /// 分页信息。
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Pagination {
     #[serde(default)]
     total_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Category {
     #[serde(default)]
     id: i64,
@@ -112,18 +115,21 @@ struct Author {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Logo {
     #[serde(default)]
     thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Links {
     #[serde(default)]
     website_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LatestFilesIndexes {
     #[serde(default)]
     game_version: Option<String>,
@@ -137,6 +143,7 @@ struct LatestFilesIndexes {
 
 /// 可下载文件。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct File {
     #[serde(default)]
     id: i64,
@@ -168,6 +175,7 @@ struct FileHash {
 
 /// 依赖项（relationType：3=required，2=optional）。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Dependency {
     #[serde(default)]
     mod_id: i64,
@@ -278,8 +286,8 @@ async fn content_type_for_class(
 
 /// 内置（混淆）CurseForge API key，编译内置，无需用户配置。
 /// 部署运维如需更换可写设置 `content.curseforgeApiKey` 覆盖（可选）。
-/// `BUILTIN_KEY_B64` 为 key 的 base64 形式，拿到正式 key 后编码填入即可。
-const BUILTIN_KEY_B64: &str = "";
+/// `BUILTIN_KEY_B64` 为官方 3rd Party CurseForge API key 的 base64 形式。
+const BUILTIN_KEY_B64: &str = "JDJhJDEwJEdFQVlodG9xT0Q3a1c3NTJoNjE4a2VDekoxUjNuTjRtTnlrd0tRLzJEV3lpblFIdlJKcmd1";
 
 /// 读取 CurseForge API key：优先用户覆盖，未覆盖则回退内置混淆 key。
 fn api_key(kernel: &KernelContext) -> Result<String, KernelError> {

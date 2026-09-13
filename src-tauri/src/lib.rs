@@ -39,6 +39,7 @@ const DEFAULT_CONCURRENCY: usize = 3;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
             let runtime = tauri::async_runtime::handle().inner().clone();
@@ -100,7 +101,7 @@ pub fn run() {
             kernel
                 .modules()
                 .register(Arc::new(modules::home::HomeModule::default()));
-            kernel.modules().register(Arc::new(modules::content_download::ContentDownloadModule));
+            kernel.modules().register(Arc::new(modules::content_download::ContentDownloadModule::default()));
             kernel
                 .modules()
                 .register(Arc::new(modules::game_download::GameDownloadModule::default()));
@@ -112,6 +113,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::kernel::kernel_info,
             commands::kernel::paths_snapshot,
+            commands::kernel::debug_log,
             commands::settings::settings_all,
             commands::settings::settings_get,
             commands::settings::settings_set,
@@ -156,6 +158,7 @@ pub fn run() {
             commands::content_download::content_download_lip_install,
             // 开始页模块（home）
             commands::home::home_versions_list,
+            commands::home::home_versions_root,
             commands::home::home_version_get,
             commands::home::home_version_save_meta,
             commands::home::home_version_rename,

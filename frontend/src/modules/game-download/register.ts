@@ -33,7 +33,7 @@ registerModule({
       path: "/game-download/:id",
       name: "game-download-detail",
       component: () => import("./VersionDetailPage.vue"),
-      meta: { titleKey: "module.game-download.detailTitle" },
+      meta: { titleKey: "module.game-download.detailTitle", backPath: "/game-download" },
     },
   ],
 });

@@ -7,6 +7,7 @@
 //!   `version.installed`（开始页据此刷新可启动版本）与 `game-download.installed`。
 //! - `resume_pending`：`start` 时续传没有完成的下载 / 续装中断的解包。
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -30,6 +31,8 @@ use super::meta_bridge;
 const CACHE_SUBDIR: &str = "game-download";
 /// 原生解包 DLL 落盘子目录。
 const GDK_SUBDIR: &str = "gdkshared";
+/// 版本根下的整包暂存子目录（同盘复用，独立于解包输出目录）。
+const DOWNLOAD_SUBDIR: &str = ".download";
 
 /// 安装流水线上下文：把 `KernelContext` 需要跨 async 捕获的能力拆出为可克隆 Arcs。
 #[derive(Clone)]
@@ -64,14 +67,25 @@ impl Ctx {
         self.paths.cache_dir().join(GDK_SUBDIR)
     }
 
-    /// 某版本整包目标路径。
+    /// 某版本整包暂存路径（`versions_root/.download/<slug>.msixvc`）。
+    ///
+    /// 暂存与安装同盘（同在 `versions_root`，避免占用系统盘缓存），但**独立于**版本
+    /// 解包输出目录（`install_dir`）：若把源包放进解包目标目录，原生解包库在清空/
+    /// 消费输出目录时会把源包一并销毁，导致“下载完但装不上”。解压校验后移除该包。
     pub fn dest_for(&self, slug: &str) -> PathBuf {
-        self.cache_home().join(format!("{slug}.msixvc"))
+        self.versions_root()
+            .join(DOWNLOAD_SUBDIR)
+            .join(format!("{slug}.msixvc"))
     }
 
-    /// 某版本安装目录（`versions/<folder>`）。
+    /// 某版本安装目录（`versions_root/<folder>`，根按设置动态解析）。
     pub fn install_dir(&self, folder: &str) -> PathBuf {
-        self.paths.versions_dir().join(folder)
+        self.versions_root().join(folder)
+    }
+
+    /// 当前游戏（版本）根目录（复用 paths 的唯一解析入口）。
+    pub fn versions_root(&self) -> PathBuf {
+        self.paths.versions_root(&self.settings)
     }
 
     /// 某时间戳（Unix 秒）。
@@ -291,25 +305,30 @@ pub fn status(ctx: &Ctx, id: &str) -> Result<Option<TaskView>, KernelError> {
 
 /// 取消任务（下载中取消 → 放弃安装）。
 ///
-/// 语义：下载中取消即“放弃该版本安装”，取消引擎任务并删除数据库记录，
-/// 从而确保：
-/// - 临时文件被清理（引擎 `remove_on_cancel`）；
+/// 语义：取消下载即“完全放弃该版本下载”，取消引擎任务、立即清除本地缓存
+/// （整包 + 断点 `.part`）、删除数据库记录，从而确保：
+/// - 缓存立刻释放，不残留占用盘空间的临时文件；
 /// - 前端行/详情页状态回退为“可下载”；
 /// - `start` 重启后 `resume_pending` 不再续传（无记录）。
+///
+/// 仅 `installed` / `extracting`（正在解包，无法中断）不可取消；其余状态
+/// （downloading / queued / paused / failed）一律视为放弃并清理。
 pub fn cancel(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
     let Some(rec) = get_record(ctx, id)? else {
         return Err(KernelError::InvalidArgument(format!("无任务 `{id}`")));
     };
-    // 仅“下载中”可取消；解包中不可中断，其它终态无可取消内容。
-    if rec.state != "downloading" {
+    if rec.state == "installed" || rec.state == "extracting" {
         return Ok(());
     }
     // 先置中间态，避免引擎 `download.status(Cancelled)` 被误判为失败并回写 failed。
     set_state(ctx, id, "cancelling", Some("已取消"))?;
-    // 取消引擎任务并清理 `.part`。容错：任务可能已不在队列（如已移除）。
+    // 取消引擎任务。容错：任务可能已不在队列（如已移除）。
     if let Some(task_id) = rec.task_id {
         let _ = ctx.download.cancel(task_id);
     }
+    // 立即清除本地缓存（整包 + 断点 `.part`），不依赖引擎 `remove_on_cancel`，
+    // 保证“马上清除缓存”。
+    cleanup_package(&rec.dest);
     // 删除记录 → 前端回退为“可下载”，重启后 `resume_pending` 不会续传。
     delete_record(ctx, id)?;
     ctx.events.publish("game-download.cancelled", serde_json::json!({ "id": id }));
@@ -360,8 +379,9 @@ pub fn handle_status(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>, payload: &Va
             if rec.state == "cancelling" {
                 return;
             }
-            // 非版本页主动取消（如全局下载列表取消）→ 同样“放弃安装”：
-            // 删除记录，避免 `resume_pending` 在重启时续传已取消的下载。
+            // 非版本页主动取消（如全局下载列表取消）→ 同样“放弃下载”：
+            // 清除缓存并删除记录，避免 `resume_pending` 在重启时续传已取消的下载。
+            cleanup_package(&rec.dest);
             let _ = delete_record(ctx, &rec.version_id);
             ctx.events.publish(
                 "game-download.cancelled",
@@ -428,11 +448,22 @@ fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) {
 
 // ---------------------------------------------------------------- 安装
 
-/// md5 校验：目标文件 MD5 需与清单 md5 一致（大小写不敏感）。
+/// md5 自验。分块流式读取，**绝不在内存中一次性载入整包**（GDK 整包可达数 GB，
+/// `fs::read` 会在设置 `extracting` 后因连续大分配失败而 panic，导致安装静默中断）。
 fn md5_matches(path: &Path, expected: &str) -> Result<bool, KernelError> {
-    let raw = std::fs::read(path)?;
-    let digest = Md5::digest(&raw);
-    Ok(format!("{digest:x}").eq_ignore_ascii_case(expected.trim()))
+    let mut file = std::fs::File::open(path).map_err(KernelError::Io)?;
+    let mut digest = Md5::new();
+    // 堆上缓冲（1 MiB）。不可用栈上大数组：启动时 `resume_pending` 会在主线程
+    // 同步调用本函数，主线程默认栈仅 1MB，栈上数组会直接爆栈。
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected.trim()))
 }
 
 /// 异步安装：单飞锁串行解包（避免并发 GB 级解压）；幂等重入安全。
@@ -442,6 +473,11 @@ pub async fn finish_install(
     rec: TaskRecord,
 ) -> Result<(), KernelError> {
     let _guard = lock.lock().await;
+
+    // 取消竞态：若记录已被取消删除，放弃本次安装（取消已完成清理）。
+    if get_record(ctx, &rec.version_id)?.is_none() {
+        return Ok(());
+    }
 
     // 幂等：已安装即直接收尾（供续装 / 重复事件）。
     let install_dir = ctx.install_dir(&rec.folder);
@@ -453,6 +489,11 @@ pub async fn finish_install(
     }
 
     set_state(ctx, &rec.version_id, "extracting", None)?;
+    log::info!(
+        "[game-download] 开始安装 {} <- {}",
+        rec.version_id,
+        rec.dest.to_string_lossy()
+    );
 
     // md5 自验（引擎只保留 sha256，清单提供的是 md5）。
     if !md5_matches(&rec.dest, &rec.md5)? {
@@ -463,12 +504,20 @@ pub async fn finish_install(
     }
 
     // 解包（.msixvc → DLL；历史 .appx → zip 回退）→ 校验主程序 → 写元数据。
-    extractor::extract_package(&rec.dest, &install_dir, &ctx.gdk_dir()).map_err(KernelError::from)?;
+    // 失败时清理输出目录：原生 DLL 解 XVC 受微软商店授权约束（如返回码 3/4），
+    // 解包可能创建空的安装目录后失败返回。对齐 Levilauncher 的 `os.RemoveAll(outDir)`，
+    // 去掉残留的“半安装”目录，避免前端看到名为已装、实则空目录的假成功。
+    let extract_result = extractor::extract_package(&rec.dest, &install_dir, &ctx.gdk_dir());
+    if let Err(e) = extract_result {
+        let _ = std::fs::remove_dir_all(&install_dir);
+        return Err(KernelError::from(e));
+    }
 
     let kind = rec.kind.clone();
     meta_bridge::write_meta(&install_dir, &rec.folder, &rec.version_id, &kind)?;
 
     set_state(ctx, &rec.version_id, "installed", None)?;
+    log::info!("[game-download] 安装完成 {} -> {}", rec.version_id, install_dir.to_string_lossy());
     cleanup_package(&rec.dest);
     publish_installed(ctx, &rec);
     Ok(())
@@ -523,7 +572,16 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
             });
             continue;
         }
-        // 整包不完整 → 重新投递续传（引擎按 `.part` Range 续传）。
+        // 整包不完整 → 提前清除“已放弃”残留：本地无整包、无断点字节，且引擎无在途任务，
+        // 说明下载已取消/无任何可恢复内容，删除记录避免重启白白续传（甚至反复失败）。
+        let part = PathBuf::from(format!("{}.part", rec.dest.to_string_lossy()));
+        let has_live = rec.task_id.map(|t| ctx.download.task(t).is_some()).unwrap_or(false);
+        if !rec.dest.is_file() && !part.is_file() && !has_live {
+            log::warn!("[game-download] 丢弃无内容的下载残留记录 {}", rec.version_id);
+            delete_record(ctx, &rec.version_id).ok();
+            continue;
+        }
+        // 重新投递续传（引擎按 `.part` Range 续传）。
         let entry = match block_load(ctx).and_then(|v| {
             v.find_by_id(&rec.version_id)
                 .ok_or_else(|| KernelError::InvalidArgument("清单无此版本".into()))

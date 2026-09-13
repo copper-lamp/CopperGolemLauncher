@@ -47,6 +47,15 @@ export function onSettingsChanged(
   );
 }
 
+/** 订阅版本清单变更（版本根目录切换等，开始页据此刷新清单）。 */
+export function onVersionsChanged(
+  handler: (payload: { gameDirectory: string }) => void,
+): Promise<Unlisten> {
+  return listen<{ gameDirectory: string }>("versions-changed", (e) =>
+    handler(e.payload),
+  );
+}
+
 /** 订阅版本安装事件（游戏下载模块发布，开始页据此刷新清单）。 */
 export function onVersionInstalled(
   handler: (name: string) => void,

@@ -66,7 +66,7 @@ const WORLDS_DIR: &str = "minecraftWorlds";
 /// 非隔离版本需要 AppX 包信息，失败（未安装 / 非 Windows）时返回错误，
 /// 前端据此提示内容管理不可用。
 pub fn content_roots(kernel: &KernelContext, name: &str) -> Result<ContentRoots, KernelError> {
-    let dir = resolve_version_dir(kernel.paths().versions_dir(), name)?;
+    let dir = resolve_version_dir(&kernel.versions_root(), name)?;
     let meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
 

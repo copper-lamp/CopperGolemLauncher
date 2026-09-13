@@ -26,6 +26,7 @@
     "unknown": "未知"
   },
   "titlebar": {
+    "back": "返回",
     "minimize": "最小化",
     "maximize": "最大化",
     "restore": "还原",
@@ -39,6 +40,7 @@
     "title": "设置",
     "tabs": {
       "general": "通用",
+      "version": "版本",
       "launch": "启动",
       "appearance": "个性",
       "modules": "模块",
@@ -53,6 +55,19 @@
       "theme_mode_auto": "跟随系统",
       "accent_color": "强调色",
       "accent_preset": "预设"
+    },
+    "version": {
+      "game_dir": "游戏目录",
+      "game_dir_label": "版本根目录",
+      "game_dir_hint": "所有已安装版本存放于此。留空使用默认目录，与 LeviLauncher 的安装目录兼容。",
+      "game_dir_default": "使用默认目录",
+      "browse": "选择文件夹",
+      "reset": "恢复默认",
+      "resolved": "当前解析为：{path}",
+      "content_target": "内容下载目标",
+      "target_label": "下载到版本",
+      "target_hint": "内容下载将安装到该版本。选择单个版本时资源自动放置到正确位置。",
+      "target_none": "仅下载不安装"
     },
     "launch": {
       "default_version": "默认启动版本",

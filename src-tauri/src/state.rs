@@ -76,6 +76,11 @@ impl KernelContext {
         &self.paths
     }
 
+    /// 当前游戏（版本）根目录（按设置动态解析）。
+    pub fn versions_root(&self) -> std::path::PathBuf {
+        self.paths.versions_root(&self.settings)
+    }
+
     pub fn db(&self) -> &Arc<DatabaseService> {
         &self.db
     }

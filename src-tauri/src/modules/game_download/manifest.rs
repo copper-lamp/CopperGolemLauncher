@@ -342,7 +342,7 @@ fn latest_of(views: &[VersionView], kind: &str) -> Option<VersionView> {
 
 /// 已安装版本名集合（复用开始页扫描逻辑，按 volume 目录）。
 fn installed_set(ctx: &Ctx) -> std::collections::HashSet<String> {
-    meta::scan_versions(ctx.paths.versions_dir())
+    meta::scan_versions(&ctx.versions_root())
         .into_iter()
         .map(|m| m.name)
         .collect()

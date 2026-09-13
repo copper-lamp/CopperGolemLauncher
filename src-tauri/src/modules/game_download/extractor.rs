@@ -1,10 +1,10 @@
 //! 游戏包解包器：GDK `.msixvc`（加密 XVC 容器）走内嵌原生 DLL，历史 `.appx`（真 ZIP）走 zip crate 回退。
 //!
 //! 技术背景：新版 GDK 游戏包是加密容器，无纯 Rust 开源解包方案。LeviLauncher 靠闭源
-//! `launcher_core.dll`（导出 `GetW`(宽字符) / `Get`(ANSI) `(in,out)->i32`）解包成功；
-//! 该方案依赖用户曾装过 Store 版并保留授权（返回码 3/4 即缺失）。本模块将该 DLL 内置，
-//! 首次运行把二进制落地到 `cache_dir()/gdkshared/`（比对 SHA256 + `.tmp` 原子落盘），
-//! 进程内 `OnceLock` 单例装载并保活模块句柄。
+//! `launcher_core.dll`（导出 `Get(in,out)->i32`，ANSI 窄字符串；另有 `GetWithPipe`）
+//! 解包成功；该方案依赖用户曾装过 Store 版并保留授权（返回码 3/4 即缺失）。本模块将该
+//! DLL 内置，首次运行把二进制落地到 `cache_dir()/gdkshared/`（比对 SHA256 + `.tmp` 原子
+//! 落盘），进程内 `OnceLock` 单例装载并保活模块句柄。
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -264,12 +264,16 @@ pub fn verify_executable(out_dir: &Path) -> Result<(), ExtractError> {
 mod native {
     use super::*;
     use libloading::Library;
+    use std::ffi::CString;
     use std::sync::OnceLock;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::HMODULE;
     use windows::Win32::System::LibraryLoader::{LoadLibraryW, SetDllDirectoryW};
 
-    type FnGetW = unsafe extern "system" fn(*const u16, *const u16) -> i32;
+    /// `launcher_core.dll` 的 ANSI 导出 `Get(in,out)->i32`。
+    /// 注意：该 DLL 实际只导出 `Get` / `GetWithPipe`，**不含** `GetW`（宽字符版），
+    /// 故以窄字节（UTF-8 字节）路径字符串调用 `Get`。
+    type FnGet = unsafe extern "system" fn(*const u8, *const u8) -> i32;
 
     /// 已装载的 launcher_core.dll 单例（进程生命周期，绝不卸载）。
     ///
@@ -278,7 +282,7 @@ mod native {
         /// 依赖库句柄保活（vcruntime / libHttpClient / launcher_core）。
         #[allow(dead_code)]
         handles: Vec<HMODULE>,
-        get_w: FnGetW,
+        get: FnGet,
     }
 
     // `HMODULE` 是 `*mut c_void` 原生包装，非 `Send+Sync`。本类型仅作为进程级静态单例
@@ -290,12 +294,17 @@ mod native {
     static CORE_DIR: OnceLock<PathBuf> = OnceLock::new();
     static CORE: OnceLock<Arc<LoadedCore>> = OnceLock::new();
 
-    /// UTF-8 字符串 → NUL 结尾的 UTF-16 缓冲区。
+    /// UTF-8 字符串 → NUL 结尾的 UTF-16 缓冲区（供依赖装载 LoadLibraryW 使用）。
     fn utf16(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(Some(0)).collect()
     }
 
-    /// 调用 GetW 解包。`dll_dir` 为首次装载时固定的落盘目录。
+    /// UTF-8 字符串 → NUL 结尾的窄字节字符串（供 ANSI 导出 `Get` 使用）。
+    fn cstr(s: &str) -> Result<CString, ExtractError> {
+        CString::new(s).map_err(|e| ExtractError::DllLoad(e.to_string()))
+    }
+
+    /// 调用 ANSI `Get` 解包。`dll_dir` 为首次装载时固定的落盘目录。
     pub fn extract_xvc(src: &Path, out_dir: &Path, dll_dir: &Path) -> Result<(), ExtractError> {
         std::fs::create_dir_all(out_dir)?;
         let _ = CORE_DIR.set(dll_dir.to_path_buf());
@@ -312,9 +321,9 @@ mod native {
         }
         let core = CORE.get().cloned().unwrap_or(core);
 
-        let ws = utf16(&src.to_string_lossy());
-        let wo = utf16(&out_dir.to_string_lossy());
-        let code = unsafe { (core.get_w)(ws.as_ptr(), wo.as_ptr()) };
+        let ws = cstr(&src.to_string_lossy())?;
+        let wo = cstr(&out_dir.to_string_lossy())?;
+        let code = unsafe { (core.get)(ws.as_ptr() as *const u8, wo.as_ptr() as *const u8) };
         let rc = ExtractReturnCode::from_code(code);
         if !rc.is_success() {
             return Err(ExtractError::Code(rc));
@@ -336,18 +345,18 @@ mod native {
             let _ = SetDllDirectoryW(PCWSTR(dir_w.as_ptr()));
         }
 
-        // —— 装载主库并解析 GetW（本 DLL 的主导出；缺则报清晰错误）。
+        // —— 装载主库并解析 `Get`（本 DLL 实际仅导出 `Get`/`GetWithPipe`，无宽字符 `GetW`）。
         // 库一旦装载即永久泄漏保活，故 fn 指针在进程内始终有效。
         // `Library::new` 在 libloading 0.8 起为 unsafe（装载外部代码）。
         let lib: &'static Library = Box::leak(Box::new(
             unsafe { Library::new(dir.join(CORE_DLL)) }
                 .map_err(|e| ExtractError::DllLoad(e.to_string()))?,
         ));
-        let sym = unsafe { lib.get::<FnGetW>(b"GetW\0") }
-            .map_err(|e| ExtractError::DllLoad(format!("缺少导出 GetW: {e}")))?;
-        let get_w: FnGetW = *sym;
+        let sym = unsafe { lib.get::<FnGet>(b"Get\0") }
+            .map_err(|e| ExtractError::DllLoad(format!("缺少导出 Get: {e}")))?;
+        let get: FnGet = *sym;
 
-        Ok(LoadedCore { handles, get_w })
+        Ok(LoadedCore { handles, get })
     }
 }
 
