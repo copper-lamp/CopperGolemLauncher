@@ -1,0 +1,54 @@
+CopperGolem third-party notices
+
+CopperCore own code
+  Copyright (C) 2026 copper-lamp
+  License: GNU GPL-3.0-or-later as stated in LICENSE
+
+The GPL notices below do not relicense bundled proprietary DLLs, Microsoft
+runtime components, fonts, images, or other dependencies. Each such component
+retains its upstream terms.
+
+== Copyleft components ==
+
+LeviLauncher nativeinstall migration
+  Source project: LeviLauncher
+  Source repository: https://github.com/LiteLDev/LeviLauncher
+  Source checkout commit: 69bde2efecc6af4479079242ebcaae7bd51c563d
+  Nativeinstall file history commit: 76fdaccd51e177f890c5b75d283dac10d6e7d6d9
+  Source paths: internal/nativeinstall and directly required internal/xbox APIs
+  License: GNU GPL-3.0-only
+  Related upstream attribution recorded by LeviLauncher:
+    Xodus commit 0670e25aeb0e0e9f800f8f2f4968ae3b681842a7 (GPL-3.0)
+    CLEP/SPLicense work by LukeFZ (MIT)
+
+The current Rust code uses the existing CopperCore Cargo dependencies for
+bounded JSON/base64 validation and does not copy LeviLauncher Go modules.
+The current tree contains a direct GPL-licensed native-install migration;
+release source correspondence must include the exact files listed above and
+any future WAM/RST/device adapter files.
+The bundled launcher/GDK DLLs remain separate components and are not relicensed
+by this notice; their upstream redistribution terms and hashes must be added
+before a release that still ships them.
+
+CopperCore files currently carrying the migration or derived implementation:
+  src-tauri/src/modules/game_download/msixvc.rs
+  src-tauri/src/modules/game_download/extractor.rs (integration boundary)
+  src-tauri/src/modules/game_download/installer.rs (authorization integration boundary)
+  src-tauri/src/services/native_install.rs (Store install orchestration, device provisioning)
+  src-tauri/src/services/store_device.rs (DPAPI cache boundary)
+  src-tauri/src/services/store_entitlement.rs (Store license protocol)
+  src-tauri/src/services/store_rst.rs (RST/CLEP pure algorithms)
+  src-tauri/src/services/store_rst_transport.rs (WS-Trust RST transport and exclusive c14n)
+  src-tauri/src/services/store_wam.rs (WAM boundary)
+  docs/msixvc-gpl-migration.md (provenance and compliance record)
+
+The MSIXVC native installation implementation is being migrated as GPL-3.0-only
+copyrighted material. This component must be conveyed under GPL-3.0-only. The
+corresponding source, this notice, the GPL license text in LICENSE, and required
+copyright/license headers must be retained in source distributions. A release
+must provide the exact CopperCore source tree, lockfile, build scripts, notices,
+and resource-generation inputs corresponding to the distributed binary.
+
+The migration must not remove or weaken the existing GPL obligations of
+CopperGolem Launcher. Other dependencies retain their own licenses as declared
+by Cargo.lock and their upstream notices.

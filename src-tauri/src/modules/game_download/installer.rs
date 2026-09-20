@@ -18,7 +18,9 @@ use serde_json::Value;
 use crate::error::KernelError;
 use crate::registry::events::EventBus;
 use crate::services::database::DatabaseService;
+use crate::services::account::AccountService;
 use crate::services::download::DownloadService;
+use crate::services::native_install;
 use crate::services::paths::Paths;
 use crate::services::settings::SettingsService;
 use crate::state::KernelContext;
@@ -42,6 +44,10 @@ pub struct Ctx {
     pub paths: Arc<Paths>,
     pub settings: Arc<SettingsService>,
     pub download: Arc<DownloadService>,
+    pub account: Arc<AccountService>,
+    /// 商店授权专用客户端：不跟随重定向（与 LeviLauncher 的 `CheckRedirect` 一致），
+    /// 避免票据被转发到非目标主机。
+    pub store_http: Arc<reqwest::Client>,
     pub runtime: tokio::runtime::Handle,
 }
 
@@ -53,6 +59,14 @@ impl Ctx {
             paths: kernel.paths().clone(),
             settings: kernel.settings().clone(),
             download: kernel.download().clone(),
+            account: kernel.account().clone(),
+            store_http: Arc::new(
+                crate::services::http_client::client_builder(std::time::Duration::from_secs(40))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .user_agent("XboxLm-PC/Microsoft.GamingServices")
+                    .build()
+                    .expect("failed to build store http client"),
+            ),
             runtime: kernel.runtime().clone(),
         }
     }
@@ -472,6 +486,77 @@ pub async fn finish_install(
     lock: &Arc<tokio::sync::Mutex<()>>,
     rec: TaskRecord,
 ) -> Result<(), KernelError> {
+    // 受保护的 MSIXVC 需要微软商店授权的内容密钥。授权不可用时保持 `None`，
+    // 由 extractor 回退到兼容后端；此处**绝不伪造密钥**。
+    let lease = store_content_key(ctx, &rec.dest).await;
+    let content_key = lease.as_ref().map(|lease| lease.key());
+    finish_install_with_key(ctx, lock, rec, content_key).await
+}
+
+/// 为加密 MSIXVC 走完 Store 授权链，取得打包绑定的内容密钥。
+///
+/// 返回 `None` 表示授权不适用或不可用（未登录、非 Windows、包为 ZIP、WAM 需要
+/// 交互、网络失败等）。密钥只在本函数返回的租约内存活，退出作用域即清零。
+async fn store_content_key(ctx: &Ctx, dest: &Path) -> Option<native_install::ContentKeyLease> {
+    if !native_install::requires_store_key(dest) {
+        return None;
+    }
+    let xuid = ctx.account.current().and_then(|account| account.xuid)?;
+    let request = native_install::StoreInstallRequest::new(
+        xuid,
+        store_market(ctx),
+        ctx.cache_home().join("store-device"),
+    );
+    match native_install::acquire_package_content_key(&ctx.store_http, &request, dest).await {
+        Ok(lease) => {
+            log::info!(
+                "[game-download] 已取得商店内容密钥 key_id={} license={:?}",
+                lease.key_id(),
+                lease.license_type()
+            );
+            Some(lease)
+        }
+        Err(error) => {
+            // 授权失败不阻断安装：兼容后端仍可能完成。错误文本不含票据或密钥。
+            log::warn!("[game-download] 商店授权未完成，回退兼容后端: {error}");
+            None
+        }
+    }
+}
+
+/// 商店市场代码：优先取系统区域设置中的两位大写地区，否则回退 `US`。
+fn store_market(ctx: &Ctx) -> String {
+    let locale = ctx
+        .settings
+        .get::<String>("locale")
+        .unwrap_or_else(|| "zh-CN".into());
+    let candidate = locale
+        .rsplit(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if native_install::validate_market(&candidate).is_ok() {
+        candidate
+    } else {
+        "US".into()
+    }
+}
+
+/// 将后端授权服务取得的 content key 借用到同步提取调用中。
+///
+/// key 不进入任务记录、数据库、事件或错误文本；`None` 保持历史兼容回退，
+/// 直到 Windows Store/WAM 服务完成真实接入。
+pub async fn finish_install_with_key(
+    ctx: &Ctx,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    rec: TaskRecord,
+    content_key: Option<&[u8]>,
+) -> Result<(), KernelError> {
+    if let Some(key) = content_key {
+        if key.len() != 32 {
+            return Err(KernelError::Config("content key 长度必须为 32 字节".into()));
+        }
+    }
     let _guard = lock.lock().await;
 
     // 取消竞态：若记录已被取消删除，放弃本次安装（取消已完成清理）。
@@ -503,18 +588,26 @@ pub async fn finish_install(
         )));
     }
 
-    // 解包（.msixvc → DLL；历史 .appx → zip 回退）→ 校验主程序 → 写元数据。
-    // 失败时清理输出目录：原生 DLL 解 XVC 受微软商店授权约束（如返回码 3/4），
+    // 解包（.msixvc 原生校验/提取，授权缺口时兼容后端；历史 .appx → zip 回退）→ 校验主程序 → 写元数据。
+    // 失败时清理输出目录：原生解包受微软商店授权约束（如缺少 content key），
     // 解包可能创建空的安装目录后失败返回。对齐 Levilauncher 的 `os.RemoveAll(outDir)`，
     // 去掉残留的“半安装”目录，避免前端看到名为已装、实则空目录的假成功。
-    let extract_result = extractor::extract_package(&rec.dest, &install_dir, &ctx.gdk_dir());
+    let extract_result = extractor::extract_package_with_key(
+        &rec.dest,
+        &install_dir,
+        &ctx.gdk_dir(),
+        content_key,
+    );
     if let Err(e) = extract_result {
         let _ = std::fs::remove_dir_all(&install_dir);
         return Err(KernelError::from(e));
     }
 
     let kind = rec.kind.clone();
-    meta_bridge::write_meta(&install_dir, &rec.folder, &rec.version_id, &kind)?;
+    if let Err(error) = meta_bridge::write_meta(&install_dir, &rec.folder, &rec.version_id, &kind) {
+        let _ = std::fs::remove_dir_all(&install_dir);
+        return Err(error);
+    }
 
     set_state(ctx, &rec.version_id, "installed", None)?;
     log::info!("[game-download] 安装完成 {} -> {}", rec.version_id, install_dir.to_string_lossy());

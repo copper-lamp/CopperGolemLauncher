@@ -660,7 +660,7 @@ impl Module for ContentDownloadModule {
         let db = kernel.db().clone();
         let events = kernel.events().clone();
         let sub = kernel.events().subscribe("download.status", move |_name, payload| {
-            apply_download_status(&db, &events, &payload);
+            apply_download_status(&db, &events, payload);
         });
         *self.subs.lock().unwrap() = vec![sub];
         Ok(())
