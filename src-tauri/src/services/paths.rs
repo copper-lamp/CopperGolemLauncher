@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
+use tauri::{AppHandle, Manager};
 
 use super::settings::SettingsService;
 
@@ -51,13 +52,42 @@ impl Paths {
         }
     }
 
+    /// 依据宿主提供的根目录初始化路径体系（应用启动的**唯一**入口）。
+    ///
+    /// 解析顺序：
+    /// 1. `COPPER_DATA_DIR`：开发调试整体重定向数据与缓存根（隔离目录运行）；
+    /// 2. 宿主根目录：`app_data_dir()` —— 桌面端为标准用户数据目录，安卓端为
+    ///    应用私有 `filesDir`（卸载即清除）。
+    ///
+    /// 之所以不在此处直接依赖 `directories`：安卓没有标准 XDG 目录，
+    /// `ProjectDirs::from` 通常返回 `None`，硬依赖会直接中断启动
+    /// （见 docs/平台适配.md 3.1 风险 2）。
+    pub fn resolve(app: &AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
+        if let Some(custom) = std::env::var_os("COPPER_DATA_DIR") {
+            if !custom.is_empty() {
+                let mut paths = Self::with_root(PathBuf::from(custom));
+                paths.logs_dir = Self::resolve_logs_dir()?;
+                return Ok(paths);
+            }
+        }
+        let root = app.path().app_data_dir()?;
+        // 桌面端保持既有布局：数据在 `app_data_dir`，缓存在宿主给的缓存目录
+        // （`%LOCALAPPDATA%`）下，避免大缓存挤占漫游数据目录。
+        let mut paths = Self::with_root(root);
+        if let Ok(cache) = app.path().app_cache_dir() {
+            paths.cache_dir = cache;
+        }
+        paths.logs_dir = Self::resolve_logs_dir_for(&paths.data_dir)?;
+        Ok(paths)
+    }
+
     /// 依据应用标识初始化路径体系（无宿主根目录时的兜底）。
     ///
     /// 解析顺序：
     /// 1. `COPPER_DATA_DIR`：开发调试整体重定向数据与缓存根（隔离目录运行）；
     /// 2. `directories::ProjectDirs`：桌面平台的标准用户目录。
     ///
-    /// 安卓等无 `ProjectDirs` 的平台必须走 [`Paths::with_root`]；若走到此处
+    /// 安卓等无 `ProjectDirs` 的平台必须走 [`Paths::resolve`]；若走到此处
     /// 且解析失败，返回错误由调用方决定是否降级。
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         // 开发调试可用 COPPER_DATA_DIR 整体重定向数据与缓存根目录，
@@ -98,6 +128,19 @@ impl Paths {
         let dirs = ProjectDirs::from("com", "copper-lamp", "CopperGolem")
             .ok_or("failed to resolve project directories")?;
         Ok(dirs.data_dir().join("logs"))
+    }
+
+    /// 在**已知数据目录**下解析日志目录。
+    ///
+    /// 除 `COPPER_LOG_DIR` 覆盖外，日志固定落在 `<data_dir>/logs`：
+    /// 宿主已给出根目录时无需（也不应）再调用 `directories` 探测。
+    fn resolve_logs_dir_for(data_dir: &std::path::Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        if let Some(custom) = std::env::var_os("COPPER_LOG_DIR") {
+            if !custom.is_empty() {
+                return Ok(PathBuf::from(custom));
+            }
+        }
+        Ok(data_dir.join("logs"))
     }
 
     /// 创建全部目录（幂等）。

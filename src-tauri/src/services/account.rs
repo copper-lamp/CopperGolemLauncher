@@ -3,9 +3,9 @@
 //! 流程：MSA 设备码授权 → 换取 MSA access_token → Xbox Live 用户认证 → XSTS
 //!（RelyingParty `http://xboxlive.com`，MCBE 客户端使用）。
 //!
-//! 凭证安全：refresh_token / access_token 经系统密钥环加密存储
-//!（Windows Credential Manager / macOS Keychain / Linux Secret Service），
-//! 数据库仅保存账户公开信息（gamertag / xuid）。
+//! 凭证安全：refresh_token / access_token 经系统安全存储加密保存
+//!（见 `platform::secret`：Windows Credential Manager / Linux Secret Service /
+//! Android 待接 Keystore），数据库仅保存账户公开信息（gamertag / xuid）。
 //!
 //! 事件：`account.login.state`（登录流程状态）、`account.changed`（账户变化）。
 
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use reqwest::Client;
 
+use crate::platform::secret::SharedSecretStore;
 use crate::services::http_client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -33,6 +34,14 @@ const MSA_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/
 const XBOX_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const KEYRING_SERVICE: &str = "copper-golem";
+
+/// access_token 的存储命名空间。
+///
+/// 与 refresh_token 分属不同 service，避免同一账户的两类令牌互相覆盖；
+/// 键位与既有密钥环布局保持一致，升级后已登录用户无需重新登录。
+fn access_service() -> String {
+    format!("{KEYRING_SERVICE}:access")
+}
 
 /// 账户公开信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +76,7 @@ pub enum LoginState {
 pub struct AccountService {
     db: Arc<DatabaseService>,
     events: Arc<EventBus>,
+    secret: SharedSecretStore,
     client: Client,
     runtime: tokio::runtime::Handle,
     /// 当前登录进行中的设备码（避免重复发起；轮询任务结束即清空）。
@@ -77,12 +87,14 @@ impl AccountService {
     pub fn new(
         db: Arc<DatabaseService>,
         events: Arc<EventBus>,
+        secret: SharedSecretStore,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let client = http_client::build_client(Duration::from_secs(30));
         Self {
             db,
             events,
+            secret,
             client,
             runtime,
             pending_device_code: Arc::new(Mutex::new(None)),
@@ -161,12 +173,13 @@ impl AccountService {
         self.publish_login_state(LoginState::Waiting, None);
 
         let (db, events, client) = self.clone_handles();
+        let secret = self.secret.clone();
         let pending = self.pending_device_code.clone();
         let interval = resp.get("interval").and_then(Value::as_u64).unwrap_or(5);
         let expires = info.expires_in_sec;
         self.runtime.spawn(async move {
             poll_login_completion(
-                (db, events, client),
+                (db, events, client, secret),
                 pending,
                 device_code,
                 interval,
@@ -191,12 +204,13 @@ impl AccountService {
         Ok(account)
     }
 
-    /// 退出登录：清除密钥环与数据库记录。
+    /// 退出登录：清除安全存储中的凭证与数据库记录。
     pub fn logout(&self) -> Result<(), KernelError> {
         if let Some(account) = self.current() {
-            if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &account.id) {
-                let _ = entry.delete_credential();
-            }
+            let _ = self.secret.delete(KEYRING_SERVICE, &account.id);
+            let _ = self
+                .secret
+                .delete(&access_service(), &account.id);
         }
         self.db.with_conn(|conn| {
             conn.execute("DELETE FROM core_account", [])?;
@@ -265,15 +279,18 @@ impl AccountService {
     }
 
     fn load_ms_token(&self, account: &AccountInfo) -> Result<String, KernelError> {
-        let entry = keyring::Entry::new(&format!("{KEYRING_SERVICE}:access"), &account.id)?;
-        entry.get_password().map_err(|_| {
-            KernelError::Account("本地凭证缺失，请重新登录".into())
-        })
+        self.secret
+            .get(&access_service(), &account.id)
+            .map_err(KernelError::Secret)?
+            .ok_or_else(|| KernelError::Account("本地凭证缺失，请重新登录".into()))
     }
 
     async fn do_refresh(&self, account: &AccountInfo) -> Result<(), KernelError> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, &account.id)?;
-        let refresh_token = entry.get_password()?;
+        let refresh_token = self
+            .secret
+            .get(KEYRING_SERVICE, &account.id)
+            .map_err(KernelError::Secret)?
+            .ok_or_else(|| KernelError::Account("本地凭证缺失，请重新登录".into()))?;
         let resp = self
             .client
             .post(MSA_TOKEN_URL)
@@ -295,11 +312,9 @@ impl AccountService {
             .get("refresh_token")
             .and_then(Value::as_str)
             .unwrap_or(&refresh_token);
-        if let Ok(entry) = keyring::Entry::new(&format!("{KEYRING_SERVICE}:access"), &account.id) {
-            let _ = entry.set_password(access);
-        }
+        let _ = self.secret.set(&access_service(), &account.id, access);
         if new_refresh != refresh_token {
-            let _ = entry.set_password(new_refresh);
+            let _ = self.secret.set(KEYRING_SERVICE, &account.id, new_refresh);
         }
         Ok(())
     }
@@ -314,7 +329,12 @@ impl AccountService {
 /// 后台轮询授权并完成登录。`pending` 用于在流程结束时清空"进行中"标记，
 /// 以便用户失败后能再次发起登录。
 async fn poll_login_completion(
-    (db, events, client): (Arc<DatabaseService>, Arc<EventBus>, Client),
+    (db, events, client, secret): (
+        Arc<DatabaseService>,
+        Arc<EventBus>,
+        Client,
+        SharedSecretStore,
+    ),
     pending: Arc<Mutex<Option<String>>>,
     device_code: String,
     interval_sec: u64,
@@ -390,13 +410,9 @@ async fn poll_login_completion(
             };
             // 加密存 refresh_token；access_token 短期有效，也一并加密存储。
             if let Some(refresh) = &ms_token.1 {
-                if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &id) {
-                    let _ = entry.set_password(refresh);
-                }
+                let _ = secret.set(KEYRING_SERVICE, &id, refresh);
             }
-            if let Ok(entry) = keyring::Entry::new(&format!("{KEYRING_SERVICE}:access"), &id) {
-                let _ = entry.set_password(&ms_token.0);
-            }
+            let _ = secret.set(&access_service(), &id, &ms_token.0);
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)

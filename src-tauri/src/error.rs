@@ -28,7 +28,7 @@ pub enum KernelError {
     Download(#[from] copper_downloader::DownloadError),
 
     #[error("密钥存储错误: {0}")]
-    Keyring(#[from] keyring::Error),
+    Secret(String),
 
     #[error("事件总线错误: {0}")]
     EventBus(String),
@@ -75,7 +75,7 @@ impl CommandError {
                 KernelError::Serde(_) => "serde",
                 KernelError::Http(_) => "http",
                 KernelError::Download(_) => "download",
-                KernelError::Keyring(_) => "keyring",
+                KernelError::Secret(_) => "keyring",
                 KernelError::EventBus(_) => "event_bus",
                 KernelError::Intent(_) => "intent",
                 KernelError::Module(_) => "module",

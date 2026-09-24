@@ -10,6 +10,7 @@
 mod commands;
 pub mod error;
 mod modules;
+pub mod platform;
 pub mod registry;
 pub mod services;
 pub mod state;
@@ -48,7 +49,6 @@ fn init_logging() {
     let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
 }
 
-use error::KernelError;
 use registry::events::EventBus;
 use registry::intents::IntentRegistry;
 use registry::modules::ModuleRegistry;
@@ -89,6 +89,9 @@ pub fn run() {
             let db = Arc::new(DatabaseService::open(paths.db_file())?);
             db.migrate_scope("core", CORE_MIGRATIONS)?;
 
+            // 平台后端：按当前平台装配（凭证存储等），供各服务注入。
+            let backends = Arc::new(platform::Backends::assemble());
+
             // 中介：事件总线（绑定前端桥接）与意图注册表。
             let events = Arc::new(EventBus::new());
             events.bind_app(app.handle().clone());
@@ -107,7 +110,12 @@ pub fn run() {
                 events.clone(),
             ));
             let account =
-                Arc::new(AccountService::new(db.clone(), events.clone(), runtime.clone()));
+                Arc::new(AccountService::new(
+                    db.clone(),
+                    events.clone(),
+                    platform::as_secret(&backends),
+                    runtime.clone(),
+                ));
             let updater = Arc::new(UpdaterService::new(
                 settings.clone(),
                 download.clone(),
@@ -128,6 +136,7 @@ pub fn run() {
                 runtime,
                 paths,
                 db,
+                backends,
                 settings,
                 i18n,
                 theme,

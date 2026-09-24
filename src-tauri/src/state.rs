@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::platform::Backends;
 use crate::registry::events::EventBus;
 use crate::registry::intents::IntentRegistry;
 use crate::registry::modules::ModuleRegistry;
@@ -26,6 +27,8 @@ pub struct KernelContext {
     runtime: tokio::runtime::Handle,
     paths: Arc<Paths>,
     db: Arc<DatabaseService>,
+    /// 平台后端（凭证存储等，随平台装配）。
+    backends: Arc<Backends>,
     settings: Arc<SettingsService>,
     i18n: Arc<I18nService>,
     theme: Arc<ThemeService>,
@@ -48,6 +51,7 @@ impl KernelContext {
         runtime: tokio::runtime::Handle,
         paths: Arc<Paths>,
         db: Arc<DatabaseService>,
+        backends: Arc<Backends>,
         settings: Arc<SettingsService>,
         i18n: Arc<I18nService>,
         theme: Arc<ThemeService>,
@@ -65,6 +69,7 @@ impl KernelContext {
             runtime,
             paths,
             db,
+            backends,
             settings,
             i18n,
             theme,
@@ -96,6 +101,11 @@ impl KernelContext {
 
     pub fn db(&self) -> &Arc<DatabaseService> {
         &self.db
+    }
+
+    /// 平台后端（凭证存储等，随平台装配）。
+    pub fn backends(&self) -> &Arc<Backends> {
+        &self.backends
     }
 
     pub fn settings(&self) -> &Arc<SettingsService> {
