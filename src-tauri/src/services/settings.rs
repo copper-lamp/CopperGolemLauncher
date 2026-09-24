@@ -148,5 +148,12 @@ pub fn defaults() -> HashMap<String, Value> {
     m.insert("appearance.list_density".into(), Value::String("comfortable".into()));
     m.insert("appearance.animations".into(), Value::Bool(true));
     m.insert("performance.render".into(), Value::String("balanced".into()));
+    // 下载：资产层镜像偏好（auto / github / jsdelivr / ghproxy / gitcode）。
+    // 只影响**资产层**（安装包、图标）的地址排序；索引层固定走内置三段镜像，
+    // 不消费本设置——索引是所有内容的信任锚，不能被用户配置的第三方镜像替换
+    // （见 docs/cgl-libs.md 2.6）。
+    m.insert("download.mirror".into(), Value::String("auto".into()));
+    // 模块：元数据发布通道过滤（stable / beta / dev，可用 `+` 组合，如 `stable+beta`）。
+    m.insert("registry.channel".into(), Value::String("stable".into()));
     m
 }

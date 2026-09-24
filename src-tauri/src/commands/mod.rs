@@ -13,6 +13,7 @@ pub mod i18n;
 pub mod intents;
 pub mod kernel;
 pub mod modules;
+pub mod registry;
 pub mod settings;
 pub mod theme;
 pub mod tips;

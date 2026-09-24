@@ -630,6 +630,11 @@ impl Module for ContentDownloadModule {
         MODULE_ID
     }
 
+    /// 内置模块无独立版本事实源，跟随内核 crate 版本发布（见 cgl-libs.md 3.5 G2）。
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
     fn init(&self, kernel: &KernelContext) -> Result<(), KernelError> {
         // 数据库 schema（记录已下载项）。
         kernel

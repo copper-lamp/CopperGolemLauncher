@@ -213,8 +213,11 @@ impl ModuleSandbox {
             return Ok(());
         }
 
-        let suspended = self.record_violation(module_id, permission, operation, target);
-        if suspended {
+        // 先记录本次越权（可能触发停用），再依据停用后的最终状态组织文案：
+        // 首次触发停用与后续继续调用都应提示"已强制停用"，而非"未声明"。
+        self.record_violation(module_id, permission, operation, target);
+
+        if self.is_suspended(module_id) {
             Err(KernelError::Module(format!(
                 "模块 `{module_id}` 越权调用 `{operation}`（缺少 `{permission}` 权限），已强制停用"
             )))
@@ -245,7 +248,10 @@ impl ModuleSandbox {
         drop(grant);
 
         if suspended {
-            return Err(KernelError::Module(format!("模块 `{module_id}` 已被强制停用")));
+            // 已停用模块的任何文件操作都拒绝；不再重复留痕，避免刷量。
+            return Err(KernelError::Module(format!(
+                "模块 `{module_id}` 已被强制停用，拒绝 `{operation}`"
+            )));
         }
 
         // 相对路径无法可靠判断归属（其结果取决于进程 cwd），一律拒绝，
@@ -283,6 +289,9 @@ impl ModuleSandbox {
     }
 
     /// 记录一次越权。返回是否因此触发强制停用。
+    ///
+    /// 加锁顺序固定为 `violations` -> `grants`，且先释放 `violations` 计数所用的读锁
+    /// 再取 `grants` 写锁，避免与 `enforce` 的加锁顺序交叉而死锁。
     fn record_violation(
         &self,
         module_id: &str,
@@ -298,31 +307,29 @@ impl ModuleSandbox {
             at_ms: now_ms(),
         };
 
-        {
+        // 写入留痕并统计该模块累计次数（同一把锁内完成，保证计数与日志一致）。
+        let count = {
             let mut log = self.violations.write();
             log.push(record);
             if log.len() > VIOLATION_CAP {
                 let overflow = log.len() - VIOLATION_CAP;
                 log.drain(0..overflow);
             }
-        }
+            log.iter().filter(|v| v.module_id == module_id).count()
+        };
 
         let mut grants = self.grants.write();
         let Some(g) = grants.get_mut(module_id) else {
+            // 未登记的模块没有档位可停用（如内核内置模块）。
             return false;
         };
-        // 未登记的模块没有档位可停用；已登记的按累计次数判定。
-        let count = self
-            .violations
-            .read()
-            .iter()
-            .filter(|v| v.module_id == module_id)
-            .count();
-        if count >= self.violation_limit && !g.suspended {
+        if g.suspended {
+            // 已停用：保持停用态，调用方据 `is_suspended` 判定提示文案。
+            return false;
+        }
+        if count >= self.violation_limit {
             g.suspended = true;
-            log::error!(
-                "module `{module_id}` suspended after {count} permission violations"
-            );
+            log::error!("module `{module_id}` suspended after {count} permission violations");
             return true;
         }
         false
@@ -564,13 +571,37 @@ mod tests {
     #[test]
     fn repeated_violations_suspend_the_module() {
         let (sb, _) = sandbox_with("demo", &[Permission::Network]);
+        for _ in 0..(DEFAULT_VIOLATION_LIMIT - 1) {
+            let _ = sb.enforce("demo", Permission::SpawnProcess, "process.spawn", "cmd.exe");
+        }
+        // 尚未达到上限：仍处于"未声明"状态。
+        assert!(!sb.is_suspended("demo"));
+
+        // 达到上限的那一次即触发停用，文案应直接体现停用。
+        let err = sb
+            .enforce("demo", Permission::SpawnProcess, "process.spawn", "cmd.exe")
+            .unwrap_err();
+        assert!(sb.is_suspended("demo"));
+        assert!(err.friendly().contains("已强制停用"), "got: {}", err.friendly());
+
+        // 停用后即使原本已声明的权限也被拒绝。
+        let err = sb.enforce("demo", Permission::Network, "http.get", "x").unwrap_err();
+        assert!(err.friendly().contains("已强制停用"), "got: {}", err.friendly());
+        assert!(!sb.is_allowed("demo", Permission::Network));
+    }
+
+    #[test]
+    fn suspended_module_is_blocked_on_path_checks() {
+        let (sb, dir) = sandbox_with("demo", &[Permission::FileSystem]);
         for _ in 0..DEFAULT_VIOLATION_LIMIT {
             let _ = sb.enforce("demo", Permission::SpawnProcess, "process.spawn", "cmd.exe");
         }
         assert!(sb.is_suspended("demo"));
-        // 停用后即使原本已声明的权限也被拒绝。
-        let err = sb.enforce("demo", Permission::Network, "http.get", "x").unwrap_err();
-        assert!(err.friendly().contains("停用"));
+
+        // 模块目录内部的合法路径，在停用后同样必须拒绝。
+        let inside = dir.join("a.bin");
+        let err = sb.enforce_path("demo", &inside, "fs.write").unwrap_err();
+        assert!(err.friendly().contains("已被强制停用"), "got: {}", err.friendly());
     }
 
     #[test]

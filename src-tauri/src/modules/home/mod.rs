@@ -202,6 +202,11 @@ impl Module for HomeModule {
         MODULE_ID
     }
 
+    /// 内置模块无独立版本事实源，跟随内核 crate 版本发布（见 cgl-libs.md 3.5 G2）。
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
     fn init(&self, kernel: &KernelContext) -> Result<(), KernelError> {
         // i18n：注册模块语言包（数据源在前端目录，后端 include_str 同源）。
         kernel.i18n().register_module_pack(

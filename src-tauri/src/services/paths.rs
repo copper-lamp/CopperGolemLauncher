@@ -26,15 +26,53 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// 解析日志目录，不依赖 `Paths` 实例。
+    ///
+    /// 日志插件必须在 `tauri::Builder` 阶段（早于 `setup`）确定落盘位置，
+    /// 因此这里与 [`Paths::new`] 共用同一套解析规则，保证两处永远一致。
+    pub fn resolve_logs_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        // 开发调试可用 COPPER_LOG_DIR 覆盖日志落盘位置（例如把日志固定到仓库内）。
+        if let Some(custom) = std::env::var_os("COPPER_LOG_DIR") {
+            if !custom.is_empty() {
+                return Ok(PathBuf::from(custom));
+            }
+        }
+        let dirs = ProjectDirs::from("com", "copper-lamp", "CopperGolem")
+            .ok_or("failed to resolve project directories")?;
+        Ok(dirs.data_dir().join("logs"))
+    }
+
     /// 依据应用标识初始化路径体系。
+    ///
+    /// 开发调试可用 `COPPER_DATA_DIR` 整体重定向数据与缓存根目录，
+    /// 便于在受限环境或隔离目录中运行而不污染真实用户数据。
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        if let Some(custom) = std::env::var_os("COPPER_DATA_DIR") {
+            if !custom.is_empty() {
+                let root = PathBuf::from(custom);
+                let data_dir = root.join("data");
+                let cache_dir = root.join("cache");
+                let logs_dir = Self::resolve_logs_dir()?;
+                let versions_dir = data_dir.join("versions");
+                let modules_dir = data_dir.join("modules");
+                let db_file = data_dir.join("copper.db");
+                return Ok(Self {
+                    data_dir,
+                    versions_dir,
+                    modules_dir,
+                    cache_dir,
+                    logs_dir,
+                    db_file,
+                });
+            }
+        }
         let dirs = ProjectDirs::from("com", "copper-lamp", "CopperGolem")
             .ok_or("failed to resolve project directories")?;
         let data_dir = dirs.data_dir().to_path_buf();
         let versions_dir = data_dir.join("versions");
         let modules_dir = data_dir.join("modules");
         let cache_dir = dirs.cache_dir().to_path_buf();
-        let logs_dir = data_dir.join("logs");
+        let logs_dir = Self::resolve_logs_dir()?;
         let db_file = data_dir.join("copper.db");
         Ok(Self {
             data_dir,

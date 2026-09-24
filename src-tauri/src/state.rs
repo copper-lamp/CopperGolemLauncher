@@ -15,6 +15,7 @@ use crate::services::database::DatabaseService;
 use crate::services::download::DownloadService;
 use crate::services::i18n::I18nService;
 use crate::services::paths::Paths;
+use crate::services::registry::RegistryService;
 use crate::services::settings::SettingsService;
 use crate::services::theme::ThemeService;
 use crate::services::tips::TipsService;
@@ -36,6 +37,8 @@ pub struct KernelContext {
     intents: Arc<IntentRegistry>,
     modules: Arc<ModuleRegistry>,
     sandbox: Arc<ModuleSandbox>,
+    /// 元数据客户端（`cgl-libs` 索引 / 分片）。命令层就绪前可能为 None。
+    registry: Option<Arc<RegistryService>>,
 }
 
 impl KernelContext {
@@ -56,6 +59,7 @@ impl KernelContext {
         intents: Arc<IntentRegistry>,
         modules: Arc<ModuleRegistry>,
         sandbox: Arc<ModuleSandbox>,
+        registry: Option<Arc<RegistryService>>,
     ) -> Self {
         Self {
             runtime,
@@ -72,6 +76,7 @@ impl KernelContext {
             intents,
             modules,
             sandbox,
+            registry,
         }
     }
 
@@ -137,5 +142,10 @@ impl KernelContext {
     /// 模块沙箱：附加模块的能力授权与越权拦截（内置模块不经此路径）。
     pub fn sandbox(&self) -> &Arc<ModuleSandbox> {
         &self.sandbox
+    }
+
+    /// 元数据客户端（`cgl-libs`：索引 / 分片 / 三级校验 / 防降级锚点）。
+    pub fn registry(&self) -> Option<&Arc<RegistryService>> {
+        self.registry.as_ref()
     }
 }

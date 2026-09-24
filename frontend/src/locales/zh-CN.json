@@ -100,7 +100,81 @@
       "enabled": "已启用",
       "disabled": "已停用",
       "no_modules": "暂无模块",
-      "refresh": "刷新"
+      "refresh": "刷新",
+      "refreshing": "刷新中",
+      "installed_section": "已安装",
+      "available_section": "可安装",
+      "no_installed": "还没有安装任何附加模块。",
+      "no_available": "元数据中没有可安装的模块。",
+      "unnamed_module": "未命名模块",
+      "local_only": "未收录",
+      "local_only_hint": "该模块不在当前元数据源中，仅显示本地信息。",
+      "loading_metadata": "正在获取模块元数据，请稍候。",
+      "metadata_unavailable_title": "模块元数据不可用",
+      "metadata_unavailable_hint": "无法获取远端模块列表，下方仅列出本机已安装的模块。已安装模块的启用与停用不受影响。",
+      "metadata_stale": "元数据可能已过期",
+      "metadata_stale_hint": "当前使用的是上次校验通过的快照（{time}）。",
+      "metadata_never_updated": "从未成功更新",
+      "last_known_good": "已回退到上一次可用的快照。",
+      "signature_not_enabled": "签名校验未启用",
+      "signature_not_enabled_hint": "当前构建未配置 minisign 公钥，元数据完整性仅依赖 sha256 校验。",
+      "schema_too_new": "元数据格式版本高于当前启动器支持值，请升级启动器。",
+      "status": {
+        "update_available": "可用更新",
+        "not_installed": "未安装",
+        "yanked": "已撤回",
+        "incompatible": "不兼容",
+        "running": "运行中",
+        "failed": "启动失败",
+        "suspended": "已停权"
+      },
+      "reason": {
+        "yanked": "该模块已被作者或维护者撤回，不再允许新安装。",
+        "platform": "该模块不支持当前平台。",
+        "min_launcher": "需要启动器 {version} 或更高版本。",
+        "max_launcher": "最高支持启动器 {version}。",
+        "api_version": "该模块使用了当前内核不支持的模块 API 版本。",
+        "schema": "元数据格式版本不受支持。"
+      },
+      "version": {
+        "installed": "已装 {version}",
+        "remote": "最新 {version}",
+        "unknown": "版本未知"
+      },
+      "permissions": {
+        "summary": "权限申请",
+        "expand": "展开权限明细",
+        "collapse": "收起权限明细",
+        "none": "无需额外权限",
+        "list_title": "具体权限",
+        "unknown_item": "未知权限：{name}",
+        "derived": {
+          "network": "网络访问",
+          "spawn_process": "启动进程",
+          "write_outside_module_dir": "写入模块目录外"
+        },
+        "items": {
+          "filesystem:read": "读取应用数据",
+          "filesystem:write": "写入应用数据",
+          "filesystem:game-dir": "读写游戏目录",
+          "network": "访问网络",
+          "process:spawn": "启动外部进程",
+          "download:enqueue": "投递下载任务",
+          "settings:write": "修改启动器设置",
+          "intents:request": "发起跨模块意图",
+          "account:read": "读取账户信息"
+        }
+      },
+      "author": {
+        "verified": "官方认证",
+        "by": "作者：{name}"
+      },
+      "actions": {
+        "install": "安装",
+        "uninstall": "卸载",
+        "details": "详情",
+        "not_supported": "当前不可安装"
+      }
     },
     "about": {
       "app_info": "关于本软件",

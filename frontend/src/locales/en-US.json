@@ -100,7 +100,81 @@
       "enabled": "Enabled",
       "disabled": "Disabled",
       "no_modules": "No modules",
-      "refresh": "Refresh"
+      "refresh": "Refresh",
+      "refreshing": "Refreshing",
+      "installed_section": "Installed",
+      "available_section": "Available",
+      "no_installed": "No additional modules installed yet.",
+      "no_available": "No installable modules in the metadata.",
+      "unnamed_module": "Unnamed module",
+      "local_only": "Not listed",
+      "local_only_hint": "This module is absent from the current metadata source; only local information is shown.",
+      "loading_metadata": "Fetching module metadata, please wait.",
+      "metadata_unavailable_title": "Module metadata unavailable",
+      "metadata_unavailable_hint": "The remote module list could not be fetched. Only modules installed on this machine are listed below. Enabling and disabling installed modules is unaffected.",
+      "metadata_stale": "Metadata may be out of date",
+      "metadata_stale_hint": "Using the last snapshot that passed verification ({time}).",
+      "metadata_never_updated": "never updated",
+      "last_known_good": "Fell back to the last known good snapshot.",
+      "signature_not_enabled": "Signature verification is not enabled",
+      "signature_not_enabled_hint": "This build has no minisign public key configured; metadata integrity relies on sha256 checks only.",
+      "schema_too_new": "The metadata schema is newer than this launcher supports. Please update the launcher.",
+      "status": {
+        "update_available": "Update available",
+        "not_installed": "Not installed",
+        "yanked": "Yanked",
+        "incompatible": "Incompatible",
+        "running": "Running",
+        "failed": "Failed to start",
+        "suspended": "Suspended"
+      },
+      "reason": {
+        "yanked": "This module has been yanked by its author or maintainer; new installs are not allowed.",
+        "platform": "This module does not support the current platform.",
+        "min_launcher": "Requires launcher {version} or newer.",
+        "max_launcher": "Supports launcher up to {version}.",
+        "api_version": "This module targets a module API version the current kernel does not support.",
+        "schema": "The metadata schema version is not supported."
+      },
+      "version": {
+        "installed": "Installed {version}",
+        "remote": "Latest {version}",
+        "unknown": "Version unknown"
+      },
+      "permissions": {
+        "summary": "Permissions requested",
+        "expand": "Show permission details",
+        "collapse": "Hide permission details",
+        "none": "No extra permissions",
+        "list_title": "Specific permissions",
+        "unknown_item": "Unknown permission: {name}",
+        "derived": {
+          "network": "Network access",
+          "spawn_process": "Spawn processes",
+          "write_outside_module_dir": "Write outside module directory"
+        },
+        "items": {
+          "filesystem:read": "Read application data",
+          "filesystem:write": "Write application data",
+          "filesystem:game-dir": "Read and write the game directory",
+          "network": "Access the network",
+          "process:spawn": "Spawn external processes",
+          "download:enqueue": "Enqueue download tasks",
+          "settings:write": "Modify launcher settings",
+          "intents:request": "Raise cross-module intents",
+          "account:read": "Read account information"
+        }
+      },
+      "author": {
+        "verified": "Verified",
+        "by": "By {name}"
+      },
+      "actions": {
+        "install": "Install",
+        "uninstall": "Uninstall",
+        "details": "Details",
+        "not_supported": "Cannot install now"
+      }
     },
     "about": {
       "app_info": "About",
