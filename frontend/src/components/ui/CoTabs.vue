@@ -2,8 +2,9 @@
 // 标签条原语（内核通用组件）：只渲染标签条，不含面板。
 //
 // 视觉母题取自浏览器标签页 —— 选中项与相邻面板同色、被咬合那一侧的边框断开，
-// 形成一条无缝接缝。实现方式：选中项的 `::after` 用面板同色覆盖面板那条 1px 边框，
-// 不使用负边距，因此切换标签时零布局位移。
+// 形成一条无缝接缝。实现方式：选中项自身那条边框取面板同色，横向再补一层
+// 面板同色的 `::after` 覆盖面板边框（纵向条带在滚动容器里，溢出会被裁掉，故不加）。
+// 全程不使用负边距（除调用方为对齐接缝自行加的 1px），因此切换标签时零布局位移。
 //
 // 方向：
 // - `vertical`：纵向条带，咬合右边（面板在右侧）；
@@ -202,7 +203,9 @@ function select(value: string) {
   font-weight: 500;
 }
 
-/* 纵向：咬合右边 —— 右边框取面板同色，::after 覆盖面板的 1px 左边框。 */
+/* 纵向：咬合右边 —— 选中项自身那 1px 右边框与面板的 1px 左边框同处一列
+   （rail `margin-right: -1px` 使其重叠），取面板同色即可抹掉接缝。
+   此处不用 `::after`：rail 是滚动容器，溢出会被裁掉。 */
 .co-tabs--vertical .co-tabs__tab--active {
   border-color: var(--copper-border);
   border-right-color: var(--copper-surface);
@@ -210,17 +213,8 @@ function select(value: string) {
   border-bottom-right-radius: 0;
 }
 
-.co-tabs--vertical .co-tabs__tab--active::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  right: -1px;
-  bottom: 0;
-  width: 1px;
-  background: var(--copper-surface);
-}
-
-/* 横向：咬合下边 —— 下边框取面板同色，::after 覆盖面板的 1px 上边框。 */
+/* 横向：咬合下边 —— 面板 1px 上边框在选中项边框盒之外（下方）那 1px，
+   故偏移取 -2px（-1px 只会覆盖选中项自己的底边框）。 */
 .co-tabs--horizontal .co-tabs__tab--active {
   border-color: var(--copper-border);
   border-bottom-color: var(--copper-surface);
@@ -232,7 +226,7 @@ function select(value: string) {
   content: "";
   position: absolute;
   right: 0;
-  bottom: -1px;
+  bottom: -2px;
   left: 0;
   height: 1px;
   background: var(--copper-surface);
