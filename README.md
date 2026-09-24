@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=modern%20Minecraft%20Bedrock%20game%20launcher%20desktop%20app%20dark%20glassmorphism%20UI%20with%20left%20navigation%20bar%20and%20content%20cards%20for%20game%20versions%20and%20mods%20clean%20futuristic%20design%20high%20detail&image_size=landscape_16_9" alt="铜傀儡启动器界面" width="880">
+  <img src="https://pic1.imgdb.cn/i/034UdJzMuWwoLY5CW8v4qx.png">
 
   <h1>铜傀儡 · CopperGolem</h1>
   <p><strong>下载游戏、管理账号、畅装内容——一次抵达。</strong></p>
