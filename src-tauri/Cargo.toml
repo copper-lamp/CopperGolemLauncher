@@ -13,6 +13,12 @@ license.workspace = true
 name = "copper_core_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# CI/发布构建用：让 openssl 从源码静态编译，构建机无需预装 OpenSSL，
+# 产物也不再依赖 libcrypto/libssl 运行库 DLL。本地开发不启用此特性，
+# 仍走 OPENSSL_DIR 指向的本机 OpenSSL（见 .cargo/env-check.ps1）。
+vendored-openssl = ["openssl/vendored"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

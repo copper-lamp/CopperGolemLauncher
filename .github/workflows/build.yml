@@ -21,6 +21,9 @@ jobs:
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+
       - name: 安装前端依赖
         working-directory: .
         run: npm --prefix frontend install
@@ -31,4 +34,5 @@ jobs:
 
       - name: 构建 Rust (release)
         working-directory: .
-        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+        # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
+        run: cargo build --release --features vendored-openssl --manifest-path src-tauri/Cargo.toml
