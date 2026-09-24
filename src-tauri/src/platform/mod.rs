@@ -19,7 +19,9 @@ pub mod secret;
 
 use std::sync::Arc;
 
-use secret::{KeyringStore, SecretStore, SharedSecretStore};
+use secret::{SecretStore, SharedSecretStore};
+#[cfg(not(target_os = "android"))]
+use secret::KeyringStore;
 #[cfg(target_os = "android")]
 use secret::UnsupportedStore;
 

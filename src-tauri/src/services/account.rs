@@ -196,12 +196,24 @@ impl AccountService {
 
     /// GDK（XAL）一键登录：读取本机已登录的 Xbox 账户后入库并广播。
     /// 不弹浏览器、不依赖微软授权网络，前提是本机已登录 Xbox。
+    ///
+    /// 仅 Windows：XAL 依赖微软 GDK 运行库（见 `services::xal`）。其它平台
+    /// 返回明确的不支持原因，前端据此隐藏入口，而不是伪造一个失败实现。
+    #[cfg(windows)]
     pub fn login_via_xal(&self) -> Result<AccountInfo, KernelError> {
         let profile = crate::services::xal::local_profile()
             .map_err(KernelError::Account)?;
         let account = self.save_account(profile.gamertag, Some(profile.xuid.to_string()))?;
         self.publish_login_state(LoginState::Done, None);
         Ok(account)
+    }
+
+    /// 非 Windows：无 GDK 运行库，显式不支持本机 Xbox 登录。
+    #[cfg(not(windows))]
+    pub fn login_via_xal(&self) -> Result<AccountInfo, KernelError> {
+        Err(KernelError::Account(
+            "当前平台不支持本机 Xbox 登录，请使用设备码登录".into(),
+        ))
     }
 
     /// 退出登录：清除安全存储中的凭证与数据库记录。

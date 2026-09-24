@@ -20,4 +20,6 @@ pub mod store_rst_transport;
 pub mod theme;
 pub mod tips;
 pub mod updater;
+/// XAL（GDK 本机 Xbox 登录）：加载微软 GDK 运行库 DLL，仅 Windows 可用。
+#[cfg(windows)]
 pub mod xal;
