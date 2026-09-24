@@ -585,7 +585,8 @@ fn replace_dir(staging: &Path, target: &Path, overwrite: bool) -> Result<(), Ker
             target.file_name().unwrap_or_default().to_string_lossy()
         )));
     }
-    let backup = staging_dir(target);
+    // 备份必须与目标同级：放进目标目录内部会变成「目录移入自身」而被系统拒绝。
+    let backup = sibling_staging(target);
     std::fs::rename(target, &backup)?;
     if let Err(e) = std::fs::rename(staging, target) {
         if let Err(rollback) = std::fs::rename(&backup, target) {
@@ -599,8 +600,14 @@ fn replace_dir(staging: &Path, target: &Path, overwrite: bool) -> Result<(), Ker
     Ok(())
 }
 
-/// 模组目录内的临时目录（同盘，保证 rename 原子）。
+/// 模组目录内的临时目录（解包 staging 用；同盘，保证 rename 原子）。
 fn staging_dir(parent: &Path) -> PathBuf {
+    parent.join(format!(".mod-tmp-{}", uuid::Uuid::new_v4()))
+}
+
+/// 与目标同级的临时目录（覆盖备份用；不能落在目标目录内部）。
+fn sibling_staging(target: &Path) -> PathBuf {
+    let parent = target.parent().unwrap_or(target);
     parent.join(format!(".mod-tmp-{}", uuid::Uuid::new_v4()))
 }
 
@@ -790,6 +797,15 @@ mod tests {
         .into_bytes()
     }
 
+    /// 模组目录下残留的临时 / 备份目录数。
+    fn temp_leftovers(root: &Path) -> usize {
+        std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".mod-tmp-"))
+            .count()
+    }
+
     #[test]
     fn manifest_roundtrip_and_toggle() {
         let root = temp_root("toggle");
@@ -882,12 +898,7 @@ mod tests {
         assert!(root.join("MyMod").join("MyMod.dll").is_file());
         assert!(root.join("MyMod").join("sub").join("data.txt").is_file());
         // staging 清理干净
-        let leftovers = std::fs::read_dir(&root)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".mod-tmp-"))
-            .count();
-        assert_eq!(leftovers, 0);
+        assert_eq!(temp_leftovers(&root), 0);
 
         // 重名：默认拒绝（Conflict），显式覆盖成功后内容被替换。
         let err = import_zip_at(&root, &source, false).unwrap_err();
@@ -895,6 +906,7 @@ mod tests {
         std::fs::write(root.join("MyMod").join("stale.txt"), b"stale").unwrap();
         import_zip_at(&root, &source, true).unwrap();
         assert!(!root.join("MyMod").join("stale.txt").exists());
+        assert_eq!(temp_leftovers(&root), 0, "覆盖后不应残留临时目录");
     }
 
     #[test]

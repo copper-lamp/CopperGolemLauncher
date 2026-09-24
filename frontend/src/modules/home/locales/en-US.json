@@ -20,6 +20,16 @@
   "back": "Back",
   "open_folder": "Version folder",
   "rename_placeholder": "Enter a new version name",
+  "tab": {
+    "basic": "Basic",
+    "content": "Content",
+    "mods": "Mods"
+  },
+  "basic": {
+    "cover": "Cover",
+    "name": "Version name",
+    "logo_hint": "Click to change the cover"
+  },
   "type": {
     "release": "Release",
     "preview": "Preview",
@@ -49,6 +59,7 @@
   "content": {
     "title": "Content",
     "empty": "No content for this version",
+    "empty_search": "No matching content",
     "load_failed": "Content directory unavailable",
     "search_placeholder": "Search content…",
     "all": "All",
@@ -63,6 +74,38 @@
     "disable": "Disable",
     "remove": "Remove",
     "remove_confirm": "Remove content \"{name}\"? "
+  },
+  "mods": {
+    "empty": "No mods for this version",
+    "empty_search": "No matching mods",
+    "search_placeholder": "Search mods…",
+    "loader_hint": "Mods are read by the loader inside the version; this page only manages mod files",
+    "import_zip": "Import ZIP",
+    "import_dll": "Import DLL",
+    "open_folder": "Open mods folder",
+    "dll_filter": "DLL mods",
+    "zip_filter": "Mod archives",
+    "skipped": "Skipped {count} folder(s) without manifest.json",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "enable": "Enable",
+    "disable": "Disable",
+    "remove": "Remove",
+    "edit": "Edit manifest",
+    "edit_title": "Edit mod manifest",
+    "field_name": "Name",
+    "field_entry": "Entry file",
+    "field_version": "Version",
+    "field_type": "Type",
+    "field_author": "Author",
+    "type_hint": "Type is free text and must match the loader convention (e.g. preload-native)",
+    "entry_hint": "The entry file must exist inside the mod folder",
+    "remove_confirm": "Remove mod \"{name}\"? Its folder will be deleted.",
+    "overwrite_confirm": "Mod \"{name}\" already exists. Overwrite its folder?",
+    "imported": "Mod imported",
+    "saved": "Mod manifest saved",
+    "removed": "Mod removed",
+    "author_none": "Unknown author"
   },
   "toast": {
     "launch_started": "Launching game…",

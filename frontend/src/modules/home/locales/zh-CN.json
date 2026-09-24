@@ -20,6 +20,16 @@
   "back": "返回",
   "open_folder": "版本文件夹",
   "rename_placeholder": "输入新版本名",
+  "tab": {
+    "basic": "基本设置",
+    "content": "内容管理",
+    "mods": "模组管理"
+  },
+  "basic": {
+    "cover": "版本封面",
+    "name": "版本名称",
+    "logo_hint": "点击更换封面"
+  },
   "type": {
     "release": "正式版",
     "preview": "预览版",
@@ -49,6 +59,7 @@
   "content": {
     "title": "内容管理",
     "empty": "该版本暂无附加内容",
+    "empty_search": "没有匹配的内容",
     "load_failed": "内容目录不可用",
     "search_placeholder": "搜索内容…",
     "all": "全部",
@@ -63,6 +74,38 @@
     "disable": "停用",
     "remove": "删除",
     "remove_confirm": "确定删除内容「{name}」吗？"
+  },
+  "mods": {
+    "empty": "该版本暂无模组",
+    "empty_search": "没有匹配的模组",
+    "search_placeholder": "搜索模组…",
+    "loader_hint": "模组由版本内置的加载器读取，本页只管理模组文件",
+    "import_zip": "导入 ZIP",
+    "import_dll": "导入 DLL",
+    "open_folder": "打开模组目录",
+    "dll_filter": "DLL 模组",
+    "zip_filter": "模组压缩包",
+    "skipped": "已跳过 {count} 个缺少 manifest.json 的目录",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "enable": "启用",
+    "disable": "停用",
+    "remove": "删除",
+    "edit": "编辑清单",
+    "edit_title": "编辑模组清单",
+    "field_name": "名称",
+    "field_entry": "入口文件",
+    "field_version": "版本",
+    "field_type": "类型",
+    "field_author": "作者",
+    "type_hint": "类型为自由文本，需与加载器约定一致（如 preload-native）",
+    "entry_hint": "入口文件需存在于模组目录内",
+    "remove_confirm": "确定删除模组「{name}」吗？模组文件夹将被移除。",
+    "overwrite_confirm": "模组「{name}」已存在，是否覆盖原文件夹？",
+    "imported": "模组已导入",
+    "saved": "模组清单已保存",
+    "removed": "模组已删除",
+    "author_none": "未署名"
   },
   "toast": {
     "launch_started": "正在启动游戏…",

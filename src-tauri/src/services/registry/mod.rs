@@ -23,9 +23,11 @@
 //! | 降级必须在状态里可见，不得"降级到看起来正常" | 2.9.6 |
 //!
 //! 当前**未**实现（诚实记录，见文档 3.6 / 3.5）：
-//! - minisign 验签：公钥尚未生成（§3.6 TODO），状态如实返回 `signature_verified: false`；
 //! - 安装包与图标下载（G4）：属于安装链路，需接入全局 `DownloadService`，不在本任务范围，
 //!   本模块只负责元数据侧的校验与判定（[`RegistryService::verify_asset_bytes`] 已就绪，供后续接入）。
+//!
+//! minisign 验签已实现并对接：公钥经 `TRUSTED_PUBLIC_KEY` 内置（见 [`signature`] 模块），
+//! 验签状态如实暴露（`verified` / `failed` / `signature_missing` / `not_configured`）。
 
 pub mod anchor;
 pub mod digest;
