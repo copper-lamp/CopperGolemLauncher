@@ -15,6 +15,7 @@ pub mod kernel;
 pub mod modules;
 pub mod settings;
 pub mod theme;
+pub mod tips;
 pub mod updater;
 
 use crate::error::CommandError;

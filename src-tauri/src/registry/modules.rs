@@ -40,6 +40,25 @@ pub enum ModuleState {
     Failed,
 }
 
+/// 模块来源：决定该模块是否受沙箱管辖。
+///
+/// 内置模块由内核静态编译，与内核同进程、同信任级；附加模块（第三方）运行在
+/// 受管控子进程中，权限由 [`crate::registry::sandbox::ModuleSandbox`] 强制执行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleOrigin {
+    /// 随内核编译，不可卸载。
+    Builtin,
+    /// 从 `<data_dir>/modules` 装载，受沙箱管辖。
+    Addon,
+}
+
+impl ModuleOrigin {
+    pub fn is_builtin(self) -> bool {
+        matches!(self, ModuleOrigin::Builtin)
+    }
+}
+
 /// 模块信息（供设置页"模块"Tab 展示）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +68,8 @@ pub struct ModuleInfo {
     pub is_builtin: bool,
     pub state: ModuleState,
     pub error: Option<String>,
+    /// 是否因越权被沙箱强制停用（仅附加模块可能为真）。
+    pub suspended: bool,
 }
 
 /// 模块注册表。
@@ -56,6 +77,7 @@ pub struct ModuleRegistry {
     modules: RwLock<Vec<Arc<dyn Module>>>,
     states: RwLock<HashMap<String, ModuleState>>,
     errors: RwLock<HashMap<String, String>>,
+    origins: RwLock<HashMap<String, ModuleOrigin>>,
 }
 
 impl ModuleRegistry {
@@ -64,12 +86,30 @@ impl ModuleRegistry {
             modules: RwLock::new(Vec::new()),
             states: RwLock::new(HashMap::new()),
             errors: RwLock::new(HashMap::new()),
+            origins: RwLock::new(HashMap::new()),
         }
     }
 
-    /// 注册模块（内核启动前静态注册）。
+    /// 注册模块（内核启动前静态注册）。默认按内置处理。
     pub fn register(&self, module: Arc<dyn Module>) {
+        self.register_with_origin(module, ModuleOrigin::Builtin);
+    }
+
+    /// 按来源注册模块。附加模块必须显式声明来源，否则会被误当作内核自带而
+    /// 绕过沙箱，属于安全相关的默认值。
+    pub fn register_with_origin(&self, module: Arc<dyn Module>, origin: ModuleOrigin) {
+        let id = module.id().to_string();
+        self.origins.write().insert(id, origin);
         self.modules.write().push(module);
+    }
+
+    /// 某模块的来源（未登记时保守地按附加模块处理）。
+    pub fn origin_of(&self, id: &str) -> ModuleOrigin {
+        self.origins
+            .read()
+            .get(id)
+            .copied()
+            .unwrap_or(ModuleOrigin::Addon)
     }
 
     /// 依次装载全部已启用模块：`init` → `start`。任一失败即中止并标记 Failed。
@@ -135,9 +175,10 @@ impl ModuleRegistry {
                 ModuleInfo {
                     id: id.to_string(),
                     enabled: self.is_enabled(kernel, id),
-                    is_builtin: true,
+                    is_builtin: self.origin_of(id).is_builtin(),
                     state: self.states.read().get(id).copied().unwrap_or(ModuleState::Stopped),
                     error: self.errors.read().get(id).cloned(),
+                    suspended: kernel.sandbox().is_suspended(id),
                 }
             })
             .collect()

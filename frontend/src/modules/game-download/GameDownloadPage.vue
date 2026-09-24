@@ -9,6 +9,7 @@ import { RefreshCw, Rocket, LoaderCircle, Layers } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
+import TipsRotator from "../../components/TipsRotator.vue";
 import VersionRow from "./VersionRow.vue";
 import type { GameVersionView } from "./api";
 
@@ -87,6 +88,8 @@ watch(gd.manifest, () => (loadError.value = null));
           <div class="gd-skeleton-line gd-skeleton-line--short" />
         </div>
       </div>
+      <!-- 清单拉取期间展示内核随机提示，骨架之外再给一点可读内容 -->
+      <TipsRotator compact />
     </div>
 
     <!-- 错误态（仅首载失败时） -->

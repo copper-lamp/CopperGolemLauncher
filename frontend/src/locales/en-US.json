@@ -155,5 +155,35 @@
     "settings_saved": "Settings saved",
     "copied": "Copied to clipboard",
     "error": "{message}"
+  },
+  "tips": {
+    "items": {
+      "1": "Copper Golem Launcher is modular: every feature is pluggable.",
+      "2": "Download community modules from Settings - Modules.",
+      "3": "You can switch the theme color freely.",
+      "4": "Version isolation is on by default, so versions never interfere with each other.",
+      "5": "Copper Golem Launcher can inject into any client.",
+      "6": "Copper Golem supports multiple operating systems.",
+      "7": "Copper Golem Launcher is developed by the CopperLamp organization.",
+      "8": "You can do everything and start the game right here.",
+      "9": "LL mods need the LL loader to work.",
+      "10": "LL is a heavyweight mod loader.",
+      "11": "Copper Golem Launcher is written in Rust.",
+      "12": "lip download failed? Make sure GitHub is reachable.",
+      "13": "Zhi is the core author of Copper Golem Launcher.",
+      "14": "lip is the package manager for LL: it installs LL and downloads mods.",
+      "15": "You can download all kinds of content in Copper Golem.",
+      "16": "Want to report a problem? Try filing an issue.",
+      "17": "Copper Golem is open source on GitHub under GPL-3.0.",
+      "18": "CopperLamp welcomes new developers.",
+      "19": "The Android build of LL is in development.",
+      "20": "Enjoying Copper Golem? A star would mean a lot.",
+      "21": "Set a custom game directory in Settings - Version; LeviLauncher install folders are supported.",
+      "22": "Downloads support pausing, resuming and retrying.",
+      "23": "Allocate memory and add launch arguments in Settings - Launch.",
+      "24": "Drag the title bar to move the window.",
+      "25": "Each version keeps its own settings: editor mode, debug console and launch args are configured separately.",
+      "26": "Stuck on something? Enable logs and debug output in Settings - Launch."
+    }
   }
 }

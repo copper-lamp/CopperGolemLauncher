@@ -13,6 +13,7 @@ import { initTheme } from "./theme";
 import { initSettings } from "./composables/useSettings";
 import { initDownloads } from "./composables/useDownloads";
 import { initAccount } from "./composables/useAccount";
+import { markKernelReady } from "./composables/useKernelReady";
 import { invoke } from "@tauri-apps/api/core";
 
 // 临时诊断：把前端 JS 运行错误 / 未处理 rejection 转发到内核日志，便于定位白屏。
@@ -36,10 +37,19 @@ app.use(router);
 app.mount("#app");
 
 // 内核能力初始化：与界面渲染并行，逐个失败互不影响。
+//
+// 「就绪」的定义：**i18n 与主题已就位**——这两者决定首屏文案与配色，
+// 未就绪就显示主界面会出现文案回退键名、配色闪白。其余能力（设置 / 下载 /
+// 账户）在后台继续初始化，由各自的事件驱动，不阻塞首屏。
+//
+// 无论成功失败都要置就绪：内核不可用（浏览器调试 / 后端异常）时不能把用户
+// 永远留在加载页，主界面自身的错误处理会给出反馈。
 void Promise.all([
   initI18n(),
   initTheme(),
   initSettings(),
   initDownloads(),
   initAccount(),
-]);
+]).finally(() => {
+  markKernelReady();
+});

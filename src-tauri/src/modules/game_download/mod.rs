@@ -21,6 +21,8 @@ pub mod installer;
 pub mod manifest;
 pub mod meta_bridge;
 pub mod msixvc;
+#[cfg(test)]
+mod real_package_check;
 
 use installer::Ctx;
 

@@ -145,7 +145,12 @@ pub fn has_encrypted_regions(path: &Path) -> Result<bool, ParseError> {
     if xvc_bytes < 0xda8 || xvc_offset.checked_add(xvc_bytes).ok_or(ParseError::OutOfBounds)? > file_len {
         return Err(ParseError::OutOfBounds);
     }
-    let xvc = read_at(&mut file, xvc_offset, 0xda8)?;
+    // Read the whole XVC metadata area: the region table starts at 0xda8, so a
+    // fixed 0xda8-byte read can never contain it.
+    if xvc_bytes > usize::MAX as u64 {
+        return Err(ParseError::OutOfBounds);
+    }
+    let xvc = read_at(&mut file, xvc_offset, xvc_bytes as usize)?;
     let region_count = le_u32(&xvc, 0xd14)? as usize;
     if region_count == 0 || region_count > 10_000 {
         return Err(ParseError::InvalidXvcRegions);
@@ -250,10 +255,10 @@ fn calculate_user_data_offset(header: &[u8], file_len: u64) -> Result<u64, Parse
             return Err(ParseError::InvalidSegmentMetadata);
         }
     }
-    // XVD stores the pre-tree reserved-page count at 0x284; 0x288 is
-    // reserved for the later user-data length field layout. Real MSIXVC
-    // packages use 0x284=1 and 0x288=0.
-    let reserved_pages = pages(le_u32(header, 0x284)? as u64)?;
+    // The hash-tree/user-data offset uses the reserved-page count at 0x288,
+    // matching the LeviLauncher reference implementation. The adjacent 0x284
+    // dword is present in real packages but is not part of this offset field.
+    let reserved_pages = pages(le_u32(header, 0x288)? as u64)?;
     let tree_offset = 12_288u64
         .checked_add(reserved_pages.checked_mul(4096).ok_or(ParseError::OutOfBounds)?)
         .and_then(|value| value.checked_add((header[0x470] as u64).checked_mul(4096)?))
@@ -306,8 +311,12 @@ fn locate_segment_metadata(
         let entry_end = entry_start.checked_add(528).ok_or(ParseError::OutOfBounds)?;
         let entry = entries.get(entry_start..entry_end).ok_or(ParseError::OutOfBounds)?;
         let name = decode_utf16(&entry[..520])?.trim_end_matches('\0').to_owned();
-        let offset = le_u32(entry, 520)? as u64;
-        let size = le_u32(entry, 524)? as u64;
+        // The user file table stores the size first and the offset second, in
+        // that order: entry[520] is the payload size and entry[524] is the
+        // offset relative to the metadata header. Swapping these makes real
+        // packages resolve `SegmentMetadata.bin` into an unrelated path blob.
+        let size = le_u32(entry, 520)? as u64;
+        let offset = le_u32(entry, 524)? as u64;
         if offset.checked_add(size).ok_or(ParseError::OutOfBounds)? > user_length - header_offset {
             return Err(ParseError::OutOfBounds);
         }
@@ -601,18 +610,22 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
     let mut seen_region_ids = HashSet::with_capacity(region_count);
     let first_segment_page = le_u32(&xvc, update_base)? as u64;
     let first_segment_offset = first_segment_page.checked_mul(4096).ok_or(ParseError::OutOfBounds)?;
-    if first_segment_offset < user_offset || first_segment_offset >= xvc_end { return Err(ParseError::InvalidXvcRegions); }
+    if first_segment_offset >= file_len { return Err(ParseError::InvalidXvcRegions); }
     for region_index in 0..region_count {
         let p = 0xda8 + region_index * 128;
         let start = le_u32(&xvc, p + 12)? as usize;
-        // Region offsets and lengths are byte offsets in the XVD file; update-table
-        // entries are page numbers and are converted below.
+        // Region offsets and lengths are absolute byte ranges inside the XVD
+        // file, not offsets inside the XVC metadata area: the highest region
+        // ends exactly at the file length. Bounds are therefore checked against
+        // the file, while the update table below stores page numbers.
         let off = le_u64(&xvc, p + 80)?;
         let length = le_u64(&xvc, p + 88)?;
         let key_index = le_u16(&xvc, p + 4)?;
         let region_id = le_u32(&xvc, p)?;
         let region_end = off.checked_add(length).ok_or(ParseError::OutOfBounds)?;
-        if off % 4096 != 0 || length == 0 || length % 4096 != 0 || off < user_offset || region_end > xvc_end {
+        // Zero-length regions are legal and simply carry no extractable pages;
+        // only the alignment and the file bound are enforced.
+        if off % 4096 != 0 || length % 4096 != 0 || region_end > file_len {
             return Err(ParseError::InvalidXvcRegions);
         }
         if !seen_region_ids.insert(region_id) { return Err(ParseError::InvalidXvcRegions); }
@@ -807,15 +820,31 @@ pub fn validate_segment_plan(metadata: &SegmentMetadata) -> Result<Vec<String>, 
 
     // A file cannot also be a parent directory. Checking prefixes after
     // case-folding catches this independently of the order in the table.
-    for (index, path) in normalized.iter().enumerate() {
-        let mut prefix = String::new();
+    //
+    // The lookup set is case-folded once up front and probed per component: a
+    // nested linear scan is quadratic in the segment count, and real packages
+    // carry tens of thousands of segments.
+    let mut folded: HashSet<String> = HashSet::with_capacity(normalized.len());
+    for path in &normalized {
+        folded.insert(path.to_lowercase());
+    }
+    let mut probe = String::new();
+    for path in &normalized {
         let components: Vec<&str> = path.split('/').collect();
-        for component in components.iter().take(components.len().saturating_sub(1)) {
-            if !prefix.is_empty() { prefix.push('/'); }
-            prefix.push_str(component);
-            if normalized.iter().enumerate().any(|(other, candidate)| {
-                other != index && candidate.to_lowercase() == prefix.to_lowercase()
-            }) {
+        if components.len() < 2 {
+            continue;
+        }
+        probe.clear();
+        for (index, component) in components.iter().enumerate() {
+            if index + 1 == components.len() {
+                break;
+            }
+            if index > 0 {
+                probe.push('/');
+            }
+            probe.push_str(component);
+            let folded_prefix = probe.to_lowercase();
+            if folded.contains(&folded_prefix) {
                 return Err(ParseError::SegmentFileDirectoryConflict(path.clone()));
             }
         }
@@ -964,8 +993,10 @@ mod tests {
         for (index, value) in "SegmentMetadata.bin".encode_utf16().enumerate() {
             put_u16(user, entry + index * 2, value);
         }
-        put_u32(user, entry + 520, 1_056);
-        put_u32(user, entry + 524, 260);
+        // Entry layout matches the real container: [520] is the payload size and
+        // [524] is the offset relative to the metadata header.
+        put_u32(user, entry + 520, 260);
+        put_u32(user, entry + 524, 1_056);
         put_u32(user, 1_072 + 12, 100);
         put_u32(user, 1_072 + 16, 3);
         for (index, (path, size)) in [

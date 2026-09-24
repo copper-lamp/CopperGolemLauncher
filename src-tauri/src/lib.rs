@@ -22,6 +22,7 @@ use error::KernelError;
 use registry::events::EventBus;
 use registry::intents::IntentRegistry;
 use registry::modules::ModuleRegistry;
+use registry::sandbox::ModuleSandbox;
 use services::account::AccountService;
 use services::database::{CORE_MIGRATIONS, DatabaseService};
 use services::download::DownloadService;
@@ -29,6 +30,7 @@ use services::i18n::I18nService;
 use services::paths::Paths;
 use services::settings::{defaults as settings_defaults, SettingsService};
 use services::theme::ThemeService;
+use services::tips::TipsService;
 use services::updater::UpdaterService;
 use state::KernelContext;
 
@@ -37,6 +39,53 @@ const DEFAULT_CONCURRENCY: usize = 3;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 临时诊断：确认 Tauri 解析的日志目录与实际可写性。
+    {
+        use tauri::Manager;
+        let probe = tauri::Builder::default().build(tauri::generate_context!());
+        match probe {
+            Ok(app) => {
+                let log_dir = app.path().app_log_dir();
+                eprintln!("[diag] app_log_dir = {log_dir:?}");
+                if let Ok(dir) = &log_dir {
+                    eprintln!("[diag] exists = {}", dir.exists());
+                    eprintln!("[diag] create_dir_all = {:?}", std::fs::create_dir_all(dir));
+                    let target = dir.join("CopperGolem.log");
+                    eprintln!("[diag] file exists = {}", target.exists());
+                    eprintln!(
+                        "[diag] append open = {:?}",
+                        std::fs::OpenOptions::new().create(true).append(true).open(&target).map(|_| ())
+                    );
+                    eprintln!(
+                        "[diag] write open  = {:?}",
+                        std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&target).map(|_| ())
+                    );
+                    eprintln!(
+                        "[diag] read open   = {:?}",
+                        std::fs::OpenOptions::new().read(true).open(&target).map(|_| ())
+                    );
+                    let alt = dir.join("diag-probe.log");
+                    eprintln!(
+                        "[diag] new file    = {:?}",
+                        std::fs::OpenOptions::new().create(true).append(true).open(&alt).map(|_| ())
+                    );
+                    let _ = std::fs::remove_file(&alt);
+                    // Compare against the project's own roaming log directory.
+                    if let Ok(dirs) = directories::ProjectDirs::from("com", "copper-lamp", "CopperGolem").ok_or(()) {
+                        let project_logs = dirs.data_dir().join("logs");
+                        let probe = project_logs.join("diag-probe.log");
+                        eprintln!(
+                            "[diag] roaming create = {:?}",
+                            std::fs::create_dir_all(&project_logs)
+                                .and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&probe).map(|_| ()))
+                        );
+                        let _ = std::fs::remove_file(&probe);
+                    }
+                }
+            }
+            Err(error) => eprintln!("[diag] builder failed: {error}"),
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -64,6 +113,8 @@ pub fn run() {
                 Arc::new(SettingsService::new(db.clone(), events.clone(), settings_defaults())?);
             let i18n = Arc::new(I18nService::new(settings.clone())?);
             let theme = Arc::new(ThemeService::new(settings.clone()));
+            // 提示依赖 i18n：文案取自内核语言包，随语言切换自动跟随。
+            let tips = Arc::new(TipsService::new(i18n.clone()));
             let download = Arc::new(DownloadService::new(
                 DEFAULT_CONCURRENCY,
                 runtime.clone(),
@@ -81,6 +132,10 @@ pub fn run() {
 
             let intents = Arc::new(IntentRegistry::new());
             let modules = Arc::new(ModuleRegistry::new());
+            // 附加模块沙箱：权限判定与越权留痕（内置模块不经此路径）。
+            let sandbox = Arc::new(ModuleSandbox::new());
+            // 意图注册表接入沙箱：附加模块声明 / 发起意图需持有 `intents` 权限。
+            intents.bind_sandbox(sandbox.clone());
 
             let kernel = KernelContext::new(
                 runtime,
@@ -89,12 +144,14 @@ pub fn run() {
                 settings,
                 i18n,
                 theme,
+                tips,
                 download,
                 account,
                 updater,
                 events,
                 intents,
                 modules,
+                sandbox,
             );
 
             // 装载模块。当前内置模块：开始页（home）、内容下载（content-download）、游戏下载（game-download）。
@@ -125,6 +182,8 @@ pub fn run() {
             commands::theme::theme_snapshot,
             commands::theme::theme_set_mode,
             commands::theme::theme_set_accent,
+            commands::tips::tips_next,
+            commands::tips::tips_keys,
             commands::download::download_enqueue,
             commands::download::download_tasks,
             commands::download::download_task,
@@ -147,6 +206,13 @@ pub fn run() {
             commands::updater::updater_status,
             commands::modules::modules_list,
             commands::modules::modules_set_enabled,
+            // 模块隔离：权限授权与越权留痕
+            commands::modules::sandbox_permissions,
+            commands::modules::sandbox_grants,
+            commands::modules::sandbox_violations,
+            commands::modules::sandbox_grant,
+            commands::modules::sandbox_revoke_permission,
+            commands::modules::sandbox_revoke,
             commands::intents::intents_request,
             commands::intents::intents_declared,
             // 内容下载模块（content-download）

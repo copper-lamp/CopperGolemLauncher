@@ -1,5 +1,6 @@
-//! 联动中介：事件总线（广播）+ 意图注册表（请求 / 响应）+ 模块契约与注册表。
+//! 联动中介：事件总线（广播）+ 意图注册表（请求 / 响应）+ 模块契约与注册表 + 模块沙箱。
 
 pub mod events;
 pub mod intents;
 pub mod modules;
+pub mod sandbox;
