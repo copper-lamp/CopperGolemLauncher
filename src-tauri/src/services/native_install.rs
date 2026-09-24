@@ -445,7 +445,7 @@ fn load_device_state(cache_dir: &Path, xuid: &str) -> Result<Option<DeviceState>
 /// Returns the content key leased to the caller. The key is bound to the
 /// package `KeyID`; a license for any other package is rejected.
 #[cfg(windows)]
-pub async fn acquire_package_content_key(
+pub(crate) async fn acquire_package_content_key(
     client: &reqwest::Client,
     request: &StoreInstallRequest,
     package: &Path,
@@ -561,7 +561,7 @@ async fn acquire_device_ticket(
 
 /// Non-Windows builds have no WAM, DPAPI or device provisioning.
 #[cfg(not(windows))]
-pub async fn acquire_package_content_key(
+pub(crate) async fn acquire_package_content_key(
     _client: &reqwest::Client,
     _request: &StoreInstallRequest,
     _package: &Path,

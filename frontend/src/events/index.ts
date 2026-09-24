@@ -74,6 +74,15 @@ export function onVersionRemoved(
   );
 }
 
+/** 订阅模组变更事件（导入 / 启停 / 删除 / 清单编辑后由后端广播）。 */
+export function onModsChanged(
+  handler: (name: string) => void,
+): Promise<Unlisten> {
+  return listen<{ name: string }>("mods-changed", (e) =>
+    handler(e.payload.name),
+  );
+}
+
 /** 游戏下载模块：任务已投递（负载 `{ id, taskId }`）。 */
 export function onGameDownloadEnqueued(
   handler: (payload: { id: string; taskId: number }) => void,

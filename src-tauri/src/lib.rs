@@ -8,11 +8,11 @@
 #![allow(dead_code)]
 
 mod commands;
-mod error;
+pub mod error;
 mod modules;
-mod registry;
-mod services;
-mod state;
+pub mod registry;
+pub mod services;
+pub mod state;
 
 use std::sync::Arc;
 
@@ -229,6 +229,13 @@ pub fn run() {
             commands::home::home_content_list,
             commands::home::home_content_set_enabled,
             commands::home::home_content_remove,
+            commands::home::home_mods_list,
+            commands::home::home_mods_import_zip,
+            commands::home::home_mods_import_dll,
+            commands::home::home_mods_set_enabled,
+            commands::home::home_mods_remove,
+            commands::home::home_mods_save_manifest,
+            commands::home::home_mods_open_folder,
             // 游戏下载模块（game-download）
             commands::game_download::game_download_manifest,
             commands::game_download::game_download_detail,

@@ -1,9 +1,13 @@
 <script setup lang="ts">
-// 自定义标题栏：左侧为「返回按钮 + 当前页面标题」，中部拖拽区，右侧为页面注入的操作区
-// + 账户头像 + 窗口控制按钮。标题/返回来自当前路由 meta，操作区由各页面经 Teleport 注入。
+// 自定义标题栏：左侧为「返回按钮 + 当前页面标题」或「面包屑导航」，中部拖拽区，
+// 右侧为页面注入的操作区 + 账户头像 + 窗口控制按钮。
+// 标题 / 返回 / 面包屑均来自当前路由 meta，操作区由各页面经 Teleport 注入。
+//
+// 路由 meta 的 `breadcrumb` 为 `{ titleKey, path }[]`：声明后左侧渲染为导航栏样式，
+// 末段为当前页（不可点击）、其余段点击跳转，且不再显示返回箭头与独立标题。
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ChevronRight } from "@lucide/vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRoute, useRouter } from "vue-router";
 
@@ -22,6 +26,32 @@ const title = computed(() => {
 const backPath = computed(() =>
   typeof route.meta.backPath === "string" ? route.meta.backPath : null,
 );
+
+/** 面包屑单段。 */
+interface BreadcrumbItem {
+  /** 段标题的 i18n 键。 */
+  titleKey: string;
+  /** 点击跳转路径（末段不跳转）。 */
+  path: string;
+}
+
+/** 路由声明的面包屑（非数组 / 结构不合法时视为未声明）。 */
+const breadcrumb = computed<BreadcrumbItem[]>(() => {
+  const raw = route.meta.breadcrumb;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (item): item is BreadcrumbItem =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as BreadcrumbItem).titleKey === "string" &&
+      typeof (item as BreadcrumbItem).path === "string",
+  );
+});
+
+/** 面包屑跳转（保留完整路径语义，直接 push）。 */
+function goCrumb(path: string) {
+  void router.push(path);
+}
 
 /** 有可退历史时优先 router.back()（保留内容列表滚动位置），否则回退到 backPath。 */
 function goBack() {
@@ -69,15 +99,36 @@ function close() {
 <template>
   <header class="titlebar">
     <div class="titlebar__left">
-      <button
-        v-if="backPath"
-        class="titlebar__back"
-        :title="t('titlebar.back')"
-        @click="goBack"
-      >
-        <ArrowLeft :size="15" />
-      </button>
-      <h1 v-if="title" class="titlebar__title">{{ title }}</h1>
+      <nav v-if="breadcrumb.length" class="titlebar__crumbs">
+        <template v-for="(crumb, index) in breadcrumb" :key="crumb.path">
+          <button
+            v-if="index < breadcrumb.length - 1"
+            class="titlebar__crumb"
+            @click="goCrumb(crumb.path)"
+          >
+            {{ t(crumb.titleKey) }}
+          </button>
+          <span v-else class="titlebar__crumb titlebar__crumb--current" aria-current="page">
+            {{ t(crumb.titleKey) }}
+          </span>
+          <ChevronRight
+            v-if="index < breadcrumb.length - 1"
+            class="titlebar__crumb-sep"
+            :size="13"
+          />
+        </template>
+      </nav>
+      <template v-else>
+        <button
+          v-if="backPath"
+          class="titlebar__back"
+          :title="t('titlebar.back')"
+          @click="goBack"
+        >
+          <ArrowLeft :size="15" />
+        </button>
+        <h1 v-if="title" class="titlebar__title">{{ title }}</h1>
+      </template>
     </div>
     <div class="titlebar__spacer" data-tauri-drag-region />
     <!-- 页面注入操作区：各模块经 <Teleport to="#copper-titlebar-actions"> 放置按钮/切换。 -->
@@ -158,6 +209,48 @@ function close() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.titlebar__crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-1);
+  min-width: 0;
+}
+
+.titlebar__crumb {
+  height: 26px;
+  padding: 0 var(--copper-space-2);
+  border: none;
+  border-radius: var(--copper-radius-sm);
+  background: transparent;
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-md);
+  white-space: nowrap;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+button.titlebar__crumb {
+  cursor: pointer;
+}
+
+button.titlebar__crumb:hover {
+  background: var(--copper-hover);
+  color: var(--copper-text);
+}
+
+.titlebar__crumb--current {
+  color: var(--copper-text);
+  font-weight: 700;
+  cursor: default;
+}
+
+.titlebar__crumb-sep {
+  flex-shrink: 0;
+  color: var(--copper-text-disabled);
 }
 
 .titlebar__spacer {

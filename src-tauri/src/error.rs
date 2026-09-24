@@ -9,6 +9,9 @@ pub enum KernelError {
     #[error("无效参数: {0}")]
     InvalidArgument(String),
 
+    #[error("冲突: {0}")]
+    Conflict(String),
+
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
 
@@ -66,6 +69,7 @@ impl CommandError {
         Self {
             kind: match e {
                 KernelError::InvalidArgument(_) => "invalid_argument",
+                KernelError::Conflict(_) => "conflict",
                 KernelError::Io(_) => "io",
                 KernelError::Database(_) => "database",
                 KernelError::Serde(_) => "serde",

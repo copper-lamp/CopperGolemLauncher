@@ -16,7 +16,7 @@ registerModule({
   nav: {
     id: "home",
     path: "/",
-    titleKey: "home.title",
+    titleKey: "module.home.title",
     icon: House,
   },
   routes: [
@@ -30,7 +30,14 @@ registerModule({
       path: "/version-settings",
       name: "version-settings",
       component: () => import("./VersionSettings.vue"),
-      meta: { titleKey: "module.home.settings" },
+      meta: {
+        titleKey: "module.home.settings",
+        // 标题栏以导航栏样式的面包屑呈现「开始 / 版本设置」，前段可点击返回。
+        breadcrumb: [
+          { titleKey: "module.home.title", path: "/" },
+          { titleKey: "module.home.settings", path: "/version-settings" },
+        ],
+      },
     },
   ],
 });

@@ -1,13 +1,14 @@
-//! 开始页模块命令：版本清单 / 设置 / 启动 / 内容管理。
+//! 开始页模块命令：版本清单 / 设置 / 启动 / 内容管理 / 模组管理。
 //!
 //! 所有命令经内核上下文访问 home 模块业务逻辑，错误统一映射为 `CommandError`。
 
 use tauri::State;
 
 use crate::commands::into_command_error;
-use crate::error::CommandResult;
+use crate::error::{CommandResult, KernelError};
 use crate::modules::home::content;
 use crate::modules::home::launch::LaunchOutcome;
+use crate::modules::home::mods;
 use crate::modules::home::{meta, VersionMetaUpdate, VersionView};
 use crate::state::KernelContext;
 
@@ -119,4 +120,110 @@ pub fn home_content_remove(
     item_id: String,
 ) -> CommandResult<()> {
     content::remove_content(kernel.inner(), &name, &item_id).map_err(into_command_error)
+}
+
+// ---------------------------------------------------------------- 模组管理
+
+/// 模组清单（附带缺少清单被跳过的目录数）。
+#[tauri::command]
+pub fn home_mods_list(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<mods::ModListResult> {
+    mods::list_mods(kernel.inner(), &name).map_err(into_command_error)
+}
+
+/// 从 ZIP 导入模组（重名且 `overwrite` 为假时返回 `conflict`）。
+#[tauri::command]
+pub fn home_mods_import_zip(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    source_path: String,
+    overwrite: bool,
+) -> CommandResult<mods::ModView> {
+    mods::import_zip(kernel.inner(), &name, &source_path, overwrite).map_err(into_command_error)
+}
+
+/// 从单个 DLL 导入模组（自动生成清单）。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn home_mods_import_dll(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    source_path: String,
+    mod_name: String,
+    mod_type: String,
+    version: String,
+    overwrite: bool,
+) -> CommandResult<mods::ModView> {
+    mods::import_dll(
+        kernel.inner(),
+        &name,
+        &source_path,
+        &mod_name,
+        &mod_type,
+        &version,
+        overwrite,
+    )
+    .map_err(into_command_error)
+}
+
+/// 启用 / 停用模组。
+#[tauri::command]
+pub fn home_mods_set_enabled(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folder: String,
+    enabled: bool,
+) -> CommandResult<()> {
+    mods::set_mod_enabled(kernel.inner(), &name, &folder, enabled).map_err(into_command_error)
+}
+
+/// 删除模组。
+#[tauri::command]
+pub fn home_mods_remove(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folder: String,
+) -> CommandResult<()> {
+    mods::remove_mod(kernel.inner(), &name, &folder).map_err(into_command_error)
+}
+
+/// 编辑模组清单。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn home_mods_save_manifest(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folder: String,
+    mod_name: String,
+    entry: String,
+    version: String,
+    mod_type: String,
+    author: String,
+) -> CommandResult<mods::ModView> {
+    mods::save_mod_manifest(
+        kernel.inner(),
+        &name,
+        &folder,
+        &mod_name,
+        &entry,
+        &version,
+        &mod_type,
+        &author,
+    )
+    .map_err(into_command_error)
+}
+
+/// 在系统文件管理器中打开模组目录（目录不存在则创建）。
+#[tauri::command]
+pub fn home_mods_open_folder(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<String> {
+    let dir = mods::mods_dir(kernel.inner(), &name, true).map_err(into_command_error)?;
+    tauri_plugin_opener::open_path(&dir, None::<&str>)
+        .map_err(|e| KernelError::InvalidArgument(format!("打开目录失败: {e}")))
+        .map_err(into_command_error)?;
+    Ok(dir.to_string_lossy().into_owned())
 }

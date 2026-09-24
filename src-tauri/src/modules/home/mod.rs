@@ -19,6 +19,7 @@ use crate::state::KernelContext;
 pub mod content;
 pub mod launch;
 pub mod meta;
+pub mod mods;
 
 use meta::VersionMeta;
 

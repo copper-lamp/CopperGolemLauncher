@@ -117,3 +117,98 @@ export function homeContentSetEnabled(
 export function homeContentRemove(name: string, itemId: string): Promise<void> {
   return call<void>("home_content_remove", { name, itemId });
 }
+
+// ---------------------------------------------------------------- 模组管理
+
+/** 模组视图（与后端 `ModView` 同构，snake_case）。 */
+export interface ModView {
+  /** 模组文件夹名（后续操作的句柄）。 */
+  folder: string;
+  name: string;
+  version: string;
+  mod_type: string;
+  author: string;
+  entry: string;
+  enabled: boolean;
+  /** 模组文件夹绝对路径。 */
+  path: string;
+}
+
+/** 模组清单结果（`skipped` 为缺少清单被跳过的目录数）。 */
+export interface ModListResult {
+  mods: ModView[];
+  skipped: number;
+}
+
+/** 模组清单。 */
+export function homeModsList(name: string): Promise<ModListResult> {
+  return call<ModListResult>("home_mods_list", { name });
+}
+
+/** 从 ZIP 导入模组；重名且未显式覆盖时抛 `KernelApiError`（`kind === "conflict"`）。 */
+export function homeModsImportZip(
+  name: string,
+  sourcePath: string,
+  overwrite = false,
+): Promise<ModView> {
+  return call<ModView>("home_mods_import_zip", { name, sourcePath, overwrite });
+}
+
+/** 从单个 DLL 导入模组（自动生成清单）。 */
+export function homeModsImportDll(
+  name: string,
+  sourcePath: string,
+  modName: string,
+  modType: string,
+  version: string,
+  overwrite = false,
+): Promise<ModView> {
+  return call<ModView>("home_mods_import_dll", {
+    name,
+    sourcePath,
+    modName,
+    modType,
+    version,
+    overwrite,
+  });
+}
+
+/** 启用 / 停用模组。 */
+export function homeModsSetEnabled(
+  name: string,
+  folder: string,
+  enabled: boolean,
+): Promise<void> {
+  return call<void>("home_mods_set_enabled", { name, folder, enabled });
+}
+
+/** 删除模组（移除整个模组文件夹）。 */
+export function homeModsRemove(name: string, folder: string): Promise<void> {
+  return call<void>("home_mods_remove", { name, folder });
+}
+
+/** 编辑模组清单，返回更新后的视图。 */
+export function homeModsSaveManifest(
+  name: string,
+  folder: string,
+  modName: string,
+  entry: string,
+  version: string,
+  modType: string,
+  author: string,
+): Promise<ModView> {
+  return call<ModView>("home_mods_save_manifest", {
+    name,
+    folder,
+    modName,
+    entry,
+    version,
+    modType,
+    author,
+  });
+}
+
+/** 在系统文件管理器中打开模组目录，返回目录绝对路径。 */
+export function homeModsOpenFolder(name: string): Promise<string> {
+  return call<string>("home_mods_open_folder", { name });
+}

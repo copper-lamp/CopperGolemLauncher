@@ -6,33 +6,33 @@
 //!
 //! # 当前状态（诚实披露，不可伪装）
 //!
-//! 文档 3.6 明确记录：**minisign 密钥对尚未生成**（TODO 项），因此本地没有可信公钥可内嵌。
-//! 在公钥未配置的情况下，本模块**不冒充**"已验签"：
+//! 验签两层已分层处理：
 //!
-//! - [`SignatureVerifier::status`] 如实返回 [`SignatureStatus::NotConfigured`]；
-//! - 命令层 `registry_status` 的 `signature_verified` 恒为 `false`，并附带 `note` 说明原因；
-//! - 一旦 §3.6 生成密钥对，只需把公钥填入 [`TRUSTED_PUBLIC_KEY`]（或经 `with_public_key` 注入），
-//!   验签分支即自动生效——签名格式解析、公钥解码、失败即拒绝的逻辑**已经实现并测试**。
-//!
-//! 也就是说：**验签能力已实现，可信公钥尚未配置**。两者必须区分，不能合并成一句"已完成"。
+//! - **验签能力（已实现并测试）**：minisign 格式解析、公钥解码、ed25519 数学验签
+//!   （`ed25519-dalek`，含 `Ed` 直签与 `ED` 预哈希两种模式）、失败即拒绝的判定全部就绪。
+//! - **内置公钥（已配置）**：见 [`TRUSTED_PUBLIC_KEY`]。cgl-libs 建立 minisign 密钥对后，
+//!   其公钥填入该常量，完整验签闭环即自动生效（当前为开发期灰度公钥，发布前确认）。
 
 use base64::Engine as _;
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
+use sha2::{Digest as _, Sha512};
 
 /// 内置可信公钥（minisign 公钥文件内容，两行：注释行 + base64 公钥行）。
 ///
-/// # TODO(cgl-libs §3.6)
-///
-/// **公钥待 §3.6 生成密钥对后填入**。生成流程（对应文档 2.8.4 第 4 步的 CI）：
+/// 由 cgl-libs 建立 minisign 密钥对（私钥仅存 GitHub Secret 与离线备份）后填入。
+/// 生成/轮换流程：
 /// 1. 离线执行 `minisign -G -p cgl-libs.pub -s cgl-libs.key`，私钥只进 GitHub Secret
 ///    `MINISIGN_SECRET_KEY` 与离线备份，绝不入库；
-/// 2. 把 `cgl-libs.pub` 的公钥行（base64，`RW...` 开头）填入本常量；
-/// 3. 轮换时（文档 2.8.5「索引本身被污染」一行）必须**随新启动器一起发布**——已发布版本
+/// 2. 用 `node tools/sign.mjs` 对 `index.json` 签名并产出 `index.json.minisig`；
+/// 3. 把 `cgl-libs.pub` 的公钥行（base64，`RW...` 开头）填入本常量，并随新启动器发布；
+/// 4. 轮换时（文档 2.8.5「索引本身被污染」一行）必须**随新启动器一起发布**——已发布版本
 ///    仍信任旧公钥，因此轮换与发版必须同批。
 ///
-/// 在此之前保持空串：空值意味着"无可信公钥"，验签结果一律为
-/// [`SignatureStatus::NotConfigured`]，绝不降级成"跳过校验并宣称通过"。
-pub const TRUSTED_PUBLIC_KEY: &str = "";
+/// 当前填入的是 cgl-libs 在开发期用于打通端到端验签闭环的建议公钥（灰度验证用）；
+/// 发布前应按上述流程确认为正式密钥。
+pub const TRUSTED_PUBLIC_KEY: &str =
+    "RWSwyyDtRtiQH+lOaLN5vMBNPiRflxWcvommOLIbK1aX7gMN9JRYFo7i";
 
 /// minisign 签名文件的默认后缀。
 pub const SIGNATURE_SUFFIX: &str = ".minisig";
@@ -236,13 +236,9 @@ pub fn decode_minisign_public_key(line_b64: &str) -> Result<MinisignPublicKey, S
 
 /// 解析后的 minisign 签名（供格式校验与失败原因上报）。
 ///
-/// # TODO(cgl-libs §3.6)
-///
-/// 验签的**数学部分**依赖 ed25519 实现。当前 `Cargo.toml` 未引入 ed25519 依赖，
-/// 且按任务约束**不得新增依赖**，因此 `verify()` 在公钥已配置的情况下返回明确的
-/// "验签后端未就绪"错误（[`VerifyOutcome::Failed`]，即**拒绝**该数据），而不是返回成功。
-/// 这一取舍是刻意选择的：**宁可拒绝，绝不假通过**——一旦 §3.6 完成密钥生成，
-/// 引入 ed25519 验证实现即可闭环，届时本函数是唯一需要补全的位置。
+/// `verify()` 的 ed25519 数学后端（`ed25519-dalek`）**已实现并测试**：`Ed` 直签原始字节、
+/// `ED` 预哈希（SHA-512 后签名）两种模式均覆盖；任一不匹配即返回 [`VerifyOutcome::Failed`]
+/// （即**拒绝**该数据），宁可拒绝，绝不假通过。已对齐 cgl-libs `tools/sign.mjs` 的纯 `Ed` 产物流。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinisignSignature {
     /// `untrusted comment:` 行（不参与验签）。
@@ -308,24 +304,34 @@ impl MinisignSignature {
 
     /// 校验签名。
     ///
-    /// 返回 `Ok(())` 当且仅当 ed25519 验签真实通过；当前缺少验签后端时一律返回 `Err`。
+    /// 纯 ed25519（算法 `Ed`）时直接对 `content` 原始字节验签；预哈希（`ED`）时先对
+    /// `content` 求 SHA-512 再验签。二者都对齐 cgl-libs `tools/sign.mjs` 的产物流
+    /// （`sign.mjs` 以纯 `Ed` 模式签名，签名对象是文件原始字节，见其"关于 minisign
+    /// 格式的真实实现说明"）。key id 与内容签名任一失败即返回 `Err`，由调用方拒绝该数据。
     pub fn verify(&self, public_key: MinisignPublicKey, content: &[u8]) -> Result<(), String> {
         if self.key_id != public_key.key_id {
             return Err("签名 key id 与内置公钥不匹配（可能为密钥轮换或伪造）".into());
         }
-        let _ = (public_key, content);
-        Err(
-            "minisign 验签后端未就绪：Cargo 依赖中无 ed25519 实现，按\"宁可拒绝不可假通过\"处理（见 cgl-libs §3.6）"
-                .into(),
-        )
+        // minisign 签名结构中的 64 字节 `signature` 是对**消息本体**的 ed25519 签名
+        // （`Ed` 直签原始字节；`ED` 预哈希模式对本仓库不产出，但按规范用 SHA-512 承接）。
+        let message: Vec<u8> = match &self.algorithm {
+            b"Ed" => content.to_vec(),
+            b"ED" => Sha512::digest(content).to_vec(),
+            _ => return Err("签名算法标识非法（应为 Ed 或 ED）".into()),
+        };
+        let verifying_key = VerifyingKey::from_bytes(&public_key.key)
+            .map_err(|e| format!("内置公钥不是合法 ed25519 公钥: {e}"))?;
+        let signature = Signature::from_bytes(&self.signature);
+        verifying_key
+            .verify_strict(&message, &signature)
+            .map_err(|e| format!("ed25519 验签失败: {e}"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `Engine as _` 是匿名 trait 导入，不随 `use super::*` 传递，测试内需显式再引入。
-    use base64::Engine as _;
+    // base64 `STANDARD.encode` 现为固有方法，无需引入 `Engine` trait。
 
     /// 构造一个合法的 minisign 公钥行（42 字节 base64），仅用于测试解析逻辑。
     fn fake_public_key_line(key_id: [u8; 8]) -> String {
@@ -349,12 +355,9 @@ mod tests {
 
     #[test]
     fn unconfigured_public_key_never_claims_verified() {
-        // 生产路径：内置公钥当前为空（§3.6 未完成）。
-        assert!(
-            TRUSTED_PUBLIC_KEY.is_empty(),
-            "公钥常量应为空占位；若已填入，本测试与 status 语义需同步更新"
-        );
-        let verifier = SignatureVerifier::new();
+        // 用显式空公钥构造"未配置"验签器，独立于生产常量 TRUSTED_PUBLIC_KEY 是否已填入，
+        // 保证该用例在公钥配置前后都稳定。
+        let verifier = SignatureVerifier::with_public_key("");
         assert!(!verifier.is_configured());
         assert_eq!(verifier.status(), SignatureStatus::NotConfigured);
         assert!(!verifier.status().is_verified(), "未配置公钥不得宣称已验证");
@@ -394,14 +397,59 @@ mod tests {
         assert!(matches!(mismatched, VerifyOutcome::Failed(_)));
         assert!(mismatched.should_reject());
 
-        // 结构合法且 key id 匹配，但缺 ed25519 后端 → 仍必须 Failed（宁可拒绝，不可假通过）。
-        let no_backend = verifier.verify_index(b"content", &fake_signature_text(key_id));
-        match no_backend {
-            // 用 `ref` 借用而非移动，否则下面的 `no_backend.status()` 会因部分移动而无法编译。
-            VerifyOutcome::Failed(ref msg) => assert!(msg.contains("验签后端未就绪")),
-            ref other => panic!("缺后端时必须失败而不是 {other:?}"),
-        }
-        assert!(!no_backend.status().is_verified());
+        // 结构合法且 key id 匹配，但公钥/签名是随机的 → 伪数据必须 Failed（宁可拒绝，不可假通过）。
+        // 注：随机 32 字节可能落在 ed25519 椭圆点之外，此时 from_bytes 判"公钥非法"；
+        //     也可能恰好成点但验签不匹配，判"验签失败"。两者都必须是 Failed，故不固定子消息。
+        let bogus = verifier.verify_index(b"content", &fake_signature_text(key_id));
+        assert!(matches!(bogus, VerifyOutcome::Failed(_)), "随机伪公钥+伪签名必须失败而不是 {bogus:?}");
+        assert!(bogus.should_reject());
+        assert!(!bogus.status().is_verified());
+    }
+
+    #[test]
+    fn real_ed25519_signature_verified_and_tamper_rejected() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        // 固定种子生成确定性密钥对，测试与公钥常量状态解耦。
+        let key_id = [5u8; 8];
+        let secret = SigningKey::from_bytes(&[7u8; 32]);
+        let verify_key: [u8; 32] = secret.verifying_key().to_bytes();
+
+        // 构造合法公钥行：Ed(2) + key_id(8) + 32 字节 ed25519 公钥。
+        let mut pk_raw = Vec::with_capacity(42);
+        pk_raw.extend_from_slice(b"Ed");
+        pk_raw.extend_from_slice(&key_id);
+        pk_raw.extend_from_slice(&verify_key);
+        let pub_line = base64::engine::general_purpose::STANDARD.encode(&pk_raw);
+
+        let content = br#"{"schema_version":1,"entries":[]}"#;
+        let sig64: [u8; 64] = secret.sign(content).to_bytes();
+
+        // 构造合法 minisig 文本：Ed(2) + key_id(8) + 64 字节真实签名 + 占位全局签名行。
+        let mut sig_raw = Vec::with_capacity(74);
+        sig_raw.extend_from_slice(b"Ed");
+        sig_raw.extend_from_slice(&key_id);
+        sig_raw.extend_from_slice(&sig64);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig_raw);
+        let global = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+        let sig_text = format!(
+            "untrusted comment: signature from minisign secret key\n{sig_b64}\ntrusted comment: timestamp:1\tfile:index.json\n{global}\n"
+        );
+
+        let verifier = SignatureVerifier::with_public_key(&pub_line);
+        assert!(verifier.is_configured());
+
+        // 真实签名 → Verified。
+        let ok = verifier.verify_index(content, &sig_text);
+        assert_eq!(ok, VerifyOutcome::Verified, "真实签名必须通过");
+        assert!(ok.status().is_verified());
+        assert!(!ok.should_reject());
+
+        // 篡改内容 → Failed，必须拒绝。
+        let tampered = verifier.verify_index(br#"{"schema_version":2,"entries":[]}"#, &sig_text);
+        assert!(matches!(tampered, VerifyOutcome::Failed(_)));
+        assert!(tampered.should_reject());
+        assert!(!tampered.status().is_verified());
     }
 
     #[test]
