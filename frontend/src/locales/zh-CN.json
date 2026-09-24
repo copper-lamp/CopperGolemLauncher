@@ -117,7 +117,7 @@
       "metadata_never_updated": "从未成功更新",
       "last_known_good": "已回退到上一次可用的快照。",
       "signature_not_enabled": "签名校验未启用",
-      "signature_not_enabled_hint": "当前构建未配置 minisign 公钥，元数据完整性仅依赖 sha256 校验。",
+      "signature_not_enabled_hint": "当前元数据缺少签名或签名校验未能通过，完整性仅依赖 sha256 校验，请与官方渠道核对。",
       "schema_too_new": "元数据格式版本高于当前启动器支持值，请升级启动器。",
       "status": {
         "update_available": "可用更新",

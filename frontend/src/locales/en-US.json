@@ -117,7 +117,7 @@
       "metadata_never_updated": "never updated",
       "last_known_good": "Fell back to the last known good snapshot.",
       "signature_not_enabled": "Signature verification is not enabled",
-      "signature_not_enabled_hint": "This build has no minisign public key configured; metadata integrity relies on sha256 checks only.",
+      "signature_not_enabled_hint": "The metadata is missing a signature or failed signature verification; integrity relies on sha256 checks only. Cross-check with the official channel.",
       "schema_too_new": "The metadata schema is newer than this launcher supports. Please update the launcher.",
       "status": {
         "update_available": "Update available",
