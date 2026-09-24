@@ -185,7 +185,7 @@ impl AccountService {
     /// 不弹浏览器、不依赖微软授权网络，前提是本机已登录 Xbox。
     pub fn login_via_xal(&self) -> Result<AccountInfo, KernelError> {
         let profile = crate::services::xal::local_profile()
-            .map_err(|e| KernelError::Account(e))?;
+            .map_err(KernelError::Account)?;
         let account = self.save_account(profile.gamertag, Some(profile.xuid.to_string()))?;
         self.publish_login_state(LoginState::Done, None);
         Ok(account)

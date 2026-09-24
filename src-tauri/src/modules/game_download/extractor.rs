@@ -1,4 +1,5 @@
-//! 游戏包解包器：GDK `.msixvc`（加密 XVC 容器）走内嵌原生 DLL，历史 `.appx`（真 ZIP）走 zip crate 回退。
+//! 游戏包解包器：MSIXVC 优先走独立 XVC 校验/提取核心；遇到尚未接入的 Store
+//! content key 时暂时走兼容 DLL，历史 `.appx`（真 ZIP）走 zip crate 回退。
 //!
 //! 技术背景：新版 GDK 游戏包是加密容器，无纯 Rust 开源解包方案。LeviLauncher 靠闭源
 //! `launcher_core.dll`（导出 `Get(in,out)->i32`，ANSI 窄字符串；另有 `GetWithPipe`）
@@ -13,6 +14,8 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::error::KernelError;
+
+use super::msixvc;
 
 // ---------------------------------------------------------------- 内嵌二进制
 
@@ -102,6 +105,8 @@ pub enum ExtractError {
     /// ZIP 条目路径非法（防路径穿越）。
     #[error("解包条目路径非法: {0}")]
     UnsafeEntry(String),
+    #[error("MSIXVC 原生解析/提取失败: {0}")]
+    Msixvc(String),
     #[error("不支持的平台（解包需 Windows）")]
     UnsupportedPlatform,
 }
@@ -169,14 +174,37 @@ impl ExtractReturnCode {
 
 // ---------------------------------------------------------------- 解包入口
 
-/// 解包 `src` 到 `out_dir`：`src` 是 ZIP（历史 `.appx`）走 zip 回退；否则视为 XVC 走原生 DLL。
+/// 解包 `src` 到 `out_dir`：历史 `.appx` ZIP 直接回退；MSIXVC 先走独立
+/// XVC 校验/提取，遇到尚未接入的 Store content key 时再走兼容 DLL。
 ///
-/// `dll_dir` 为原生 DLL 落盘目录（通常 `cache_dir()/gdkshared`），仅在走 DLL 分支时使用。
+/// `dll_dir` 为兼容 DLL 落盘目录（通常 `cache_dir()/gdkshared`）。
 pub fn extract_package(src: &Path, out_dir: &Path, dll_dir: &Path) -> Result<(), ExtractError> {
+    extract_package_with_key(src, out_dir, dll_dir, None)
+}
+
+/// Extraction entry point for the future Store entitlement service. The key is
+/// borrowed only for the synchronous extraction call and is never serialized.
+pub fn extract_package_with_key(
+    src: &Path,
+    out_dir: &Path,
+    dll_dir: &Path,
+    content_key: Option<&[u8]>,
+) -> Result<(), ExtractError> {
+    if let Some(key) = content_key {
+        if key.len() != 32 {
+            return Err(ExtractError::Msixvc("content key 长度必须为 32 字节".into()));
+        }
+    }
     if is_appx_zip(src) {
         return extract_appx_zip(src, out_dir);
     }
-    extract_xvc(src, out_dir, dll_dir)
+    match msixvc::extract_xvc(src, out_dir, content_key) {
+        Ok(()) => verify_executable(out_dir),
+        Err(msixvc::ParseError::MissingContentKey) if content_key.is_none() => {
+            extract_xvc(src, out_dir, dll_dir)
+        }
+        Err(error) => Err(ExtractError::Msixvc(error.to_string())),
+    }
 }
 
 /// 是否为真 ZIP 容器（PK 魔数）。历史 `.appx` 与绝大多数压缩文件都是 ZIP。

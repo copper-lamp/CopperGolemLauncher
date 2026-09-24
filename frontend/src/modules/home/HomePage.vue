@@ -10,6 +10,7 @@ import { Play, Gamepad2, Download } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
+import TipsRotator from "../../components/TipsRotator.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
@@ -121,6 +122,8 @@ function goDownload() {
     <div v-else class="home-page__simple">
       <template v-if="loading">
         <p class="home-page__hint">{{ t("common.loading") }}</p>
+        <!-- 版本清单扫描期间展示内核随机提示，避免空白等待 -->
+        <TipsRotator compact />
       </template>
 
       <template v-else-if="!current">

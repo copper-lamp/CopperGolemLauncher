@@ -17,6 +17,7 @@ import {
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
+import TipsRotator from "../../components/TipsRotator.vue";
 import {
   contentDownloadList,
   type ContentItem,
@@ -227,14 +228,18 @@ onMounted(() => {
       </div>
 
     <!-- 加载骨架 -->
-    <div v-if="loading && items.length === 0" class="content-list__grid">
-      <div v-for="n in 8" :key="n" class="content-card content-card--skeleton">
-        <div class="content-card__skeleton-thumb" />
-        <div class="content-card__skeleton-body">
-          <div class="content-card__skeleton-line" />
-          <div class="content-card__skeleton-line content-card__skeleton-line--short" />
+    <div v-if="loading && items.length === 0" class="content-list__loading">
+      <div class="content-list__grid">
+        <div v-for="n in 8" :key="n" class="content-card content-card--skeleton">
+          <div class="content-card__skeleton-thumb" />
+          <div class="content-card__skeleton-body">
+            <div class="content-card__skeleton-line" />
+            <div class="content-card__skeleton-line content-card__skeleton-line--short" />
+          </div>
         </div>
       </div>
+      <!-- 内容拉取期间展示内核随机提示 -->
+      <TipsRotator compact />
     </div>
 
     <!-- 错误态 -->

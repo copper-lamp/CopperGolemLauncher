@@ -1,7 +1,7 @@
 //! 游戏下载模块（`game-download`）：拉取 MCBE 版本清单，下载版本包并安装进开始页。
 //!
-//! 数据源：社区维护 GDK 清单（三镜像 CDN），`.msixvc` 用内嵌闭源原生 DLL 解包
-//! （需用户 Store 授权），历史 `.appx` 走 zip 回退。安装完成写 `version.json`，
+//! 数据源：社区维护 GDK 清单（三镜像 CDN），历史 `.appx` 走 zip 回退；MSIXVC
+//! 原生格式校验与解包能力在 `msixvc` 中逐步替代旧兼容后端。安装完成写 `version.json`，
 //! 使版本进入「开始页」可启动项，并经事件总线广播 `version.installed`。
 //!
 //! 联动（经内核中介）：
@@ -20,6 +20,9 @@ pub mod extractor;
 pub mod installer;
 pub mod manifest;
 pub mod meta_bridge;
+pub mod msixvc;
+#[cfg(test)]
+mod real_package_check;
 
 use installer::Ctx;
 
@@ -52,6 +55,11 @@ impl GameDownloadModule {
 impl Module for GameDownloadModule {
     fn id(&self) -> &'static str {
         MODULE_ID
+    }
+
+    /// 内置模块无独立版本事实源，跟随内核 crate 版本发布（见 cgl-libs.md 3.5 G2）。
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
     }
 
     fn init(&self, kernel: &KernelContext) -> Result<(), KernelError> {

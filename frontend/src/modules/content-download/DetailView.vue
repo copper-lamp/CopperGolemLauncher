@@ -20,6 +20,7 @@ import {
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
+import TipsRotator from "../../components/TipsRotator.vue";
 import {
   contentDownloadDetail,
   contentDownloadReadme,
@@ -214,6 +215,8 @@ onMounted(load);
         <div class="cd-detail__skeleton-line" />
         <div class="cd-detail__skeleton-line cd-detail__skeleton-line--short" />
       </div>
+      <!-- 详情拉取期间展示内核随机提示 -->
+      <TipsRotator compact />
     </template>
 
     <template v-else-if="error">

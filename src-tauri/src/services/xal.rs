@@ -13,7 +13,7 @@
 //! `nh_04d8c8d4`=GetLocalUserId、`nh_f53b7b5e`=GetLocalUserGamertag、
 //! `nh_3e61c2af`=XUserGetState、`nh_5c8e2c0b`=ResetSession（登出用）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// 函数指针类型（无需持有 `Library`，普通 fn 指针天然 Send + Sync，
@@ -67,7 +67,7 @@ fn cache_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(base).join("copper-golem").join("xal"))
 }
 
-fn write_once(dir: &PathBuf, name: &str, data: &[u8]) -> Result<(), String> {
+fn write_once(dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
     if let Ok(existing) = std::fs::read(dir.join(name)) {
         if existing.len() == data.len() && existing == data {
             return Ok(());

@@ -9,13 +9,16 @@ use std::sync::Arc;
 use crate::registry::events::EventBus;
 use crate::registry::intents::IntentRegistry;
 use crate::registry::modules::ModuleRegistry;
+use crate::registry::sandbox::ModuleSandbox;
 use crate::services::account::AccountService;
 use crate::services::database::DatabaseService;
 use crate::services::download::DownloadService;
 use crate::services::i18n::I18nService;
 use crate::services::paths::Paths;
+use crate::services::registry::RegistryService;
 use crate::services::settings::SettingsService;
 use crate::services::theme::ThemeService;
+use crate::services::tips::TipsService;
 use crate::services::updater::UpdaterService;
 
 /// 内核上下文。
@@ -26,12 +29,16 @@ pub struct KernelContext {
     settings: Arc<SettingsService>,
     i18n: Arc<I18nService>,
     theme: Arc<ThemeService>,
+    tips: Arc<TipsService>,
     download: Arc<DownloadService>,
     account: Arc<AccountService>,
     updater: Arc<UpdaterService>,
     events: Arc<EventBus>,
     intents: Arc<IntentRegistry>,
     modules: Arc<ModuleRegistry>,
+    sandbox: Arc<ModuleSandbox>,
+    /// 元数据客户端（`cgl-libs` 索引 / 分片）。命令层就绪前可能为 None。
+    registry: Option<Arc<RegistryService>>,
 }
 
 impl KernelContext {
@@ -44,12 +51,15 @@ impl KernelContext {
         settings: Arc<SettingsService>,
         i18n: Arc<I18nService>,
         theme: Arc<ThemeService>,
+        tips: Arc<TipsService>,
         download: Arc<DownloadService>,
         account: Arc<AccountService>,
         updater: Arc<UpdaterService>,
         events: Arc<EventBus>,
         intents: Arc<IntentRegistry>,
         modules: Arc<ModuleRegistry>,
+        sandbox: Arc<ModuleSandbox>,
+        registry: Option<Arc<RegistryService>>,
     ) -> Self {
         Self {
             runtime,
@@ -58,12 +68,15 @@ impl KernelContext {
             settings,
             i18n,
             theme,
+            tips,
             download,
             account,
             updater,
             events,
             intents,
             modules,
+            sandbox,
+            registry,
         }
     }
 
@@ -97,6 +110,11 @@ impl KernelContext {
         &self.theme
     }
 
+    /// 加载提示（内核通用能力，模块经命令层取用）。
+    pub fn tips(&self) -> &Arc<TipsService> {
+        &self.tips
+    }
+
     pub fn download(&self) -> &Arc<DownloadService> {
         &self.download
     }
@@ -119,5 +137,15 @@ impl KernelContext {
 
     pub fn modules(&self) -> &Arc<ModuleRegistry> {
         &self.modules
+    }
+
+    /// 模块沙箱：附加模块的能力授权与越权拦截（内置模块不经此路径）。
+    pub fn sandbox(&self) -> &Arc<ModuleSandbox> {
+        &self.sandbox
+    }
+
+    /// 元数据客户端（`cgl-libs`：索引 / 分片 / 三级校验 / 防降级锚点）。
+    pub fn registry(&self) -> Option<&Arc<RegistryService>> {
+        self.registry.as_ref()
     }
 }
