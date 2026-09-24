@@ -81,9 +81,10 @@ pub fn run() {
             services::http_client::inject_system_proxy_env();
 
             // 路径体系 + 数据库（含内核自身 schema 迁移）。
-            let paths = Arc::new(
-                Paths::new().map_err(|e| KernelError::Config(e.to_string()))?,
-            );
+            // 根目录由宿主（Tauri）提供：桌面端为标准应用数据目录，安卓端为应用
+            // 私有 `filesDir`。显式传入而非依赖 `directories` 探测，避免安卓无
+            // XDG 目录导致启动中断（见 docs/平台适配.md 3.1 风险 2）。
+            let paths = Arc::new(Paths::resolve(app.handle())?);
             paths.ensure_dirs()?;
             let db = Arc::new(DatabaseService::open(paths.db_file())?);
             db.migrate_scope("core", CORE_MIGRATIONS)?;

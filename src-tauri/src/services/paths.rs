@@ -26,10 +26,68 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// 依据**显式根目录**初始化路径体系（首选入口）。
+    ///
+    /// 根目录由宿主提供，而非在此处猜测：桌面端传 Tauri 的 app data 目录，
+    /// 安卓端传应用私有 `filesDir`。这样 `Paths` 不依赖 `directories` 在
+    /// 各平台的行为——`ProjectDirs::from` 在安卓无标准 XDG 目录、通常会返回
+    /// `None`，若在此处硬依赖将直接中断启动（见 docs/平台适配.md 3.1 风险 2）。
+    ///
+    /// 布局：`<root>/data`（持久数据）、`<root>/cache`（下载缓存）。
+    pub fn with_root(root: PathBuf) -> Self {
+        let data_dir = root.join("data");
+        let cache_dir = root.join("cache");
+        let versions_dir = data_dir.join("versions");
+        let modules_dir = data_dir.join("modules");
+        let logs_dir = data_dir.join("logs");
+        let db_file = data_dir.join("copper.db");
+        Self {
+            data_dir,
+            versions_dir,
+            modules_dir,
+            cache_dir,
+            logs_dir,
+            db_file,
+        }
+    }
+
+    /// 依据应用标识初始化路径体系（无宿主根目录时的兜底）。
+    ///
+    /// 解析顺序：
+    /// 1. `COPPER_DATA_DIR`：开发调试整体重定向数据与缓存根（隔离目录运行）；
+    /// 2. `directories::ProjectDirs`：桌面平台的标准用户目录。
+    ///
+    /// 安卓等无 `ProjectDirs` 的平台必须走 [`Paths::with_root`]；若走到此处
+    /// 且解析失败，返回错误由调用方决定是否降级。
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // 开发调试可用 COPPER_DATA_DIR 整体重定向数据与缓存根目录，
+        // 便于在受限环境或隔离目录中运行而不污染真实用户数据。
+        if let Some(custom) = std::env::var_os("COPPER_DATA_DIR") {
+            if !custom.is_empty() {
+                let mut paths = Self::with_root(PathBuf::from(custom));
+                paths.logs_dir = Self::resolve_logs_dir()?;
+                return Ok(paths);
+            }
+        }
+        let dirs = ProjectDirs::from("com", "copper-lamp", "CopperGolem")
+            .ok_or("failed to resolve project directories")?;
+        // 桌面端：数据与缓存分属不同根（`%APPDATA%` / `%LOCALAPPDATA%`），
+        // 不能复用 `with_root`（它把两者放在同一根下）。
+        let data_dir = dirs.data_dir().to_path_buf();
+        let cache_dir = dirs.cache_dir().to_path_buf();
+        Ok(Self {
+            versions_dir: data_dir.join("versions"),
+            modules_dir: data_dir.join("modules"),
+            logs_dir: Self::resolve_logs_dir()?,
+            db_file: data_dir.join("copper.db"),
+            data_dir,
+            cache_dir,
+        })
+    }
+
     /// 解析日志目录，不依赖 `Paths` 实例。
     ///
-    /// 日志插件必须在 `tauri::Builder` 阶段（早于 `setup`）确定落盘位置，
-    /// 因此这里与 [`Paths::new`] 共用同一套解析规则，保证两处永远一致。
+    /// 与 [`Paths::new`] 共用同一套解析规则，保证两处永远一致。
     pub fn resolve_logs_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
         // 开发调试可用 COPPER_LOG_DIR 覆盖日志落盘位置（例如把日志固定到仓库内）。
         if let Some(custom) = std::env::var_os("COPPER_LOG_DIR") {
@@ -40,48 +98,6 @@ impl Paths {
         let dirs = ProjectDirs::from("com", "copper-lamp", "CopperGolem")
             .ok_or("failed to resolve project directories")?;
         Ok(dirs.data_dir().join("logs"))
-    }
-
-    /// 依据应用标识初始化路径体系。
-    ///
-    /// 开发调试可用 `COPPER_DATA_DIR` 整体重定向数据与缓存根目录，
-    /// 便于在受限环境或隔离目录中运行而不污染真实用户数据。
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        if let Some(custom) = std::env::var_os("COPPER_DATA_DIR") {
-            if !custom.is_empty() {
-                let root = PathBuf::from(custom);
-                let data_dir = root.join("data");
-                let cache_dir = root.join("cache");
-                let logs_dir = Self::resolve_logs_dir()?;
-                let versions_dir = data_dir.join("versions");
-                let modules_dir = data_dir.join("modules");
-                let db_file = data_dir.join("copper.db");
-                return Ok(Self {
-                    data_dir,
-                    versions_dir,
-                    modules_dir,
-                    cache_dir,
-                    logs_dir,
-                    db_file,
-                });
-            }
-        }
-        let dirs = ProjectDirs::from("com", "copper-lamp", "CopperGolem")
-            .ok_or("failed to resolve project directories")?;
-        let data_dir = dirs.data_dir().to_path_buf();
-        let versions_dir = data_dir.join("versions");
-        let modules_dir = data_dir.join("modules");
-        let cache_dir = dirs.cache_dir().to_path_buf();
-        let logs_dir = Self::resolve_logs_dir()?;
-        let db_file = data_dir.join("copper.db");
-        Ok(Self {
-            data_dir,
-            versions_dir,
-            modules_dir,
-            cache_dir,
-            logs_dir,
-            db_file,
-        })
     }
 
     /// 创建全部目录（幂等）。
