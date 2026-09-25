@@ -740,6 +740,47 @@ onUnmounted(resetCrumbTitle);
   color: var(--copper-text-secondary);
 }
 
+/* GitHub 告警块（> [!NOTE] 等）：按类型着色，标题独立成行。 */
+.cd-doc :deep(.cd-alert) {
+  padding: 0.6em 1em;
+  border-left-width: 4px;
+  border-radius: var(--copper-radius-sm);
+  background: color-mix(in srgb, var(--alert-color) 10%, transparent);
+  border-left-color: var(--alert-color);
+  color: var(--copper-text-secondary);
+}
+
+.cd-doc :deep(.cd-alert__title) {
+  margin: 0 0 0.3em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--alert-color);
+}
+
+.cd-doc :deep(.cd-alert--note) {
+  --alert-color: var(--copper-accent);
+}
+
+.cd-doc :deep(.cd-alert--tip) {
+  --alert-color: var(--copper-success, #3fb950);
+}
+
+.cd-doc :deep(.cd-alert--important) {
+  --alert-color: var(--copper-accent);
+}
+
+.cd-doc :deep(.cd-alert--warning) {
+  --alert-color: var(--copper-warning);
+}
+
+.cd-doc :deep(.cd-alert--caution) {
+  --alert-color: var(--copper-danger);
+}
+
+.cd-doc :deep(.cd-alert > p:last-child) {
+  margin-bottom: 0;
+}
+
 /* 宽表格 / 宽内容横向滚动，不撑破卡片。 */
 .cd-doc :deep(table) {
   display: block;

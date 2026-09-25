@@ -19,6 +19,10 @@ use crate::task::{DownloadStatus, TaskSnapshot};
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 const BACKOFF_BASE_MS: u64 = 500;
 const BACKOFF_CAP_MS: u64 = 8_000;
+/// 单次读超时（两次收到数据之间的最长等待），防止连接半开时任务永久卡在下载中。
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// 建立连接超时。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// 速率统计的指数移动平均系数。
 const SPEED_EMA_ALPHA: f64 = 0.3;
 
@@ -200,17 +204,37 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    /// 创建下载管理器。
+    /// 创建下载管理器（直连）。
     ///
     /// `concurrency`：同时下载的任务数；`runtime`：用于派生下载任务的 tokio 运行时句柄。
     pub fn new(concurrency: usize, runtime: tokio::runtime::Handle) -> Self {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(300))
+        Self::new_with_proxy(concurrency, runtime, None)
+    }
+
+    /// 创建下载管理器并应用代理。
+    ///
+    /// `proxy`：全协议代理地址（如 `http://127.0.0.1:7890`），`None` 表示直连。
+    /// 本 crate 编译 reqwest 时关闭了默认特性，reqwest 不会自行读取系统/环境变量代理，
+    /// 因此需要代理的网络必须由内核经此参数显式注入。
+    pub fn new_with_proxy(
+        concurrency: usize,
+        runtime: tokio::runtime::Handle,
+        proxy: Option<String>,
+    ) -> Self {
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            // 只设读空闲超时：`.timeout()` 是「整个请求（含响应体）」的总超时，
+            // 会把 GB 级安装包下载拦腰掐断，这里改用逐次读超时防止连接半开挂死。
+            .read_timeout(READ_TIMEOUT)
             .user_agent(concat!("copper-downloader/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .expect("failed to build reqwest client");
+            .redirect(reqwest::redirect::Policy::limited(10));
+        if let Some(url) = proxy.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            match reqwest::Proxy::all(url) {
+                Ok(p) => builder = builder.proxy(p),
+                Err(e) => warn!("代理地址无效，将直连：{url} ({e})"),
+            }
+        }
+        let client = builder.build().expect("failed to build reqwest client");
         Self {
             inner: Arc::new(ManagerInner {
                 tasks: Mutex::new(HashMap::new()),
@@ -651,13 +675,19 @@ async fn download_once(
         .unwrap_or(0);
     state.total_bytes.store(total, Ordering::Relaxed);
 
-    let stream = match resp.status().as_u16() {
+    // 写入前先确保临时文件父目录存在：引擎此前只在 finalize 阶段建目录，
+    // 若调用方未预建 `dest` 的父目录，这里会以 `io::Error`（系统找不到指定的路径）
+    // 抛出，被显示成「网络错误」，与真实原因（本地目录缺失）不符。
+    ensure_parent_dir(&state.part_path).await?;
+
+    // 200 分支已把头截断重下，写入起点必须是 0；只有 206 续传才从旧文件长度继续。
+    let (stream, mut downloaded) = match resp.status().as_u16() {
         200 => {
             // 服务器忽略 Range，从头重下：截断临时文件。
             let file = tokio::fs::File::create(&state.part_path).await?;
             file.set_len(0).await?;
             state.downloaded_bytes.store(0, Ordering::Relaxed);
-            resp.bytes_stream()
+            (resp.bytes_stream(), 0u64)
         }
         206 => {
             // 追加模式写入，续传位置由文件长度决定。
@@ -667,7 +697,7 @@ async fn download_once(
                 .open(&state.part_path)
                 .await?;
             drop(file);
-            resp.bytes_stream()
+            (resp.bytes_stream(), start)
         }
         code => return Err(DownloadError::HttpStatus(code)),
     };
@@ -678,7 +708,6 @@ async fn download_once(
         .open(&state.part_path)
         .await?;
 
-    let mut downloaded = start;
     state.downloaded_bytes.store(downloaded, Ordering::Relaxed);
 
     let mut ema_speed: f64 = 0.0;
@@ -748,11 +777,19 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// 确保路径的父目录存在（幂等）。
+async fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+    Ok(())
+}
+
 /// 临时文件落位：Windows 下先移除目标再重命名。
 async fn finalize(part: &Path, dest: &Path) -> std::io::Result<()> {
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
+    ensure_parent_dir(dest).await?;
     let _ = tokio::fs::remove_file(dest).await;
     tokio::fs::rename(part, dest).await
 }

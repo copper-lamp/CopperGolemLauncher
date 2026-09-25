@@ -24,7 +24,13 @@ impl DownloadService {
         paths: Arc<Paths>,
         events: Arc<EventBus>,
     ) -> Self {
-        let manager = DownloadManager::new(concurrency, runtime);
+        // 引擎自建 reqwest 客户端，且编译时关闭了 reqwest 默认特性（不读环境变量代理），
+        // 必须显式注入内核解析出的代理，否则 http:// CDN 下载在需要代理的网络下会失败。
+        let manager = DownloadManager::new_with_proxy(
+            concurrency,
+            runtime,
+            crate::services::http_client::resolved_proxy(),
+        );
         // 引擎事件 → 内核事件总线（含前端桥接）。
         manager.add_listener(move |ev| {
             let (name, snapshot) = match ev {

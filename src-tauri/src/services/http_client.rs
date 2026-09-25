@@ -16,8 +16,11 @@ pub fn build_client(timeout: Duration) -> Client {
         .expect("failed to build reqwest client")
 }
 
-/// 把 Windows 系统代理注入环境变量，供只读环境变量的下游（下载引擎等）一并生效。
+/// 把 Windows 系统代理注入环境变量，供读环境变量的下游（子进程、系统组件）一并生效。
 /// 仅当未显式配置环境变量代理时注入，避免覆盖用户显式设置。应在启动早期、单线程阶段调用。
+///
+/// 注意：本函数**不能**让 reqwest 走系统代理。本项目 reqwest 关闭了默认特性（`default-features = false`），
+/// 其环境变量代理支持未启用；reqwest 客户端必须经 [`client_builder`] 或 [`resolved_proxy`] 显式应用代理。
 pub fn inject_system_proxy_env() {
     if env_proxy().is_some() {
         return;
@@ -25,9 +28,20 @@ pub fn inject_system_proxy_env() {
     #[cfg(windows)]
     if let Some(url) = windows_system_proxy() {
         unsafe {
-            std::env::set_var("HTTPS_PROXY", url);
+            // 同时写入大小写变体与 `ALL_PROXY`：明文 `http://` 目标只认 `HTTP_PROXY`/`ALL_PROXY`，
+            // 只写 `HTTPS_PROXY` 会让 CDN 下载等 http 请求绕过代理。
+            std::env::set_var("HTTPS_PROXY", &url);
+            std::env::set_var("HTTP_PROXY", &url);
+            std::env::set_var("ALL_PROXY", &url);
         }
     }
+}
+
+/// 解析当前生效的代理地址（`http://host:port`），供需要显式应用代理的组件复用（如下载引擎）。
+///
+/// 优先级：环境变量代理 → Windows 系统代理 → `None`（直连）。
+pub fn resolved_proxy() -> Option<String> {
+    env_proxy().or_else(windows_system_proxy)
 }
 
 /// 应用代理策略后的 `ClientBuilder`，调用方可再叠加 UA / 连接参数。
@@ -41,8 +55,7 @@ pub fn client_builder(timeout: Duration) -> ClientBuilder {
 
 /// 应用代理策略：优先显式环境变量代理，其次 Windows 系统代理（IE/Clash 写注册表），缺失则直连。
 fn apply_proxy(mut builder: ClientBuilder) -> ClientBuilder {
-    let proxy = env_proxy().or_else(windows_system_proxy);
-    if let Some(url) = proxy {
+    if let Some(url) = resolved_proxy() {
         if let Ok(p) = reqwest::Proxy::all(url) {
             builder = builder.proxy(p);
         }

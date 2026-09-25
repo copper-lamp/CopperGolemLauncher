@@ -44,6 +44,7 @@ export function renderReadme(
   let html: string;
   if (format === "markdown") {
     html = marked.parse(raw, { async: false, gfm: true, breaks: false });
+    html = convertGithubAlerts(html);
   } else {
     html = raw;
   }
@@ -58,6 +59,44 @@ export function renderReadme(
   return absolutize(clean, baseUrl);
 }
 
+/** GitHub 告警块类型（`> [!TYPE]`），与 GitHub 官方语法一致。 */
+const ALERT_TYPES = ["note", "tip", "important", "warning", "caution"] as const;
+const ALERT_PATTERN = new RegExp(`^\\[!(${ALERT_TYPES.join("|")})\\][ \\t]*\\r?\\n?`, "i");
+
+/**
+ * 把 GitHub 告警语法 `> [!WARNING]` 转成带类型的引用块。
+ *
+ * `marked` 不认识该扩展语法，不转换会在正文里原样显示 `[!WARNING]` 文本
+ * （用户反馈的「不兼容显示」之一）。转换后由 `.cd-doc blockquote.cd-alert--*`
+ * 按类型着色。
+ *
+ * 标记一定位于引用块首个段落的首个文本节点起始处，因此只裁切该节点，
+ * 不跨元素边界（首行后常紧跟 `<strong>` 等行内元素，跨节点裁切会损坏正文）。
+ */
+function convertGithubAlerts(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("blockquote").forEach((quote) => {
+    const first = quote.querySelector("p");
+    const firstText = first?.firstChild;
+    if (!first || !firstText || firstText.nodeType !== Node.TEXT_NODE) return;
+
+    const text = firstText.textContent ?? "";
+    const marker = ALERT_PATTERN.exec(text);
+    if (!marker) return;
+    const kind = marker[1].toLowerCase();
+
+    firstText.textContent = text.slice(marker[0].length);
+    if (!(first.textContent ?? "").trim()) first.remove();
+
+    const title = doc.createElement("p");
+    title.className = "cd-alert__title";
+    title.textContent = kind.toUpperCase();
+    quote.classList.add("cd-alert", `cd-alert--${kind}`);
+    quote.prepend(title);
+  });
+  return doc.body.innerHTML;
+}
+
 /**
  * 把相对链接 / 图片地址改写为绝对地址，并给外链补安全属性。
  *
@@ -65,43 +104,64 @@ export function renderReadme(
  */
 function absolutize(html: string, baseUrl?: string | null): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const base = baseUrl && baseUrl.trim() ? resolveBase(baseUrl) : null;
+  if (!baseUrl || !baseUrl.trim()) return doc.body.innerHTML;
+
+  // GitHub 仓库主页下，链接应落在 `blob/<ref>/`、图片应落在 `raw/<ref>/`，
+  // 直接按主页拼接会 404（README 大量使用相对路径）。非 GitHub 则回落为同址拼接。
+  const repo = parseGithubRepo(baseUrl);
+  const base = baseUrl.trim().replace(/\/+$/, "");
+  const linkBase = repo ? `${repo.host}/${repo.owner}/${repo.repo}/blob/HEAD` : base;
+  const assetBase = repo ? `${repo.host}/${repo.owner}/${repo.repo}/raw/HEAD` : base;
 
   doc.querySelectorAll("a[href]").forEach((a) => {
     const href = a.getAttribute("href") ?? "";
-    if (base && isRelative(href)) {
-      a.setAttribute("href", joinUrl(base, href));
+    // 纯页内锚点保持原页跳转，不新开窗口。
+    if (href.startsWith("#")) return;
+    if (isRelative(href)) {
+      a.setAttribute("href", joinUrl(linkBase, href));
     }
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer nofollow");
   });
 
-  if (base) {
-    doc.querySelectorAll("img[src]").forEach((img) => {
-      const src = img.getAttribute("src") ?? "";
-      if (isRelative(src)) img.setAttribute("src", joinUrl(base, src));
-    });
-    doc.querySelectorAll("source[srcset]").forEach((s) => {
-      const srcset = s.getAttribute("srcset") ?? "";
-      const fixed = srcset
-        .split(",")
-        .map((part) => {
-          const [url, ...rest] = part.trim().split(/\s+/);
-          if (!url || !isRelative(url)) return part.trim();
-          return [joinUrl(base, url), ...rest].join(" ");
-        })
-        .join(", ");
-      s.setAttribute("srcset", fixed);
-    });
-  }
+  doc.querySelectorAll("img[src]").forEach((img) => {
+    const src = img.getAttribute("src") ?? "";
+    if (isRelative(src)) img.setAttribute("src", joinUrl(assetBase, src));
+  });
+
+  doc.querySelectorAll("source[srcset]").forEach((s) => {
+    const srcset = s.getAttribute("srcset") ?? "";
+    const fixed = srcset
+      .split(",")
+      .map((part) => {
+        const [url, ...rest] = part.trim().split(/\s+/);
+        if (!url || !isRelative(url)) return part.trim();
+        return [joinUrl(assetBase, url), ...rest].join(" ");
+      })
+      .join(", ");
+    s.setAttribute("srcset", fixed);
+  });
 
   return doc.body.innerHTML;
 }
 
-/** 归一基准地址：GitHub 仓库主页补齐为 raw 可解析的同源根。 */
-function resolveBase(baseUrl: string): string {
-  const url = baseUrl.trim().replace(/\/+$/, "");
-  return url;
+/** 识别 GitHub 仓库主页，返回归一后的三要素；非 GitHub 返回 null。 */
+function parseGithubRepo(
+  url: string,
+): { host: string; owner: string; repo: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (host !== "github.com" && host !== "www.github.com") return null;
+  const segs = parsed.pathname.split("/").filter(Boolean);
+  const owner = segs[0];
+  const repo = segs[1]?.replace(/\.git$/, "");
+  if (!owner || !repo) return null;
+  return { host: "https://github.com", owner, repo };
 }
 
 /** 判断是否为相对路径（含锚点与协议相对写法）。 */

@@ -380,41 +380,92 @@ const README_PROXY_PREFIX: &str = "https://github.bibk.top";
 const README_DIRECT_HOST: &str = "https://raw.githubusercontent.com";
 /// 默认分支尝试顺序。
 const README_BRANCHES: &[&str] = &["main", "master"];
-/// 单次抓取的请求数上限（候选组合兜底，避免异常时放大请求）。
-const README_MAX_REQUESTS: usize = 24;
+/// 单个主机（镜像 / 直连）各自的请求数上限。
+///
+/// 每个主机独立计量：镜像不可达时不会耗尽全局预算，仍能切到直连继续探测；
+/// 同时避免候选组合异常时放大请求。
+const README_MAX_REQUESTS_PER_HOST: usize = 48;
+
+/// 语言别名表：`locale` 主语言 → 社区常见的等价标记（含中文习惯用法）。
+///
+/// 覆盖两类情况：一是同一语言的地区 / 文字变体（`zh-hans` / `zh-hant` / `cn`），
+/// 二是本地化简称（`ja` 常用 `jp`、`ko` 常用 `kr`）。
+fn language_aliases(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "zh" => &["zh-cn", "zh-hans", "zh-sg", "cn", "chs", "chinese", "zh-hant", "zh-tw", "cht"],
+        "ja" => &["jp", "japanese"],
+        "ko" => &["kr", "korean"],
+        "fr" => &["french"],
+        "de" => &["german"],
+        "es" => &["spanish"],
+        "pt" => &["portuguese", "pt-br"],
+        "ru" => &["russian"],
+        "it" => &["italian"],
+        "tr" => &["turkish"],
+        "vi" => &["vietnamese"],
+        "th" => &["thai"],
+        "id" => &["indonesian"],
+        "ar" => &["arabic"],
+        _ => &[],
+    }
+}
+
+/// readme 文件名形态模板（`{}` 为语言标签占位），按社区常见度从高到低。
+const README_FORMS: &[&str] = &[
+    "README_{}.md",
+    "README.{}.md",
+    "README-{}.md",
+    "README_{}.markdown",
+    "README.{}.markdown",
+];
 
 /// 按用户语言生成 readme 文件名候选（优先级从高到低）。
 ///
-/// 约定与 GitHub 社区惯例一致：`README.<lang>.md` 为主，兼容 `_` 分隔写法，
-/// 末位固定回退到无语言标识的 `README.md`。英语（`en`）无需语言变体，
-/// 直接返回默认候选。
+/// GitHub raw 路径**大小写敏感**，因此每个语言标签同时产出小写与全大写两种写法
+/// （社区两种写法都常见，如 `README_ZH.md` 与 `README_zh.md`）。
+/// 标签集合包含：完整 locale → 主语言 → 语言别名（见 `language_aliases`），
+/// 末位固定回退无语言标识的 `README.md` / `readme.md`。英语无需语言变体。
 pub fn readme_filename_candidates(locale: &str) -> Vec<String> {
     let norm = locale.trim().replace('_', "-");
     let lower = norm.to_lowercase();
     let lang = lower.split('-').next().unwrap_or("").to_string();
 
-    // 语言标识候选：完整 locale（zh-CN）在前，仅主语言（zh）在后。
+    // 标签集合（有序，去重）：完整 locale 在前，主语言次之，别名兜底。
     let mut tags: Vec<String> = Vec::new();
-    if !lang.is_empty() && lang != "en" {
-        let canonical = canonicalize_tag(&norm);
-        if !canonical.is_empty() {
-            tags.push(canonical);
+    let mut push_tag = |raw: &str, tags: &mut Vec<String>| {
+        let canonical = canonicalize_tag(raw);
+        if canonical.is_empty() {
+            return;
         }
-        let canonical_lang = canonicalize_tag(&lang);
-        if !canonical_lang.is_empty() && canonical_lang != tags[0] {
-            tags.push(canonical_lang);
+        for variant in [canonical.to_lowercase(), canonical.to_uppercase()] {
+            if !tags.contains(&variant) {
+                tags.push(variant);
+            }
+        }
+    };
+
+    if !lang.is_empty() && lang != "en" {
+        push_tag(&norm, &mut tags);
+        push_tag(&lang, &mut tags);
+        for alias in language_aliases(&lang) {
+            push_tag(alias, &mut tags);
         }
     }
 
     let mut out: Vec<String> = Vec::new();
-    for tag in &tags {
-        for name in [format!("README.{tag}.md"), format!("README_{tag}.md")] {
+    for form in README_FORMS {
+        for tag in &tags {
+            let name = form.replace("{}", tag);
             if !out.contains(&name) {
                 out.push(name);
             }
         }
     }
-    out.push("README.md".to_string());
+    for fallback in ["README.md", "readme.md"] {
+        if !out.contains(&fallback.to_string()) {
+            out.push(fallback.to_string());
+        }
+    }
     out
 }
 
@@ -464,16 +515,17 @@ pub fn parse_github_repo(url: &str) -> Option<(String, String)> {
 /// 抓取 GitHub readme 原文：镜像优先、直连回退；按分支与语言候选顺序尝试。
 ///
 /// 任一候选返回非空正文即命中；全部未命中（或无 GitHub 仓库）返回 None。
+/// 每个主机独立预算，镜像整体失败后仍会切直连重试同一批候选。
 pub async fn fetch_github_readme(repo_url: &str, locale: &str) -> Option<String> {
     let (owner, repo) = parse_github_repo(repo_url)?;
     let files = readme_filename_candidates(locale);
-    let mut requests = 0usize;
     for host in [README_PROXY_PREFIX, README_DIRECT_HOST] {
         let proxied = host == README_PROXY_PREFIX;
-        for branch in README_BRANCHES {
+        let mut requests = 0usize;
+        'probe: for branch in README_BRANCHES {
             for file in &files {
-                if requests >= README_MAX_REQUESTS {
-                    return None;
+                if requests >= README_MAX_REQUESTS_PER_HOST {
+                    break 'probe;
                 }
                 requests += 1;
                 let url = if proxied {
@@ -482,6 +534,7 @@ pub async fn fetch_github_readme(repo_url: &str, locale: &str) -> Option<String>
                     format!("{host}/{owner}/{repo}/{branch}/{file}")
                 };
                 if let Some(text) = fetch_text(&url).await {
+                    log::info!("[content-download] readme 命中 {url}");
                     return Some(text);
                 }
             }
@@ -617,5 +670,38 @@ mod tests {
             infer_project_url("liteldev/tstamp"),
             Some("https://github.com/liteldev/tstamp".to_string())
         );
+    }
+
+    #[test]
+    fn readme_candidates_cover_uppercase_language_tag() {
+        let files = readme_filename_candidates("zh-CN");
+        // 实测仓库 wo55555/Playback 的中文文档名为全大写 `README_ZH.md`，
+        // raw 路径大小写敏感，必须命中且排在较前位置。
+        assert!(files.contains(&"README_ZH.md".to_string()));
+        assert!(files.contains(&"README_zh.md".to_string()));
+        assert!(files.contains(&"README.zh-CN.md".to_string()));
+        assert!(files.contains(&"README_ZH-CN.md".to_string()));
+        assert!(files.contains(&"README_CN.md".to_string()));
+        let pos_upper = files.iter().position(|f| f == "README_ZH.md").unwrap();
+        assert!(pos_upper < 8, "全大写中文 readme 候选应靠前，实际下标 {pos_upper}");
+        // 无语言标识的兜底固定末位。
+        assert_eq!(files.last().unwrap(), "readme.md");
+        assert!(files.iter().any(|f| f == "README.md"));
+    }
+
+    #[test]
+    fn readme_candidates_english_only_fallback() {
+        let files = readme_filename_candidates("en-US");
+        assert!(!files.iter().any(|f| f.contains("EN")));
+        assert!(files.contains(&"README.md".to_string()));
+    }
+
+    #[test]
+    fn readme_candidates_no_duplicates() {
+        let files = readme_filename_candidates("zh-CN");
+        let mut sorted = files.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), files.len());
     }
 }
