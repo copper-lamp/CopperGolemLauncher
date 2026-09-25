@@ -13,10 +13,14 @@ import { useRoute, useRouter } from "vue-router";
 
 import AccountMenu from "./AccountMenu.vue";
 import { useI18n } from "../i18n";
+import { usePlatform } from "../composables/usePlatform";
 
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
+
+// 移动端没有窗口装饰，最小化 / 最大化 / 关闭按钮无意义，需隐藏（见 docs/平台适配.md 2.5）。
+const { isMobile } = usePlatform();
 
 /** 当前路由标题（i18n）与返回目标路径。 */
 const title = computed(() => {
@@ -135,31 +139,33 @@ function close() {
     <div class="titlebar__actions" id="copper-titlebar-actions" />
     <div class="titlebar__right">
       <AccountMenu />
-      <div class="titlebar__sep" />
-      <div class="titlebar__controls">
-        <button
-          class="titlebar__btn"
-          :title="t('titlebar.minimize')"
-          @click="minimize"
-        >
-          <Minus :size="14" />
-        </button>
-        <button
-          class="titlebar__btn"
-          :title="maximized ? t('titlebar.restore') : t('titlebar.maximize')"
-          @click="toggleMaximize"
-        >
-          <Copy v-if="maximized" :size="12" />
-          <Square v-else :size="11" />
-        </button>
-        <button
-          class="titlebar__btn titlebar__btn--close"
-          :title="t('titlebar.close')"
-          @click="close"
-        >
-          <X :size="14" />
-        </button>
-      </div>
+      <template v-if="!isMobile">
+        <div class="titlebar__sep" />
+        <div class="titlebar__controls">
+          <button
+            class="titlebar__btn"
+            :title="t('titlebar.minimize')"
+            @click="minimize"
+          >
+            <Minus :size="14" />
+          </button>
+          <button
+            class="titlebar__btn"
+            :title="maximized ? t('titlebar.restore') : t('titlebar.maximize')"
+            @click="toggleMaximize"
+          >
+            <Copy v-if="maximized" :size="12" />
+            <Square v-else :size="11" />
+          </button>
+          <button
+            class="titlebar__btn titlebar__btn--close"
+            :title="t('titlebar.close')"
+            @click="close"
+          >
+            <X :size="14" />
+          </button>
+        </div>
+      </template>
     </div>
   </header>
 </template>

@@ -31,17 +31,13 @@ serde_json = "1"
 thiserror = "2"
 log = "0.4"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 parking_lot = "0.12"
-directories = "5"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["signature"] }
 openssl = "0.10"
 semver = "1"
-keyring = "3"
-self-replace = "1"
 base64 = "0.21"
 quick-xml = "0.41"
 async-trait = "0.1"
@@ -50,7 +46,10 @@ libloading = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 copper-downloader = { path = "../copper-downloader" }
 
+# TLS 后端按平台选择：Windows 走系统 Schannel（native-tls，无额外依赖、
+# 跟随系统证书库）；Android/Linux 走 rustls（纯 Rust，交叉编译无需 OpenSSL）。
 [target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
@@ -70,3 +69,13 @@ windows = { version = "0.58", features = [
     "Security_Credentials",
     "UI_ApplicationSettings",
 ] }
+
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+# 桌面平台专属依赖：
+# - keyring：系统密钥环，无 Android 后端（Android 走 Keystore，见 platform/secret.rs）。
+# - self-replace：更新时自替换可执行文件，移动端由应用商店分发，不适用。
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+keyring = "3"
+self-replace = "1"

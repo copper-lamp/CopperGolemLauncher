@@ -1,15 +1,20 @@
 name: build
 
-# 每日/提交/PR 校验：前端编译 + Rust 编译，用于持续验证代码可构建。
+# 三平台编译校验：Windows 出完整产物，Linux / Android 做交叉编译检查。
+#
+# 为什么前端单独成一个 job：`tauri::generate_context!` 会把 `frontendDist`
+# （`../frontend/dist`）内嵌进内核，**前端产物是 Rust 编译的前置**。集中构建一次
+# 并作为 artifact 分发，可避免三个平台各跑一遍 `vue-tsc` 类型检查。
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  check:
-    runs-on: windows-latest
-    timeout-minutes: 60
+  # 前端构建（含 vue-tsc 类型检查），产出 dist 供各平台复用。
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -18,21 +23,158 @@ jobs:
         with:
           node-version: 24
 
+      - name: 安装前端依赖
+        working-directory: .
+        run: npm --prefix frontend ci
+
+      - name: 构建前端（含 vue-tsc 类型检查）
+        working-directory: .
+        run: npm --prefix frontend run build
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          # 仅用于同一次流水线内的中转，保留 1 天即可。
+          retention-days: 1
+
+  # Windows x64：唯一出完整可执行产物的平台。
+  # 刻意不给 `name`：job id 为 `check`，其必检项名为 `build / check`，
+  # 改名会让既有分支保护规则失配、静默卡住所有 PR。
+  check:
+    needs: frontend
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: 缓存 Rust 构建产物
         uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x86_64
 
-      - name: 安装前端依赖
-        working-directory: .
-        run: npm --prefix frontend install
-
-      - name: 构建前端
-        working-directory: .
-        run: npm --prefix frontend run build
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
 
       - name: 构建 Rust (release)
         working-directory: .
         # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
         run: cargo build --release --features vendored-openssl --manifest-path src-tauri/Cargo.toml
+
+  # Linux x64：编译检查（不做打包，产物分发不在本阶段范围）。
+  linux:
+    name: Linux 编译检查
+    needs: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Tauri 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-x86_64
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: 编译检查 (linux-x86_64)
+        working-directory: .
+        # Linux 走 rustls，openssl 由 libssl-dev 提供，无需 vendored。
+        run: cargo check --target x86_64-unknown-linux-gnu --manifest-path src-tauri/Cargo.toml
+
+  # Android arm64：编译检查。
+  #
+  # 注意：这里只做 `cargo check`。`tauri-build` 仅在设置了
+  # `TAURI_ANDROID_PROJECT_PATH` 时才要求生成 Gradle 工程，故无需
+  # `tauri android init` 也能通过类型检查；真实打包留到阶段 1（见 docs/平台适配.md）。
+  android:
+    name: Android 编译检查
+    needs: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装系统依赖（vendored openssl 需要 perl / make）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-arm64
+
+      - name: 配置 Android NDK 交叉编译环境
+        run: |
+          # ubuntu runner 预装 NDK，并导出 ANDROID_NDK_LATEST_HOME / ANDROID_NDK_HOME
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          if [ -z "$NDK" ]; then
+            echo "未找到 Android NDK，runner 环境变量缺失" >&2
+            exit 1
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          API=21
+
+          # clang 包装脚本加入 PATH（仅对后续 step 生效）
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+
+          {
+            # openssl-src(vendored) 依赖该变量定位 NDK
+            echo "ANDROID_NDK_ROOT=$NDK"
+            # rustc 链接器
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android${API}-clang"
+            # rusqlite(bundled) 等 -sys crate 经 cc crate 编译 C 代码，走 NDK clang
+            echo "CC_aarch64-linux-android=aarch64-linux-android${API}-clang"
+            echo "CXX_aarch64-linux-android=aarch64-linux-android${API}-clang++"
+            echo "AR_aarch64-linux-android=llvm-ar"
+            echo "RANLIB_aarch64-linux-android=llvm-ranlib"
+          } >> "$GITHUB_ENV"
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: 编译检查 (android-arm64)
+        working-directory: .
+        # Android 无系统 OpenSSL，openssl 需从源码交叉编译（openssl-src 支持 NDK）。
+        run: cargo check --target aarch64-linux-android --features vendored-openssl --manifest-path src-tauri/Cargo.toml

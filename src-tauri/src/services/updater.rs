@@ -19,6 +19,7 @@ use crate::error::KernelError;
 use crate::registry::events::EventBus;
 use crate::services::download::DownloadService;
 use crate::services::paths::Paths;
+use crate::services::registry::model::Platform;
 use crate::services::settings::SettingsService;
 
 const GITHUB_API: &str = "https://api.github.com";
@@ -146,7 +147,10 @@ impl UpdaterService {
         let mut st = self.status.lock();
         match latest_v {
             Some(v) if v > current_v => {
-                if let Some(asset) = pick_asset(resp.get("assets").and_then(Value::as_array)) {
+                let platform = Platform::current();
+                if let Some(asset) =
+                    pick_asset(resp.get("assets").and_then(Value::as_array), platform.as_ref())
+                {
                     st.latest = Some(UpdateInfo {
                         version: tag,
                         notes: resp
@@ -221,6 +225,10 @@ impl UpdaterService {
     }
 
     /// 安装已下载的更新：原地替换可执行文件并重启应用。
+    ///
+    /// 仅桌面平台：依赖 `self-replace` 自替换可执行文件。移动端（Android）
+    /// 由应用商店分发更新，不存在「原地替换自身」的通道，故显式不支持。
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn install(&self) -> Result<(), KernelError> {
         let info = {
             let st = self.status.lock();
@@ -242,6 +250,14 @@ impl UpdaterService {
             let _ = std::process::Command::new(exe).spawn();
         }
         std::process::exit(0);
+    }
+
+    /// 移动端：更新由应用商店负责，内核不提供自替换通道。
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub fn install(&self) -> Result<(), KernelError> {
+        Err(KernelError::Updater(
+            "移动端更新由应用商店分发，内核不支持原地替换".into(),
+        ))
     }
 
     /// 当前更新状态。
@@ -337,9 +353,23 @@ struct ReleaseAsset {
     url: String,
 }
 
-/// 挑选更新资产：优先 Windows 可执行文件（供 `self-replace` 原地替换），
-/// 否则取第一个带下载地址的资产。
-fn pick_asset(assets: Option<&Vec<Value>>) -> Option<ReleaseAsset> {
+/// 平台对应的更新包文件名后缀（小写比较）。
+///
+/// 同一 Release 会同时挂多平台产物，必须按当前平台精确挑，否则会把别的平台
+/// 的包投给用户。未知平台返回空集合 —— 只走「第一个带地址的资产」兜底。
+fn asset_suffixes(platform: Option<&Platform>) -> &'static [&'static str] {
+    match platform {
+        Some(Platform::WindowsX86_64) | Some(Platform::WindowsAarch64) => &[".exe"],
+        Some(Platform::LinuxX86_64) => &[".appimage", ".deb"],
+        Some(Platform::AndroidArm64) => &[".apk"],
+        Some(Platform::Unknown(_)) | None => &[],
+    }
+}
+
+/// 挑选更新资产：优先匹配当前平台的产物后缀，否则取第一个带下载地址的资产。
+///
+/// `platform` 由调用方传入（通常为 `Platform::current()`），便于测试注入。
+fn pick_asset(assets: Option<&Vec<Value>>, platform: Option<&Platform>) -> Option<ReleaseAsset> {
     let assets = assets?;
     if assets.is_empty() {
         return None;
@@ -350,11 +380,13 @@ fn pick_asset(assets: Option<&Vec<Value>>) -> Option<ReleaseAsset> {
         let size = a.get("size").and_then(Value::as_u64).unwrap_or(0);
         Some(ReleaseAsset { name, size, url })
     };
+    let suffixes = asset_suffixes(platform);
     assets
         .iter()
         .find_map(|a| {
             let ra = with_url(a)?;
-            if ra.name.to_ascii_lowercase().ends_with(".exe") {
+            let lower = ra.name.to_ascii_lowercase();
+            if suffixes.iter().any(|s| lower.ends_with(s)) {
                 Some(ra)
             } else {
                 None
@@ -369,26 +401,68 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn pick_asset_prefers_exe() {
+    fn pick_asset_prefers_exe_on_windows() {
         let assets = vec![
             json!({"name": "copper-golem-0.2.0.zip", "size": 10, "browser_download_url": "https://x/z.zip"}),
             json!({"name": "copper-golem-0.2.0.exe", "size": 20, "browser_download_url": "https://x/z.exe"}),
         ];
-        let picked = pick_asset(Some(&assets)).expect("asset should be picked");
+        let picked = pick_asset(Some(&assets), Some(&Platform::WindowsX86_64))
+            .expect("asset should be picked");
         assert_eq!(picked.name, "copper-golem-0.2.0.exe");
         assert_eq!(picked.size, 20);
     }
 
     #[test]
+    fn pick_asset_matches_linux_bundle_not_exe() {
+        let assets = vec![
+            json!({"name": "copper-golem-0.2.0.exe", "size": 20, "browser_download_url": "https://x/z.exe"}),
+            json!({"name": "copper-golem-0.2.0_amd64.deb", "size": 30, "browser_download_url": "https://x/z.deb"}),
+        ];
+        let picked = pick_asset(Some(&assets), Some(&Platform::LinuxX86_64))
+            .expect("asset should be picked");
+        assert_eq!(picked.name, "copper-golem-0.2.0_amd64.deb");
+    }
+
+    #[test]
+    fn pick_asset_matches_android_apk() {
+        let assets = vec![
+            json!({"name": "copper-golem-0.2.0.exe", "size": 20, "browser_download_url": "https://x/z.exe"}),
+            json!({"name": "copper-golem-0.2.0.apk", "size": 40, "browser_download_url": "https://x/z.apk"}),
+        ];
+        let picked = pick_asset(Some(&assets), Some(&Platform::AndroidArm64))
+            .expect("asset should be picked");
+        assert_eq!(picked.name, "copper-golem-0.2.0.apk");
+    }
+
+    #[test]
+    fn pick_asset_suffix_match_is_case_insensitive() {
+        let assets = vec![json!({"name": "CopperGolem-0.2.0.AppImage", "size": 8, "browser_download_url": "https://x/z"})];
+        let picked = pick_asset(Some(&assets), Some(&Platform::LinuxX86_64))
+            .expect("asset should be picked");
+        assert_eq!(picked.name, "CopperGolem-0.2.0.AppImage");
+    }
+
+    #[test]
     fn pick_asset_falls_back_to_first_with_url() {
         let assets = vec![json!({"name": "bundle.zip", "size": 5, "browser_download_url": "https://x/b.zip"})];
-        let picked = pick_asset(Some(&assets)).expect("asset should be picked");
+        let picked = pick_asset(Some(&assets), Some(&Platform::WindowsX86_64))
+            .expect("asset should be picked");
         assert_eq!(picked.name, "bundle.zip");
     }
 
     #[test]
+    fn pick_asset_unknown_platform_uses_fallback() {
+        let assets = vec![
+            json!({"name": "copper-golem-0.2.0.exe", "size": 20, "browser_download_url": "https://x/z.exe"}),
+            json!({"name": "copper-golem-0.2.0.apk", "size": 40, "browser_download_url": "https://x/z.apk"}),
+        ];
+        let picked = pick_asset(Some(&assets), None).expect("asset should be picked");
+        assert_eq!(picked.name, "copper-golem-0.2.0.exe");
+    }
+
+    #[test]
     fn pick_asset_none_when_empty() {
-        assert!(pick_asset(Some(&vec![])).is_none());
-        assert!(pick_asset(None).is_none());
+        assert!(pick_asset(Some(&vec![]), Some(&Platform::WindowsX86_64)).is_none());
+        assert!(pick_asset(None, Some(&Platform::WindowsX86_64)).is_none());
     }
 }

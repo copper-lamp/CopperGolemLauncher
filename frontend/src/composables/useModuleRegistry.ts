@@ -23,9 +23,7 @@ import {
   type RegistryStatus,
 } from "../api/registry";
 import { useLocaleRef } from "../i18n";
-
-/** 当前平台的权威枚举值（cgl-libs.md 2.3.6「三、平台与资产」）。 */
-const PLATFORM_WINDOWS_X64 = "windows-x86_64";
+import { currentPlatform } from "./usePlatform";
 
 /** 内核 `Module` trait 契约版本，当前为 1（2.3.2 `api_version`）。 */
 const SUPPORTED_API_VERSION = 1;
@@ -39,19 +37,8 @@ const SUPPORTED_API_VERSION = 1;
 const SUPPORTED_SCHEMA_VERSION = 1;
 
 /**
- * 探测当前平台枚举值。
- *
- * 仅用于把条目 `platforms` / `assets` 与本机比对；无法识别的架构按 x86_64 处理
- * （本项目当前只有 MSVC 一种工具链，见 2.3.6 平台枚举选型理由）。
+ * 解析 semver 为可比较的数值三元组；非法输入返回 `null`。
  */
-function detectPlatform(): string {
-  if (typeof navigator === "undefined") return PLATFORM_WINDOWS_X64;
-  const ua = navigator.userAgent;
-  if (/aarch64|arm64/i.test(ua)) return "windows-aarch64";
-  return PLATFORM_WINDOWS_X64;
-}
-
-/** 解析 semver 为可比较的数值三元组；非法输入返回 `null`。 */
 function parseSemver(value: string | null | undefined): number[] | null {
   if (typeof value !== "string") return null;
   const core = value.trim().replace(/^v/i, "").split(/[-+]/)[0];
@@ -138,7 +125,6 @@ const localLoading = ref(false);
 const refreshing = ref(false);
 
 const locale = useLocaleRef();
-const platform = detectPlatform();
 
 let inflight: Promise<void> | null = null;
 
@@ -172,7 +158,7 @@ function entryBlockedBy(
 
   // 平台不兼容：`platforms` 缺省时不判负（容忍内核尚未合并该字段）。
   if (Array.isArray(entry.platforms) && entry.platforms.length > 0) {
-    if (!entry.platforms.includes(platform)) reasons.push("platform");
+    if (!entry.platforms.includes(currentPlatform())) reasons.push("platform");
   }
 
   if (launcherVersion) {

@@ -17,3 +17,5 @@ Thumbs.db
 #dev
 *.env
 docs
+# 开发期隔离数据根（dev.cmd 使用：内核数据 + WebView2 profile）
+.devdata/

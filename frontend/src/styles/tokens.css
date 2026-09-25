@@ -52,6 +52,13 @@
   /* 左导航 */
   --copper-nav-w: 64px;
 
+  /* 安全区（刘海 / 圆角 / 手势条）：桌面端 env() 取不到值，恒为 0。
+   * 移动端由浏览器注入真实内边距，Shell 与底部标签栏据此避让系统区域。 */
+  --copper-safe-top: env(safe-area-inset-top, 0px);
+  --copper-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --copper-safe-left: env(safe-area-inset-left, 0px);
+  --copper-safe-right: env(safe-area-inset-right, 0px);
+
   /* 字体 */
   --copper-font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei",
     system-ui, -apple-system, sans-serif;

@@ -15,40 +15,111 @@ pub mod registry;
 pub mod services;
 pub mod state;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tauri::Manager;
 
-/// 最小 stdout 日志后端。
+/// 内核日志后端：标准输出 +（可选）文件落盘。
 ///
-/// `tauri-plugin-log` 会在启动时强制创建文件日志目录，在受限环境下会因无法
-/// 写入 `app_log_dir` 而直接中断应用启动。这里改为仅输出到标准输出：保留
-/// 全部 `log::` 调用点的可观测性，同时不产生任何文件系统副作用。
-struct StdoutLogger;
+/// 不用 `tauri-plugin-log`：它在启动时必须先创建 `app_log_dir`，受限环境下会
+/// 因该目录不可写而直接中断应用启动。可观测性不该成为启动失败的原因。
+///
+/// 这里自己做两层：
+/// - stdout：`tauri dev` 下即时可见；
+/// - 文件：让"事后复盘"成为可能。此前只有 stdout，终端一关现场就没了，
+///   排查只能靠反复重编重跑。
+///
+/// 文件句柄在路径体系就绪后才挂上（[`attach_file_sink`]）：日志目录的解析规则
+/// 由 `Paths` 统一持有，此处另起一套平台探测只会制造第二套真相。挂载失败只
+/// 降级为"仅 stdout"并留一条警告，不中断启动。
+struct KernelLogger {
+    /// 落盘句柄；`None` 表示仅输出到 stdout（尚未挂载或挂载失败）。
+    sink: parking_lot::Mutex<Option<std::fs::File>>,
+    /// 进程启动时刻，用于给日志行标注相对时间。
+    ///
+    /// 不自造日期格式化（那要额外引入时间库）：绝对时间可由日志文件的 mtime
+    /// 还原，行内只有相对偏移，足以对齐同一次启动内事件的先后顺序。
+    started: std::time::Instant,
+}
 
-impl log::Log for StdoutLogger {
+/// 单次运行的日志文件大小上限；超过即轮转为 `kernel.log.prev`，避免无限增长。
+const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 全局日志器实例（`log::set_logger` 要求 `'static` 引用）。
+static LOGGER: std::sync::OnceLock<KernelLogger> = std::sync::OnceLock::new();
+
+impl log::Log for KernelLogger {
     fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
         true
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        println!(
-            "[{}][{}] {}",
+        let line = format!(
+            "[+{:>8.3}s][{}][{}] {}",
+            self.started.elapsed().as_secs_f32(),
             record.level(),
             record.target(),
             record.args()
         );
+        println!("{line}");
+        if let Some(file) = self.sink.lock().as_mut() {
+            use std::io::Write;
+            // 不做缓冲：崩溃现场正是最需要日志的时刻，缓冲会把它一起丢掉。
+            let _ = writeln!(file, "{line}");
+        }
     }
 
-    fn flush(&self) {}
+    fn flush(&self) {
+        use std::io::Write;
+        if let Some(file) = self.sink.lock().as_mut() {
+            let _ = file.flush();
+        }
+    }
 }
 
 /// 安装全局日志后端（幂等：重复调用只生效一次）。
+///
+/// 此处只装 stdout 部分；文件部分由 [`attach_file_sink`] 在路径就绪后补挂。
 fn init_logging() {
-    static LOGGER: StdoutLogger = StdoutLogger;
-    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+    let logger = LOGGER.get_or_init(|| KernelLogger {
+        sink: parking_lot::Mutex::new(None),
+        started: std::time::Instant::now(),
+    });
+    let _ = log::set_logger(logger).map(|()| log::set_max_level(log::LevelFilter::Info));
 }
 
+/// 挂载文件日志（须在目录就绪后调用，即 `Paths::prepare` 之后）。
+///
+/// 失败只降级为"仅 stdout"，绝不中断启动。
+fn attach_file_sink(logs_dir: &Path) {
+    let Some(logger) = LOGGER.get() else {
+        log::warn!("[kernel] 日志后端尚未初始化，跳过文件落盘");
+        return;
+    };
+    match open_log_file(logs_dir) {
+        Ok(file) => *logger.sink.lock() = Some(file),
+        Err(e) => log::warn!(
+            "[kernel] 日志无法落盘，本次运行仅输出到 stdout ({}): {e}",
+            logs_dir.display()
+        ),
+    }
+}
+
+/// 打开（必要时创建）日志文件；超过上限先把旧文件轮转为 `kernel.log.prev`。
+fn open_log_file(logs_dir: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(logs_dir)?;
+    let path = logs_dir.join("kernel.log");
+    let oversized = std::fs::metadata(&path)
+        .map(|m| m.len() > LOG_ROTATE_BYTES)
+        .unwrap_or(false);
+    if oversized {
+        std::fs::rename(&path, logs_dir.join("kernel.log.prev"))?;
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(&path)
+}
+
+use error::KernelError;
 use registry::events::EventBus;
 use registry::intents::IntentRegistry;
 use registry::modules::ModuleRegistry;
@@ -84,10 +155,23 @@ pub fn run() {
             // 根目录由宿主（Tauri）提供：桌面端为标准应用数据目录，安卓端为应用
             // 私有 `filesDir`。显式传入而非依赖 `directories` 探测，避免安卓无
             // XDG 目录导致启动中断（见 docs/平台适配.md 3.1 风险 2）。
-            let paths = Arc::new(Paths::resolve(app.handle())?);
-            paths.ensure_dirs()?;
-            let db = Arc::new(DatabaseService::open(paths.db_file())?);
-            db.migrate_scope("core", CORE_MIGRATIONS)?;
+            //
+            // `prepare` 会建目录并做写探针：目录"存在但不可写"是此前最难定位的
+            // 一类启动失败（裸 `os error 5`，不带路径），现在会带着目录名报出。
+            let mut resolved = Paths::resolve(app.handle())
+                .map_err(|e| KernelError::startup("解析数据目录", e))?;
+            resolved
+                .prepare()
+                .map_err(|e| KernelError::startup("准备数据目录", e))?;
+            // 目录就绪后立刻挂文件日志，让后续每一步初始化都有落盘现场。
+            attach_file_sink(resolved.logs_dir());
+            let paths = Arc::new(resolved);
+
+            let db = Arc::new(DatabaseService::open(paths.db_file()).map_err(|e| {
+                KernelError::startup(format!("打开数据库 {}", paths.db_file().display()), e)
+            })?);
+            db.migrate_scope("core", CORE_MIGRATIONS)
+                .map_err(|e| KernelError::startup("执行内核 schema 迁移", e))?;
 
             // 平台后端：按当前平台装配（凭证存储等），供各服务注入。
             let backends = Arc::new(platform::Backends::assemble());
@@ -97,9 +181,14 @@ pub fn run() {
             events.bind_app(app.handle().clone());
 
             // 能力服务。
-            let settings =
-                Arc::new(SettingsService::new(db.clone(), events.clone(), settings_defaults())?);
-            let i18n = Arc::new(I18nService::new(settings.clone())?);
+            let settings = Arc::new(
+                SettingsService::new(db.clone(), events.clone(), settings_defaults())
+                    .map_err(|e| KernelError::startup("装载设置服务", e))?,
+            );
+            let i18n = Arc::new(
+                I18nService::new(settings.clone())
+                    .map_err(|e| KernelError::startup("装载 i18n 服务", e))?,
+            );
             let theme = Arc::new(ThemeService::new(settings.clone()));
             // 提示依赖 i18n：文案取自内核语言包，随语言切换自动跟随。
             let tips = Arc::new(TipsService::new(i18n.clone()));

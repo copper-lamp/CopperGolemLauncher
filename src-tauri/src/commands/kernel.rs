@@ -10,9 +10,13 @@ use crate::state::KernelContext;
 #[tauri::command]
 pub fn kernel_info(kernel: State<'_, KernelContext>) -> CommandResult<Value> {
     let kc = kernel.inner();
+    let backends = kc.backends();
     Ok(json!({
         "name": "copper-golem",
         "version": env!("CARGO_PKG_VERSION"),
+        // 平台标识与形态：驱动前端 Shell 的桌面/移动两态布局（见 docs/平台适配.md 2.5）。
+        "platform": backends.platform_id(),
+        "formFactor": backends.form_factor().as_str(),
         "paths": kc.paths().snapshot(),
         "theme": kc.theme().snapshot(),
         "locales": kc.i18n().supported_locales(),

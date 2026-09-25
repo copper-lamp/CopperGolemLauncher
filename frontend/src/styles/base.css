@@ -42,6 +42,14 @@ body {
   overflow: hidden;
 }
 
+/* 移动端：全屏无圆角（无边框窗口的圆角由系统负责），并让出安全区。 */
+html[data-form-factor="mobile"] .app-shell {
+  border-radius: 0;
+  padding-top: var(--copper-safe-top);
+  padding-left: var(--copper-safe-left);
+  padding-right: var(--copper-safe-right);
+}
+
 /* 统一滚动条 */
 ::-webkit-scrollbar {
   width: 10px;

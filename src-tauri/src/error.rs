@@ -47,9 +47,28 @@ pub enum KernelError {
 
     #[error("配置错误: {0}")]
     Config(String),
+
+    /// 启动装配失败：`step` 标出失败的步骤，`source` 保留底层原因。
+    ///
+    /// setup 阶段此前一律用 `?` 冒泡，最终被 Tauri 压成一句
+    /// `Failed to setup app: ...`，既看不出是哪一步，也看不出涉及哪个路径。
+    /// 包一层步骤名后，启动失败一次就能定位。
+    #[error("启动失败于「{step}」: {source}")]
+    Startup {
+        step: String,
+        source: Box<KernelError>,
+    },
 }
 
 impl KernelError {
+    /// 为启动装配步骤附加步骤名（保留底层原因）。
+    pub fn startup(step: impl Into<String>, source: KernelError) -> Self {
+        Self::Startup {
+            step: step.into(),
+            source: Box::new(source),
+        }
+    }
+
     /// 人类可读的短消息（去掉内部技术细节，仅保留首句）。
     pub fn friendly(&self) -> String {
         self.to_string()
@@ -82,6 +101,7 @@ impl CommandError {
                 KernelError::Account(_) => "account",
                 KernelError::Updater(_) => "updater",
                 KernelError::Config(_) => "config",
+                KernelError::Startup { .. } => "startup",
             }
             .to_string(),
             message: e.friendly(),

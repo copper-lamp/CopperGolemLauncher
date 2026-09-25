@@ -25,10 +25,19 @@ export function themeSetAccent(hex: string): Promise<void> {
   return call<void>("theme_set_accent", { hex });
 }
 
-/** 内核信息聚合（版本 / 路径 / 主题 / 语言）。 */
+/** 内核信息聚合（版本 / 平台 / 路径 / 主题 / 语言）。 */
 export interface KernelInfo {
   name: string;
   version: string;
+  /**
+   * 平台枚举值（如 `windows-x86_64` / `android-arm64`）。
+   *
+   * 声明为可选：容忍内核尚未下发该字段的旧版本，此时前端退回 UA 兜底
+   * （见 `composables/usePlatform.ts`）。
+   */
+  platform?: string;
+  /** 平台形态：驱动 Shell 桌面 / 移动两态布局。 */
+  formFactor?: "desktop" | "mobile";
   paths: Record<string, string>;
   theme: ThemeSnapshot;
   locales: string[];
