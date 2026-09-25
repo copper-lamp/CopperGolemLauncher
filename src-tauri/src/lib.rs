@@ -147,6 +147,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 附加模块前端产物经自定义协议暴露（Windows/安卓映射为 http://cglmod.localhost）。
+        .register_uri_scheme_protocol(registry::frontend::SCHEME, |app, request| {
+            registry::frontend::serve_asset(&app, request)
+        })
         .setup(|app| {
             let runtime = tauri::async_runtime::handle().inner().clone();
 
@@ -321,6 +325,10 @@ pub fn run() {
             // 附加模块：已解包目录扫描与卸载（安装后仍需重启装载，见 cgl-libs.md 3.5 G5）
             commands::modules::modules_installed_addons,
             commands::modules::modules_uninstall,
+            // 附加模块：安装链路 + 前端入口清单 + 后端命令分发
+            commands::modules::modules_install,
+            commands::modules::modules_frontends,
+            commands::modules::module_invoke,
             commands::intents::intents_request,
             commands::intents::intents_declared,
             // 元数据（cgl-libs）：索引状态 / 刷新 / 远端模块列表

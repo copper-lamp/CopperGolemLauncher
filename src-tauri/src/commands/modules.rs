@@ -83,6 +83,54 @@ pub fn sandbox_revoke_permission(
         .map_err(into_command_error)
 }
 
+/// 安装附加模块：下载 → sha256 → 解包 → 原子落位（见 `registry::install`）。
+///
+/// 安装完成后**不立即装载**（装载只在启动期执行一次），返回 `restart_required`，
+/// 由前端提示用户重启——这是「重启生效」的产品决策。
+///
+/// 本命令是 async 且会等待下载完成（可能数十秒），前端应以加载态呈现。
+#[tauri::command]
+pub async fn modules_install(
+    kernel: State<'_, KernelContext>,
+    id: String,
+) -> CommandResult<crate::registry::install::InstallOutcome> {
+    crate::registry::install::install_addon(kernel.inner(), &id)
+        .await
+        .map_err(into_command_error)
+}
+
+/// 附加模块前端入口清单（供前端 Shell 运行期装配）。
+///
+/// 只读磁盘，不装载：返回已启用、且磁盘上确有入口脚本的模块。
+#[tauri::command]
+pub fn modules_frontends(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<crate::registry::frontend::AddonFrontendView>> {
+    Ok(crate::registry::frontend::list_frontends(kernel.inner()))
+}
+
+/// 向指定模块分发一条后端命令（附加模块的能力通道）。
+///
+/// 前端统一经此调用附加模块的后端逻辑：内核按 `module_id` 找到已装载模块并转发
+/// 到其 `Module::invoke`。内置模块不走此路径（其命令在静态命令表中）。
+#[tauri::command]
+pub fn module_invoke(
+    kernel: State<'_, KernelContext>,
+    module_id: String,
+    command: String,
+    args: Option<serde_json::Value>,
+) -> CommandResult<serde_json::Value> {
+    kernel
+        .inner()
+        .modules()
+        .invoke(
+            &module_id,
+            &command,
+            args.unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(into_command_error)
+}
+
 /// 注销模块（卸载时调用）：清除授权与留痕。
 #[tauri::command]
 pub fn sandbox_revoke(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {

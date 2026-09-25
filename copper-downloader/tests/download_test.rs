@@ -32,6 +32,14 @@ fn sha256_hex(data: &[u8]) -> String {
 
 /// 支持 Range、分块延时的本地静态文件服务。
 async fn start_server(data: Arc<Vec<u8>>, ranges_seen: Arc<Mutex<Vec<String>>>) -> SocketAddr {
+    start_server_with_range_behavior(data, ranges_seen, false).await
+}
+
+async fn start_server_with_range_behavior(
+    data: Arc<Vec<u8>>,
+    ranges_seen: Arc<Mutex<Vec<String>>>,
+    ignore_range: bool,
+) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -54,7 +62,7 @@ async fn start_server(data: Arc<Vec<u8>>, ranges_seen: Arc<Mutex<Vec<String>>>) 
                             ranges_seen.lock().push(r.clone());
                         }
                         let (status, start) = match &range {
-                            Some(r) => {
+                            Some(r) if !ignore_range => {
                                 let start: usize = r
                                     .trim_start_matches("bytes=")
                                     .trim_end_matches('-')
@@ -62,7 +70,7 @@ async fn start_server(data: Arc<Vec<u8>>, ranges_seen: Arc<Mutex<Vec<String>>>) 
                                     .unwrap_or(0);
                                 (StatusCode::PARTIAL_CONTENT, start)
                             }
-                            None => (StatusCode::OK, 0),
+                            _ => (StatusCode::OK, 0),
                         };
                         let body = if start == 0 {
                             chunked_body(data.to_vec(), CHUNK, CHUNK_DELAY)
@@ -164,6 +172,32 @@ async fn download_completes_and_verifies() {
     assert_eq!(std::fs::read(&dest).unwrap(), payload);
     // 首次请求不应携带 Range。
     assert!(ranges.lock().is_empty());
+}
+
+#[tokio::test]
+async fn server_ignoring_range_restarts_from_zero() {
+    let payload: Vec<u8> = (0..200_000).map(|i| (i % 251) as u8).collect();
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let addr = start_server_with_range_behavior(
+        Arc::new(payload.clone()),
+        ranges.clone(),
+        true,
+    )
+    .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("out.bin");
+    let part = std::path::PathBuf::from(format!("{}.part", dest.display()));
+    std::fs::write(&part, &payload[..4096]).unwrap();
+    let mgr = manager();
+    let id = mgr
+        .enqueue(format!("http://{addr}/file"), &dest, default_options())
+        .unwrap();
+
+    wait_status(&mgr, id, DownloadStatus::Done).await;
+
+    assert_eq!(std::fs::read(&dest).unwrap(), payload);
+    assert_eq!(ranges.lock().as_slice(), &["bytes=4096-".to_owned()]);
 }
 
 #[tokio::test]

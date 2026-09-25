@@ -49,6 +49,24 @@ pub trait Module: Send + Sync {
 
     /// 停止：退订、注销意图、释放资源。
     fn stop(&self, kernel: &KernelContext) -> Result<(), KernelError>;
+
+    /// 命令分发入口（附加模块的后端能力通道）。
+    ///
+    /// 内核的 Tauri 命令表是**静态**的（`generate_handler![]`），动态装载的附加模块
+    /// 无法向其中追加命令。因此附加模块的后端能力统一经这里分发：前端调用通用命令
+    /// `module_invoke(module_id, command, args)`，内核按 `module_id` 找到模块并转发。
+    ///
+    /// 默认实现返回「未实现」：内置模块的命令已在静态命令表中，不走此路径。
+    fn invoke(
+        &self,
+        command: &str,
+        _args: serde_json::Value,
+    ) -> Result<serde_json::Value, KernelError> {
+        Err(KernelError::Module(format!(
+            "模块 `{}` 未实现命令分发（command=`{command}`）",
+            self.id()
+        )))
+    }
 }
 
 /// 模块运行状态。
@@ -419,6 +437,27 @@ impl ModuleRegistry {
         self.errors.write().remove(id);
         self.origins.write().remove(id);
         Ok(removed)
+    }
+
+    /// 向指定模块分发一条命令（附加模块的后端能力通道）。
+    ///
+    /// 读锁在调用模块实现**之前**释放：模块的 `invoke` 可能回调注册表 / 事件总线，
+    /// 若持锁调用会与其内部获取写锁形成重入死锁。
+    pub fn invoke(
+        &self,
+        id: &str,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, KernelError> {
+        let module: Arc<dyn Module> = {
+            let modules = self.modules.read();
+            modules
+                .iter()
+                .find(|m| m.id() == id)
+                .cloned()
+                .ok_or_else(|| KernelError::Module(format!("模块 `{id}` 未装载")))?
+        };
+        module.invoke(command, args)
     }
 
     /// 记录一次「装载阶段」失败（模块尚未注册进注册表）。

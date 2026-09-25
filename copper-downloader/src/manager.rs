@@ -682,32 +682,25 @@ async fn download_once(
         .await
         .map_err(|e| local_io_error("创建下载目录", &state.part_path, e))?;
 
-    // 打开临时文件：200/206 共用同一句柄，避免「只为探测+截断而打开、随即关闭」，
-    // 中间存在一个目标文件被其它进程抢占（Windows 拒绝访问 os error 5）的窗口。
-    // `read(true)` 是 `File::set_len` 的前置要求。
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(&state.part_path)
-        .await
-        .map_err(|e| local_io_error("打开下载临时文件", &state.part_path, e))?;
-
-    // 200 分支已把头截断重下，写入起点必须是 0；只有 206 续传才从旧文件长度继续。
-    let (stream, downloaded) = match resp.status().as_u16() {
+    let (stream, mut file, mut downloaded) = match resp.status().as_u16() {
         200 => {
-            // 服务器忽略 Range，从头重下：截断临时文件。
-            file.set_len(0)
+            let file = tokio::fs::File::create(&state.part_path)
                 .await
                 .map_err(|e| local_io_error("截断下载临时文件", &state.part_path, e))?;
             state.downloaded_bytes.store(0, Ordering::Relaxed);
-            (resp.bytes_stream(), 0u64)
+            (resp.bytes_stream(), file, 0u64)
         }
-        206 => (resp.bytes_stream(), start),
+        206 => {
+            let file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&state.part_path)
+                .await
+                .map_err(|e| local_io_error("打开续传临时文件", &state.part_path, e))?;
+            (resp.bytes_stream(), file, start)
+        }
         code => return Err(DownloadError::HttpStatus(code)),
     };
-
-    let mut downloaded = downloaded;
 
     state.downloaded_bytes.store(downloaded, Ordering::Relaxed);
 
