@@ -83,27 +83,25 @@ pub struct CapabilityRequest {
     pub params: Value,
 }
 
+/// 能力参数**顶层**不得携带 `module_id`。
+///
+/// 这只是一道廉价的第一道闸：真正的防护是宿主始终使用**会话绑定**的模块身份，从不
+/// 读取请求里的任何身份字段（见内核的 `registry::capability`）。因此这里只检查顶层，
+/// 不再递归——递归会把模块存储里一条恰好含 `module_id` 字段的正常记录也拒掉，
+/// 那是把防御变成了功能缺陷。
 fn deserialize_capability_params<'de, D>(deserializer: D) -> Result<Value, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let params = Value::deserialize(deserializer)?;
-    if contains_module_id(&params) {
-        return Err(serde::de::Error::custom(
-            "capability params must not contain module_id",
-        ));
+    if let Value::Object(object) = &params {
+        if object.contains_key("module_id") {
+            return Err(serde::de::Error::custom(
+                "capability params must not carry module_id at the top level",
+            ));
+        }
     }
     Ok(params)
-}
-
-fn contains_module_id(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => {
-            object.contains_key("module_id") || object.values().any(contains_module_id)
-        }
-        Value::Array(values) => values.iter().any(contains_module_id),
-        _ => false,
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +116,30 @@ pub const METHOD_MODULE_HEALTH: &str = "module.health";
 pub const METHOD_MODULE_INVOKE: &str = "module.invoke";
 /// 版本协商。必须在任何其它方法之前调用，双方各自拒绝不支持的版本。
 pub const METHOD_MODULE_HANDSHAKE: &str = "module.handshake";
+/// 插件向宿主请求能力时使用的方法名（方向为 helper → host）。
+pub const METHOD_CAPABILITY_REQUEST: &str = "capability.request";
+
+/// 双向通道上的消息信封。
+///
+/// 内核与 helper 之间**两个方向都会发请求**：宿主驱动模块生命周期，插件则请求宿主
+/// 能力。因此每一帧都必须自描述方向，不能靠"收到的一定是响应"来推断——那样一旦
+/// 能力 RPC 上线就会出现帧被解析成错误类型的问题。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IpcMessage {
+    Request(IpcRequest),
+    Response(IpcResponse),
+}
+
+impl IpcMessage {
+    pub fn encode(&self) -> Result<Vec<u8>, IpcError> {
+        serde_json::to_vec(self).map_err(IpcError::Json)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, IpcError> {
+        serde_json::from_slice(payload).map_err(IpcError::Json)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleMethod {
@@ -514,9 +536,12 @@ mod tests {
 
         let nested_module_id = json!({
             "capability": "world.read",
-            "params": { "options": [{ "module_id": "attacker-module" }] }
+            "params": { "options": [{ "module_id": "some-value" }] }
         });
-        assert!(serde_json::from_value::<CapabilityRequest>(nested_module_id).is_err());
+        assert!(
+            serde_json::from_value::<CapabilityRequest>(nested_module_id).is_ok(),
+            "嵌套的 module_id 是模块自己的数据，不构成身份伪造"
+        );
 
         let encoded_field = json!({
             "capability": "world.read",

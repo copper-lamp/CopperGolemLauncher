@@ -19,13 +19,52 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::ipc::{
-    read_frame, write_frame, IpcError, IpcRequest, IpcResponse, ModuleMethod, PROTOCOL_VERSION,
+    read_frame, write_frame, CapabilityRequest, IpcError, IpcErrorDto, IpcMessage, IpcRequest,
+    IpcResponse, ModuleMethod, METHOD_CAPABILITY_REQUEST, PROTOCOL_VERSION,
 };
 
 /// stderr 只保留末尾这么多字节用于诊断，避免无界增长。
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 /// 等待进程退出的轮询间隔。
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// 插件能力请求被拒绝时返回给 helper 的结构化原因。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// 宿主能力派发器。
+///
+/// 实现方拿到的 `module_id` **由宿主会话绑定**，不是插件自报的：helper 只把它从
+/// 启动参数里透传过来。派发器必须按该身份逐项授权，未知能力默认拒绝。
+pub trait CapabilityDispatcher: Send + Sync + 'static {
+    fn dispatch(
+        &self,
+        module_id: &str,
+        request: CapabilityRequest,
+    ) -> Result<Value, CapabilityError>;
+}
+
+/// 默认派发器：拒绝一切能力请求。
+///
+/// 用作 [`HelperProcess::spawn`] 的默认行为，使"未接入能力服务"与"显式拒绝插件"
+/// 表现一致——绝不因为没接线而放行。
+pub struct NoCapabilities;
+
+impl CapabilityDispatcher for NoCapabilities {
+    fn dispatch(
+        &self,
+        _module_id: &str,
+        request: CapabilityRequest,
+    ) -> Result<Value, CapabilityError> {
+        Err(CapabilityError {
+            code: "capability_not_supported",
+            message: format!("capability `{}` is not available", request.capability),
+        })
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HelperError {
@@ -57,8 +96,8 @@ enum HelperEvent {
 /// 与一个 helper 子进程的同步会话。
 pub struct HelperProcess {
     child: Child,
-    /// `None` 表示 stdin 已关闭（停机流程已启动）。
-    stdin: Option<ChildStdin>,
+    /// 写端在两个线程间共享：主线程发方法请求，IO 线程回能力响应。
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     events: Receiver<HelperEvent>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     module_id: String,
@@ -67,8 +106,18 @@ pub struct HelperProcess {
 }
 
 impl HelperProcess {
-    /// 派生 helper 进程。此时尚未握手，也尚未加载插件。
+    /// 派生 helper 进程，并使用默认的「拒绝一切能力」派发器。
     pub fn spawn(program: &Path, module_id: &str, plugin_path: &Path) -> Result<Self, HelperError> {
+        Self::spawn_with_dispatcher(program, module_id, plugin_path, Arc::new(NoCapabilities))
+    }
+
+    /// 派生 helper 进程，并指定能力派发器。
+    pub fn spawn_with_dispatcher(
+        program: &Path,
+        module_id: &str,
+        plugin_path: &Path,
+        dispatcher: Arc<dyn CapabilityDispatcher>,
+    ) -> Result<Self, HelperError> {
         let mut child = Command::new(program)
             // 结构化参数：不经 shell，避免拼接与环境变量注入。
             .arg("--module-id")
@@ -81,17 +130,23 @@ impl HelperProcess {
             .spawn()
             .map_err(HelperError::Spawn)?;
 
-        let stdin = child.stdin.take().ok_or(HelperError::MissingPipe)?;
+        let stdin = Arc::new(Mutex::new(Some(
+            child.stdin.take().ok_or(HelperError::MissingPipe)?,
+        )));
         let stdout = child.stdout.take().ok_or(HelperError::MissingPipe)?;
         let stderr = child.stderr.take().ok_or(HelperError::MissingPipe)?;
         let stderr_tail = spawn_stderr_collector(stderr);
 
         let (sender, events) = mpsc::channel();
-        std::thread::spawn(move || read_responses(stdout, sender));
+        let io_stdin = Arc::clone(&stdin);
+        let io_module_id = module_id.to_owned();
+        std::thread::spawn(move || {
+            handle_stream(stdout, sender, io_stdin, io_module_id, dispatcher)
+        });
 
         Ok(Self {
             child,
-            stdin: Some(stdin),
+            stdin,
             events,
             stderr_tail,
             module_id: module_id.to_owned(),
@@ -198,9 +253,13 @@ impl HelperProcess {
             params,
         };
 
-        let encoded = serde_json::to_vec(&request).map_err(IpcError::Json)?;
+        let encoded = IpcMessage::Request(request).encode()?;
         let write_error = {
-            let stdin = self.stdin.as_mut().ok_or(HelperError::MissingPipe)?;
+            let mut guard = self
+                .stdin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let stdin = guard.as_mut().ok_or(HelperError::MissingPipe)?;
             write_frame(stdin, &encoded)
                 .and_then(|()| stdin.flush().map_err(IpcError::Io))
                 .err()
@@ -257,16 +316,25 @@ impl HelperProcess {
     pub fn shutdown(&mut self, timeout: Duration) -> Result<bool, HelperError> {
         // 插件停机失败不阻断回收：真正的目标是确保进程与资源被释放。
         let _ = self.stop(timeout);
-        self.stdin.take();
+        self.close_stdin();
         self.wait_for_exit(timeout)
     }
 
     /// 强制终止并回收进程。
     pub fn terminate(&mut self) -> Result<(), HelperError> {
-        self.stdin.take();
+        self.close_stdin();
         let _ = self.child.kill();
         self.child.wait().map_err(HelperError::Spawn)?;
         Ok(())
+    }
+
+    /// 关闭写端：helper 读到 EOF 会正常退出。
+    fn close_stdin(&self) {
+        let mut guard = self
+            .stdin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = None;
     }
 
     /// 当前进程是否已退出。
@@ -304,14 +372,23 @@ impl HelperProcess {
 impl Drop for HelperProcess {
     fn drop(&mut self) {
         // 绝不留孤儿进程：drop 时若进程仍在，直接终止并回收。
-        self.stdin.take();
+        self.close_stdin();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
 
-/// 把 stdout 上的响应帧投递到通道。通道接收端消失即结束，不产生后台泄漏。
-fn read_responses(stdout: ChildStdout, sender: mpsc::Sender<HelperEvent>) {
+/// 读取 helper 的帧流，并在同一个线程里回答它转来的能力请求。
+///
+/// 两个方向共用一个线程是必要的：能力请求必须在宿主仍在等待当前方法响应的**同时**
+/// 被处理，否则会死锁。收到响应投递给调用方，收到请求就地派发。
+fn handle_stream(
+    stdout: ChildStdout,
+    sender: mpsc::Sender<HelperEvent>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    module_id: String,
+    dispatcher: Arc<dyn CapabilityDispatcher>,
+) {
     let mut reader = BufReader::new(stdout);
     loop {
         let payload = match read_frame(&mut reader) {
@@ -319,13 +396,76 @@ fn read_responses(stdout: ChildStdout, sender: mpsc::Sender<HelperEvent>) {
             // EOF 或坏帧：结束线程即可，调用方会通过通道断开感知到。
             Err(_) => return,
         };
-        let event = match serde_json::from_slice::<IpcResponse>(&payload) {
-            Ok(response) => HelperEvent::Response(response),
-            Err(error) => HelperEvent::Malformed(error.to_string()),
-        };
-        if sender.send(event).is_err() {
-            return;
+
+        match IpcMessage::decode(&payload) {
+            Ok(IpcMessage::Response(response)) => {
+                if sender.send(HelperEvent::Response(response)).is_err() {
+                    return;
+                }
+            }
+            Ok(IpcMessage::Request(request)) => {
+                let response = answer_capability_request(&*dispatcher, &module_id, request);
+                let encoded = match IpcMessage::Response(response).encode() {
+                    Ok(encoded) => encoded,
+                    Err(_) => return,
+                };
+                let mut guard = match stdin.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                let Some(writer) = guard.as_mut() else {
+                    return;
+                };
+                if write_frame(writer, &encoded).is_err() || writer.flush().is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(HelperEvent::Malformed(error.to_string()));
+                return;
+            }
         }
+    }
+}
+
+/// 把一个来自 helper 的请求转成响应：只接受能力请求，其余方法一律拒绝。
+fn answer_capability_request(
+    dispatcher: &dyn CapabilityDispatcher,
+    module_id: &str,
+    request: IpcRequest,
+) -> IpcResponse {
+    let version = request.version;
+    let request_id = request.request_id;
+    let error = |code: &str, message: String| IpcResponse {
+        version,
+        request_id: request_id.clone(),
+        result: None,
+        error: Some(IpcErrorDto {
+            code: code.to_owned(),
+            message,
+        }),
+    };
+
+    if request.method != METHOD_CAPABILITY_REQUEST {
+        return error(
+            "method_not_found",
+            format!("host does not accept requests with method `{}`", request.method),
+        );
+    }
+
+    let capability: CapabilityRequest = match serde_json::from_value(request.params) {
+        Ok(capability) => capability,
+        Err(parse_error) => return error("invalid_params", parse_error.to_string()),
+    };
+
+    match dispatcher.dispatch(module_id, capability) {
+        Ok(result) => IpcResponse {
+            version,
+            request_id,
+            result: Some(result),
+            error: None,
+        },
+        Err(denied) => error(denied.code, denied.message),
     }
 }
 

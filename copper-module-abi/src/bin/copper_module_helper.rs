@@ -9,11 +9,14 @@
 //!
 //! 启动参数：`--module-id <id> --plugin <path>`
 
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
-use copper_module_abi::helper_runtime::{validate_module_id, validate_plugin_path, HelperRuntime};
-use copper_module_abi::ipc::{read_frame, write_frame, IpcError, IpcRequest};
+use copper_module_abi::helper_runtime::{
+    validate_module_id, validate_plugin_path, HelperChannel, HelperRuntime,
+};
+use copper_module_abi::ipc::{IpcError, IpcMessage};
 
 /// 参数或前置校验失败。
 const EXIT_USAGE: u8 = 2;
@@ -39,52 +42,50 @@ fn main() -> ExitCode {
         return ExitCode::from(EXIT_USAGE);
     }
 
-    let mut runtime = HelperRuntime::new(module_id, plugin_path);
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = BufWriter::new(stdout.lock());
+    let channel = Arc::new(Mutex::new(HelperChannel::stdio()));
+    let mut runtime = HelperRuntime::with_channel(module_id, plugin_path, Arc::clone(&channel));
 
+    // 单调循环：每轮读一条宿主消息、处理、回一条响应。
+    //
+    // 关键约束：**处理请求期间不持通道锁**。插件在 `invoke` 内发起能力请求时，
+    // 它的回调要借用同一个通道；若此处持锁，双方会死锁。
     loop {
-        let payload = match read_frame(&mut reader) {
-            Ok(payload) => payload,
-            // 宿主关闭管道：正常停机，不视为错误。
-            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                return ExitCode::SUCCESS;
-            }
-            Err(error) => {
-                eprintln!("[helper] failed to read a host frame: {error}");
-                return ExitCode::from(EXIT_PROTOCOL);
+        let message = {
+            let mut guard = lock_channel(&channel);
+            match guard.recv() {
+                Ok(message) => message,
+                // 宿主关闭管道：正常停机，不视为错误。
+                Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                    return ExitCode::SUCCESS;
+                }
+                Err(error) => {
+                    eprintln!("[helper] failed to read a host frame: {error}");
+                    return ExitCode::from(EXIT_PROTOCOL);
+                }
             }
         };
 
-        let request: IpcRequest = match serde_json::from_slice(&payload) {
-            Ok(request) => request,
-            Err(error) => {
-                eprintln!("[helper] host sent a malformed request frame: {error}");
+        let request = match message {
+            IpcMessage::Request(request) => request,
+            IpcMessage::Response(response) => {
+                eprintln!(
+                    "[helper] host sent an unexpected response for `{}`",
+                    response.request_id
+                );
                 return ExitCode::from(EXIT_PROTOCOL);
             }
         };
 
         let response = runtime.handle(request);
-        let encoded = match serde_json::to_vec(&response) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                eprintln!("[helper] failed to encode a response: {error}");
-                return ExitCode::from(EXIT_PROTOCOL);
-            }
-        };
-
-        if let Err(error) = write_frame(&mut writer, &encoded) {
+        if let Err(error) = lock_channel(&channel).send(&IpcMessage::Response(response)) {
             eprintln!("[helper] failed to write a response frame: {error}");
             return ExitCode::from(EXIT_PROTOCOL);
         }
-        // 必须逐帧刷新：宿主在等这一帧，缓冲会让双方互相等待。
-        if let Err(error) = writer.flush() {
-            eprintln!("[helper] failed to flush a response frame: {error}");
-            return ExitCode::from(EXIT_PROTOCOL);
-        }
     }
+}
+
+fn lock_channel(channel: &Arc<Mutex<HelperChannel>>) -> std::sync::MutexGuard<'_, HelperChannel> {
+    channel.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn parse_args() -> Result<(String, std::path::PathBuf), String> {

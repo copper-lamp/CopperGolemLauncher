@@ -26,13 +26,15 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
-use copper_module_abi::helper_client::{HelperError, HelperProcess};
+use copper_module_abi::helper_client::{CapabilityDispatcher, HelperError, HelperProcess};
 
 use crate::error::KernelError;
+use crate::registry::capability::KernelCapabilities;
 use crate::registry::dylib_backend::resolve_artifact;
 use crate::registry::loader::ModuleLoadBackend;
 use crate::registry::manifest::ModuleManifest;
-use crate::registry::modules::Module;
+use crate::registry::module_storage::ModuleStorage;
+use crate::registry::modules::{Module, ModuleRegistry};
 use crate::state::KernelContext;
 
 /// 显式指定 helper 可执行文件的路径（调试与集成测试用）。
@@ -115,8 +117,10 @@ impl AddonSession {
         module_id: &str,
         plugin_path: &Path,
         config: &Value,
+        dispatcher: Arc<dyn CapabilityDispatcher>,
     ) -> Result<Self, HelperError> {
-        let mut process = HelperProcess::spawn(helper_program, module_id, plugin_path)?;
+        let mut process =
+            HelperProcess::spawn_with_dispatcher(helper_program, module_id, plugin_path, dispatcher)?;
         process.handshake(HANDSHAKE_TIMEOUT)?;
         process.initialize(config, INIT_TIMEOUT)?;
         Ok(Self {
@@ -160,6 +164,8 @@ pub struct AddonProxyModule {
     module_dir: PathBuf,
     helper_program: PathBuf,
     plugin_path: PathBuf,
+    /// 插件能力请求的宿主侧授权与执行入口。
+    capabilities: Arc<dyn CapabilityDispatcher>,
     /// 会话只在 `init` 成功后存在；`stop` 会取走它以确保进程被回收。
     session: Mutex<Option<AddonSession>>,
 }
@@ -171,6 +177,7 @@ impl AddonProxyModule {
         module_dir: PathBuf,
         helper_program: PathBuf,
         plugin_path: PathBuf,
+        capabilities: Arc<dyn CapabilityDispatcher>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -178,6 +185,7 @@ impl AddonProxyModule {
             module_dir,
             helper_program,
             plugin_path,
+            capabilities,
             session: Mutex::new(None),
         }
     }
@@ -238,6 +246,7 @@ impl Module for AddonProxyModule {
             &self.id,
             &self.plugin_path,
             &config,
+            Arc::clone(&self.capabilities),
         )
         .map_err(|error| self.wrap(error))?;
 
@@ -279,17 +288,19 @@ impl Module for AddonProxyModule {
 }
 
 /// [`ModuleLoadBackend`] 的受监管子进程实现。
-pub struct HelperBackend;
-
-impl HelperBackend {
-    pub fn new() -> Self {
-        Self
-    }
+pub struct HelperBackend {
+    /// 用于构造能力派发器：插件的能力请求需要按会话身份查注册表。
+    modules: Arc<ModuleRegistry>,
+    /// 模块私有存储。全体附加模块共用一个实例，因此缓存与配额判定是全局一致的。
+    storage: Arc<ModuleStorage>,
 }
 
-impl Default for HelperBackend {
-    fn default() -> Self {
-        Self::new()
+impl HelperBackend {
+    pub fn new(modules: Arc<ModuleRegistry>, data_dir: PathBuf) -> Self {
+        Self {
+            modules,
+            storage: Arc::new(ModuleStorage::new(&data_dir)),
+        }
     }
 }
 
@@ -305,6 +316,10 @@ impl ModuleLoadBackend for HelperBackend {
     ) -> Result<Arc<dyn Module>, KernelError> {
         let plugin_path = resolve_artifact(module_dir, manifest)?;
         let helper_program = locate_helper_program()?;
+        let capabilities = Arc::new(KernelCapabilities::new(
+            Arc::clone(&self.modules),
+            Arc::clone(&self.storage),
+        ));
 
         // 此处只构造代理，不派生进程：进程在 `init` 时按注册表节奏启动，
         // 这样「扫描/校验失败」不会留下半启动的子进程。
@@ -314,6 +329,164 @@ impl ModuleLoadBackend for HelperBackend {
             module_dir.to_path_buf(),
             helper_program,
             plugin_path,
+            capabilities,
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use copper_module_abi::helper_client::NoCapabilities;
+    use std::sync::OnceLock;
+
+    /// 与夹具插件清单一致的模块 id；不一致会让插件拒绝初始化。
+    const FIXTURE_MODULE_ID: &str = "copper-lamp.demo-tools";
+
+    /// 集成测试无法用 `CARGO_BIN_EXE_*` 拿到其它 crate 的产物，因此显式构建一次，
+    /// 再在 target 目录里定位。`OnceLock` 避免并行测试重复构建。
+    fn helper_program() -> PathBuf {
+        static HELPER: OnceLock<PathBuf> = OnceLock::new();
+        HELPER
+            .get_or_init(|| {
+                let status = std::process::Command::new(env!("CARGO"))
+                    .args([
+                        "build",
+                        "-p",
+                        "copper-module-abi",
+                        "--bin",
+                        "copper-module-helper",
+                    ])
+                    .status()
+                    .expect("cargo must be available to build the helper");
+                assert!(status.success(), "failed to build the helper binary");
+
+                let candidate = target_debug_dir().join(helper_file_name());
+                assert!(
+                    candidate.is_file(),
+                    "helper binary not found at {}",
+                    candidate.display()
+                );
+                candidate
+            })
+            .clone()
+    }
+
+    fn fixture_plugin() -> PathBuf {
+        static PLUGIN: OnceLock<PathBuf> = OnceLock::new();
+        PLUGIN
+            .get_or_init(|| {
+                let status = std::process::Command::new(env!("CARGO"))
+                    .args(["build", "-p", "abi-fixture-echo"])
+                    .status()
+                    .expect("cargo must be available to build the fixture plugin");
+                assert!(status.success(), "failed to build the fixture plugin");
+
+                let debug_dir = target_debug_dir();
+                find_dylib(&debug_dir).unwrap_or_else(|| {
+                    panic!(
+                        "fixture plugin artifact not found under {}",
+                        debug_dir.display()
+                    )
+                })
+            })
+            .clone()
+    }
+
+    fn target_debug_dir() -> PathBuf {
+        let exe = std::env::current_exe().expect("test executable path");
+        exe.parent()
+            .and_then(Path::parent)
+            .expect("test executable should live under target/<profile>/deps")
+            .to_path_buf()
+    }
+
+    fn find_dylib(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut candidates: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    return false;
+                };
+                name.contains("abi_fixture_echo")
+                    && (name.ends_with(".dll") || name.ends_with(".so") || name.ends_with(".dylib"))
+            })
+            .collect();
+        candidates.sort();
+        candidates.into_iter().next()
+    }
+
+    #[test]
+    fn session_launches_a_real_plugin_and_round_trips_invoke() {
+        let mut session = AddonSession::launch(
+            &helper_program(),
+            FIXTURE_MODULE_ID,
+            &fixture_plugin(),
+            &json!({ "greeting": "hi" }),
+            Arc::new(NoCapabilities),
+        )
+        .expect("a real plugin artifact should launch");
+
+        assert_eq!(session.module_id(), FIXTURE_MODULE_ID);
+        session.start().unwrap();
+
+        let echoed = session
+            .invoke("demo.echo", &json!({ "value": 7 }))
+            .unwrap();
+        assert_eq!(echoed["echo"]["value"], json!(7));
+        assert_eq!(echoed["started"], json!(true));
+        assert!(
+            echoed["config"]
+                .as_str()
+                .is_some_and(|config| config.contains("greeting")),
+            "plugin should receive the host config, got {}",
+            echoed["config"]
+        );
+
+        session.stop().unwrap();
+        assert!(session.shutdown().unwrap());
+    }
+
+    #[test]
+    fn session_rejects_a_module_id_mismatch_between_host_and_plugin() {
+        let error = match AddonSession::launch(
+            &helper_program(),
+            "copper-lamp.other",
+            &fixture_plugin(),
+            &json!({}),
+            Arc::new(NoCapabilities),
+        ) {
+            Ok(_) => panic!("a plugin whose declared id differs from the host's must be refused"),
+            Err(error) => error,
+        };
+
+        match error {
+            HelperError::Remote { code, .. } => assert_eq!(code, "plugin_init_failed"),
+            other => panic!("expected a remote init failure, got {other}"),
+        }
+    }
+
+    #[test]
+    fn proxy_module_refuses_commands_before_init() {
+        let module = AddonProxyModule::new(
+            FIXTURE_MODULE_ID,
+            "0.1.0",
+            PathBuf::from("."),
+            PathBuf::from("unused-helper"),
+            PathBuf::from("unused-plugin"),
+            Arc::new(NoCapabilities),
+        );
+
+        assert_eq!(module.id(), FIXTURE_MODULE_ID);
+        assert_eq!(module.version(), "0.1.0");
+        assert!(!module.is_running());
+        assert!(module.stderr_tail().is_none());
+
+        let error = module
+            .invoke("demo.echo", json!({}))
+            .expect_err("invoking before init must fail rather than pretend to work");
+        assert!(matches!(error, KernelError::Module(_)));
     }
 }

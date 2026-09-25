@@ -119,9 +119,11 @@ unsafe extern "C" fn invoke(
             "last_capability_status": state.last_capability_status,
         }),
         "demo.probe_capability" => {
-            let status = unsafe { request_capability(state, "world.read") };
+            let (status, payload) = unsafe { request_capability(state, "world.read") };
             state.last_capability_status = status;
-            serde_json::json!({ "capability_status": status })
+            let payload: serde_json::Value =
+                serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
+            serde_json::json!({ "capability_status": status, "capability_payload": payload })
         }
         other => serde_json::json!({ "unsupported_command": other }),
     };
@@ -133,13 +135,16 @@ unsafe extern "C" fn invoke(
     write_output(output, &encoded)
 }
 
-/// 通过宿主 API 发起一次能力请求，返回宿主给出的状态码。
-unsafe fn request_capability(state: &mut EchoState, capability: &str) -> i32 {
+/// 通过宿主 API 发起一次能力请求，返回宿主状态码与宿主写回的结果原文。
+///
+/// 返回原文（而不是只返回状态码）才能让集成测试断言"结果真的经输出缓冲回到了
+/// 插件"，而不只是"调用没有报错"。
+unsafe fn request_capability(state: &mut EchoState, capability: &str) -> (i32, Vec<u8>) {
     let Some(host) = (unsafe { state.host.as_ref() }) else {
-        return ABI_STATUS_ERROR;
+        return (ABI_STATUS_ERROR, Vec::new());
     };
     let Some(callback) = host.call_capability else {
-        return ABI_STATUS_ERROR;
+        return (ABI_STATUS_ERROR, Vec::new());
     };
 
     let empty = AbiBytes {
@@ -150,14 +155,18 @@ unsafe fn request_capability(state: &mut EchoState, capability: &str) -> i32 {
         ptr: capability.as_ptr(),
         len: capability.len() as u64,
     };
-    let mut buffer = [0_u8; 256];
+    let mut buffer = [0_u8; 1024];
     let mut output = AbiBuffer {
         ptr: buffer.as_mut_ptr(),
         capacity: buffer.len() as u64,
         len: 0,
     };
 
-    unsafe { callback(host.user_data, capability, empty, &mut output) }
+    let status = unsafe { callback(host.user_data, capability, empty, &mut output) };
+    let written = usize::try_from(output.len)
+        .unwrap_or(0)
+        .min(buffer.len());
+    (status, buffer[..written].to_vec())
 }
 
 /// 把字节写入宿主提供的输出缓冲；容量不足时按协议上报需求长度。

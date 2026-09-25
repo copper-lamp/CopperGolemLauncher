@@ -172,6 +172,8 @@ pub fn run() {
             // 目录就绪后立刻挂文件日志，让后续每一步初始化都有落盘现场。
             attach_file_sink(resolved.logs_dir());
             let paths = Arc::new(resolved);
+            // 装载后端需要数据目录来落模块私有存储；KernelContext 会另行接管一份引用。
+            let paths_for_addons = Arc::clone(&paths);
 
             let db = Arc::new(DatabaseService::open(paths.db_file()).map_err(|e| {
                 KernelError::startup(format!("打开数据库 {}", paths.db_file().display()), e)
@@ -220,6 +222,8 @@ pub fn run() {
 
             let intents = Arc::new(IntentRegistry::new());
             let modules = Arc::new(ModuleRegistry::new());
+            // 装载后端要用注册表构造能力派发器；KernelContext 会另行接管一份引用。
+            let modules_for_addons = Arc::clone(&modules);
             // 附加模块沙箱：权限判定与越权留痕（内置模块不经此路径）。
             let sandbox = Arc::new(ModuleSandbox::new());
             // 意图注册表接入沙箱：附加模块声明 / 发起意图需持有 `intents` 权限。
@@ -258,7 +262,10 @@ pub fn run() {
             // 附加模块：扫描 `<data_dir>/modules`，逐个校验清单并同进程装载动态库。
             // 必须在 `boot()` **之前**完成：装载进来的模块与内置模块一并由 boot 驱动
             // 生命周期；单个失败不影响其它模块（见 loader::ModuleLoader::load_installed）。
-            let loader = ModuleLoader::new(Arc::new(HelperBackend::new()));
+            let loader = ModuleLoader::new(Arc::new(HelperBackend::new(
+                modules_for_addons,
+                paths_for_addons.data_dir().clone(),
+            )));
             let reports = loader.load_installed(&kernel);
             let loaded = reports.iter().filter(|r| r.loaded).count();
             if !reports.is_empty() {

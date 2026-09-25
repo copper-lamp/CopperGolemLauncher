@@ -9,6 +9,7 @@
 //! - [`install`]：安装链路（下载 → 校验 → 解包 → 落位）；
 //! - [`frontend`]：前端产物自定义协议服务与入口列举。
 
+pub mod capability;
 pub mod dylib_backend;
 pub mod events;
 pub mod frontend;
@@ -18,6 +19,7 @@ pub mod intents;
 pub mod loader;
 pub mod manifest;
 pub mod module_entry;
+pub mod module_storage;
 pub mod modules;
 pub mod package;
 pub mod sandbox;

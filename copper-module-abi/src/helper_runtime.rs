@@ -10,20 +10,64 @@
 //! 一律显式拒绝（fail closed），不使用成功桩。
 
 use std::ffi::c_void;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::ipc::{
-    negotiate_handshake, validate_version, HealthResponse, InitializeResponse, InvokeResponse,
-    IpcRequest, IpcResponse, LifecycleAction, LifecycleResponse, ModuleLifecycleState,
-    ModuleMethod, ModuleRequest, PROTOCOL_VERSION,
+    negotiate_handshake, read_frame, validate_version, write_frame, HealthResponse,
+    InitializeResponse, InvokeResponse, IpcError, IpcMessage, IpcRequest, IpcResponse,
+    LifecycleAction, LifecycleResponse, ModuleLifecycleState, ModuleMethod, ModuleRequest,
+    METHOD_CAPABILITY_REQUEST, PROTOCOL_VERSION,
 };
 use crate::module_id::is_valid_module_id;
 use crate::plugin_abi::{
-    AbiBuffer, AbiBytes, PluginEntry, PluginInstance, ABI_STATUS_NOT_SUPPORTED,
-    PLUGIN_ENTRY_SYMBOL,
+    AbiBuffer, AbiBytes, PluginEntry, PluginInstance, ABI_STATUS_BUFFER_TOO_SMALL,
+    ABI_STATUS_ERROR, ABI_STATUS_NOT_SUPPORTED, ABI_STATUS_OK, PLUGIN_ENTRY_SYMBOL,
 };
+
+/// helper 与宿主之间的帧通道。
+///
+/// 两个方向共用同一对标准流：主循环读宿主请求；插件发起能力请求时，能力回调在插件
+/// 调用栈内写请求并读响应。用同一把锁串行化，且**主循环处理请求期间不持锁**，
+/// 否则回调无法取得通道而死锁。
+pub struct HelperChannel {
+    reader: BufReader<std::io::StdinLock<'static>>,
+    writer: BufWriter<std::io::StdoutLock<'static>>,
+    /// 能力请求序号，保证 request id 在会话内唯一。
+    capability_seq: u64,
+}
+
+impl HelperChannel {
+    /// 绑定本进程的标准输入输出。
+    pub fn stdio() -> Self {
+        Self {
+            reader: BufReader::new(std::io::stdin().lock()),
+            writer: BufWriter::new(std::io::stdout().lock()),
+            capability_seq: 0,
+        }
+    }
+
+    /// 读取一帧消息。
+    pub fn recv(&mut self) -> Result<IpcMessage, IpcError> {
+        let payload = read_frame(&mut self.reader)?;
+        IpcMessage::decode(&payload)
+    }
+
+    /// 写出一帧消息并立即刷新：对端正在等这一帧，缓冲会让双方互相等待。
+    pub fn send(&mut self, message: &IpcMessage) -> Result<(), IpcError> {
+        let payload = message.encode()?;
+        write_frame(&mut self.writer, &payload)?;
+        self.writer.flush().map_err(IpcError::Io)
+    }
+
+    fn next_capability_request_id(&mut self) -> String {
+        self.capability_seq += 1;
+        format!("cap-{}", self.capability_seq)
+    }
+}
 
 /// 会转成 IPC 错误 DTO 的失败。
 pub struct Failure {
@@ -43,37 +87,138 @@ impl Failure {
 /// helper 侧宿主上下文：能力回调的 `user_data` 指向它。
 struct HostContext {
     module_id: String,
+    /// 与宿主的帧通道。`None` 表示本运行时没有接宿主（进程内单测），
+    /// 此时能力请求一律拒绝而不是假装成功。
+    channel: Option<Arc<Mutex<HelperChannel>>>,
 }
 
-/// 能力 RPC 一律显式拒绝。
+/// 插件能力请求的宿主入口。
 ///
-/// 授权切片尚未实现时返回 `ABI_STATUS_NOT_SUPPORTED` 而不是成功或空结果：插件因此
-/// 能明确区分"被拒绝"与"拿到结果"，不会把未实现当作可用。
-unsafe extern "C" fn deny_capability(
+/// 把请求转发给宿主并按响应回填输出：宿主是唯一能决定"是否授权"的一方，helper
+/// 只负责搬运，绝不自作判断或返回伪造结果。
+unsafe extern "C" fn plugin_capability(
     user_data: *mut c_void,
     capability: AbiBytes,
-    _input: AbiBytes,
-    _output: *mut AbiBuffer,
+    input: AbiBytes,
+    output: *mut AbiBuffer,
 ) -> i32 {
-    let module_id = if user_data.is_null() {
-        "<unknown>".to_owned()
-    } else {
-        // SAFETY: `user_data` 由 `PluginInstance` 持有，始终指向本模块的 HostContext。
-        let context = unsafe { &*(user_data as *const HostContext) };
-        context.module_id.clone()
+    let Some(context) = (unsafe { (user_data as *const HostContext).as_ref() }) else {
+        return ABI_STATUS_ERROR;
     };
-    eprintln!(
-        "[helper] capability request ({} bytes) denied for module `{module_id}`: \
-         capability RPC is not implemented in this build",
-        capability.len
-    );
-    ABI_STATUS_NOT_SUPPORTED
+    let Some(channel) = context.channel.as_ref() else {
+        eprintln!(
+            "[helper] capability request refused for module `{}`: no host channel is attached",
+            context.module_id
+        );
+        return ABI_STATUS_NOT_SUPPORTED;
+    };
+
+    let Some(capability_name) = (unsafe { abi_bytes_to_string(capability) }) else {
+        return ABI_STATUS_ERROR;
+    };
+    let params = match unsafe { abi_bytes_to_vec(input) } {
+        Some(bytes) if bytes.is_empty() => Value::Null,
+        Some(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => Value::Null,
+        },
+        None => return ABI_STATUS_ERROR,
+    };
+
+    let mut guard = match channel.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let request_id = guard.next_capability_request_id();
+    let request = IpcRequest {
+        version: PROTOCOL_VERSION,
+        request_id: request_id.clone(),
+        method: METHOD_CAPABILITY_REQUEST.to_owned(),
+        params: json!({ "capability": capability_name, "params": params }),
+    };
+    if let Err(error) = guard.send(&IpcMessage::Request(request)) {
+        eprintln!("[helper] failed to forward a capability request: {error}");
+        return ABI_STATUS_ERROR;
+    }
+
+    let response = loop {
+        match guard.recv() {
+            Ok(IpcMessage::Response(response)) => break response,
+            // 宿主在能力往返期间不应主动发请求；收到就拒绝，避免把乱序当成响应。
+            Ok(IpcMessage::Request(request)) => {
+                eprintln!("[helper] host sent a request while a capability call was pending: {}", request.method);
+                return ABI_STATUS_ERROR;
+            }
+            Err(error) => {
+                eprintln!("[helper] failed to read a capability response: {error}");
+                return ABI_STATUS_ERROR;
+            }
+        }
+    };
+
+    if response.request_id != request_id {
+        eprintln!(
+            "[helper] capability response id `{}` does not match request id `{request_id}`",
+            response.request_id
+        );
+        return ABI_STATUS_ERROR;
+    }
+    if let Some(error) = response.error {
+        // 宿主未实现该能力与"授权失败"要区分开，插件才能正确处理。
+        return if error.code == "capability_not_supported" {
+            ABI_STATUS_NOT_SUPPORTED
+        } else {
+            ABI_STATUS_ERROR
+        };
+    }
+    let Some(result) = response.result else {
+        return ABI_STATUS_ERROR;
+    };
+    let encoded = match serde_json::to_vec(&result) {
+        Ok(encoded) => encoded,
+        Err(_) => return ABI_STATUS_ERROR,
+    };
+
+    if output.is_null() {
+        return ABI_STATUS_ERROR;
+    }
+    let output = unsafe { &mut *output };
+    let required = encoded.len() as u64;
+    if output.ptr.is_null() || output.capacity < required {
+        output.len = required;
+        return ABI_STATUS_BUFFER_TOO_SMALL;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(encoded.as_ptr(), output.ptr, encoded.len());
+    }
+    output.len = required;
+    ABI_STATUS_OK
+}
+
+/// 读取跨 ABI 的字节块。拷贝而非借用：裸指针无法携带生命周期。
+unsafe fn abi_bytes_to_vec(bytes: AbiBytes) -> Option<Vec<u8>> {
+    if bytes.len == 0 {
+        return Some(Vec::new());
+    }
+    if bytes.ptr.is_null() {
+        return None;
+    }
+    let len = usize::try_from(bytes.len).ok()?;
+    Some(unsafe { std::slice::from_raw_parts(bytes.ptr, len) }.to_vec())
+}
+
+unsafe fn abi_bytes_to_string(bytes: AbiBytes) -> Option<String> {
+    let raw = unsafe { abi_bytes_to_vec(bytes) }?;
+    String::from_utf8(raw).ok()
 }
 
 /// 驱动单个附加模块插件的 helper 运行时限。
 pub struct HelperRuntime {
     module_id: String,
     plugin_path: PathBuf,
+    /// 与宿主的帧通道；`None` 时能力请求被拒绝（进程内单测用）。
+    channel: Option<Arc<Mutex<HelperChannel>>>,
     /// 字段顺序即释放顺序：`instance` 必须先于 `library` 释放，
     /// 因为插件 `destroy` 回调的函数指针属于 `library` 的映像。
     instance: Option<PluginInstance<HostContext>>,
@@ -82,14 +227,27 @@ pub struct HelperRuntime {
 }
 
 impl HelperRuntime {
-    /// 构造运行时。此时尚未加载任何插件代码。
+    /// 构造不带宿主通道的运行时（仅用于不涉及能力请求的进程内测试）。
     pub fn new(module_id: impl Into<String>, plugin_path: impl Into<PathBuf>) -> Self {
         Self {
             module_id: module_id.into(),
             plugin_path: plugin_path.into(),
+            channel: None,
             instance: None,
             library: None,
             handed_over: false,
+        }
+    }
+
+    /// 构造绑定宿主通道的运行时：插件的能力请求会经该通道转发给宿主。
+    pub fn with_channel(
+        module_id: impl Into<String>,
+        plugin_path: impl Into<PathBuf>,
+        channel: Arc<Mutex<HelperChannel>>,
+    ) -> Self {
+        Self {
+            channel: Some(channel),
+            ..Self::new(module_id, plugin_path)
         }
     }
 
@@ -218,8 +376,9 @@ impl HelperRuntime {
                 &config_bytes,
                 HostContext {
                     module_id: self.module_id.clone(),
+                    channel: self.channel.clone(),
                 },
-                deny_capability,
+                plugin_capability,
             )
         }
         .map_err(|error| Failure::new("plugin_init_failed", error.to_string()))?;

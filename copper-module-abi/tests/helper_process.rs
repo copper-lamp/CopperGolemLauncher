@@ -7,13 +7,15 @@
 //! 每个测试使用独立命名的产物文件：测试是并行执行的，共享同一路径会互相删除。
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use copper_module_abi::helper_client::{HelperError, HelperProcess};
-use copper_module_abi::ipc::{ModuleMethod, PROTOCOL_VERSION};
-use copper_module_abi::plugin_abi::ABI_STATUS_NOT_SUPPORTED;
-use serde_json::json;
+use copper_module_abi::helper_client::{
+    CapabilityDispatcher, CapabilityError, HelperError, HelperProcess,
+};
+use copper_module_abi::ipc::{CapabilityRequest, ModuleMethod, PROTOCOL_VERSION};
+use copper_module_abi::plugin_abi::{ABI_STATUS_NOT_SUPPORTED, ABI_STATUS_OK};
+use serde_json::{json, Value};
 
 /// 宽松超时：helper 是本地进程，正常往返在毫秒级；放宽只为避免慢机器上的假失败。
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -275,5 +277,58 @@ fn capability_requests_fail_closed_until_the_rpc_slice_lands() {
         probe["capability_status"],
         json!(ABI_STATUS_NOT_SUPPORTED),
         "capability RPC is not implemented yet and must be refused, never faked"
+    );
+}
+
+/// 记录被请求的身份，并回一个可断言的结果。
+#[derive(Default)]
+struct EchoDispatcher {
+    seen_module_ids: Mutex<Vec<String>>,
+}
+
+impl CapabilityDispatcher for EchoDispatcher {
+    fn dispatch(
+        &self,
+        module_id: &str,
+        request: CapabilityRequest,
+    ) -> Result<Value, CapabilityError> {
+        self.seen_module_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(module_id.to_owned());
+        Ok(json!({ "echoed": request.capability, "module": module_id }))
+    }
+}
+
+#[test]
+fn capability_requests_round_trip_through_the_host() {
+    let dispatcher = Arc::new(EchoDispatcher::default());
+    let plugin = fixture_plugin();
+    let mut helper = HelperProcess::spawn_with_dispatcher(
+        &helper_program(),
+        MODULE_ID,
+        &plugin,
+        Arc::clone(&dispatcher) as Arc<dyn CapabilityDispatcher>,
+    )
+    .expect("helper should spawn");
+    helper.handshake(TIMEOUT).unwrap();
+    helper.initialize(&json!({}), TIMEOUT).unwrap();
+
+    let probe = helper
+        .invoke("demo.probe_capability", &json!({}), TIMEOUT)
+        .unwrap();
+
+    // 结果必须真的经输出缓冲回到插件，而不只是"调用没报错"。
+    assert_eq!(probe["capability_status"], json!(ABI_STATUS_OK));
+    assert_eq!(probe["capability_payload"]["echoed"], json!("world.read"));
+    assert_eq!(probe["capability_payload"]["module"], json!(MODULE_ID));
+    // 派发器看到的身份来自宿主会话绑定，不是插件自报。
+    assert_eq!(
+        dispatcher
+            .seen_module_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[MODULE_ID.to_owned()]
     );
 }
