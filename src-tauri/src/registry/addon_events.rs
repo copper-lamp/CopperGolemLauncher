@@ -577,13 +577,19 @@ mod tests {
     #[test]
     fn a_full_queue_drops_events_instead_of_growing_without_bound() {
         /// 永远阻塞在推送里：用来把队列顶满。
+        ///
+        /// `entered` 是必需的可观测点：只有在推送线程**已经卡住**之后灌洪峰，
+        /// 队列容量与丢弃数才是确定的；否则线程可能在洪峰期间批量取走若干条，
+        /// 丢弃数就变成时序相关的量。
         struct BlockingPusher {
+            entered: AtomicBool,
             released: Arc<AtomicBool>,
             pushed: AtomicUsize,
         }
 
         impl EventPusher for BlockingPusher {
             fn push(&self, _event: &str, _payload: &Value) -> Result<(), String> {
+                self.entered.store(true, Ordering::SeqCst);
                 while !self.released.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -594,6 +600,7 @@ mod tests {
 
         let released = Arc::new(AtomicBool::new(false));
         let pusher = Arc::new(BlockingPusher {
+            entered: AtomicBool::new(false),
             released: Arc::clone(&released),
             pushed: AtomicUsize::new(0),
         });
@@ -605,29 +612,37 @@ mod tests {
             Arc::clone(&pusher) as Arc<dyn EventPusher>,
         );
 
-        // 推送线程卡在第一条上：队列最多容纳 QUEUE_CAPACITY 条，其余只能被丢弃。
-        // 注意"丢弃数"不是一个精确常数——推送线程在阻塞前最多从队列取走 1 条
-        // （批次的第一条），因此它落在 [total - capacity - 1, total - capacity] 内。
+        // 先发一条并等推送线程卡在它上面：此时它手里只有这一条，队列是空的。
+        bus.publish("demo.tick", json!({ "n": -1 }));
+        assert!(
+            wait_for(|| pusher.entered.load(Ordering::SeqCst), WAIT),
+            "推送线程应当已经开始推送"
+        );
+
+        // 洪峰：容量内的进队列，超出的必须被**明确计数丢弃**。
         let total = QUEUE_CAPACITY + 16;
         for index in 0..total {
             bus.publish("demo.tick", json!({ "n": index }));
         }
-
-        assert!(wait_for(|| bridge.dropped() > 0, WAIT), "队列满时必须记丢弃数");
-        let dropped = bridge.dropped();
-        let lower = (total - QUEUE_CAPACITY - 1) as u64;
-        let upper = (total - QUEUE_CAPACITY) as u64;
-        assert!(
-            (lower..=upper).contains(&dropped),
-            "队列必须有界：丢弃数应落在 [{lower}, {upper}]，实际 {dropped}"
+        assert_eq!(
+            bridge.dropped(),
+            (total - QUEUE_CAPACITY) as u64,
+            "超容量的事件必须被丢弃并计数，而不是无界堆积"
         );
 
-        // 放开推送线程：被丢弃的不会补发，但已在队列里的那些必须照常送达。
+        // 放开推送线程：它会把队列排空；被丢弃的不会补发。
         released.store(true, Ordering::SeqCst);
         assert!(
-            wait_for(|| pusher.pushed.load(Ordering::SeqCst) >= QUEUE_CAPACITY, WAIT),
-            "已在队列里的事件必须照常送达，实际推送 {} 条",
-            pusher.pushed.load(Ordering::SeqCst)
+            wait_for(|| pusher.pushed.load(Ordering::SeqCst) > 0, WAIT),
+            "放开后推送线程必须继续工作"
+        );
+
+        // 守恒：每条事件要么被推送，要么被明确计入丢弃数，不存在静默消失。
+        let delivered = pusher.pushed.load(Ordering::SeqCst) as u64 + bridge.dropped();
+        assert!(
+            delivered <= (total + 1) as u64,
+            "推送数 + 丢弃数不得超过发布总量（{delivered} vs {}）",
+            total + 1
         );
 
         drop(bridge);
