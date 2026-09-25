@@ -2,21 +2,29 @@
 // 版本设置 · 基本设置分区。
 //
 // 封面（点击进入编辑弹窗）、版本名（失焦 / 回车提交重命名）、元信息（类型 · 游戏版本 ·
-// 已注册），以及 版本文件夹 / 渲染龙 / 世界编辑器 三个设置行与「删除版本」。
+// 已注册），以及 目录快捷方式 / 渲染龙 / 世界编辑器 三个设置行与「删除版本」。
+//
+// 目录快捷方式经后端统一命令打开（版本 / 模组 / 存档目录解析在 Rust 侧完成，
+// 非隔离版本与多用户存档路径前端无法自行拼出）。
 //
 // 重命名与设置写入在本组件内完成（便于失败时回滚输入框草稿），成功后经 `updated`
 // 把新视图交回 `VersionSettings` 同步清单与路由；删除涉及路由跳转，由父级处理。
 
 import { computed, ref, watch } from "vue";
-import { FolderOpen, Gamepad2, Trash2 } from "@lucide/vue";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { FolderOpen, Gamepad2, Puzzle, Trash2, Upload } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
-import { homeVersionRename, homeVersionSaveMeta, type VersionView } from "../../api/home";
+import {
+  homeVersionOpenDir,
+  homeVersionRename,
+  homeVersionSaveMeta,
+  type VersionDirKind,
+  type VersionView,
+} from "../../api/home";
 
 const props = defineProps<{
   version: VersionView;
@@ -78,8 +86,23 @@ async function saveMeta(update: {
   }
 }
 
-function openFolder() {
-  void openPath(props.version.folder);
+/** 目录快捷方式：图标 + i18n key + 后端目标种类。 */
+const dirShortcuts: Array<{
+  kind: VersionDirKind;
+  labelKey: string;
+  icon: typeof FolderOpen;
+}> = [
+  { kind: "version", labelKey: "module.home.dir.version", icon: FolderOpen },
+  { kind: "mods", labelKey: "module.home.dir.mods", icon: Puzzle },
+  { kind: "worlds", labelKey: "module.home.dir.worlds", icon: Upload },
+];
+
+async function openDir(kind: VersionDirKind) {
+  try {
+    await homeVersionOpenDir(props.version.name, kind);
+  } catch (e) {
+    showToast(String(e), "error");
+  }
 }
 </script>
 
@@ -114,21 +137,36 @@ function openFolder() {
 
     <ul class="basic__rows">
       <li class="basic__row">
-        <span class="basic__row-title">{{ t("module.home.open_folder") }}</span>
-        <button class="basic__path" :title="version.folder" @click="openFolder">
-          <FolderOpen :size="14" />
-          <span class="basic__path-text">{{ version.folder }}</span>
-        </button>
+        <div class="basic__row-text">
+          <span class="basic__row-title">{{ t("module.home.basic.folders") }}</span>
+          <span class="basic__row-hint">{{ t("module.home.basic.folders_hint") }}</span>
+        </div>
+        <div class="basic__shortcuts">
+          <button
+            v-for="item in dirShortcuts"
+            :key="item.kind"
+            type="button"
+            class="basic__shortcut"
+            @click="openDir(item.kind)"
+          >
+            <component :is="item.icon" :size="14" />
+            <span>{{ t(item.labelKey) }}</span>
+          </button>
+        </div>
       </li>
       <li class="basic__row">
-        <span class="basic__row-title">{{ t("module.home.meta.render_dragon") }}</span>
+        <div class="basic__row-text">
+          <span class="basic__row-title">{{ t("module.home.meta.render_dragon") }}</span>
+        </div>
         <CoSwitch
           :model-value="version.enable_render_dragon"
           @update:model-value="(v: boolean) => void saveMeta({ enable_render_dragon: v })"
         />
       </li>
       <li class="basic__row">
-        <span class="basic__row-title">{{ t("module.home.meta.editor_mode") }}</span>
+        <div class="basic__row-text">
+          <span class="basic__row-title">{{ t("module.home.meta.editor_mode") }}</span>
+        </div>
         <CoSwitch
           :model-value="version.enable_editor_mode"
           @update:model-value="(v: boolean) => void saveMeta({ enable_editor_mode: v })"
@@ -199,13 +237,14 @@ function openFolder() {
   gap: var(--copper-space-1);
 }
 
+/* 字段标签为辅助信息，弱化处理以突出用户输入内容。 */
 .basic__label {
-  font-size: var(--copper-font-size-sm);
-  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
+  color: var(--copper-text-disabled);
 }
 
 .basic__meta {
-  font-size: var(--copper-font-size-sm);
+  font-size: var(--copper-font-size-xs);
   color: var(--copper-text-secondary);
 }
 
@@ -229,17 +268,38 @@ function openFolder() {
   border-bottom: 1px solid var(--copper-border);
 }
 
-.basic__row-title {
-  font-size: var(--copper-font-size-md);
-  flex-shrink: 0;
+.basic__row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-.basic__path {
+/* 行标题为主信息：正文色 + 中等字重，与右侧控件对齐基线。 */
+.basic__row-title {
+  font-size: var(--copper-font-size-md);
+  font-weight: 500;
+  color: var(--copper-text);
+}
+
+/* 行副标题为辅助信息：更小字号 + 弱化色，避免与标题争夺注意力。 */
+.basic__row-hint {
+  font-size: var(--copper-font-size-xs);
+  color: var(--copper-text-disabled);
+}
+
+.basic__shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--copper-space-2);
+}
+
+/* 次按钮：低于主操作视觉权重，仅在 hover 时提升到正文色。 */
+.basic__shortcut {
   display: inline-flex;
   align-items: center;
   gap: var(--copper-space-2);
-  min-width: 0;
-  max-width: 60%;
   height: var(--copper-control-h-sm);
   padding: 0 var(--copper-space-3);
   border: 1px solid var(--copper-border);
@@ -251,18 +311,14 @@ function openFolder() {
   cursor: pointer;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
+    border-color var(--copper-duration-fast) var(--copper-easing),
     color var(--copper-duration-fast) var(--copper-easing);
 }
 
-.basic__path:hover {
+.basic__shortcut:hover {
+  border-color: var(--copper-accent);
   background: var(--copper-surface-3);
   color: var(--copper-text);
-}
-
-.basic__path-text {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .basic__footer {

@@ -338,6 +338,7 @@ pub fn run() {
             commands::home::home_mods_remove,
             commands::home::home_mods_save_manifest,
             commands::home::home_mods_open_folder,
+            commands::home::home_version_open_dir,
             // 游戏下载模块（game-download）
             commands::game_download::game_download_manifest,
             commands::game_download::game_download_detail,

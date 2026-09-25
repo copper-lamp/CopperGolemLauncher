@@ -33,13 +33,22 @@ pub async fn content_download_detail(
         .map_err(into_command_error)
 }
 
-/// 拉取 CurseForge 项目 readme（HTML）。
+/// 拉取项目 readme 原文（CF 为 HTML 片段、lip 为 Markdown）。
+///
+/// `locale` 由前端传入当前界面语言，lip 据此优先匹配 `README.<locale>.md`。
 #[tauri::command]
 pub async fn content_download_readme(
     kernel: State<'_, KernelContext>,
     id: String,
+    locale: Option<String>,
 ) -> CommandResult<Option<String>> {
-    ContentDownloadModule::readme(kernel.inner(), &id)
+    let locale = locale.unwrap_or_default();
+    let locale = if locale.trim().is_empty() {
+        "en-US"
+    } else {
+        locale.as_str()
+    };
+    ContentDownloadModule::readme(kernel.inner(), &id, locale)
         .await
         .map_err(into_command_error)
 }

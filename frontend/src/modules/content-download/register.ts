@@ -27,13 +27,24 @@ registerModule({
       path: "/content",
       name: "content-list",
       component: () => import("./ListView.vue"),
-      meta: { titleKey: "module.content-download.listTitle" },
+      meta: {
+        titleKey: "module.content-download.listTitle",
+        breadcrumb: [{ titleKey: "module.content-download.listTitle", path: "/content" }],
+      },
     },
     {
       path: "/content/:id",
       name: "content-detail",
       component: () => import("./DetailView.vue"),
-      meta: { titleKey: "module.content-download.detailTitle", backPath: "/content" },
+      meta: {
+        titleKey: "module.content-download.detailTitle",
+        backPath: "/content",
+        // 末级标题为动态内容名：详情页加载完成后写入 `title` 字面量（见 DetailView）。
+        breadcrumb: [
+          { titleKey: "module.content-download.listTitle", path: "/content" },
+          { titleKey: "module.content-download.detailTitle", path: "" },
+        ],
+      },
     },
   ],
 });

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>tab fillet probe</title>
+<style>
+:root {
+  --copper-bg: #1b1917;
+  --copper-surface: #242220;
+  --copper-surface-2: #2c2a27;
+  --copper-surface-3: #34312e;
+  --copper-border: #3d3a36;
+  --copper-text: #ece8e3;
+  --copper-text-secondary: #a8a29a;
+  --copper-text-disabled: #6f6a63;
+  --copper-hover: rgba(255, 255, 255, 0.05);
+  --copper-radius-md: 10px;
+  --copper-radius-lg: 14px;
+  --copper-space-1: 4px;
+  --copper-space-2: 8px;
+  --copper-space-3: 12px;
+  --copper-space-4: 16px;
+  --copper-font-size-md: 13px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--copper-bg);
+  color: var(--copper-text);
+  font-family: "Segoe UI", sans-serif;
+  padding: 40px;
+}
+.wrap {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 760px;
+  height: 300px;
+}
+.top-tabs {
+  grid-column: 2; grid-row: 1;
+  align-self: start; justify-self: end;
+  margin-bottom: -1px;
+}
+.rail {
+  grid-column: 1; grid-row: 2;
+  width: 236px;
+  overflow-y: auto;
+  margin-right: -1px;
+  padding-block: var(--copper-radius-md);
+}
+.panel {
+  grid-column: 2; grid-row: 2;
+  background: var(--copper-surface);
+  border: 1px solid var(--copper-border);
+  border-radius: 0 var(--copper-radius-lg) var(--copper-radius-lg) 0;
+  overflow: hidden;
+}
+
+/* ===== CoTabs.vue styles copied verbatim ===== */
+.co-tabs {
+  --co-tabs-corner: var(--copper-radius-md);
+  --co-tabs-fillet-at-bottom-left: radial-gradient(
+    circle at 100% 100%,
+    transparent calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) var(--co-tabs-corner),
+    var(--copper-surface) var(--co-tabs-corner)
+  );
+  --co-tabs-fillet-at-bottom-right: radial-gradient(
+    circle at 0 100%,
+    transparent calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) var(--co-tabs-corner),
+    var(--copper-surface) var(--co-tabs-corner)
+  );
+  position: relative;
+  z-index: 1;
+  border: none;
+}
+.co-tabs--vertical { display: flex; flex-direction: column; gap: var(--copper-space-1); }
+.co-tabs--horizontal { display: flex; flex-direction: row; gap: 2px; }
+.co-tabs__tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--copper-radius-md);
+  background: transparent;
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-md);
+  text-align: left;
+  cursor: pointer;
+}
+.co-tabs--vertical .co-tabs__tab { width: 100%; padding: var(--copper-space-2) var(--copper-space-3); }
+.co-tabs--horizontal .co-tabs__tab { padding: var(--copper-space-2) var(--copper-space-4); }
+.co-tabs__tab--active {
+  z-index: 1;
+  background: var(--copper-surface);
+  color: var(--copper-text);
+  font-weight: 500;
+}
+.co-tabs--vertical .co-tabs__tab--active {
+  border-color: var(--copper-border);
+  border-right-color: var(--copper-surface);
+  border-radius: var(--co-tabs-corner) 0 0 var(--co-tabs-corner);
+}
+.co-tabs--horizontal .co-tabs__tab--active {
+  border-color: var(--copper-border);
+  border-bottom-color: var(--copper-surface);
+  border-radius: var(--co-tabs-corner) var(--co-tabs-corner) 0 0;
+}
+.co-tabs__tab--active::before,
+.co-tabs__tab--active::after {
+  content: "";
+  position: absolute;
+  width: var(--co-tabs-corner);
+  height: var(--co-tabs-corner);
+  pointer-events: none;
+}
+.co-tabs--vertical .co-tabs__tab--active::before {
+  right: calc(100% + 1px); bottom: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-left);
+}
+.co-tabs--vertical .co-tabs__tab--active::after {
+  right: calc(100% + 1px); top: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-right);
+}
+.co-tabs--horizontal .co-tabs__tab--active::before {
+  right: calc(100% + 1px); bottom: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-left);
+}
+.co-tabs--horizontal .co-tabs__tab--active::after {
+  left: calc(100% + 1px); bottom: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-right);
+}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top-tabs">
+      <div class="co-tabs co-tabs--horizontal" role="tablist">
+        <button class="co-tabs__tab co-tabs__tab--active" type="button">基本设置</button>
+        <button class="co-tabs__tab" type="button">内容管理</button>
+        <button class="co-tabs__tab" type="button">模组管理</button>
+      </div>
+    </div>
+    <div class="rail">
+      <div class="co-tabs co-tabs--vertical" role="tablist">
+        <button class="co-tabs__tab co-tabs__tab--active" type="button">1.21.50 正式版</button>
+        <button class="co-tabs__tab" type="button">1.21.0 预览版</button>
+      </div>
+    </div>
+    <div class="panel"></div>
+  </div>
+</body>
+</html>

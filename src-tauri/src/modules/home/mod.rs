@@ -54,6 +54,38 @@ pub struct VersionMetaUpdate {
     pub env_vars: Option<String>,
 }
 
+/// 版本设置中「打开目录」快捷方式的目标目录种类。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenDirKind {
+    /// 版本目录（`<versions>/<name>`）。
+    Version,
+    /// 模组目录（`<版本目录>/mods`）。
+    Mods,
+    /// 存档目录（玩家数据目录下的 `minecraftWorlds`）。
+    Worlds,
+}
+
+/// 解析「打开目录」快捷方式的目标路径，`create` 为真时确保目录存在。
+pub fn resolve_open_dir(
+    kernel: &KernelContext,
+    name: &str,
+    kind: OpenDirKind,
+    create: bool,
+) -> Result<std::path::PathBuf, KernelError> {
+    match kind {
+        OpenDirKind::Version => {
+            let dir = meta::resolve_version_dir(&kernel.versions_root(), name)?;
+            if !dir.is_dir() {
+                return Err(KernelError::InvalidArgument(format!("版本 `{name}` 不存在")));
+            }
+            Ok(dir)
+        }
+        OpenDirKind::Mods => mods::mods_dir(kernel, name, create),
+        OpenDirKind::Worlds => content::worlds_dir(kernel, name, create),
+    }
+}
+
 /// 开始页模块实例。
 pub struct HomeModule {
     /// 事件订阅句柄（stop 时退订）。

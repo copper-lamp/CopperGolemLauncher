@@ -28,7 +28,14 @@
   "basic": {
     "cover": "Cover",
     "name": "Version name",
-    "logo_hint": "Click to change the cover"
+    "logo_hint": "Click to change the cover",
+    "folders": "Folder shortcuts",
+    "folders_hint": "Open in file explorer"
+  },
+  "dir": {
+    "version": "Version folder",
+    "mods": "Mods folder",
+    "worlds": "Worlds folder"
   },
   "type": {
     "release": "Release",

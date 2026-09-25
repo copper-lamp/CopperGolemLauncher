@@ -26,6 +26,29 @@
   "latestVersion": "Latest",
   "adapterVersion": "Game version",
   "downloads": "{count} downloads",
+  "filter": "Filters",
+  "filterTitle": "Filter options",
+  "filterReset": "Reset",
+  "filterActive": "{count} filters applied",
+  "version": "Game version",
+  "versionAll": "All versions",
+  "versionLoadFailed": "Failed to load version list",
+  "sort": "Sort by",
+  "sortDownloadsDesc": "Downloads (high to low)",
+  "sortDownloadsAsc": "Downloads (low to high)",
+  "sortNameAsc": "Name (A→Z)",
+  "sortUpdatedDesc": "Recently updated",
+  "badge": {
+    "behavior_pack": "mcaddon",
+    "texture_pack": "mcpack",
+    "shader": "mcpack",
+    "ll_mod": "LeviLauncher",
+    "source_curseforge": "CurseForge",
+    "source_lip": "LIP",
+    "release": "Release",
+    "beta": "Beta",
+    "alpha": "Alpha"
+  },
   "prev": "Previous",
   "next": "Next",
   "pageInfo": "Page {current} / {total}",
@@ -37,6 +60,10 @@
     "projectUrl": "Project page",
     "compatibleVersions": "Supported versions",
     "files": "Available versions",
+    "versions": "Versions",
+    "versionCount": "{count} versions",
+    "expand": "Expand",
+    "collapse": "Collapse",
     "size": "Size",
     "releaseType": {
       "release": "Release",
@@ -63,6 +90,8 @@
     "lipNotFound": "lip not detected. Please install lip first (with a BDS environment)",
     "confirmInstall": "Install \"{name}\" to \"{dir}\"? Continue?",
     "confirmInstallTitle": "Confirm install",
-    "defaultDir": "Default versions directory"
+    "defaultDir": "Default versions directory",
+    "docLoading": "Loading documentation",
+    "docRenderFailed": "Unsupported document format, shown as plain text"
   }
 }

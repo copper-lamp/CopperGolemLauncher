@@ -26,6 +26,29 @@
   "latestVersion": "最新版本",
   "adapterVersion": "适配版本",
   "downloads": "下载 {count}",
+  "filter": "筛选",
+  "filterTitle": "筛选条件",
+  "filterReset": "重置",
+  "filterActive": "已设置 {count} 项筛选",
+  "version": "游戏版本",
+  "versionAll": "全部版本",
+  "versionLoadFailed": "版本列表加载失败",
+  "sort": "排序方式",
+  "sortDownloadsDesc": "下载量（从高到低）",
+  "sortDownloadsAsc": "下载量（从低到高）",
+  "sortNameAsc": "名称（A→Z）",
+  "sortUpdatedDesc": "最近更新",
+  "badge": {
+    "behavior_pack": "mcaddon",
+    "texture_pack": "mcpack",
+    "shader": "mcpack",
+    "ll_mod": "LeviLauncher",
+    "source_curseforge": "CurseForge",
+    "source_lip": "LIP",
+    "release": "正式版",
+    "beta": "测试版",
+    "alpha": "预览版"
+  },
   "prev": "上一页",
   "next": "下一页",
   "pageInfo": "第 {current} / {total} 页",
@@ -37,6 +60,10 @@
     "projectUrl": "项目主页",
     "compatibleVersions": "适配游戏版本",
     "files": "可选版本",
+    "versions": "版本",
+    "versionCount": "{count} 个版本",
+    "expand": "展开",
+    "collapse": "折叠",
     "size": "大小",
     "releaseType": {
       "release": "正式版",
@@ -63,6 +90,8 @@
     "lipNotFound": "未检测到 lip，请先安装 lip（并准备 BDS 环境）",
     "confirmInstall": "将安装「{name}」到「{dir}」，继续吗？",
     "confirmInstallTitle": "确认安装",
-    "defaultDir": "默认版本目录"
+    "defaultDir": "默认版本目录",
+    "docLoading": "文档加载中",
+    "docRenderFailed": "文档格式不受支持，已按纯文本显示"
   }
 }

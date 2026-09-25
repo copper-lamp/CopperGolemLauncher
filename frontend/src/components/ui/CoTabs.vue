@@ -8,10 +8,23 @@
 // 实现方式：
 // 1. 调用方把条带朝面板方向负偏移 1px（纵向 `margin-right`、横向 `margin-bottom`），
 //    选中项自身那条边框（取面板同色）正好压住面板的 1px 边框；
-// 2. 选中项被咬合那一侧的两个端角取直角，并在其**外侧**各贴一个同色方块，
-//    方块用径向遮罩挖出四分之一圆，露出缺口 —— 即外弧倒角（`--co-tabs-corner`）。
-//    遮罩而非渐变色：渐变从透明过渡到实色会经过半透明灰，遮罩只取 alpha，无灰边。
+// 2. 选中项被咬合那一侧的两个端角取直角，并在其**外侧**各贴一个方块的
+//    「外侧对角线区域」（`--co-tabs-corner` 见方）。方块内用硬停径向渐变一次画出
+//    两件事：沿四分之一圆走的一条 1px 描边弧带（取 `--copper-border`，与面板边框
+//    同色，保证轮廓在倒角处不断开），以及弧线以外的实体填充（取 `--copper-surface`，
+//    与面板同色）。硬停让浏览器只做抗锯齿，不会经过半透明灰而留灰边。
 // 3. 倒角方块要压在相邻标签之上，故选中项自身抬升一层。
+//
+// 几何：补块见方，贴在选中项**外侧**（跨过咬合侧边缘，并与面板边框同列 / 同行），
+// 圆心取**与目标凹角呈对角**的那个角，保留圆外区域；弧线两端分别与「选中项咬合侧
+// 边缘」和「面板轮廓线」相切，于是接缝向外张开。
+// 纵向接缝（面板在右，咬合边为其右边缘）：
+//   上倒角圆心取补块右下（`circle at 100% 100%`），下倒角圆心取补块右上（`circle at 0 100%`）；
+// 横向接缝（面板在下，咬合边为其下边缘）：
+//   左倒角圆心取补块右下（`circle at 100% 100%`），右倒角圆心取补块左下（`circle at 0 100%`）。
+//
+// 定位：`absolute` 的包含块是**内边距盒**，受自身 1px 边框影响，故所有偏移都要
+// `calc(100% + 1px)` 校正，补块才能正好落在边框盒外沿。
 //
 // 方向：
 // - `vertical`：纵向条带，咬合右边（面板在右侧），倒角落在右上 / 右下；
@@ -21,7 +34,8 @@
 // 1. 面板 `background` 必须是 `var(--copper-surface)`，被咬合的那条边为
 //    `1px solid var(--copper-border)`；
 // 2. 条带须朝面板方向负偏移 1px，且与被咬合的面板之间不能有其它间隙；
-// 3. 条带自身不要设置滚动（需要滚动请在条带外层套 overflow 容器）。
+// 3. 补块会越出条带边界，故条带自身不要设置滚动，外层滚动容器需为倒角留出
+//    `--co-tabs-corner` 的内边距，否则首末项的倒角会被裁掉。
 //
 // 选中态只靠「同色 + 边框断开」表达，不另加指示条；
 // 复杂标签内容（图片、多行）用 `#item` 插槽替换默认的 图标 + 文本。
@@ -69,6 +83,24 @@ function select(value: string) {
 <style scoped>
 .co-tabs {
   --co-tabs-corner: var(--copper-radius-md);
+  /* 倒角补块的三种朝向。补块贴在选中项外侧，圆心取**与目标凹角呈对角**的那个角，
+     保留圆外区域：弧线两端分别与「选中项咬合侧边缘」「面板轮廓线」相切，
+     于是接缝向外张开。硬停边界上用 `--copper-border` 画 1px 弧带（描边贴合轮廓），
+     其余填面板同色 `--copper-surface`。 */
+  --co-tabs-fillet-at-bottom-left: radial-gradient(
+    circle at 100% 100%,
+    transparent calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) var(--co-tabs-corner),
+    var(--copper-surface) var(--co-tabs-corner)
+  );
+  --co-tabs-fillet-at-bottom-right: radial-gradient(
+    circle at 0 100%,
+    transparent calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) calc(var(--co-tabs-corner) - 1px),
+    var(--copper-border) var(--co-tabs-corner),
+    var(--copper-surface) var(--co-tabs-corner)
+  );
   position: relative;
   z-index: 1; /* 抬升条带，使选中项能压住相邻面板的边框 */
   border: none;
@@ -143,53 +175,44 @@ function select(value: string) {
   border-radius: var(--co-tabs-corner) var(--co-tabs-corner) 0 0;
 }
 
-/* 外弧倒角：同色方块压在标签外侧，用径向遮罩挖掉靠近标签的那个四分之一圆，
-   留下的部分即从标签边缘向外张开的凹弧。 */
+/* 外弧倒角：补块贴在标签外侧，内部径向渐变已含 1px 描边弧带与同色填充，
+   弧线朝面板方向张开，接缝两端由此延续面板轮廓。 */
 .co-tabs__tab--active::before,
 .co-tabs__tab--active::after {
   content: "";
   position: absolute;
   width: var(--co-tabs-corner);
   height: var(--co-tabs-corner);
-  background: var(--copper-surface);
   pointer-events: none;
 }
 
-/* 纵向：倒角贴在右边框之外（`-1px` 让它与 1px 边框对齐），上下各一。
-   上端圆心取方块左下角、下端取左上角，弧线均朝面板方向张开。 */
-.co-tabs--vertical .co-tabs__tab--active::before,
-.co-tabs--vertical .co-tabs__tab--active::after {
-  left: calc(100% - 1px);
-}
-
+/* 纵向：补块贴在选中项右缘之外（其中 1px 压在面板边框同列上），上端圆心取
+   补块右下角、下端圆心取右上角，弧线朝面板方向张开。
+   `right: calc(100% + 1px)` 从内边距盒右缘再外移 1px，落在边框盒外沿；
+   反向的 `bottom/top: calc(100% + 1px)` 同理补偿自身边框。 */
 .co-tabs--vertical .co-tabs__tab--active::before {
-  bottom: 100%;
-  -webkit-mask: radial-gradient(circle at 0 100%, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
-  mask: radial-gradient(circle at 0 100%, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  right: calc(100% + 1px);
+  bottom: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-left);
 }
 
 .co-tabs--vertical .co-tabs__tab--active::after {
-  top: 100%;
-  -webkit-mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
-  mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  right: calc(100% + 1px);
+  top: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-right);
 }
 
-/* 横向：倒角贴在底边之外，左右各一。左端圆心取方块左上角、右端取右上角。 */
-.co-tabs--horizontal .co-tabs__tab--active::before,
-.co-tabs--horizontal .co-tabs__tab--active::after {
-  bottom: 0;
-}
-
+/* 横向：补块贴在选中项下缘之外，左端圆心取补块右下角、右端圆心取左下角。 */
 .co-tabs--horizontal .co-tabs__tab--active::before {
-  right: 100%;
-  -webkit-mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
-  mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  right: calc(100% + 1px);
+  bottom: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-left);
 }
 
 .co-tabs--horizontal .co-tabs__tab--active::after {
-  left: 100%;
-  -webkit-mask: radial-gradient(circle at 100% 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
-  mask: radial-gradient(circle at 100% 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  left: calc(100% + 1px);
+  bottom: calc(100% + 1px);
+  background: var(--co-tabs-fillet-at-bottom-right);
 }
 
 .co-tabs__label {

@@ -111,15 +111,28 @@ impl ContentDownloadModule {
         }
     }
 
-    /// 拉取 CurseForge 项目 readme（HTML）。仅 CF 支持。
-    pub async fn readme(kernel: &KernelContext, id: &str) -> Result<Option<String>, KernelError> {
-        let cf_id = id
-            .strip_prefix("cf:")
-            .ok_or_else(|| KernelError::InvalidArgument("readme 仅支持 CurseForge 内容".into()))?;
-        let mod_id: i64 = cf_id
-            .parse()
-            .map_err(|_| KernelError::InvalidArgument(format!("无效内容 id `{id}`")))?;
-        curseforge::description(kernel, mod_id).await
+    /// 拉取项目 readme 原文，按跨源 id 路由。
+    ///
+    /// - `cf:` → CurseForge 项目描述（HTML 片段）。
+    /// - `lip:` → 对应 GitHub 仓库的 readme（Markdown 原文），按 `locale` 优先匹配语言变体。
+    ///
+    /// 返回的是「原文」而非渲染结果：CF 为 HTML、lip 为 Markdown，两者都需前端
+    /// 经安全过滤后渲染。无文档时返回 `None`，不伪造内容。
+    pub async fn readme(
+        kernel: &KernelContext,
+        id: &str,
+        locale: &str,
+    ) -> Result<Option<String>, KernelError> {
+        if let Some(cf_id) = id.strip_prefix("cf:") {
+            let mod_id: i64 = cf_id
+                .parse()
+                .map_err(|_| KernelError::InvalidArgument(format!("无效内容 id `{id}`")))?;
+            curseforge::description(kernel, mod_id).await
+        } else if let Some(ident) = id.strip_prefix("lip:") {
+            lip::readme(kernel, ident, locale).await
+        } else {
+            Err(KernelError::InvalidArgument(format!("无法识别的内容 id `{id}`")))
+        }
     }
 
     /// 可选游戏版本列表（供前端「版本过滤」下拉）。

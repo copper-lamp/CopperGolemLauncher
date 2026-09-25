@@ -28,7 +28,14 @@
   "basic": {
     "cover": "版本封面",
     "name": "版本名称",
-    "logo_hint": "点击更换封面"
+    "logo_hint": "点击更换封面",
+    "folders": "目录快捷方式",
+    "folders_hint": "在文件资源管理器中打开"
+  },
+  "dir": {
+    "version": "版本目录",
+    "mods": "模组目录",
+    "worlds": "存档目录"
   },
   "type": {
     "release": "正式版",

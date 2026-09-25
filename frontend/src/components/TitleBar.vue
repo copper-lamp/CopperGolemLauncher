@@ -33,8 +33,10 @@ const backPath = computed(() =>
 
 /** 面包屑单段。 */
 interface BreadcrumbItem {
-  /** 段标题的 i18n 键。 */
-  titleKey: string;
+  /** 段标题的 i18n 键（与 `title` 二选一，优先级低于 `title`）。 */
+  titleKey?: string;
+  /** 段标题字面量：用于动态名称（如具体内容名），无需预先声明 i18n 键。 */
+  title?: string;
   /** 点击跳转路径（末段不跳转）。 */
   path: string;
 }
@@ -47,13 +49,21 @@ const breadcrumb = computed<BreadcrumbItem[]>(() => {
     (item): item is BreadcrumbItem =>
       typeof item === "object" &&
       item !== null &&
-      typeof (item as BreadcrumbItem).titleKey === "string" &&
-      typeof (item as BreadcrumbItem).path === "string",
+      typeof (item as BreadcrumbItem).path === "string" &&
+      (typeof (item as BreadcrumbItem).title === "string" ||
+        typeof (item as BreadcrumbItem).titleKey === "string"),
   );
 });
 
+/** 段标题文本：字面量优先，其次 i18n 键。 */
+function crumbText(item: BreadcrumbItem): string {
+  if (typeof item.title === "string" && item.title.length > 0) return item.title;
+  return typeof item.titleKey === "string" ? t(item.titleKey) : "";
+}
+
 /** 面包屑跳转（保留完整路径语义，直接 push）。 */
 function goCrumb(path: string) {
+  if (!path) return;
   void router.push(path);
 }
 
@@ -104,16 +114,16 @@ function close() {
   <header class="titlebar">
     <div class="titlebar__left">
       <nav v-if="breadcrumb.length" class="titlebar__crumbs">
-        <template v-for="(crumb, index) in breadcrumb" :key="crumb.path">
+        <template v-for="(crumb, index) in breadcrumb" :key="`${index}-${crumb.path}`">
           <button
             v-if="index < breadcrumb.length - 1"
             class="titlebar__crumb"
             @click="goCrumb(crumb.path)"
           >
-            {{ t(crumb.titleKey) }}
+            {{ crumbText(crumb) }}
           </button>
           <span v-else class="titlebar__crumb titlebar__crumb--current" aria-current="page">
-            {{ t(crumb.titleKey) }}
+            {{ crumbText(crumb) }}
           </span>
           <ChevronRight
             v-if="index < breadcrumb.length - 1"

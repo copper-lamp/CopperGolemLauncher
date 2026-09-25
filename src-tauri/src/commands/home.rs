@@ -9,7 +9,7 @@ use crate::error::{CommandResult, KernelError};
 use crate::modules::home::content;
 use crate::modules::home::launch::LaunchOutcome;
 use crate::modules::home::mods;
-use crate::modules::home::{meta, VersionMetaUpdate, VersionView};
+use crate::modules::home::{meta, OpenDirKind, VersionMetaUpdate, VersionView};
 use crate::state::KernelContext;
 
 /// 版本清单。
@@ -222,6 +222,22 @@ pub fn home_mods_open_folder(
     name: String,
 ) -> CommandResult<String> {
     let dir = mods::mods_dir(kernel.inner(), &name, true).map_err(into_command_error)?;
+    tauri_plugin_opener::open_path(&dir, None::<&str>)
+        .map_err(|e| KernelError::InvalidArgument(format!("打开目录失败: {e}")))
+        .map_err(into_command_error)?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// 在系统文件管理器中打开版本相关目录（版本目录 / 模组目录 / 存档目录），
+/// 返回目录绝对路径。目录不存在则创建。
+#[tauri::command]
+pub fn home_version_open_dir(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    kind: OpenDirKind,
+) -> CommandResult<String> {
+    let dir = crate::modules::home::resolve_open_dir(kernel.inner(), &name, kind, true)
+        .map_err(into_command_error)?;
     tauri_plugin_opener::open_path(&dir, None::<&str>)
         .map_err(|e| KernelError::InvalidArgument(format!("打开目录失败: {e}")))
         .map_err(into_command_error)?;

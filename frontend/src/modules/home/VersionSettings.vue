@@ -287,6 +287,8 @@ async function deleteVersion() {
   width: 236px;
   min-height: 0;
   overflow-y: auto;
+  /* 纵向内边距为选中项的外弧倒角留位，否则首末项的倒角会被本容器裁掉。 */
+  padding-block: var(--copper-radius-md);
   margin-right: -1px;
   position: relative;
   z-index: 1;

@@ -212,3 +212,11 @@ export function homeModsSaveManifest(
 export function homeModsOpenFolder(name: string): Promise<string> {
   return call<string>("home_mods_open_folder", { name });
 }
+
+/** 版本目录快捷方式的目标。 */
+export type VersionDirKind = "version" | "mods" | "worlds";
+
+/** 在系统文件管理器中打开版本相关目录（版本 / 模组 / 存档），返回目录绝对路径。 */
+export function homeVersionOpenDir(name: string, kind: VersionDirKind): Promise<string> {
+  return call<string>("home_version_open_dir", { name, kind });
+}

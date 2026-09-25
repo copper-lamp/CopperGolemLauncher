@@ -35,6 +35,7 @@ const moduleNav = getModuleNav();
     </div>
     <div class="side-nav__bottom">
       <RouterLink
+        id="copper-nav-downloads"
         to="/downloads"
         class="side-nav__item"
         :title="t('nav.downloads')"
@@ -119,5 +120,32 @@ const moduleNav = getModuleNav();
 .side-nav__item.router-link-active {
   background: color-mix(in srgb, var(--copper-accent) 16%, transparent);
   color: var(--copper-accent);
+}
+
+/* 下载落点水波纹：圆点飞抵下载入口后触发，向外扩散一圈即消散。 */
+.side-nav__item--pulse {
+  position: relative;
+  color: var(--copper-accent);
+}
+
+.side-nav__item--pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid var(--copper-accent);
+  pointer-events: none;
+  animation: side-nav-ripple 700ms var(--copper-easing) forwards;
+}
+
+@keyframes side-nav-ripple {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
 }
 </style>

@@ -356,6 +356,150 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
     })
 }
 
+/// 拉取 LL 模组 readme 原文（GitHub，按用户语言优先）。
+///
+/// lipr 索引导只声明项目 identifier，不含文档；readme 从对应 GitHub 仓库抓取。
+/// 非 GitHub 项目（或无对应仓库）返回 `None`，不伪造内容。
+pub async fn readme(
+    _kernel: &KernelContext,
+    identifier: &str,
+    locale: &str,
+) -> Result<Option<String>, KernelError> {
+    let key = identifier.split('#').next().unwrap_or(identifier);
+    let Some(url) = infer_project_url(key) else {
+        return Ok(None);
+    };
+    Ok(fetch_github_readme(&url, locale).await)
+}
+
+// ---------------------------------------------------------------- readme 抓取
+
+/// GitHub 加速镜像（与 LeviLauncher 一致），优先使用以提高国内可达性。
+const README_PROXY_PREFIX: &str = "https://github.bibk.top";
+/// 直连回退主机（镜像不可用时使用）。
+const README_DIRECT_HOST: &str = "https://raw.githubusercontent.com";
+/// 默认分支尝试顺序。
+const README_BRANCHES: &[&str] = &["main", "master"];
+/// 单次抓取的请求数上限（候选组合兜底，避免异常时放大请求）。
+const README_MAX_REQUESTS: usize = 24;
+
+/// 按用户语言生成 readme 文件名候选（优先级从高到低）。
+///
+/// 约定与 GitHub 社区惯例一致：`README.<lang>.md` 为主，兼容 `_` 分隔写法，
+/// 末位固定回退到无语言标识的 `README.md`。英语（`en`）无需语言变体，
+/// 直接返回默认候选。
+pub fn readme_filename_candidates(locale: &str) -> Vec<String> {
+    let norm = locale.trim().replace('_', "-");
+    let lower = norm.to_lowercase();
+    let lang = lower.split('-').next().unwrap_or("").to_string();
+
+    // 语言标识候选：完整 locale（zh-CN）在前，仅主语言（zh）在后。
+    let mut tags: Vec<String> = Vec::new();
+    if !lang.is_empty() && lang != "en" {
+        let canonical = canonicalize_tag(&norm);
+        if !canonical.is_empty() {
+            tags.push(canonical);
+        }
+        let canonical_lang = canonicalize_tag(&lang);
+        if !canonical_lang.is_empty() && canonical_lang != tags[0] {
+            tags.push(canonical_lang);
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for tag in &tags {
+        for name in [format!("README.{tag}.md"), format!("README_{tag}.md")] {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out.push("README.md".to_string());
+    out
+}
+
+/// 归一语言标签大小写：`zh-cn` → `zh-CN`（主语言小写、地区大写）。
+fn canonicalize_tag(tag: &str) -> String {
+    let mut parts = tag.split('-');
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    let mut out = first.to_lowercase();
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        out.push('-');
+        out.push_str(&part.to_uppercase());
+    }
+    out
+}
+
+/// 从项目 URL 解析 GitHub `owner/repo`；非 GitHub 站点返回 None。
+pub fn parse_github_repo(url: &str) -> Option<(String, String)> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let rest = trimmed
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut segs = rest.split('/').filter(|s| !s.is_empty());
+    let host = segs.next()?;
+    // 去 userinfo 与端口。
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("www.github.com") {
+        return None;
+    }
+    let owner = segs.next()?.to_string();
+    let repo = segs.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+/// 抓取 GitHub readme 原文：镜像优先、直连回退；按分支与语言候选顺序尝试。
+///
+/// 任一候选返回非空正文即命中；全部未命中（或无 GitHub 仓库）返回 None。
+pub async fn fetch_github_readme(repo_url: &str, locale: &str) -> Option<String> {
+    let (owner, repo) = parse_github_repo(repo_url)?;
+    let files = readme_filename_candidates(locale);
+    let mut requests = 0usize;
+    for host in [README_PROXY_PREFIX, README_DIRECT_HOST] {
+        let proxied = host == README_PROXY_PREFIX;
+        for branch in README_BRANCHES {
+            for file in &files {
+                if requests >= README_MAX_REQUESTS {
+                    return None;
+                }
+                requests += 1;
+                let url = if proxied {
+                    format!("{host}/{owner}/{repo}/raw/refs/heads/{branch}/{file}")
+                } else {
+                    format!("{host}/{owner}/{repo}/{branch}/{file}")
+                };
+                if let Some(text) = fetch_text(&url).await {
+                    return Some(text);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 取远程文本；非 2xx 或空正文视为未命中。
+async fn fetch_text(url: &str) -> Option<String> {
+    let resp = super::http::client().get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let text = resp.text().await.ok()?;
+    (!text.trim().is_empty()).then_some(text)
+}
+
 fn package_to_item(p: &Package) -> ContentItem {
     let latest = p
         .preferred_variants

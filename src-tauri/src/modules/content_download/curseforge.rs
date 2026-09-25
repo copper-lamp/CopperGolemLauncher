@@ -21,8 +21,8 @@ use crate::state::KernelContext;
 use super::http;
 use super::model::{
     normalize_sort, ContentDependency, ContentDetail, ContentFile, ContentItem, ContentListPage,
-    ContentListQuery, SOURCE_CURSEFORGE, SORT_DOWNLOADS_ASC, SORT_DOWNLOADS_DESC, SORT_NAME_ASC,
-    SORT_UPDATED_DESC, TYPE_BEHAVIOR_PACK, TYPE_SHADER, TYPE_TEXTURE_PACK,
+    ContentListQuery, SOURCE_CURSEFORGE, SORT_DOWNLOADS_ASC, SORT_NAME_ASC, SORT_UPDATED_DESC,
+    TYPE_BEHAVIOR_PACK, TYPE_SHADER, TYPE_TEXTURE_PACK,
 };
 
 /// CurseForge API 基址与 MC 基岩版 gameId（参考 LeviLauncher）。

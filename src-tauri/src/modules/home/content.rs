@@ -255,6 +255,50 @@ fn first_player_worlds_dir(roots: &ContentRoots) -> Option<PathBuf> {
     None
 }
 
+/// 定位世界（存档）目录，供「打开存档目录」使用。
+///
+/// 优先取首个玩家目录下的 `minecraftWorlds`；玩家目录尚未生成时退回首个非 Shared
+/// 用户目录再退回 Shared，保证版本可隔离、多用户场景下都能得到一个可打开的目录。
+/// `create` 为真时确保目录存在。
+pub fn worlds_dir(
+    kernel: &KernelContext,
+    name: &str,
+    create: bool,
+) -> Result<PathBuf, KernelError> {
+    let roots = content_roots(kernel, name)?;
+    let dir = first_player_worlds_dir(&roots).unwrap_or_else(|| {
+        first_user_root(&roots)
+            .unwrap_or_else(|| roots.com_mojang.clone())
+            .join(SHARED_GAME_DIR)
+            .join(WORLDS_DIR)
+    });
+    if create {
+        std::fs::create_dir_all(&dir)?;
+    }
+    Ok(dir)
+}
+
+/// 首个可用玩家目录（跳过 `Shared` 与点开头目录）。
+fn first_user_root(roots: &ContentRoots) -> Option<PathBuf> {
+    let users = &roots.users_root;
+    if !users.is_dir() {
+        return None;
+    }
+    let entries = std::fs::read_dir(users).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.eq_ignore_ascii_case("Shared") || name.starts_with('.') {
+            continue;
+        }
+        return Some(path);
+    }
+    None
+}
+
 /// 按 id 定位条目（在加载目录与备份目录中查找），返回 (条目, 是否在加载目录)。
 fn find_item(roots: &ContentRoots, item_id: &str) -> Result<(ContentItem, bool), KernelError> {
     let (kind_str, name) = item_id

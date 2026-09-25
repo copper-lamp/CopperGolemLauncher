@@ -50,6 +50,10 @@ export interface ContentListQuery {
   source?: ContentSource;
   contentType?: ContentType;
   search?: string;
+  /** 按 MCBE 游戏版本过滤（LL 模组无游戏版本元数据，指定后不匹配）。 */
+  gameVersion?: string;
+  /** 排序方式，缺省后端按下载量降序。 */
+  sort?: ContentSort;
   page?: number;
 }
 
@@ -109,9 +113,20 @@ export function contentDownloadDetail(id: string): Promise<ContentDetail> {
   return call<ContentDetail>("content_download_detail", { id });
 }
 
-/** 拉取 CurseForge 项目 readme（HTML），无则返回 null。 */
-export function contentDownloadReadme(id: string): Promise<string | null> {
-  return call<string | null>("content_download_readme", { id });
+/** 拉取项目 readme 原文（CF 为 HTML、lip 为 Markdown），无则返回 null。
+ *
+ * `locale` 传入当前界面语言，lip 据此优先匹配 `README.<locale>.md`。
+ */
+export function contentDownloadReadme(
+  id: string,
+  locale?: string,
+): Promise<string | null> {
+  return call<string | null>("content_download_readme", { id, locale });
+}
+
+/** 可选游戏版本列表（供「版本过滤」下拉；来源为 CurseForge）。 */
+export function contentDownloadGameVersions(): Promise<string[]> {
+  return call<string[]>("content_download_game_versions");
 }
 
 /** 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。 */
