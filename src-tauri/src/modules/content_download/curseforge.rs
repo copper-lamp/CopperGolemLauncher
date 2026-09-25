@@ -678,6 +678,7 @@ fn file_to_model(f: &File) -> ContentFile {
             })
             .collect(),
         release_type: release_type_name(f.release_type).to_string(),
+        variant: None,
     }
 }
 

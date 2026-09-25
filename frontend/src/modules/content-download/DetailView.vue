@@ -26,6 +26,7 @@ import {
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
+import { useSettings } from "../../composables/useSettings";
 import TipsRotator from "../../components/TipsRotator.vue";
 import ContentBadge from "./ContentBadge.vue";
 import {
@@ -47,6 +48,7 @@ import {
   type ContentDetail,
   type ContentFile,
   type LipEnv,
+  type LipInstallOutcome,
 } from "./api";
 
 const MB_KEY = "module.content-download";
@@ -58,6 +60,7 @@ const DOWNLOAD_NAV_ID = "copper-nav-downloads";
 const route = useRoute();
 const router = useRouter();
 const { t, locale } = useI18n();
+const settings = useSettings();
 
 const detail = ref<ContentDetail | null>(null);
 const readmeHtml = ref<string | null>(null);
@@ -75,6 +78,34 @@ const installFile = ref<ContentFile | null>(null);
 const installRunning = ref(false);
 
 const isLip = computed(() => detail.value?.item.source === "lip");
+
+/** lip 安装目标版本（`launch.default_version`，与后端解析口径一致）。 */
+const targetVersion = computed(() =>
+  settings.get<string>("launch.default_version", "").trim(),
+);
+/** 弹窗展示的目标描述：无默认版本时明确提示，避免「默认版本目录」这种含糊说法。 */
+const targetLabel = computed(
+  () => targetVersion.value || t(`${KB}.noVersionTarget`),
+);
+
+/** lip 安装错误码 → 本地化提示键（未知码回退后端原文）。 */
+const LIP_ERROR_KEYS: Record<string, string> = {
+  ERR_LIP_NOT_INSTALLED: "lipNotFound",
+  ERR_LIP_PACKAGE_INVALID_IDENTIFIER: "lipErrInvalidIdentifier",
+  ERR_LIP_PACKAGE_VERSION_REQUIRED: "lipErrVersionRequired",
+  ERR_TARGET_NOT_FOUND: "lipErrTargetNotFound",
+};
+
+/** 把 lip 安装失败结果转成用户可读提示。 */
+function lipErrorMessage(outcome: LipInstallOutcome): string {
+  const key = LIP_ERROR_KEYS[outcome.errorCode ?? ""];
+  if (key) return t(`${KB}.${key}`);
+  // 安装类失败：附上 daemon 原文便于排查。
+  const detail = (outcome.stderr || outcome.stdout).trim();
+  return t(`${KB}.libInstallFailed`, {
+    message: detail || outcome.errorCode || "",
+  });
+}
 
 function typeIcon(ct: string) {
   switch (ct) {
@@ -258,15 +289,14 @@ async function confirmInstall() {
   if (!detail.value || !installFile.value) return;
   installRunning.value = true;
   try {
+    // variant 必须独立下发：后端据此拼 `github.com/owner/repo#<variant>@<version>`。
     const outcome = await contentDownloadLipInstall(
       detail.value.item.id,
       installFile.value.version,
+      installFile.value.variant ?? undefined,
     );
     if (!outcome.success) {
-      showToast(
-        t(`${KB}.libInstallFailed`, { message: outcome.stderr || outcome.stdout }),
-        "error",
-      );
+      showToast(lipErrorMessage(outcome), "error");
     } else {
       showToast(t(`${KB}.installStarted`), "success");
       flyToDownloads();
@@ -462,7 +492,7 @@ onUnmounted(resetCrumbTitle);
           {{
             t(`${KB}.confirmInstall`, {
               name: detail?.item.name ?? "",
-              dir: t(`${KB}.defaultDir`),
+              dir: targetLabel,
             })
           }}
         </p>

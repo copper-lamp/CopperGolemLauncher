@@ -75,21 +75,30 @@ pub async fn content_download_download(
         .map_err(into_command_error)
 }
 
-/// 探测 lip 环境（是否安装 lip 可执行文件）。
+/// 探测 lip 环境（是否安装 lipd 可执行文件）。
 #[tauri::command]
 pub async fn content_download_lip_env() -> CommandResult<LipEnv> {
-    Ok(ContentDownloadModule::lip_env().await)
+    Ok(ContentDownloadModule::lip_env())
 }
 
-/// 经 lip 安装 LL 模组到目标版本目录。
+/// 经 lipd 安装 / 更新 LL 模组到目标版本目录。
+///
+/// `variant` 缺省按 lip 约定回退 `client`；`dir` 缺省解析设置 `launch.default_version`。
+/// 域内失败以 `success=false` + `errorCode` 返回，不走命令错误通道。
 #[tauri::command]
 pub async fn content_download_lip_install(
     kernel: State<'_, KernelContext>,
     id: String,
     version: String,
+    variant: Option<String>,
     dir: Option<String>,
 ) -> CommandResult<LipInstallOutcome> {
-    ContentDownloadModule::lip_install(kernel.inner(), &id, &version, dir)
-        .await
-        .map_err(into_command_error)
+    Ok(ContentDownloadModule::lip_install(
+        kernel.inner(),
+        &id,
+        &version,
+        variant.as_deref(),
+        dir.as_deref(),
+    )
+    .await)
 }

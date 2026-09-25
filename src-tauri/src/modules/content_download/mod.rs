@@ -3,8 +3,8 @@
 //! 两类数据源：
 //! - **CurseForge**（行为包 / 材质包 / 光影包）：列表 / 详情 / 文件直链齐备，
 //!   `download` 把 `downloadUrl` 投递到内核全局下载队列（悬浮窗统一展示进度）。
-//! - **LIP**（LL 模组）：lipr 索引导仅含元数据，真实安装依赖用户预装的 lip + BDS，
-//!   经 `lip_install` 调用 lip 子进程完成；不伪造直链。
+//! - **LIP**（LL 模组）：lipr 索引导仅含元数据，真实安装经 `lip_install` 调用
+//!   `lipd` 守护进程完成（见 `lipd.rs` / `lip_install.rs`）；不伪造直链。
 //!
 //! 联动（经内核中介）：投递任务 `kernel.download()`、持久化 `kernel.db()`
 //! （记录已下载项）、设置 `content.curseforgeApiKey`、语言包 `kernel.i18n()`。
@@ -27,9 +27,13 @@ use self::model::{
     TYPE_BEHAVIOR_PACK, TYPE_LL_MOD, TYPE_SHADER, TYPE_TEXTURE_PACK,
 };
 
+pub use self::lip_install::LipInstallOutcome;
+
 pub mod curseforge;
 pub mod http;
 pub mod lip;
+pub mod lip_install;
+pub mod lipd;
 pub mod model;
 
 /// 模块唯一标识。
@@ -199,51 +203,31 @@ impl ContentDownloadModule {
         Ok(task_id)
     }
 
-    /// 探测 lip 环境：lip 可执行是否可用、应用版本目录。
-    pub async fn lip_env() -> LipEnv {
+    /// 探测 lip 环境：lipd 可执行是否可用。
+    pub fn lip_env() -> LipEnv {
+        let available = lipd::find_lip_executable();
         LipEnv {
-            lip_available: find_executable("lip").is_some(),
-            message: if find_executable("lip").is_some() {
+            lip_available: available.is_some(),
+            message: if available.is_some() {
                 None
             } else {
-                Some("未检测到 lip，请先安装 lip（并准备 BDS 环境）".to_string())
+                Some("未检测到 lipd，请先安装 lip（需要 .NET 10 运行时）".to_string())
             },
         }
     }
 
-    /// 经 lip 安装 LL 模组：在目标版本目录执行 `lip install <ident>@<version> -y`。
+    /// 经 lipd 安装 / 更新 LL 模组到目标版本目录。
+    ///
+    /// 目标目录取「具体已安装版本目录」：显式 `dir` 优先，否则解析设置
+    /// `launch.default_version`。域内失败以 `success=false` + `error_code` 表达。
     pub async fn lip_install(
         kernel: &KernelContext,
         id: &str,
         version: &str,
-        dir: Option<String>,
-    ) -> Result<LipInstallOutcome, KernelError> {
-        let ident = id
-            .strip_prefix("lip:")
-            .ok_or_else(|| KernelError::InvalidArgument("仅支持 lip 来源的模组安装".into()))?;
-        let lip = find_executable("lip")
-            .ok_or_else(|| KernelError::InvalidArgument("未检测到 lip，请先安装 lip（并准备 BDS 环境）".into()))?;
-
-        let cwd = match dir {
-            Some(d) if !d.trim().is_empty() => d,
-            _ => kernel.paths().versions_dir().to_string_lossy().into_owned(),
-        };
-
-        let pkg = format!("{ident}@{version}");
-        let output = tokio::process::Command::new(&lip)
-            .arg("install")
-            .arg(&pkg)
-            .arg("-y")
-            .current_dir(&cwd)
-            .output()
-            .await?;
-
-        Ok(LipInstallOutcome {
-            success: output.status.success(),
-            package: pkg,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+        variant: Option<&str>,
+        dir: Option<&str>,
+    ) -> LipInstallOutcome {
+        lip_install::install(kernel, id, version, variant, dir).await
     }
 }
 
@@ -397,16 +381,6 @@ async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<
 pub struct LipEnv {
     pub lip_available: bool,
     pub message: Option<String>,
-}
-
-/// lip 安装结果。
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LipInstallOutcome {
-    pub success: bool,
-    pub package: String,
-    pub stdout: String,
-    pub stderr: String,
 }
 
 // ---------------------------------------------------------------- 本地下载记录

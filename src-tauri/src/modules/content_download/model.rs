@@ -85,6 +85,12 @@ pub struct ContentFile {
     pub dependencies: Vec<ContentDependency>,
     /// 发布类型：release / beta / alpha。
     pub release_type: String,
+    /// LIP 包的 variant（如 `client` / `server`）。仅 LIP 来源存在。
+    ///
+    /// LIP 安装必须把 variant 独立下发给 lipd（包引用形如
+    /// `github.com/owner/repo#<variant>@<version>`），不能只藏在 `id` 里。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
 }
 
 /// 依赖项（前置模组跳转 / 可选依赖）。

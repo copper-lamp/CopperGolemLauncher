@@ -68,6 +68,8 @@ export interface ContentFile {
   gameVersions: string[];
   dependencies: ContentDependency[];
   releaseType: string;
+  /** LIP 包的 variant（如 `client` / `server`）。仅 LIP 来源存在。 */
+  variant?: string | null;
 }
 
 /** 依赖（与后端 `ContentDependency` 同构）。 */
@@ -99,6 +101,8 @@ export interface LipInstallOutcome {
   package: string;
   stdout: string;
   stderr: string;
+  /** 机器可读错误码（成功时缺省），前端据此映射本地化提示。 */
+  errorCode?: string | null;
 }
 
 /** 列表：按来源 / 类型过滤 + 关键字搜索 + 分页。 */
@@ -142,15 +146,22 @@ export function contentDownloadLipEnv(): Promise<LipEnv> {
   return call<LipEnv>("content_download_lip_env");
 }
 
-/** 经 lip 安装 LL 模组到目标版本目录。 */
+/** 经 lipd 安装 / 更新 LL 模组到目标版本目录。
+ *
+ * `variant` 缺省按 lip 约定回退 `client`（后端拼接为
+ * `github.com/owner/repo#<variant>@<version>`）；`dir` 缺省解析设置
+ * `launch.default_version` 对应的版本目录。
+ */
 export function contentDownloadLipInstall(
   id: string,
   version: string,
+  variant?: string,
   dir?: string,
 ): Promise<LipInstallOutcome> {
   return call<LipInstallOutcome>("content_download_lip_install", {
     id,
     version,
+    variant,
     dir,
   });
 }

@@ -334,6 +334,8 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
                 game_versions: Vec::new(),
                 dependencies,
                 release_type: "release".into(),
+                // variant 独立下发给 lipd（包引用 `github.com/owner/repo#<variant>`）。
+                variant: Some(variant.key.clone()),
             });
         }
     }
