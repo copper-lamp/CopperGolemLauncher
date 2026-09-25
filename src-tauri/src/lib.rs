@@ -120,7 +120,7 @@ fn open_log_file(logs_dir: &Path) -> std::io::Result<std::fs::File> {
 }
 
 use error::KernelError;
-use registry::dylib_backend::DylibBackend;
+use registry::helper_backend::HelperBackend;
 use registry::events::EventBus;
 use registry::intents::IntentRegistry;
 use registry::loader::ModuleLoader;
@@ -258,7 +258,7 @@ pub fn run() {
             // 附加模块：扫描 `<data_dir>/modules`，逐个校验清单并同进程装载动态库。
             // 必须在 `boot()` **之前**完成：装载进来的模块与内置模块一并由 boot 驱动
             // 生命周期；单个失败不影响其它模块（见 loader::ModuleLoader::load_installed）。
-            let loader = ModuleLoader::new(Arc::new(DylibBackend::new()));
+            let loader = ModuleLoader::new(Arc::new(HelperBackend::new()));
             let reports = loader.load_installed(&kernel);
             let loaded = reports.iter().filter(|r| r.loaded).count();
             if !reports.is_empty() {

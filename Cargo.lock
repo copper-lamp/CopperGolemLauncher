@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "abi-fixture-echo"
+version = "0.1.0"
+dependencies = [
+ "copper-module-abi",
+ "serde_json",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -551,6 +559,7 @@ dependencies = [
  "async-trait",
  "base64 0.21.7",
  "copper-downloader",
+ "copper-module-abi",
  "ed25519-dalek",
  "keyring",
  "libloading 0.8.9",
@@ -597,6 +606,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "copper-module-abi"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

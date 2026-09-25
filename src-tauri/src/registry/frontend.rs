@@ -92,7 +92,7 @@ pub fn list_frontends(kernel: &KernelContext) -> Vec<AddonFrontendView> {
 
         let style_urls = collect_styles(&frontend_dir)
             .into_iter()
-            .map(|rel| format!("{URL_PREFIX}/{id}/{}", rel.replace('\\', "/")))
+            .map(|rel| format!("{URL_PREFIX}/{id}/{rel}"))
             .collect();
 
         out.push(AddonFrontendView {
@@ -107,7 +107,8 @@ pub fn list_frontends(kernel: &KernelContext) -> Vec<AddonFrontendView> {
     out
 }
 
-/// 递归收集 `<frontend>/` 下的全部 `.css`（相对 frontend 的路径）。
+/// 递归收集 `<frontend>/` 下的全部 `.css`，返回 **URL 风格**的相对路径
+/// （分隔符统一为正斜杠，可直接拼进 `cglmod` URL）。
 fn collect_styles(frontend_dir: &Path) -> Vec<String> {
     fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -119,7 +120,7 @@ fn collect_styles(frontend_dir: &Path) -> Vec<String> {
                 walk(base, &path, out);
             } else if path.extension().and_then(|e| e.to_str()) == Some("css") {
                 if let Ok(rel) = path.strip_prefix(base) {
-                    out.push(rel.to_string_lossy().into_owned());
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
                 }
             }
         }

@@ -45,6 +45,9 @@ md-5 = "0.10"
 libloading = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 copper-downloader = { path = "../copper-downloader" }
+# 附加模块稳定契约层（模块 id 规则 / 宿主 IPC 协议 / 插件 ABI）。
+# 独立成 crate 以便 helper 进程与附加模块模板复用同一份定义，而不链接 Tauri。
+copper-module-abi = { path = "../copper-module-abi" }
 
 # TLS 后端按平台选择：Windows 走系统 Schannel（native-tls，无额外依赖、
 # 跟随系统证书库）；Android/Linux 走 rustls（纯 Rust，交叉编译无需 OpenSSL）。

@@ -421,8 +421,9 @@ const README_FORMS: &[&str] = &[
 
 /// 按用户语言生成 readme 文件名候选（优先级从高到低）。
 ///
-/// GitHub raw 路径**大小写敏感**，因此每个语言标签同时产出小写与全大写两种写法
-/// （社区两种写法都常见，如 `README_ZH.md` 与 `README_zh.md`）。
+/// GitHub raw 路径**大小写敏感**，因此每个语言标签产出 canonical（`zh-CN`）、
+/// 小写（`zh-cn`）与全大写（`ZH-CN`）三种写法（社区写法不一，如
+/// `README_ZH.md`、`README_zh.md` 与 `README.zh-CN.md` 都常见）。
 /// 标签集合包含：完整 locale → 主语言 → 语言别名（见 `language_aliases`），
 /// 末位固定回退无语言标识的 `README.md` / `readme.md`。英语无需语言变体。
 pub fn readme_filename_candidates(locale: &str) -> Vec<String> {
@@ -432,12 +433,18 @@ pub fn readme_filename_candidates(locale: &str) -> Vec<String> {
 
     // 标签集合（有序，去重）：完整 locale 在前，主语言次之，别名兜底。
     let mut tags: Vec<String> = Vec::new();
-    let mut push_tag = |raw: &str, tags: &mut Vec<String>| {
+    let push_tag = |raw: &str, tags: &mut Vec<String>| {
         let canonical = canonicalize_tag(raw);
         if canonical.is_empty() {
             return;
         }
-        for variant in [canonical.to_lowercase(), canonical.to_uppercase()] {
+        // canonical 形式（`zh-CN`）必须保留：仓库里的文档名常用这种大小写，
+        // 而 raw 路径大小写敏感，漏掉即命中失败。
+        for variant in [
+            canonical.clone(),
+            canonical.to_lowercase(),
+            canonical.to_uppercase(),
+        ] {
             if !tags.contains(&variant) {
                 tags.push(variant);
             }

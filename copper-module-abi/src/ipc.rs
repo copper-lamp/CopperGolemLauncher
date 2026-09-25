@@ -116,9 +116,12 @@ pub const METHOD_MODULE_START: &str = "module.start";
 pub const METHOD_MODULE_STOP: &str = "module.stop";
 pub const METHOD_MODULE_HEALTH: &str = "module.health";
 pub const METHOD_MODULE_INVOKE: &str = "module.invoke";
+/// 版本协商。必须在任何其它方法之前调用，双方各自拒绝不支持的版本。
+pub const METHOD_MODULE_HANDSHAKE: &str = "module.handshake";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleMethod {
+    Handshake,
     Initialize,
     Start,
     Stop,
@@ -129,6 +132,7 @@ pub enum ModuleMethod {
 impl ModuleMethod {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Handshake => METHOD_MODULE_HANDSHAKE,
             Self::Initialize => METHOD_MODULE_INITIALIZE,
             Self::Start => METHOD_MODULE_START,
             Self::Stop => METHOD_MODULE_STOP,
@@ -139,6 +143,7 @@ impl ModuleMethod {
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
+            METHOD_MODULE_HANDSHAKE => Some(Self::Handshake),
             METHOD_MODULE_INITIALIZE => Some(Self::Initialize),
             METHOD_MODULE_START => Some(Self::Start),
             METHOD_MODULE_STOP => Some(Self::Stop),
@@ -150,6 +155,7 @@ impl ModuleMethod {
 
     pub fn decode_request(self, params: Value) -> Result<ModuleRequest, serde_json::Error> {
         match self {
+            Self::Handshake => serde_json::from_value(params).map(ModuleRequest::Handshake),
             Self::Initialize => serde_json::from_value(params).map(ModuleRequest::Initialize),
             Self::Start | Self::Stop => serde_json::from_value(params).map(ModuleRequest::Lifecycle),
             Self::Health => serde_json::from_value(params).map(ModuleRequest::Health),
@@ -159,6 +165,7 @@ impl ModuleMethod {
 
     pub fn decode_response(self, result: Value) -> Result<ModuleResponse, serde_json::Error> {
         match self {
+            Self::Handshake => serde_json::from_value(result).map(ModuleResponse::Handshake),
             Self::Initialize => serde_json::from_value(result).map(ModuleResponse::Initialize),
             Self::Start | Self::Stop => serde_json::from_value(result).map(ModuleResponse::Lifecycle),
             Self::Health => serde_json::from_value(result).map(ModuleResponse::Health),
@@ -169,6 +176,7 @@ impl ModuleMethod {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModuleRequest {
+    Handshake(HandshakeRequest),
     Initialize(InitializeRequest),
     Lifecycle(LifecycleRequest),
     Health(HealthRequest),
@@ -177,6 +185,7 @@ pub enum ModuleRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModuleResponse {
+    Handshake(HandshakeResponse),
     Initialize(InitializeResponse),
     Lifecycle(LifecycleResponse),
     Health(HealthResponse),
@@ -424,12 +433,13 @@ mod tests {
     #[test]
     fn module_method_names_map_to_typed_request_and_response_dtos() {
         use super::{
-            ModuleMethod, ModuleRequest, ModuleResponse, METHOD_MODULE_HEALTH,
-            METHOD_MODULE_INITIALIZE, METHOD_MODULE_INVOKE, METHOD_MODULE_START,
-            METHOD_MODULE_STOP,
+            ModuleMethod, ModuleRequest, ModuleResponse, METHOD_MODULE_HANDSHAKE,
+            METHOD_MODULE_HEALTH, METHOD_MODULE_INITIALIZE, METHOD_MODULE_INVOKE,
+            METHOD_MODULE_START, METHOD_MODULE_STOP,
         };
 
         let cases = [
+            (ModuleMethod::Handshake, METHOD_MODULE_HANDSHAKE),
             (ModuleMethod::Initialize, METHOD_MODULE_INITIALIZE),
             (ModuleMethod::Start, METHOD_MODULE_START),
             (ModuleMethod::Stop, METHOD_MODULE_STOP),

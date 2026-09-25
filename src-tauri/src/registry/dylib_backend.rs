@@ -105,7 +105,10 @@ impl ModuleLoadBackend for DylibBackend {
 ///
 /// 匹配策略：优先命中清单声明的产物主干（[`BackendSpec::artifact_stem`]），
 /// 否则回退到该目录下第一个扩展名匹配的文件。找不到则报错，不做猜测。
-fn resolve_artifact(module_dir: &Path, manifest: &ModuleManifest) -> Result<PathBuf, KernelError> {
+pub(crate) fn resolve_artifact(
+    module_dir: &Path,
+    manifest: &ModuleManifest,
+) -> Result<PathBuf, KernelError> {
     let backend_dir = module_dir.join("backend");
     let ext = std::env::consts::DLL_EXTENSION;
 

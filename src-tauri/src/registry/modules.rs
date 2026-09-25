@@ -19,8 +19,12 @@ use crate::state::KernelContext;
 ///
 /// 生命周期：`init`（注册命令 / 订阅 / 声明意图 / schema 迁移）→ `start`（开始工作）→ `stop`（清理）。
 pub trait Module: Send + Sync {
-    /// 模块唯一标识（如 `home`、`game-download`、`content-download`）。
-    fn id(&self) -> &'static str;
+    /// 模块唯一标识（如 `home`、`game-download`、内置）或附加模块的两段式 id
+    /// （如 `author.module`）。
+    ///
+    /// 返回借用而非 `&'static str`：附加模块 id 来自运行期清单，静态模块返回
+    /// 字面量即可（`&'static str` 可自动收窄为 `&str`）。
+    fn id(&self) -> &str;
 
     /// 模块自身版本号（严格 semver）。
     ///
@@ -28,7 +32,7 @@ pub trait Module: Send + Sync {
     /// 不能变成强制改动，否则任何新增字段都会迫使全部模块同步修改。默认值
     /// `"0.0.0"` 是显式的"未知版本"占位，前端据此隐藏版本行而不是显示假版本。
     /// 内置模块应在自身 `impl Module` 中覆写为本模块真实版本。
-    fn version(&self) -> &'static str {
+    fn version(&self) -> &str {
         "0.0.0"
     }
 
@@ -37,7 +41,7 @@ pub trait Module: Send + Sync {
     /// 默认 `None`：内置模块的展示名由前端语言包（`module.<i18n_namespace>.*`）提供，
     /// 只有需要向内核自报展示名的模块才覆写。`None` 表示"交由前端 i18n 解析"，
     /// 而不是"没有名字"。
-    fn display_name(&self) -> Option<&'static str> {
+    fn display_name(&self) -> Option<&str> {
         None
     }
 
@@ -141,39 +145,9 @@ pub struct ModuleRegistry {
     origins: RwLock<HashMap<String, ModuleOrigin>>,
 }
 
-/// 合法的模块 id 形态：**两段式** `author.module`，与 cgl-libs 2.3.2 的正则逐字一致。
-///
-/// 每段由小写字母数字组成、可用单个 `-` 连接，段数 >= 2。这条校验是安全边界的
-/// 第一道闸：模块 id 会被直接当作**目录名**使用，若放行 `..`、`/`、`\`、盘符或
-/// Windows 保留名，扫描与卸载就会越过 `modules_dir`。
-pub(crate) fn is_valid_module_id(id: &str) -> bool {
-    // 长度上界防止病态输入（目录名超长在 Windows 上会直接失败）。
-    if id.is_empty() || id.len() > 128 {
-        return false;
-    }
-    let mut count = 0usize;
-    for seg in id.split('.') {
-        count += 1;
-        if !is_valid_id_segment(seg) {
-            return false;
-        }
-    }
-    // 必须两段及以上（`author.module`），单段 id 不符合规范。
-    count >= 2
-}
-
-/// 单个 id 段：`[a-z0-9]+(-[a-z0-9]+)*`。
-fn is_valid_id_segment(seg: &str) -> bool {
-    if seg.is_empty() {
-        return false;
-    }
-    for part in seg.split('-') {
-        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
-            return false;
-        }
-    }
-    true
-}
+/// 合法模块 id 形态的**单一来源**在 `copper-module-abi::module_id`：内核、helper
+/// 进程与附加模块模板必须按同一规则判定，否则会出现"能装不能加载"的错位。
+pub(crate) use copper_module_abi::module_id::is_valid_module_id;
 
 /// 规范化路径：解析 `.` 与 `..`，不做符号链接解引用。
 ///

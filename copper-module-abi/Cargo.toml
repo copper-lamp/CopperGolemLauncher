@@ -1,0 +1,21 @@
+[package]
+name = "copper-module-abi"
+version = "0.1.0"
+description = "铜傀儡 · 附加模块稳定契约层：模块 id 规则、宿主 IPC 协议、插件 ABI 与 helper 运行时"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "copper_module_abi"
+path = "src/lib.rs"
+
+# helper 是与内核隔离的独立进程：只依赖契约层，不链接 Tauri 与内核业务代码。
+[[bin]]
+name = "copper-module-helper"
+path = "src/bin/copper_module_helper.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+libloading = "0.8"

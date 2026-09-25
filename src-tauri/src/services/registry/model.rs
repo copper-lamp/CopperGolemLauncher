@@ -649,36 +649,11 @@ pub fn is_safe_relative_path(path: &str) -> bool {
     !p.split('/').any(|seg| seg == ".." || seg == ".")
 }
 
-/// 模块 id 是否符合两段式规范 `^[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+$`。
+/// 模块 id 是否符合规范。**单一来源**在 `copper-module-abi::module_id`：内核各处
+/// 与 helper 进程、附加模块模板必须按同一规则判定，否则会出现"能装不能加载"的错位。
 ///
 /// 仅作判定，不用于拒绝整份元数据：不合规的条目由业务层跳过并计入问题列表。
-pub fn is_valid_module_id(id: &str) -> bool {
-    let mut segments = id.split('.');
-    let Some(first) = segments.next() else {
-        return false;
-    };
-    if !is_valid_id_segment(first) {
-        return false;
-    }
-    let mut rest = 0usize;
-    for seg in segments {
-        if !is_valid_id_segment(seg) {
-            return false;
-        }
-        rest += 1;
-    }
-    rest >= 1
-}
-
-/// 单段 id：`[a-z0-9]+(-[a-z0-9]+)*`。
-fn is_valid_id_segment(seg: &str) -> bool {
-    if seg.is_empty() {
-        return false;
-    }
-    seg.split('-').all(|part| {
-        !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    })
-}
+pub use copper_module_abi::module_id::is_valid_module_id;
 
 /// 解析 semver（容忍常见前缀 `v`）；非法返回 `None`。
 ///

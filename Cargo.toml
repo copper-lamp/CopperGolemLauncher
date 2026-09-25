@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "copper-downloader"]
+members = ["src-tauri", "copper-downloader", "copper-module-abi", "fixtures/abi-fixture-echo"]
 resolver = "2"
 
 [workspace.package]

@@ -12,12 +12,17 @@
 pub mod dylib_backend;
 pub mod events;
 pub mod frontend;
+pub mod helper_backend;
 pub mod install;
 pub mod intents;
-pub mod ipc;
 pub mod loader;
 pub mod manifest;
 pub mod module_entry;
 pub mod modules;
 pub mod package;
 pub mod sandbox;
+
+// 插件 ABI 与宿主 IPC 契约位于独立 crate `copper-module-abi`：内核、隔离的 helper
+// 进程与附加模块模板共享同一份定义。此处 re-export 保持 `registry::ipc` /
+// `registry::plugin_abi` 路径稳定。
+pub use copper_module_abi::{ipc, plugin_abi};
