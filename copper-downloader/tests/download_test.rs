@@ -189,6 +189,9 @@ async fn server_ignoring_range_restarts_from_zero() {
     let dest = tmp.path().join("out.bin");
     let part = std::path::PathBuf::from(format!("{}.part", dest.display()));
     std::fs::write(&part, &payload[..4096]).unwrap();
+    let mut permissions = std::fs::metadata(&part).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&part, permissions).unwrap();
     let mgr = manager();
     let id = mgr
         .enqueue(format!("http://{addr}/file"), &dest, default_options())

@@ -45,13 +45,16 @@ jobs:
         # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
         run: npm run tauri:build -- --features vendored-openssl --bundles nsis,msi
 
+      - name: 检查 Windows 打包产物
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem src-tauri/target/release/bundle -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+
       - name: 上传 Windows 安装包
         uses: actions/upload-artifact@v4
         with:
           name: windows-installers
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+          path: src-tauri/target/release/bundle/
           if-no-files-found: error
 
   # Linux x64：deb + AppImage。
@@ -98,13 +101,15 @@ jobs:
         # Linux 走 rustls，openssl 由 libssl-dev 提供，无需 vendored。
         run: npm run tauri:build -- --bundles deb,appimage
 
+      - name: 检查 Linux 打包产物
+        if: always()
+        run: find src-tauri/target/release/bundle -type f -print 2>/dev/null || true
+
       - name: 上传 Linux 安装包
         uses: actions/upload-artifact@v4
         with:
           name: linux-installers
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          path: src-tauri/target/release/bundle/
           if-no-files-found: error
 
   # Android arm64：APK。
@@ -128,7 +133,9 @@ jobs:
           java-version: 17
 
       - name: 准备 Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: 安装 Android SDK 组件与 NDK
         run: |

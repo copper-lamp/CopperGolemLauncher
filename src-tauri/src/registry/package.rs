@@ -61,12 +61,14 @@ pub fn extract_package(archive_path: &Path, dest: &Path) -> Result<ExtractedPack
             return Err(KernelError::Module("模块包内含符号链接，拒绝解包".into()));
         }
         let raw_name = entry.name().to_string();
-        if entry.is_dir() {
-            continue;
-        }
         let relative = safe_relative_path(&raw_name).ok_or_else(|| {
             KernelError::Module(format!("模块包内含非法路径: {raw_name}"))
         })?;
+        if entry.is_dir() {
+            std::fs::create_dir_all(dest.join(relative))
+                .map_err(|e| KernelError::Module(format!("创建解包目录失败: {e}")))?;
+            continue;
+        }
 
         let out_path = dest.join(&relative);
         if let Some(parent) = out_path.parent() {
@@ -203,13 +205,15 @@ fn hex_digest(bytes: &[u8]) -> String {
 pub(crate) fn safe_relative_path(raw: &str) -> Option<PathBuf> {
     // zip 规范用 `/` 分隔；Windows 上也可能出现 `\`，统一处理。
     let normalized = raw.replace('\\', "/");
-    let trimmed = normalized.trim_start_matches('/');
-    if trimmed.is_empty() {
+    if normalized.starts_with('/') {
+        return None;
+    }
+    if normalized.is_empty() {
         return None;
     }
 
     let mut out = PathBuf::new();
-    for part in trimmed.split('/') {
+    for part in normalized.split('/') {
         if part.is_empty() || part == "." {
             continue;
         }

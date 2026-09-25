@@ -6,7 +6,7 @@
 
 ## 架构
 
-`installer.rs` 以数据库任务记录驱动 `downloading`、`extracting`、`installed`、`failed` 状态，并复用全局下载服务。底层下载引擎将数据流式写入 `.part`：HTTP 200（服务端不支持/忽略 Range）用截断方式从头下载，HTTP 206 用追加方式续传；本地文件错误与网络错误分开报告，并包含操作及路径上下文。`.appx` 走 ZIP 回退；`.msixvc` 先执行独立 XVC 头、哈希树、区域表、路径和原子提取校验，缺少 Store content key 时才进入兼容后端。完成后写入版本元数据并广播 `version.installed` 与模块事件，前端通过 i18n 键呈现状态。
+`installer.rs` 以数据库任务记录驱动 `downloading`、`extracting`、`installed`、`failed` 状态，并复用全局下载服务。底层下载引擎将数据流式写入 `.part`：HTTP 200（服务端不支持/忽略 Range）用截断方式从头下载，HTTP 206 用追加方式续传；Windows 下如已有临时文件带只读属性，引擎仅清除该临时文件的只读属性后继续下载；本地文件错误与网络错误分开报告，并包含操作及路径上下文。`.appx` 走 ZIP 回退；`.msixvc` 先执行独立 XVC 头、哈希树、区域表、路径和原子提取校验，缺少 Store content key 时才进入兼容后端。完成后写入版本元数据并广播 `version.installed` 与模块事件，前端通过 i18n 键呈现状态。
 
 ## 备注
 

@@ -682,7 +682,14 @@ async fn download_once(
         .await
         .map_err(|e| local_io_error("创建下载目录", &state.part_path, e))?;
 
-    let (stream, mut file, mut downloaded) = match resp.status().as_u16() {
+    let status = resp.status().as_u16();
+    if matches!(status, 200 | 206) {
+        clear_readonly_part(&state.part_path)
+            .await
+            .map_err(|e| local_io_error("清除下载临时文件只读属性", &state.part_path, e))?;
+    }
+
+    let (stream, mut file, mut downloaded) = match status {
         200 => {
             let file = tokio::fs::File::create(&state.part_path)
                 .await
@@ -780,6 +787,48 @@ async fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn clear_readonly_part(path: &Path) -> std::io::Result<()> {
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.permissions().readonly() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let path = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let attributes = unsafe {
+                windows::Win32::Storage::FileSystem::GetFileAttributesW(path.as_ptr())
+            };
+            if attributes == u32::MAX {
+                return Err(std::io::Error::last_os_error());
+            }
+            let writable = attributes
+                & !windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY;
+            unsafe {
+                windows::Win32::Storage::FileSystem::SetFileAttributesW(
+                    path.as_ptr(),
+                    writable,
+                )
+            }
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "下载临时文件为只读文件",
+            ));
         }
     }
     Ok(())

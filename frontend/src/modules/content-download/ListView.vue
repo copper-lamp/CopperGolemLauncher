@@ -816,6 +816,7 @@ onBeforeUnmount(() => {
 }
 
 .content-card__name {
+  color: var(--copper-text);
   font-size: var(--copper-font-size-md);
   font-weight: 600;
   overflow: hidden;
