@@ -73,46 +73,48 @@
   --copper-duration: 200ms;
   --copper-easing: cubic-bezier(0.25, 0.1, 0.25, 1);
 
-  /* 内容徽标配色（深色）：每个内容类型一组「文字色 / 底色 / 描边色」，
-   * 底色为低透明度色雾，保证在深色卡片上不过曝、文字对比度 ≥ 4.5:1。
+  /* 内容徽标配色（深色）：每个内容类型一组「文字色 / 底色 / 描边色」。
+   * 底色为同色相的深调实色（而非低透明度色雾）：深色卡片下色雾会与背景混合成
+   * 灰糊状，导致文字与底色对比不足、徽标边界消失。改用实色底后，文字对比度
+   * 稳定在 ≥ 7:1，且在缩略图等复杂背景上依然清晰。
    * 业务组件按 `--copper-badge-<type>` 取用，禁止写颜色字面量。 */
   --copper-badge-behavior-pack: #7ee787;
-  --copper-badge-behavior-pack-bg: rgba(126, 231, 135, 0.14);
-  --copper-badge-behavior-pack-border: rgba(126, 231, 135, 0.3);
+  --copper-badge-behavior-pack-bg: #102a18;
+  --copper-badge-behavior-pack-border: #2b5c3a;
 
   --copper-badge-texture-pack: #79c0ff;
-  --copper-badge-texture-pack-bg: rgba(121, 192, 255, 0.14);
-  --copper-badge-texture-pack-border: rgba(121, 192, 255, 0.3);
+  --copper-badge-texture-pack-bg: #0d2338;
+  --copper-badge-texture-pack-border: #234f78;
 
   --copper-badge-shader: #d2a8ff;
-  --copper-badge-shader-bg: rgba(210, 168, 255, 0.14);
-  --copper-badge-shader-border: rgba(210, 168, 255, 0.3);
+  --copper-badge-shader-bg: #211834;
+  --copper-badge-shader-border: #47336e;
 
   --copper-badge-ll-mod: #ffa657;
-  --copper-badge-ll-mod-bg: rgba(255, 166, 87, 0.14);
-  --copper-badge-ll-mod-border: rgba(255, 166, 87, 0.32);
+  --copper-badge-ll-mod-bg: #2b1a0b;
+  --copper-badge-ll-mod-border: #5e3b1a;
 
   /* 来源徽标：CurseForge 用中性灰、LIP 用品牌铜色，与类型徽标区分维度。 */
-  --copper-badge-source-curseforge: #8b949e;
-  --copper-badge-source-curseforge-bg: rgba(139, 148, 158, 0.14);
-  --copper-badge-source-curseforge-border: rgba(139, 148, 158, 0.3);
+  --copper-badge-source-curseforge: #adbac7;
+  --copper-badge-source-curseforge-bg: #21272f;
+  --copper-badge-source-curseforge-border: #3f4855;
 
-  --copper-badge-source-lip: #e0a878;
-  --copper-badge-source-lip-bg: rgba(224, 168, 120, 0.14);
-  --copper-badge-source-lip-border: rgba(224, 168, 120, 0.32);
+  --copper-badge-source-lip: #e8b98a;
+  --copper-badge-source-lip-bg: #2b1d10;
+  --copper-badge-source-lip-border: #5e4125;
 
   /* 发布类型徽标：正式版绿、测试版黄、预览版红。 */
   --copper-badge-release: #7ee787;
-  --copper-badge-release-bg: rgba(126, 231, 135, 0.12);
-  --copper-badge-release-border: rgba(126, 231, 135, 0.26);
+  --copper-badge-release-bg: #102a18;
+  --copper-badge-release-border: #2b5c3a;
 
   --copper-badge-beta: #e3b341;
-  --copper-badge-beta-bg: rgba(227, 179, 65, 0.12);
-  --copper-badge-beta-border: rgba(227, 179, 65, 0.28);
+  --copper-badge-beta-bg: #2a2209;
+  --copper-badge-beta-border: #5c4a15;
 
   --copper-badge-alpha: #ff7b72;
-  --copper-badge-alpha-bg: rgba(255, 123, 114, 0.12);
-  --copper-badge-alpha-border: rgba(255, 123, 114, 0.28);
+  --copper-badge-alpha-bg: #2c1214;
+  --copper-badge-alpha-border: #5e2a2d;
 }
 
 html[data-theme="light"] {

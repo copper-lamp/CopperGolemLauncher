@@ -37,13 +37,14 @@ const toneVar = computed(() => `--copper-badge-${props.tone}`);
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  padding: 1px 8px;
+  padding: 2px 9px;
   border: 1px solid var(--badge-border);
   border-radius: var(--copper-radius-full);
   background: var(--badge-bg);
   color: var(--badge-color);
-  font-size: var(--copper-font-size-xs);
-  line-height: 1.6;
+  font-size: var(--copper-font-size-sm);
+  font-weight: 500;
+  line-height: 1.45;
   white-space: nowrap;
 }
 </style>

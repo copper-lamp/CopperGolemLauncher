@@ -678,35 +678,36 @@ async fn download_once(
     // 写入前先确保临时文件父目录存在：引擎此前只在 finalize 阶段建目录，
     // 若调用方未预建 `dest` 的父目录，这里会以 `io::Error`（系统找不到指定的路径）
     // 抛出，被显示成「网络错误」，与真实原因（本地目录缺失）不符。
-    ensure_parent_dir(&state.part_path).await?;
+    ensure_parent_dir(&state.part_path)
+        .await
+        .map_err(|e| local_io_error("创建下载目录", &state.part_path, e))?;
+
+    // 打开临时文件：200/206 共用同一句柄，避免「只为探测+截断而打开、随即关闭」，
+    // 中间存在一个目标文件被其它进程抢占（Windows 拒绝访问 os error 5）的窗口。
+    // `read(true)` 是 `File::set_len` 的前置要求。
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(&state.part_path)
+        .await
+        .map_err(|e| local_io_error("打开下载临时文件", &state.part_path, e))?;
 
     // 200 分支已把头截断重下，写入起点必须是 0；只有 206 续传才从旧文件长度继续。
-    let (stream, mut downloaded) = match resp.status().as_u16() {
+    let (stream, downloaded) = match resp.status().as_u16() {
         200 => {
             // 服务器忽略 Range，从头重下：截断临时文件。
-            let file = tokio::fs::File::create(&state.part_path).await?;
-            file.set_len(0).await?;
+            file.set_len(0)
+                .await
+                .map_err(|e| local_io_error("截断下载临时文件", &state.part_path, e))?;
             state.downloaded_bytes.store(0, Ordering::Relaxed);
             (resp.bytes_stream(), 0u64)
         }
-        206 => {
-            // 追加模式写入，续传位置由文件长度决定。
-            let file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&state.part_path)
-                .await?;
-            drop(file);
-            (resp.bytes_stream(), start)
-        }
+        206 => (resp.bytes_stream(), start),
         code => return Err(DownloadError::HttpStatus(code)),
     };
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&state.part_path)
-        .await?;
+    let mut downloaded = downloaded;
 
     state.downloaded_bytes.store(downloaded, Ordering::Relaxed);
 
@@ -725,7 +726,9 @@ async fn download_once(
         }
 
         let chunk = chunk?;
-        file.write_all(&chunk).await?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| local_io_error("写入下载文件", &state.part_path, e))?;
         downloaded += chunk.len() as u64;
         state.downloaded_bytes.store(downloaded, Ordering::Relaxed);
 
@@ -747,7 +750,9 @@ async fn download_once(
             inner.emit_progress(state);
         }
     }
-    file.flush().await?;
+    file.flush()
+        .await
+        .map_err(|e| local_io_error("刷新下载文件", &state.part_path, e))?;
 
     // 收尾：速率归零，强制发一次进度，确保 UI 到 100%。
     state.speed_bytes_per_sec.store(0, Ordering::Relaxed);
@@ -787,9 +792,29 @@ async fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 给本地文件系统错误补上「动作 + 路径」上下文。
+///
+/// 裸 `io::Error` 在 Windows 上常常只剩一句 `拒绝访问。 (os error 5)`，既没有
+/// 出错的路径，也无法区分是权限、占用还是只读属性。补上这两个字段后，前端
+/// 报错和日志都能直接定位到具体文件。
+fn local_io_error(action: &str, path: &Path, e: std::io::Error) -> DownloadError {
+    DownloadError::Io(std::io::Error::new(
+        e.kind(),
+        format!("{action} {} 失败: {e}", path.display()),
+    ))
+}
+
 /// 临时文件落位：Windows 下先移除目标再重命名。
 async fn finalize(part: &Path, dest: &Path) -> std::io::Result<()> {
     ensure_parent_dir(dest).await?;
-    let _ = tokio::fs::remove_file(dest).await;
-    tokio::fs::rename(part, dest).await
+    if let Err(e) = tokio::fs::remove_file(dest).await {
+        // 目标不存在是正常情况（首次下载）；其余错误（多为 `os error 5`：
+        // 文件被占用或只读）必须上报，否则问题会推迟到 rename 时才暴露。
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(local_io_error("覆盖已存在的目标文件", dest, e).into_io());
+        }
+    }
+    tokio::fs::rename(part, dest)
+        .await
+        .map_err(|e| local_io_error("落位下载文件到", dest, e).into_io())
 }

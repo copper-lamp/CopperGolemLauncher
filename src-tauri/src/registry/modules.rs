@@ -128,7 +128,7 @@ pub struct ModuleRegistry {
 /// 每段由小写字母数字组成、可用单个 `-` 连接，段数 >= 2。这条校验是安全边界的
 /// 第一道闸：模块 id 会被直接当作**目录名**使用，若放行 `..`、`/`、`\`、盘符或
 /// Windows 保留名，扫描与卸载就会越过 `modules_dir`。
-fn is_valid_module_id(id: &str) -> bool {
+pub(crate) fn is_valid_module_id(id: &str) -> bool {
     // 长度上界防止病态输入（目录名超长在 Windows 上会直接失败）。
     if id.is_empty() || id.len() > 128 {
         return false;
@@ -419,6 +419,17 @@ impl ModuleRegistry {
         self.errors.write().remove(id);
         self.origins.write().remove(id);
         Ok(removed)
+    }
+
+    /// 记录一次「装载阶段」失败（模块尚未注册进注册表）。
+    ///
+    /// 供装载器在清单解析 / 平台校验 / 动态库加载失败时调用：这些阶段模块还没
+    /// 进入 `modules` 列表，`boot()` 的错误通道覆盖不到。写入后
+    /// [`ModuleRegistry::list_installed_addons`] 会把该目录如实呈现为 `Failed`，
+    /// 用户可在设置页看到失败原因，而不是「目录在、却莫名不工作」。
+    pub fn mark_failed(&self, id: &str, error: String) {
+        self.states.write().insert(id.to_string(), ModuleState::Failed);
+        self.errors.write().insert(id.to_string(), error);
     }
 
     /// 模块信息列表（按注册顺序）。
