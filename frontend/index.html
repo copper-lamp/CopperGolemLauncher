@@ -5,6 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>铜傀儡启动器</title>
+
+    <!--
+      附加模块前端的裸说明符解析。
+      模块 ESM 产物把 vue / vue-router 标为外部依赖，以便与宿主共用同一个运行时；
+      浏览器不认识裸说明符，必须在这里映射到宿主分发的 vendor 文件。
+      import map 必须出现在任何 module 脚本之前，否则会被忽略。
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "vue": "/vendor/vue.esm-browser.prod.js",
+          "vue-router": "/vendor/vue-router.esm-browser.js"
+        }
+      }
+    </script>
   </head>
 
   <body>

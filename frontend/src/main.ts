@@ -15,6 +15,7 @@ import { initSettings } from "./composables/useSettings";
 import { initDownloads } from "./composables/useDownloads";
 import { initAccount } from "./composables/useAccount";
 import { markKernelReady } from "./composables/useKernelReady";
+import { loadAddonFrontends } from "./modules/addonRuntime";
 import { invoke } from "@tauri-apps/api/core";
 
 // 临时诊断：把前端 JS 运行错误 / 未处理 rejection 转发到内核日志，便于定位白屏。
@@ -35,7 +36,13 @@ window.addEventListener("unhandledrejection", (e) => {
 
 const app = createApp(App);
 app.use(router);
-app.mount("#app");
+
+// 附加模块前端必须在挂载**之前**登记：左导航与路由表在首次渲染时被读取，
+// 挂载后再追加会出现"导航项在、首次点击 404"的竞态。
+// 单个模块加载失败只影响它自己，不阻断内置界面（见 addonRuntime 的错误隔离）。
+void loadAddonFrontends(router).finally(() => {
+  app.mount("#app");
+});
 
 // 内核能力初始化：与界面渲染并行，逐个失败互不影响。
 //

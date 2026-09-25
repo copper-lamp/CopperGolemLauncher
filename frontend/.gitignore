@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# 由 scripts/copy-vendor.mjs 从 node_modules 复制的运行时产物（dev / build 自动重建）
+public/vendor
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
