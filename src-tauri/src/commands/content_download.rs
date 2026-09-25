@@ -44,6 +44,16 @@ pub async fn content_download_readme(
         .map_err(into_command_error)
 }
 
+/// 可选游戏版本列表（供前端「版本过滤」下拉）。
+#[tauri::command]
+pub async fn content_download_game_versions(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<String>> {
+    ContentDownloadModule::game_versions(kernel.inner())
+        .await
+        .map_err(into_command_error)
+}
+
 /// 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。
 #[tauri::command]
 pub async fn content_download_download(

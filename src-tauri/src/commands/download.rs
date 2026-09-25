@@ -124,3 +124,35 @@ pub fn download_resume_all(kernel: State<'_, KernelContext>) -> CommandResult<()
     kernel.download().resume_all();
     Ok(())
 }
+
+/// 并发上限的合法区间：与前端下拉框 1~5 一致，后端做最后一道夹紧。
+const CONCURRENCY_MIN: usize = 1;
+const CONCURRENCY_MAX: usize = 5;
+
+/// 读取当前同时下载数。
+#[tauri::command]
+pub fn download_concurrency(kernel: State<'_, KernelContext>) -> CommandResult<usize> {
+    Ok(kernel.download().concurrency())
+}
+
+/// 设置同时下载数并即时生效。越界值夹紧到 [1, 5]，不报错——
+/// 前端已用下拉框约束取值，夹紧只是防御异常入参。
+#[tauri::command]
+pub fn download_set_concurrency(
+    kernel: State<'_, KernelContext>,
+    concurrency: usize,
+) -> CommandResult<usize> {
+    let clamped = concurrency.clamp(CONCURRENCY_MIN, CONCURRENCY_MAX);
+    kernel.download().set_concurrency(clamped);
+    // 同步写回设置，使重启后仍是用户选择的值。
+    let mut entries = std::collections::HashMap::new();
+    entries.insert(
+        "download.concurrency".to_string(),
+        serde_json::Value::Number(clamped.into()),
+    );
+    kernel
+        .settings()
+        .set_many(&entries)
+        .map_err(into_command_error)?;
+    Ok(clamped)
+}

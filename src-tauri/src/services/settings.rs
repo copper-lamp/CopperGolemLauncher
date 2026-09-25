@@ -153,7 +153,20 @@ pub fn defaults() -> HashMap<String, Value> {
     // 不消费本设置——索引是所有内容的信任锚，不能被用户配置的第三方镜像替换
     // （见 docs/cgl-libs.md 2.6）。
     m.insert("download.mirror".into(), Value::String("auto".into()));
+    // 下载：同时下载数（1~5）。运行期可即时调整，见 `commands::download`。
+    m.insert("download.concurrency".into(), Value::Number(3.into()));
+    // 下载：下载页「最近下载」展示条目上限（0 = 不显示）。
+    // 历史记录仅存在于内存，故这里限制的是**展示窗口**而非持久化策略。
+    m.insert("download.history_limit".into(), Value::Number(50.into()));
     // 模块：元数据发布通道过滤（stable / beta / dev，可用 `+` 组合，如 `stable+beta`）。
     m.insert("registry.channel".into(), Value::String("stable".into()));
+    // 内容下载：列表筛选持久化（来源 / 类型 / 游戏版本 / 排序方式；空串 = 不限）。
+    m.insert("content.filter.source".into(), Value::String(String::new()));
+    m.insert("content.filter.type".into(), Value::String(String::new()));
+    m.insert("content.filter.version".into(), Value::String(String::new()));
+    m.insert(
+        "content.filter.sort".into(),
+        Value::String("downloads_desc".into()),
+    );
     m
 }

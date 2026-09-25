@@ -13,12 +13,15 @@ import {
   downloadRemove,
   downloadPauseAll,
   downloadResumeAll,
+  downloadConcurrency,
+  downloadSetConcurrency,
   type DownloadTask,
 } from "../api/download";
 import { onDownload } from "../events";
 import { showToast } from "./useToast";
 
 const tasks = ref<DownloadTask[]>([]);
+const concurrency = ref(3);
 const initialized = ref(false);
 
 function upsert(task: DownloadTask) {
@@ -30,7 +33,7 @@ function upsert(task: DownloadTask) {
   }
 }
 
-/** 初始化：拉取一次全量快照并订阅增量事件。 */
+/** 初始化：拉取一次全量快照与并发数，并订阅增量事件。 */
 export async function initDownloads(): Promise<void> {
   if (initialized.value) return;
   initialized.value = true;
@@ -38,6 +41,11 @@ export async function initDownloads(): Promise<void> {
     tasks.value = await downloadTasks();
   } catch {
     // 内核未就绪时为空列表。
+  }
+  try {
+    concurrency.value = await downloadConcurrency();
+  } catch {
+    // 内核未就绪时保留默认值。
   }
   await Promise.all([
     onDownload("created", upsert),
@@ -56,7 +64,15 @@ function activeCount(): number {
 export function useDownloads() {
   return {
     tasks: readonly(tasks),
+    concurrency: readonly(concurrency),
     activeCount,
+    async setConcurrency(value: number) {
+      try {
+        concurrency.value = await downloadSetConcurrency(value);
+      } catch (e) {
+        showToast(String(e), "error");
+      }
+    },
     async pause(id: number) {
       try {
         await downloadPause(id);

@@ -2,25 +2,30 @@
 // 标签条原语（内核通用组件）：只渲染标签条，不含面板。
 //
 // 视觉母题取自浏览器标签页 —— 选中项与相邻面板同色、被咬合那一侧的边框断开，
-// 形成一条无缝接缝。实现方式：选中项自身那条边框取面板同色，横向再补一层
-// 面板同色的 `::after` 覆盖面板边框（纵向条带在滚动容器里，溢出会被裁掉，故不加）。
-// 全程不使用负边距（除调用方为对齐接缝自行加的 1px），因此切换标签时零布局位移。
+// 形成一条无缝接缝；接缝两端是**向外张开的倒角**（外弧，即"反向圆角"），
+// 让选中项沿着面板边缘平滑地铺开。
+//
+// 实现方式：
+// 1. 调用方把条带朝面板方向负偏移 1px（纵向 `margin-right`、横向 `margin-bottom`），
+//    选中项自身那条边框（取面板同色）正好压住面板的 1px 边框；
+// 2. 选中项被咬合那一侧的两个端角取直角，并在其**外侧**各贴一个同色方块，
+//    方块用径向遮罩挖出四分之一圆，露出缺口 —— 即外弧倒角（`--co-tabs-corner`）。
+//    遮罩而非渐变色：渐变从透明过渡到实色会经过半透明灰，遮罩只取 alpha，无灰边。
+// 3. 倒角方块要压在相邻标签之上，故选中项自身抬升一层。
 //
 // 方向：
-// - `vertical`：纵向条带，咬合右边（面板在右侧）；
-// - `horizontal`：横向条带，咬合下边（面板在下方）。
+// - `vertical`：纵向条带，咬合右边（面板在右侧），倒角落在右上 / 右下；
+// - `horizontal`：横向条带，咬合下边（面板在下方），倒角落在左下 / 右下。
 //
 // 调用方契约（重要）：
 // 1. 面板 `background` 必须是 `var(--copper-surface)`，被咬合的那条边为
 //    `1px solid var(--copper-border)`；
-// 2. 条带与被咬合的面板之间不能有间隙（父容器不要在此处加 gap / margin），
-//    否则接缝会落在空隙里；
+// 2. 条带须朝面板方向负偏移 1px，且与被咬合的面板之间不能有其它间隙；
 // 3. 条带自身不要设置滚动（需要滚动请在条带外层套 overflow 容器）。
 //
-// 选中指示条（3px 强调色）用 `transform` 位移，切换标签时只重绘、不重排；
+// 选中态只靠「同色 + 边框断开」表达，不另加指示条；
 // 复杂标签内容（图片、多行）用 `#item` 插槽替换默认的 图标 + 文本。
 
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Component } from "vue";
 
 const props = withDefaults(
@@ -35,76 +40,6 @@ const props = withDefaults(
 
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 
-/** 指示条粗细。 */
-const BAR_SIZE = 3;
-/** 指示条沿条带方向的内缩，避免顶到圆角。 */
-const BAR_INSET = 6;
-
-const listEl = ref<HTMLElement | null>(null);
-const bar = ref({ x: 0, y: 0, w: 0, h: 0, visible: false });
-
-const activeIndex = computed(() =>
-  props.items.findIndex((item) => item.value === props.modelValue),
-);
-
-/**
- * 用包围盒差值定位指示条（容器无边框，故等效于其 padding 盒原点，
- * 与绝对定位的 `left: 0; top: 0` 基准一致）。
- */
-async function measure() {
-  await nextTick();
-  const list = listEl.value;
-  const index = activeIndex.value;
-  const tab =
-    list && index >= 0
-      ? list.querySelectorAll<HTMLElement>("[data-co-tab]")[index]
-      : null;
-  if (!list || !tab) {
-    bar.value = { ...bar.value, visible: false };
-    return;
-  }
-  const listRect = list.getBoundingClientRect();
-  const tabRect = tab.getBoundingClientRect();
-  const x = tabRect.left - listRect.left;
-  const y = tabRect.top - listRect.top;
-  bar.value =
-    props.direction === "vertical"
-      ? {
-          x,
-          y: y + BAR_INSET,
-          w: BAR_SIZE,
-          h: Math.max(tabRect.height - BAR_INSET * 2, BAR_SIZE),
-          visible: true,
-        }
-      : {
-          x: x + BAR_INSET,
-          y,
-          w: Math.max(tabRect.width - BAR_INSET * 2, BAR_SIZE),
-          h: BAR_SIZE,
-          visible: true,
-        };
-}
-
-let observer: ResizeObserver | null = null;
-
-onMounted(() => {
-  void measure();
-  if (listEl.value && typeof ResizeObserver !== "undefined") {
-    observer = new ResizeObserver(() => void measure());
-    observer.observe(listEl.value);
-  }
-});
-
-onBeforeUnmount(() => {
-  observer?.disconnect();
-  observer = null;
-});
-
-watch(
-  () => [props.modelValue, props.items.length, props.direction],
-  () => void measure(),
-);
-
 function select(value: string) {
   if (value === props.modelValue) return;
   emit("update:modelValue", value);
@@ -112,11 +47,7 @@ function select(value: string) {
 </script>
 
 <template>
-  <div
-    ref="listEl"
-    :class="['co-tabs', `co-tabs--${direction}`]"
-    role="tablist"
-  >
+  <div :class="['co-tabs', `co-tabs--${direction}`]" role="tablist">
     <button
       v-for="item in items"
       :key="item.value"
@@ -132,20 +63,12 @@ function select(value: string) {
         <span class="co-tabs__label">{{ item.label }}</span>
       </slot>
     </button>
-
-    <span
-      :class="['co-tabs__indicator', { 'co-tabs__indicator--hidden': !bar.visible }]"
-      :style="{
-        width: `${bar.w}px`,
-        height: `${bar.h}px`,
-        transform: `translate(${bar.x}px, ${bar.y}px)`,
-      }"
-    />
   </div>
 </template>
 
 <style scoped>
 .co-tabs {
+  --co-tabs-corner: var(--copper-radius-md);
   position: relative;
   z-index: 1; /* 抬升条带，使选中项能压住相邻面板的边框 */
   border: none;
@@ -164,10 +87,12 @@ function select(value: string) {
 }
 
 .co-tabs__tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--copper-space-2);
   border: 1px solid transparent;
+  border-radius: var(--copper-radius-md);
   background: transparent;
   color: var(--copper-text-secondary);
   font-family: inherit;
@@ -183,12 +108,10 @@ function select(value: string) {
 .co-tabs--vertical .co-tabs__tab {
   width: 100%;
   padding: var(--copper-space-2) var(--copper-space-3);
-  border-radius: var(--copper-radius-md);
 }
 
 .co-tabs--horizontal .co-tabs__tab {
   padding: var(--copper-space-2) var(--copper-space-4);
-  border-radius: var(--copper-radius-md) var(--copper-radius-md) 0 0;
 }
 
 .co-tabs__tab:hover:not(.co-tabs__tab--active) {
@@ -197,59 +120,81 @@ function select(value: string) {
 }
 
 .co-tabs__tab--active {
-  position: relative;
+  z-index: 1; /* 倒角方块需压住左右相邻标签 */
   background: var(--copper-surface);
   color: var(--copper-text);
   font-weight: 500;
 }
 
-/* 纵向：咬合右边 —— 选中项自身那 1px 右边框与面板的 1px 左边框同处一列
-   （rail `margin-right: -1px` 使其重叠），取面板同色即可抹掉接缝。
-   此处不用 `::after`：rail 是滚动容器，溢出会被裁掉。 */
+/* 纵向：咬合右边 —— 条带 `margin-right: -1px` 后，选中项那 1px 右边框与面板的
+   1px 左边框同处一列，取面板同色即可抹掉接缝；左侧两角仍圆角，右侧两角取直角
+   以便外接倒角方块。 */
 .co-tabs--vertical .co-tabs__tab--active {
   border-color: var(--copper-border);
   border-right-color: var(--copper-surface);
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
+  border-radius: var(--co-tabs-corner) 0 0 var(--co-tabs-corner);
 }
 
-/* 横向：咬合下边 —— 面板 1px 上边框在选中项边框盒之外（下方）那 1px，
-   故偏移取 -2px（-1px 只会覆盖选中项自己的底边框）。 */
+/* 横向：咬合下边 —— 同理，条带 `margin-bottom: -1px` 后选中项的底边框压住
+   面板的上边框，取面板同色即抹掉接缝；上侧两角圆角，下侧两角取直角。 */
 .co-tabs--horizontal .co-tabs__tab--active {
   border-color: var(--copper-border);
   border-bottom-color: var(--copper-surface);
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+  border-radius: var(--co-tabs-corner) var(--co-tabs-corner) 0 0;
+}
+
+/* 外弧倒角：同色方块压在标签外侧，用径向遮罩挖掉靠近标签的那个四分之一圆，
+   留下的部分即从标签边缘向外张开的凹弧。 */
+.co-tabs__tab--active::before,
+.co-tabs__tab--active::after {
+  content: "";
+  position: absolute;
+  width: var(--co-tabs-corner);
+  height: var(--co-tabs-corner);
+  background: var(--copper-surface);
+  pointer-events: none;
+}
+
+/* 纵向：倒角贴在右边框之外（`-1px` 让它与 1px 边框对齐），上下各一。
+   上端圆心取方块左下角、下端取左上角，弧线均朝面板方向张开。 */
+.co-tabs--vertical .co-tabs__tab--active::before,
+.co-tabs--vertical .co-tabs__tab--active::after {
+  left: calc(100% - 1px);
+}
+
+.co-tabs--vertical .co-tabs__tab--active::before {
+  bottom: 100%;
+  -webkit-mask: radial-gradient(circle at 0 100%, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  mask: radial-gradient(circle at 0 100%, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+}
+
+.co-tabs--vertical .co-tabs__tab--active::after {
+  top: 100%;
+  -webkit-mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+}
+
+/* 横向：倒角贴在底边之外，左右各一。左端圆心取方块左上角、右端取右上角。 */
+.co-tabs--horizontal .co-tabs__tab--active::before,
+.co-tabs--horizontal .co-tabs__tab--active::after {
+  bottom: 0;
+}
+
+.co-tabs--horizontal .co-tabs__tab--active::before {
+  right: 100%;
+  -webkit-mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  mask: radial-gradient(circle at 0 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
 }
 
 .co-tabs--horizontal .co-tabs__tab--active::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: -2px;
-  left: 0;
-  height: 1px;
-  background: var(--copper-surface);
+  left: 100%;
+  -webkit-mask: radial-gradient(circle at 100% 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
+  mask: radial-gradient(circle at 100% 0, #0000 calc(var(--co-tabs-corner) - 1px), #000 var(--co-tabs-corner));
 }
 
 .co-tabs__label {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.co-tabs__indicator {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 1;
-  border-radius: var(--copper-radius-full);
-  background: var(--copper-accent);
-  pointer-events: none;
-  transition: transform var(--copper-duration) var(--copper-easing);
-}
-
-.co-tabs__indicator--hidden {
-  opacity: 0;
 }
 </style>

@@ -53,6 +53,16 @@ impl DownloadService {
         self.manager.snapshots()
     }
 
+    /// 当前并发上限（同时下载的任务数）。
+    pub fn concurrency(&self) -> usize {
+        self.manager.concurrency()
+    }
+
+    /// 调整并发上限（运行期即时生效，排队任务按新上限重新派发）。
+    pub fn set_concurrency(&self, concurrency: usize) {
+        self.manager.set_concurrency(concurrency);
+    }
+
     /// 单个任务快照。
     pub fn task(&self, id: u64) -> Option<TaskSnapshot> {
         self.manager.snapshot(id).ok()

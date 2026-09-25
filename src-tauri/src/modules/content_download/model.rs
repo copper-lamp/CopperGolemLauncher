@@ -20,6 +20,25 @@ pub const TYPE_LL_MOD: &str = "ll_mod";
 pub const SOURCE_CURSEFORGE: &str = "curseforge";
 pub const SOURCE_LIP: &str = "lip";
 
+/// 排序方式：按下载量降序（默认）。
+pub const SORT_DOWNLOADS_DESC: &str = "downloads_desc";
+/// 排序方式：按下载量升序。
+pub const SORT_DOWNLOADS_ASC: &str = "downloads_asc";
+/// 排序方式：按名称升序（字典序）。
+pub const SORT_NAME_ASC: &str = "name_asc";
+/// 排序方式：按最近更新降序。
+pub const SORT_UPDATED_DESC: &str = "updated_desc";
+
+/// 归一化未知 / 空排序串为默认排序。
+pub fn normalize_sort(sort: Option<&str>) -> &'static str {
+    match sort.map(str::trim) {
+        Some(SORT_DOWNLOADS_ASC) => SORT_DOWNLOADS_ASC,
+        Some(SORT_NAME_ASC) => SORT_NAME_ASC,
+        Some(SORT_UPDATED_DESC) => SORT_UPDATED_DESC,
+        _ => SORT_DOWNLOADS_DESC,
+    }
+}
+
 /// 列表卡片内容项。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,6 +127,10 @@ pub struct ContentListQuery {
     pub content_type: Option<String>,
     /// 搜索关键字。
     pub search: Option<String>,
+    /// 按 MCBE 游戏版本过滤（CurseForge 原生支持；LL 模组无游戏版本元数据，不过滤）。
+    pub game_version: Option<String>,
+    /// 排序方式（`downloads_desc` / `downloads_asc` / `name_asc` / `updated_desc`）。
+    pub sort: Option<String>,
     /// 页码（从 0 起），每页默认 40。
     pub page: u32,
 }

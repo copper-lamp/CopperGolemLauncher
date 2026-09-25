@@ -1,20 +1,25 @@
 name: build
 
-# 三平台编译校验：Windows 出完整产物，Linux / Android 做交叉编译检查。
+# 三平台打包：push / PR 触发，产出 Windows / Linux / Android 安装包。
 #
-# 为什么前端单独成一个 job：`tauri::generate_context!` 会把 `frontendDist`
-# （`../frontend/dist`）内嵌进内核，**前端产物是 Rust 编译的前置**。集中构建一次
-# 并作为 artifact 分发，可避免三个平台各跑一遍 `vue-tsc` 类型检查。
+# 触发时机按项目要求「先在 push 跑通，再迁到 tag」——当前挂在 push/PR 上，
+# 待三平台都稳定后再改为 tag 触发并挂到 Release（见 docs/平台适配.md）。
+#
+# 打包前置：Tauri CLI 的 `beforeBuildCommand`（根 `npm run build` → 前端 build）
+# 会先构建前端产物，`tauri::generate_context!` 再把它内嵌进内核。
+# 因此每个平台都需装两份依赖：根（@tauri-apps/cli）与 frontend/（Vue 工具链）。
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  # 前端构建（含 vue-tsc 类型检查），产出 dist 供各平台复用。
-  frontend:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  # Windows x64：NSIS(.exe) + MSI。
+  # 刻意不给 `name`：job id 为 `check`，其必检项名为 `build / check`，
+  # 改名会让既有分支保护规则失配、静默卡住所有 PR。
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -23,59 +28,37 @@ jobs:
         with:
           node-version: 24
 
-      - name: 安装前端依赖
-        working-directory: .
-        run: npm --prefix frontend ci
-
-      - name: 构建前端（含 vue-tsc 类型检查）
-        working-directory: .
-        run: npm --prefix frontend run build
-
-      - name: 上传前端产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist
-          # 仅用于同一次流水线内的中转，保留 1 天即可。
-          retention-days: 1
-
-  # Windows x64：唯一出完整可执行产物的平台。
-  # 刻意不给 `name`：job id 为 `check`，其必检项名为 `build / check`，
-  # 改名会让既有分支保护规则失配、静默卡住所有 PR。
-  check:
-    needs: frontend
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
 
       - name: 缓存 Rust 构建产物
         uses: Swatinem/rust-cache@v2
         with:
           key: windows-x86_64
 
-      - name: 下载前端产物
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist
+      - name: 安装依赖
+        run: |
+          npm ci
+          npm --prefix frontend ci
 
-      - name: 构建 Rust (release)
-        working-directory: .
+      - name: 打包 Windows 安装包
         # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
-        run: cargo build --release --features vendored-openssl --manifest-path src-tauri/Cargo.toml
+        run: npm run tauri:build -- --features vendored-openssl --bundles nsis,msi
 
-  # Linux x64：编译检查（不做打包，产物分发不在本阶段范围）。
+      - name: 上传 Windows 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  # Linux x64：deb + AppImage。
   linux:
-    name: Linux 编译检查
-    needs: frontend
+    name: Linux 安装包
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -93,44 +76,80 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
 
       - name: 缓存 Rust 构建产物
         uses: Swatinem/rust-cache@v2
         with:
           key: linux-x86_64
 
-      - name: 下载前端产物
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist
+      - name: 安装依赖
+        run: |
+          npm ci
+          npm --prefix frontend ci
 
-      - name: 编译检查 (linux-x86_64)
-        working-directory: .
+      - name: 打包 Linux 安装包
         # Linux 走 rustls，openssl 由 libssl-dev 提供，无需 vendored。
-        run: cargo check --target x86_64-unknown-linux-gnu --manifest-path src-tauri/Cargo.toml
+        run: npm run tauri:build -- --bundles deb,appimage
 
-  # Android arm64：编译检查。
+      - name: 上传 Linux 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  # Android arm64：APK。
   #
-  # 注意：这里只做 `cargo check`。`tauri-build` 仅在设置了
-  # `TAURI_ANDROID_PROJECT_PATH` 时才要求生成 Gradle 工程，故无需
-  # `tauri android init` 也能通过类型检查；真实打包留到阶段 1（见 docs/平台适配.md）。
+  # 当前用 `--debug` 出 debug 变体 APK（由 AGP 自动用 debug keystore 签名），
+  # 可直接装机自测，但**不能对外分发**。换成正式签名只需两步（见 docs/平台适配.md）：
+  #   1. 在 `gen/android/app/build.gradle.kts` 加 release signingConfigs；
+  #   2. CI 从 Secrets 写 `gen/android/keystore.properties` 并去掉 `--debug`。
   android:
-    name: Android 编译检查
-    needs: frontend
+    name: Android 安装包
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装系统依赖（vendored openssl 需要 perl / make）
+      - name: 安装 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # Tauri v2 Android 的基线是 17；更高的 JDK 可能与 AGP 冲突。
+          java-version: 17
+
+      - name: 准备 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 Android SDK 组件与 NDK
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential perl
+          # Tauri v2.11 的 Android 模板为 compileSdk/targetSdk = 36，需装对应 platform。
+          # NDK 取 r27 LTS（Tauri v2 的受支持版本线）。
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.3.13750724"
+          # Tauri 经 NDK_HOME 定位 NDK
+          {
+            echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+            echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+          } >> "$GITHUB_ENV"
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -142,39 +161,37 @@ jobs:
         with:
           key: android-arm64
 
-      - name: 配置 Android NDK 交叉编译环境
+      - name: 安装依赖
         run: |
-          # ubuntu runner 预装 NDK，并导出 ANDROID_NDK_LATEST_HOME / ANDROID_NDK_HOME
-          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
-          if [ -z "$NDK" ]; then
-            echo "未找到 Android NDK，runner 环境变量缺失" >&2
-            exit 1
+          npm ci
+          npm --prefix frontend ci
+
+      - name: 生成 Android 工程（仓库中尚无时）
+        id: android_init
+        run: |
+          if [ -d src-tauri/gen/android ]; then
+            echo "已存在 gen/android，跳过 init"
+            echo "generated=false" >> "$GITHUB_OUTPUT"
+          else
+            npx tauri android init
+            echo "generated=true" >> "$GITHUB_OUTPUT"
           fi
-          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          API=21
 
-          # clang 包装脚本加入 PATH（仅对后续 step 生效）
-          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
-
-          {
-            # openssl-src(vendored) 依赖该变量定位 NDK
-            echo "ANDROID_NDK_ROOT=$NDK"
-            # rustc 链接器
-            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android${API}-clang"
-            # rusqlite(bundled) 等 -sys crate 经 cc crate 编译 C 代码，走 NDK clang
-            echo "CC_aarch64-linux-android=aarch64-linux-android${API}-clang"
-            echo "CXX_aarch64-linux-android=aarch64-linux-android${API}-clang++"
-            echo "AR_aarch64-linux-android=llvm-ar"
-            echo "RANLIB_aarch64-linux-android=llvm-ranlib"
-          } >> "$GITHUB_ENV"
-
-      - name: 下载前端产物
-        uses: actions/download-artifact@v4
+      - name: 上传新生成的 Android 工程
+        # 工程尚未入库时把它作为 artifact 产出，便于提交进仓库后免去每次 init。
+        if: steps.android_init.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
         with:
-          name: frontend-dist
-          path: frontend/dist
+          name: android-gen-project
+          path: src-tauri/gen/android
 
-      - name: 编译检查 (android-arm64)
-        working-directory: .
+      - name: 打包 Android 安装包
         # Android 无系统 OpenSSL，openssl 需从源码交叉编译（openssl-src 支持 NDK）。
-        run: cargo check --target aarch64-linux-android --features vendored-openssl --manifest-path src-tauri/Cargo.toml
+        run: npx tauri android build --apk --debug --target aarch64 --features vendored-openssl
+
+      - name: 上传 Android 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

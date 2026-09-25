@@ -10,9 +10,11 @@ import CoSelect from "../../components/ui/CoSelect.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
+import { useSettings } from "../../composables/useSettings";
 import { themeState, setThemeMode, setAccent, type ThemeMode } from "../../theme";
 
 const { t, locale, setLocale, supportedLocales } = useI18n();
+const { get, set } = useSettings();
 
 const mode = computed({
   get: () => themeState.mode,
@@ -47,6 +49,22 @@ const presets = [
   "#8957e5",
 ];
 
+// 下载页「历史下载」展示上限。0 = 不显示；数值取值为固定档位，避免自由输入产生
+// 无意义的展示窗口。仅影响显示，不删除任何记录（历史记录本身只在内存中）。
+const historyLimit = computed({
+  get: () => get<number>("download.history_limit", 50),
+  set: (value: number) => void set("download.history_limit", value),
+});
+
+const historyLimitOptions = [0, 20, 50, 70, 100, 150, 200].map((n) => ({
+  value: String(n),
+  label: n === 0 ? t("settings.general.download_history_none") : t(`settings.general.download_history_${n}`),
+}));
+
+function updateHistoryLimit(value: string) {
+  historyLimit.value = Number(value);
+}
+
 async function changeLocale(code: string) {
   if (code === locale.value) return;
   await setLocale(code);
@@ -74,6 +92,16 @@ async function applyAccent(hex: string) {
       </SettingRow>
       <SettingRow label-key="settings.general.theme_mode">
         <CoSegmented :model-value="mode" :options="modeOptions" @update:model-value="mode = $event as ThemeMode" />
+      </SettingRow>
+      <SettingRow
+        label-key="settings.general.download_history"
+        hint-key="settings.general.download_history_hint"
+      >
+        <CoSelect
+          :model-value="String(historyLimit)"
+          :options="historyLimitOptions"
+          @update:model-value="updateHistoryLimit"
+        />
       </SettingRow>
     </SettingSection>
 

@@ -136,7 +136,7 @@ use services::tips::TipsService;
 use services::updater::UpdaterService;
 use state::KernelContext;
 
-/// 默认同时下载数（可从设置读取，暂未开放配置）。
+/// 默认同时下载数；实际取值以设置 `download.concurrency` 为准（1~5）。
 const DEFAULT_CONCURRENCY: usize = 3;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -193,7 +193,7 @@ pub fn run() {
             // 提示依赖 i18n：文案取自内核语言包，随语言切换自动跟随。
             let tips = Arc::new(TipsService::new(i18n.clone()));
             let download = Arc::new(DownloadService::new(
-                DEFAULT_CONCURRENCY,
+                settings.get_or("download.concurrency", DEFAULT_CONCURRENCY),
                 runtime.clone(),
                 paths.clone(),
                 events.clone(),
@@ -280,6 +280,8 @@ pub fn run() {
             commands::download::download_remove,
             commands::download::download_pause_all,
             commands::download::download_resume_all,
+            commands::download::download_concurrency,
+            commands::download::download_set_concurrency,
             commands::account::account_current,
             commands::account::account_begin_login,
             commands::account::account_begin_xal_login,
@@ -312,6 +314,7 @@ pub fn run() {
             commands::content_download::content_download_list,
             commands::content_download::content_download_detail,
             commands::content_download::content_download_readme,
+            commands::content_download::content_download_game_versions,
             commands::content_download::content_download_download,
             commands::content_download::content_download_lip_env,
             commands::content_download::content_download_lip_install,

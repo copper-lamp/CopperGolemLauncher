@@ -18,8 +18,8 @@ use crate::error::KernelError;
 use crate::state::KernelContext;
 
 use super::model::{
-    ContentDependency, ContentDetail, ContentFile, ContentItem, ContentListPage,
-    ContentListQuery, PAGE_SIZE, SOURCE_LIP, TYPE_LL_MOD,
+    normalize_sort, ContentDependency, ContentDetail, ContentFile, ContentItem, ContentListPage,
+    ContentListQuery, PAGE_SIZE, SOURCE_LIP, SORT_DOWNLOADS_ASC, SORT_NAME_ASC, TYPE_LL_MOD,
 };
 
 /// lipr 索引导地址（与 LeviLauncher 前端一致）。
@@ -233,11 +233,26 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
 
 // ---------------------------------------------------------------- 对外接口
 
-/// 列表：关键字搜索 + 页码分页。
+/// 列表：关键字搜索 + 排序 + 页码分页。
+///
+/// 游戏版本过滤对 LL 模组不适用：lipr 索引只声明 LeviLamina 依赖，没有 MCBE
+/// 游戏版本元数据，因此指定 `game_version` 时返回空列表（不伪造匹配）。
 pub async fn list(
     _kernel: &KernelContext,
     query: &ContentListQuery,
 ) -> Result<ContentListPage, KernelError> {
+    if query
+        .game_version
+        .as_deref()
+        .is_some_and(|gv| !gv.trim().is_empty())
+    {
+        return Ok(ContentListPage {
+            items: Vec::new(),
+            has_more: false,
+            total: 0,
+        });
+    }
+
     let data = index().await?;
     let search = query.search.as_deref().unwrap_or("").to_lowercase();
 
@@ -252,12 +267,22 @@ pub async fn list(
         })
         .map(package_to_item)
         .collect();
-    // 稳定排序：热度过高者靠前，其次 identifier。
-    matched.sort_by(|a, b| {
-        b.download_count
-            .cmp(&a.download_count)
-            .then_with(|| a.name.cmp(&b.name))
-    });
+
+    // 稳定排序：默认下载量（热度）降序，其次 name；可切升序 / 名称。
+    match normalize_sort(query.sort.as_deref()) {
+        SORT_DOWNLOADS_ASC => matched.sort_by(|a, b| {
+            a.download_count
+                .cmp(&b.download_count)
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+        SORT_NAME_ASC => matched.sort_by(|a, b| a.name.cmp(&b.name)),
+        // downloads_desc 与 updated_desc：索引无更新时间，统一按热度降序（>= 而非伪造时间）。
+        _ => matched.sort_by(|a, b| {
+            b.download_count
+                .cmp(&a.download_count)
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+    }
 
     let total = matched.len() as u64;
     let page = query.page as usize;

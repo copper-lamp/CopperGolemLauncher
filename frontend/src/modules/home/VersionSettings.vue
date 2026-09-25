@@ -1,15 +1,20 @@
 <script setup lang="ts">
-// 版本设置页：编排层。
+// 版本设置页：编排层。整体为三个部分 —— 左标签页、主面板、顶部标签页。
 //
-// - 左侧：纵向 `CoTabs` 版本 rail，直接落在页面底色上，选中项与右侧面板咬合成一体；
-// - 右侧：面板卡片 —— 顶部内层横向 `CoTabs`（基本设置 / 内容管理 / 模组管理），
-//   下辖面板工具栏（搜索框，仅内容 / 模组两个分区显示）与分区内容。
+// - 左标签页：纵向 `CoTabs` 版本 rail，落在页面底色上，贴着主面板左边，
+//   选中项与主面板咬合成一体（接缝处是向外张开的倒角）；
+// - 顶部标签页：横向 `CoTabs`（基本设置 / 内容管理 / 模组管理），在**主面板之上**、
+//   与主面板分离，整体靠右，选中项向下与主面板咬合；
+// - 主面板：卡片容器，顶部通栏是搜索框（仅内容 / 模组两个分区显示），下方是分区内容。
+//
+// 版面用 2×2 网格约束：顶部标签页独占第 1 行第 2 列（因此它不占左标签页的宽度），
+// 左标签页与主面板同处第 2 行 —— 二者的顶边自然对齐，左标签页无需手工让位。
 //
 // 标题栏的「开始 / 版本设置」面包屑来自路由 meta `breadcrumb`（见 register.ts），
 // 因此本页不再自带返回箭头与页面标题。
 //
-// 分区内容拆在 `VersionBasicTab` / `ContentTab` / `ModTab`；搜索词虽然由面板工具栏
-// 统一承载（位置与样式共用），但两个分区各持一份状态，互不影响。
+// 分区内容拆在 `VersionBasicTab` / `ContentTab` / `ModTab`；搜索词虽然由主面板顶部
+// 通栏统一承载（位置与样式共用），但两个分区各持一份状态，互不影响。
 
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -173,6 +178,11 @@ async function deleteVersion() {
 
 <template>
   <div class="version-settings">
+    <!-- 顶部标签页：主面板之上、整体靠右；网格第 1 行第 2 列，不占左标签页的宽度 -->
+    <nav class="version-settings__top-tabs">
+      <CoTabs v-model="activeTab" :items="sectionTabs" />
+    </nav>
+
     <!-- 左：版本 rail（无卡片，选中项直接与右侧面板咬合） -->
     <aside class="version-settings__rail">
       <div v-if="loading" class="version-settings__rail-state">
@@ -202,15 +212,14 @@ async function deleteVersion() {
       </CoTabs>
     </aside>
 
-    <!-- 右：面板卡片 -->
+    <!-- 主面板：与左标签页同处网格第 2 行，顶边天然对齐 -->
     <section class="version-settings__panel">
-      <header class="version-settings__panel-head">
-        <CoTabs v-model="activeTab" :items="sectionTabs" />
-        <div v-if="activeTab !== 'basic'" class="version-settings__search">
+      <div v-if="activeTab !== 'basic'" class="version-settings__panel-top">
+        <div class="version-settings__search">
           <Search :size="14" class="version-settings__search-icon" />
           <CoTextField v-model="activeSearch" :placeholder="searchPlaceholder" />
         </div>
-      </header>
+      </div>
 
       <div class="version-settings__panel-body">
         <template v-if="current">
@@ -245,18 +254,37 @@ async function deleteVersion() {
 </template>
 
 <style scoped>
+/* 三个部分的版面约束：第 1 行放顶部标签页（第 2 列），第 2 行放左标签页与主面板。
+   两者同行即同高同顶，左标签页的接缝才能与主面板左边严丝合缝。 */
 .version-settings {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   padding: var(--copper-space-4);
   min-height: 0;
 }
 
+/* 顶部标签页：在主面板之上、整体靠右。
+   `align-self: start` 让条带顶到网格行顶（默认拉伸会把它压扁 1px）；
+   `margin-bottom: -1px` 让选中项的底边框正好压住主面板的上边框
+   （配合 CoTabs 的 `border-bottom-color: surface` 抹掉接缝）。 */
+.version-settings__top-tabs {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  z-index: 1;
+  align-self: start;
+  justify-self: end;
+  margin-bottom: -1px;
+}
+
 /* 版本 rail：无卡片、可滚动（滚动条隐藏以免占位破坏 1px 咬合对齐）。
    `margin-right: -1px` 让选中态的 1px 右边框正好压住面板的 1px 左边框。 */
 .version-settings__rail {
+  grid-column: 1;
+  grid-row: 2;
   width: 236px;
-  flex-shrink: 0;
   min-height: 0;
   overflow-y: auto;
   margin-right: -1px;
@@ -324,33 +352,28 @@ async function deleteVersion() {
   white-space: nowrap;
 }
 
+/* 主面板：左上 / 左下被 rail 咬合，故左端取直角。 */
 .version-settings__panel {
-  flex: 1;
+  grid-column: 2;
+  grid-row: 2;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--copper-surface);
-  /* 左侧被 rail 咬合，故左角取直角 */
   border: 1px solid var(--copper-border);
   border-radius: 0 var(--copper-radius-lg) var(--copper-radius-lg) 0;
   overflow: hidden;
 }
 
-.version-settings__panel-head {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--copper-space-4);
-  padding: var(--copper-space-2) var(--copper-space-4) 0 var(--copper-space-2);
-  border-bottom: 1px solid var(--copper-border);
+/* 主面板顶部通栏：搜索框所在行，仅内容 / 模组两个分区渲染。 */
+.version-settings__panel-top {
+  flex-shrink: 0;
+  padding: var(--copper-space-4) var(--copper-space-4) 0;
 }
 
 .version-settings__search {
   position: relative;
-  flex: 1;
-  min-width: 140px;
-  margin-left: auto;
-  margin-bottom: var(--copper-space-2);
 }
 
 .version-settings__search-icon {

@@ -148,7 +148,11 @@ type DownloadListener = Arc<dyn Fn(DownloadEvent) + Send + Sync>;
 
 struct ManagerInner {
     tasks: Mutex<HashMap<u64, Arc<TaskState>>>,
-    semaphore: Arc<tokio::sync::Semaphore>,
+    /// 并发名额。调整并发数时整体替换（旧信号量的等待者会随旧信号量一起失效，
+    /// 因此调整前必须先把排队任务唤回并重新派发，见 `set_concurrency`）。
+    semaphore: Mutex<Arc<tokio::sync::Semaphore>>,
+    /// 当前并发上限，与 `semaphore` 同步维护。
+    concurrency: AtomicU64,
     next_id: AtomicU64,
     listeners: Mutex<Vec<DownloadListener>>,
     client: reqwest::Client,
@@ -161,6 +165,11 @@ impl ManagerInner {
         for l in listeners {
             l(event.clone());
         }
+    }
+
+    /// 取当前并发信号量（短锁，避免运行循环长时间持有）。
+    fn semaphore(&self) -> Arc<tokio::sync::Semaphore> {
+        self.semaphore.lock().clone()
     }
 
     fn emit_status(&self, state: &TaskState) {
@@ -205,12 +214,48 @@ impl DownloadManager {
         Self {
             inner: Arc::new(ManagerInner {
                 tasks: Mutex::new(HashMap::new()),
-                semaphore: Arc::new(tokio::sync::Semaphore::new(concurrency.max(1))),
+                semaphore: Mutex::new(Arc::new(tokio::sync::Semaphore::new(
+                    concurrency.max(1),
+                ))),
+                concurrency: AtomicU64::new(concurrency.max(1) as u64),
                 next_id: AtomicU64::new(1),
                 listeners: Mutex::new(Vec::new()),
                 client,
                 runtime,
             }),
+        }
+    }
+
+    /// 当前并发上限（同时下载的任务数）。
+    pub fn concurrency(&self) -> usize {
+        self.inner.concurrency.load(Ordering::Relaxed) as usize
+    }
+
+    /// 调整并发上限。
+    ///
+    /// 信号量不可 resize，整体替换会让仍挂在旧信号量上排队的任务永远拿不到名额，
+    /// 所以这里先把这些任务从「等待队列」唤回：置回 `Queued` 并按新信号量重新派发
+    /// （`run_task` 开头看到 `pause_requested` / 取消标记才退出，普通等待者会重新
+    /// 进入 `acquire`）。
+    pub fn set_concurrency(&self, concurrency: usize) {
+        let concurrency = concurrency.max(1);
+        let previous = self.inner.concurrency.swap(concurrency as u64, Ordering::SeqCst) as usize;
+        if previous == concurrency {
+            return;
+        }
+        *self.inner.semaphore.lock() = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+        let waiting: Vec<Arc<TaskState>> = self
+            .inner
+            .tasks
+            .lock()
+            .values()
+            .filter(|s| *s.status.lock() == DownloadStatus::Queued)
+            .cloned()
+            .collect();
+        for state in waiting {
+            self.inner.emit_status(&state);
+            self.spawn_run(state);
         }
     }
 
@@ -442,7 +487,7 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
 
     // 等待并发名额，期间可响应暂停 / 取消。
     let permit = {
-        let acquire = inner.semaphore.clone().acquire_owned();
+        let acquire = inner.semaphore().acquire_owned();
         tokio::pin!(acquire);
         tokio::select! {
             permit = &mut acquire => permit.expect("semaphore closed"),

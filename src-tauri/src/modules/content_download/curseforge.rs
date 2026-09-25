@@ -20,8 +20,9 @@ use crate::state::KernelContext;
 
 use super::http;
 use super::model::{
-    ContentDependency, ContentDetail, ContentFile, ContentItem, ContentListPage,
-    ContentListQuery, SOURCE_CURSEFORGE, TYPE_BEHAVIOR_PACK, TYPE_SHADER, TYPE_TEXTURE_PACK,
+    normalize_sort, ContentDependency, ContentDetail, ContentFile, ContentItem, ContentListPage,
+    ContentListQuery, SOURCE_CURSEFORGE, SORT_DOWNLOADS_ASC, SORT_DOWNLOADS_DESC, SORT_NAME_ASC,
+    SORT_UPDATED_DESC, TYPE_BEHAVIOR_PACK, TYPE_SHADER, TYPE_TEXTURE_PACK,
 };
 
 /// CurseForge API 基址与 MC 基岩版 gameId（参考 LeviLauncher）。
@@ -29,6 +30,8 @@ const BASE_URL: &str = "https://api.curseforge.com";
 const GAME_ID: &str = "78022";
 /// 类别 / 分类表缓存 TTL（秒）。
 const CATEGORY_CACHE_TTL_SECS: u64 = 300;
+/// 游戏版本列表缓存 TTL（秒）。
+const VERSIONS_CACHE_TTL_SECS: u64 = 3600;
 
 /// 每请求最大条数（API 上限 50）。
 const PAGE_SIZE: usize = 40;
@@ -201,7 +204,37 @@ struct CategoriesResponse {
     data: Vec<Category>,
 }
 
+/// 排序方式 → CurseForge `sortField` / `sortOrder`。
+///
+/// CurseForge `sortField` 取值：2 = Name，3 = LastUpdated，6 = TotalDownloads。
+fn sort_params(sort: &str) -> (u32, &'static str) {
+    match sort {
+        SORT_DOWNLOADS_ASC => (6, "asc"),
+        SORT_NAME_ASC => (2, "asc"),
+        SORT_UPDATED_DESC => (3, "desc"),
+        // SORT_DOWNLOADS_DESC 及其它未知值统一为下载量降序。
+        _ => (6, "desc"),
+    }
+}
+
+/// `/v1/games/{gameId}/versions` 响应（仅取列表首层字段）。
+#[derive(Debug, Deserialize)]
+struct GameVersionsResponse {
+    data: Vec<GameVersionEntry>,
+}
+
+/// 单个游戏版本条目（CurseForge 用 `name` 承载版本号串）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GameVersionEntry {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    slug: String,
+}
+
 // ---------------------------------------------------------------- 类别缓存
+
 
 struct CategoryCache {
     id_by_name: HashMap<String, i64>,
@@ -334,6 +367,14 @@ pub async fn list(
             url.push_str(&format!("&searchFilter={}", urlencoded(s)));
         }
     }
+    if let Some(gv) = query.game_version.as_deref() {
+        let gv = gv.trim();
+        if !gv.is_empty() {
+            url.push_str(&format!("&gameVersion={}", urlencoded(gv)));
+        }
+    }
+    let (sort_field, sort_order) = sort_params(normalize_sort(query.sort.as_deref()));
+    url.push_str(&format!("&sortField={sort_field}&sortOrder={sort_order}"));
 
     let resp: SearchResponse = http::client()
         .get(&url)
@@ -430,6 +471,63 @@ pub async fn description(kernel: &KernelContext, mod_id: i64) -> Result<Option<S
         .await?;
     let html = resp.data;
     Ok((!html.trim().is_empty()).then_some(html))
+}
+
+/// 游戏版本列表缓存（用于前端「版本过滤」下拉）。TTL 1 小时。
+struct VersionsCache {
+    versions: Vec<String>,
+    fetched_at: std::time::Instant,
+}
+
+static VERSIONS_CACHE: OnceLock<Mutex<Option<VersionsCache>>> = OnceLock::new();
+
+fn versions_cache() -> &'static Mutex<Option<VersionsCache>> {
+    VERSIONS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// 拉取 / 复用 MCBE 游戏版本列表（降序，去重）。
+///
+/// 该列表即 CurseForge 搜索 `gameVersion` 参数的可选值，供前端版本过滤下拉使用。
+pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
+    if let Some(c) = versions_cache().lock().unwrap().as_ref() {
+        if c.fetched_at.elapsed().as_secs() < VERSIONS_CACHE_TTL_SECS {
+            return Ok(c.versions.clone());
+        }
+    }
+    let api_key = api_key(kernel)?;
+    let url = format!("{BASE_URL}/v1/games/{GAME_ID}/versions");
+    let resp: GameVersionsResponse = http::client()
+        .get(&url)
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let mut versions: Vec<String> = Vec::new();
+    for entry in resp.data {
+        let raw = if !entry.name.trim().is_empty() {
+            entry.name.trim().to_string()
+        } else {
+            entry.slug.trim().to_string()
+        };
+        if !raw.is_empty() && !versions.contains(&raw) {
+            versions.push(raw);
+        }
+    }
+    // 版本号降序（新版本在前）；无法解析者排末尾。
+    versions.sort_by(|a, b| {
+        parse_game_version(b)
+            .cmp(&parse_game_version(a))
+            .then_with(|| a.cmp(b))
+    });
+
+    *versions_cache().lock().unwrap() = Some(VersionsCache {
+        versions: versions.clone(),
+        fetched_at: std::time::Instant::now(),
+    });
+    Ok(versions)
 }
 
 // ---------------------------------------------------------------- 归一化

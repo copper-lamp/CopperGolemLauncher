@@ -122,6 +122,13 @@ impl ContentDownloadModule {
         curseforge::description(kernel, mod_id).await
     }
 
+    /// 可选游戏版本列表（供前端「版本过滤」下拉）。
+    ///
+    /// LL 模组无 MCBE 游戏版本元数据，故列表仅来自 CurseForge。
+    pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
+        curseforge::game_versions(kernel).await
+    }
+
     /// 下载投递：CurseForge 文件直链 → 内核下载队列，并落库一条下载记录。
     ///
     /// LIP 无直链，返回明确错误提示需经 lip 安装。
@@ -265,6 +272,8 @@ async fn type_pick(
     t: &str,
     offset: usize,
     count: usize,
+    game_version: Option<&str>,
+    sort: Option<&str>,
 ) -> Result<(Vec<ContentItem>, bool), KernelError> {
     let mut out = Vec::with_capacity(count);
     let mut has_more = false;
@@ -277,6 +286,8 @@ async fn type_pick(
             source: if t == TYPE_LL_MOD { Some(SOURCE_LIP.to_string()) } else { None },
             content_type: Some(t.to_string()),
             search: None,
+            game_version: game_version.map(str::to_string),
+            sort: sort.map(str::to_string),
             page: sub_page as u32,
         };
         let typed: ContentListPage = if t == TYPE_LL_MOD {
@@ -331,7 +342,15 @@ async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<
         std::collections::HashMap::new();
 
     for &(t, per_page) in TYPE_PER_PAGE {
-        let (items, more) = type_pick(kernel, t, page * per_page, per_page).await?;
+        let (items, more) = type_pick(
+            kernel,
+            t,
+            page * per_page,
+            per_page,
+            query.game_version.as_deref(),
+            query.sort.as_deref(),
+        )
+        .await?;
         has_more = has_more || more;
         // 类型 total 仅作分页近似合计（抓取接口不再回传 total，此处用已取到的量近似）。
         total += per_page as u64;

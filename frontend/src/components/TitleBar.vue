@@ -224,7 +224,11 @@ function close() {
   min-width: 0;
 }
 
+/* 可点击段是 `button`、当前段是 `span`：两者都必须是同一种盒模型，
+   否则 `height` 在 `span` 上失效、单行文本会贴着盒顶（表现为当前段文字偏上）。 */
 .titlebar__crumb {
+  display: inline-flex;
+  align-items: center;
   height: 26px;
   padding: 0 var(--copper-space-2);
   border: none;
@@ -233,6 +237,7 @@ function close() {
   color: var(--copper-text-secondary);
   font-family: inherit;
   font-size: var(--copper-font-size-md);
+  line-height: 1;
   white-space: nowrap;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),

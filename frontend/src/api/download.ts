@@ -85,6 +85,16 @@ export function downloadResumeAll(): Promise<void> {
   return call<void>("download_resume_all");
 }
 
+/** 当前同时下载数（1~5）。 */
+export function downloadConcurrency(): Promise<number> {
+  return call<number>("download_concurrency");
+}
+
+/** 设置同时下载数，运行期即时生效并持久化；返回夹紧后的实际值。 */
+export function downloadSetConcurrency(concurrency: number): Promise<number> {
+  return call<number>("download_set_concurrency", { concurrency });
+}
+
 /** 格式化速率（字节/秒 → 可读文本）。 */
 export function formatSpeed(bytesPerSec: number): string {
   if (bytesPerSec <= 0) return "0 B/s";

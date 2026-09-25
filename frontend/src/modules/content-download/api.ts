@@ -15,6 +15,13 @@ export type ContentType =
   | "shader"
   | "ll_mod";
 
+/** 排序方式（与后端 `SORT_*` 对应）。 */
+export type ContentSort =
+  | "downloads_desc"
+  | "downloads_asc"
+  | "name_asc"
+  | "updated_desc";
+
 /** 列表卡片（与后端 `ContentItem` 同构，camelCase）。 */
 export interface ContentItem {
   id: string;
