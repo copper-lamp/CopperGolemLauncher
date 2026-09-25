@@ -20,9 +20,11 @@ use copper_module_abi::helper_client::{CapabilityDispatcher, CapabilityError};
 use copper_module_abi::ipc::CapabilityRequest;
 
 use crate::error::KernelError;
+use crate::registry::events::{pattern_matches, EventBus};
 use crate::registry::intents::IntentRegistry;
 use crate::registry::module_storage::{ModuleStorage, StorageError};
 use crate::registry::modules::ModuleRegistry;
+use crate::registry::sandbox::{ModuleSandbox, Permission};
 
 /// 自省能力：返回调用方**自身**的模块信息。
 pub const CAPABILITY_MODULE_INFO: &str = "module.info";
@@ -36,12 +38,23 @@ pub const CAPABILITY_STORAGE_LIST: &str = "storage.list";
 /// 复用既有能力 RPC 通道，因此**不需要新增 IPC 方法与 ABI 字段**——"发起意图"
 /// 对 helper 而言就是一次普通的能力请求。
 pub const CAPABILITY_INTENT_REQUEST: &str = "intent.request";
+/// 插件向外发布一条事件（需要 `events` 权限，且事件名必须落在清单 `events.publish` 声明的上界内）。
+///
+/// 与订阅分开授权：能收某事件不代表能以它的名义发布——后者等于允许模块冒充内核事件源，
+/// 而内核事件会被桥接到前端监听器，冒充会直接污染界面状态。
+pub const CAPABILITY_EVENTS_PUBLISH: &str = "events.publish";
 
-/// 绑定内核注册表、意图注册表与模块存储的能力派发器。
+/// 绑定内核注册表、意图注册表、模块存储、事件总线与沙箱的能力派发器。
 pub struct KernelCapabilities {
     modules: Arc<ModuleRegistry>,
     intents: Arc<IntentRegistry>,
     storage: Arc<ModuleStorage>,
+    /// 事件总线：`events.publish` 的落点。
+    events: Arc<EventBus>,
+    /// 模块沙箱：事件发布等需要权限的能力在这里逐次判定。
+    sandbox: Arc<ModuleSandbox>,
+    /// 本会话清单声明的**发布上界**（由装载后端按模块注入，不同模块不同）。
+    publish_patterns: Vec<String>,
 }
 
 impl KernelCapabilities {
@@ -49,11 +62,17 @@ impl KernelCapabilities {
         modules: Arc<ModuleRegistry>,
         intents: Arc<IntentRegistry>,
         storage: Arc<ModuleStorage>,
+        events: Arc<EventBus>,
+        sandbox: Arc<ModuleSandbox>,
+        publish_patterns: Vec<String>,
     ) -> Self {
         Self {
             modules,
             intents,
             storage,
+            events,
+            sandbox,
+            publish_patterns,
         }
     }
 }
@@ -86,6 +105,14 @@ struct IntentRequestParams {
     payload: Value,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventPublishParams {
+    name: String,
+    #[serde(default)]
+    payload: Value,
+}
+
 /// 解析能力参数。`deny_unknown_fields` + 严格类型：多余字段直接拒绝，
 /// 避免"传错字段名却静默成功"这类难查的集成问题。
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, CapabilityError> {
@@ -99,6 +126,14 @@ fn storage_error(error: StorageError) -> CapabilityError {
     CapabilityError {
         code: error.code(),
         message: error.to_string(),
+    }
+}
+
+/// 沙箱判定失败到能力错误的映射：越权必须如实上报，绝不能放行。
+fn sandbox_error(error: KernelError) -> CapabilityError {
+    CapabilityError {
+        code: "capability_denied",
+        message: error.friendly(),
     }
 }
 
@@ -186,6 +221,41 @@ impl CapabilityDispatcher for KernelCapabilities {
                     .map_err(intent_error)?;
                 Ok(json!({ "result": result }))
             }
+            CAPABILITY_EVENTS_PUBLISH => {
+                let params: EventPublishParams = parse_params(request.params)?;
+
+                // 两道闸缺一不可：先判权限（用户可在设置页收紧 `events`），再判清单上界。
+                self.sandbox
+                    .enforce(
+                        module_id,
+                        Permission::Events,
+                        "events.publish",
+                        &params.name,
+                    )
+                    .map_err(sandbox_error)?;
+
+                if !self
+                    .publish_patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, &params.name))
+                {
+                    return Err(CapabilityError {
+                        code: "event_not_declared",
+                        message: format!(
+                            "事件 `{}` 不在本模块 events.publish 声明的上界内（已声明：{}）",
+                            params.name,
+                            if self.publish_patterns.is_empty() {
+                                "无".to_owned()
+                            } else {
+                                self.publish_patterns.join(", ")
+                            }
+                        ),
+                    });
+                }
+
+                self.events.publish(&params.name, params.payload);
+                Ok(json!({ "published": true }))
+            }
             other => Err(CapabilityError {
                 code: "capability_not_supported",
                 message: format!(
@@ -244,6 +314,28 @@ mod tests {
 
     /// 每个测试用独立数据目录：测试并行执行，共享目录会互相污染。
     fn capabilities(tag: &str) -> (KernelCapabilities, Arc<IntentRegistry>, std::path::PathBuf) {
+        // 默认授予 `Intents`：意图路径的授权判定发生在 `IntentRegistry` 自己的沙箱上，
+        // 这里给不给都不改变其行为；给上是为了让"能力层自身的沙箱"在默认用例里不设障。
+        let (capabilities, intents, _events, root) =
+            capabilities_with(tag, Vec::new(), &[Permission::Intents]);
+        (capabilities, intents, root)
+    }
+
+    /// 可指定**发布上界**与沙箱授予集的能力派发器。
+    ///
+    /// 额外返回事件总线：发布路径的断言必须落在"订阅者真的收到了"，否则只能证明
+    /// 能力被受理，不能证明它到了总线。
+    #[allow(clippy::type_complexity)]
+    fn capabilities_with(
+        tag: &str,
+        publish_patterns: Vec<String>,
+        granted: &[Permission],
+    ) -> (
+        KernelCapabilities,
+        Arc<IntentRegistry>,
+        Arc<EventBus>,
+        std::path::PathBuf,
+    ) {
         let root = std::env::temp_dir().join(format!(
             "cgl-capabilities-{tag}-{}",
             std::process::id()
@@ -252,9 +344,24 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let storage = Arc::new(ModuleStorage::new(&root));
         let intents = Arc::new(IntentRegistry::new());
+        let events = Arc::new(EventBus::new());
+        let sandbox = Arc::new(ModuleSandbox::new());
+        sandbox.grant(
+            "copper-lamp.demo-tools",
+            granted.iter().copied().collect(),
+            std::path::PathBuf::from("C:\\tmp\\module"),
+        );
         (
-            KernelCapabilities::new(registry_with_stub(), Arc::clone(&intents), storage),
+            KernelCapabilities::new(
+                registry_with_stub(),
+                Arc::clone(&intents),
+                storage,
+                Arc::clone(&events),
+                sandbox,
+                publish_patterns,
+            ),
             intents,
+            events,
             root,
         )
     }
@@ -286,6 +393,9 @@ mod tests {
             Arc::new(ModuleRegistry::new()),
             Arc::new(IntentRegistry::new()),
             Arc::new(ModuleStorage::new(&root)),
+            Arc::new(EventBus::new()),
+            Arc::new(ModuleSandbox::new()),
+            Vec::new(),
         );
 
         let error = capabilities
@@ -473,6 +583,119 @@ mod tests {
             unknown.code, "invalid_capability_params",
             "拼错字段名或夹带身份字段都必须拒绝"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn events_publish_reaches_the_bus_for_a_declared_name() {
+        let (capabilities, _intents, events, root) = capabilities_with(
+            "publish-ok",
+            vec!["demo-tools.activity".to_owned()],
+            &[Permission::Events],
+        );
+
+        // 订阅者收得到才叫"发布了"：只看能力回执只能证明调用被受理。
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let _subscription = events.subscribe("demo-tools.*", move |name, payload| {
+            sink.lock()
+                .unwrap()
+                .push((name.to_owned(), payload.clone()));
+        });
+
+        let result = capabilities
+            .dispatch(
+                "copper-lamp.demo-tools",
+                request_with(
+                    CAPABILITY_EVENTS_PUBLISH,
+                    json!({ "name": "demo-tools.activity", "payload": { "kind": "ping" } }),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(result["published"], json!(true));
+        let received = seen.lock().unwrap().clone();
+        assert_eq!(received.len(), 1, "订阅者必须收到这条事件：{received:?}");
+        assert_eq!(received[0].0, "demo-tools.activity");
+        assert_eq!(received[0].1["kind"], json!("ping"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn events_publish_refuses_a_name_outside_the_declared_bound() {
+        let (capabilities, _intents, _events, root) = capabilities_with(
+            "publish-bound",
+            vec!["demo-tools.*".to_owned()],
+            &[Permission::Events],
+        );
+
+        // 声明了自己的域前缀，就不能以别人的名义（尤其是内核事件名）发布。
+        let error = capabilities
+            .dispatch(
+                "copper-lamp.demo-tools",
+                request_with(
+                    CAPABILITY_EVENTS_PUBLISH,
+                    json!({ "name": "settings.changed", "payload": {} }),
+                ),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "event_not_declared", "未声明的事件名必须拒绝");
+
+        // 声明过的域内事件照常放行。
+        capabilities
+            .dispatch(
+                "copper-lamp.demo-tools",
+                request_with(
+                    CAPABILITY_EVENTS_PUBLISH,
+                    json!({ "name": "demo-tools.activity", "payload": {} }),
+                ),
+            )
+            .expect("声明过的事件必须可发布");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn events_publish_is_refused_without_the_events_permission() {
+        // 沙箱登记了该模块但不授予 `Events`：即使用户在设置页收紧了权限，也必须拦住。
+        let (capabilities, _intents, _events, root) = capabilities_with(
+            "publish-denied",
+            vec!["demo-tools.activity".to_owned()],
+            &[],
+        );
+
+        let error = capabilities
+            .dispatch(
+                "copper-lamp.demo-tools",
+                request_with(
+                    CAPABILITY_EVENTS_PUBLISH,
+                    json!({ "name": "demo-tools.activity", "payload": {} }),
+                ),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "capability_denied", "越权必须如实上报，不得放行");
+        assert!(error.message.contains("events"), "got: {}", error.message);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn events_publish_rejects_malformed_params() {
+        let (capabilities, _intents, _events, root) = capabilities_with(
+            "publish-params",
+            vec!["demo-tools.activity".to_owned()],
+            &[Permission::Events],
+        );
+
+        let missing = capabilities
+            .dispatch(
+                "copper-lamp.demo-tools",
+                request_with(CAPABILITY_EVENTS_PUBLISH, json!({ "payload": {} })),
+            )
+            .unwrap_err();
+        assert_eq!(missing.code, "invalid_capability_params", "缺 name 必须拒绝");
 
         let _ = std::fs::remove_dir_all(&root);
     }

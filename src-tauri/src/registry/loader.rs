@@ -24,7 +24,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::error::KernelError;
-use crate::registry::manifest::ModuleManifest;
+use crate::registry::manifest::{EventDeclarations, ModuleManifest};
 use crate::registry::modules::{Module, ModuleOrigin, resolve_addon_dir};
 use crate::registry::sandbox::Permission;
 use crate::state::KernelContext;
@@ -184,11 +184,12 @@ impl ModuleLoader {
         );
 
         log::info!(
-            "[loader/{}] 已装载附加模块 `{module_id}`@{}（声明权限 {} 项，事件模式 {} 项，意图 {} 项）",
+            "[loader/{}] 已装载附加模块 `{module_id}`@{}（声明权限 {} 项，订阅 {} 项，发布 {} 项，意图 {} 项）",
             self.backend.name(),
             manifest.version,
             manifest.permissions.len(),
-            manifest.events.len(),
+            manifest.events.subscribe.len(),
+            manifest.events.publish.len(),
             manifest.intents.len()
         );
 
@@ -241,10 +242,10 @@ fn read_manifest(dir: &Path) -> Result<ModuleManifest, KernelError> {
 ///
 /// # 事件订阅的权限来源
 ///
-/// `events` 列表非空即视为申请 [`Permission::Events`]。清单的 `permissions` 枚举里
-/// 没有对应项，而 `events` 列表本身既表达了"要不要订阅"又表达了"订阅哪些"——再加
-/// 一项 `permissions` 条目就是同一语义的第二份真相，两份真相迟早漂移（权限枚举已经
-/// 因为粗细粒度分歧吃过这个亏，见下）。
+/// `events` 列表非空即视为申请 [`Permission::Events`]（订阅与发布任一方向非空都算）。
+/// 清单的 `permissions` 枚举里没有对应项，而 `events` 声明本身既表达了"要不要收发"
+/// 又表达了"能收发哪些"——再加一项 `permissions` 条目就是同一语义的第二份真相，
+/// 两份真相迟早漂移（权限枚举已经因为粗细粒度分歧吃过这个亏，见下）。
 ///
 /// # 契约分歧（已知，需收口）
 ///
@@ -258,7 +259,7 @@ fn read_manifest(dir: &Path) -> Result<ModuleManifest, KernelError> {
 ///
 /// 该分歧的收口（细粒度化沙箱枚举或补齐映射表）属后续任务，记录在
 /// `docs/铜核心/设计.md`。
-fn declared_permissions(raw: &[String], events: &[String]) -> HashSet<Permission> {
+fn declared_permissions(raw: &[String], events: &EventDeclarations) -> HashSet<Permission> {
     let mut set = HashSet::new();
     for name in raw {
         match name.as_str() {
@@ -314,7 +315,7 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let set = declared_permissions(&raw, &[]);
+        let set = declared_permissions(&raw, &EventDeclarations::default());
         assert!(set.contains(&Permission::FileSystem));
         assert!(set.contains(&Permission::Network));
         assert!(set.contains(&Permission::SpawnProcess));
@@ -322,17 +323,28 @@ mod tests {
         assert!(set.contains(&Permission::Intents));
         // 三类文件系统权限收敛为一项，不应膨胀成三个。
         assert_eq!(set.len(), 5);
-        // 订阅上界为空时不得凭空获得 Events 能力。
+        // 事件声明为空时不得凭空获得 Events 能力。
         assert!(!set.contains(&Permission::Events));
     }
 
     #[test]
-    fn declared_permissions_grants_events_only_for_a_non_empty_subscription() {
-        // 空 = 什么都不收：权限层也必须一致。
-        assert!(!declared_permissions(&[], &[]).contains(&Permission::Events));
+    fn declared_permissions_grants_events_only_for_a_non_empty_declaration() {
+        // 空 = 什么都不收也不发：权限层也必须一致。
+        assert!(!declared_permissions(&[], &EventDeclarations::default())
+            .contains(&Permission::Events));
 
-        let patterns = vec!["download.*".to_string()];
-        let set = declared_permissions(&[], &patterns);
+        let subscribing = EventDeclarations {
+            subscribe: vec!["download.*".to_string()],
+            publish: Vec::new(),
+        };
+        assert!(declared_permissions(&[], &subscribing).contains(&Permission::Events));
+
+        // 只声明发布（不订阅）同样要授予：两个方向共用同一项能力。
+        let publishing = EventDeclarations {
+            subscribe: Vec::new(),
+            publish: vec!["demo-tools.activity".to_string()],
+        };
+        let set = declared_permissions(&[], &publishing);
         assert!(set.contains(&Permission::Events));
         assert_eq!(set.len(), 1, "events 只映射到一项能力");
     }
@@ -341,9 +353,10 @@ mod tests {
     fn declared_permissions_is_fail_closed_for_unknown() {
         // 尚未有对应能力的清单权限不得被授予。
         let raw = vec!["account:read".to_string(), "download:enqueue".to_string()];
-        assert!(declared_permissions(&raw, &[]).is_empty());
-        assert!(declared_permissions(&["totally-made-up".to_string()], &[]).is_empty());
-        assert!(declared_permissions(&[], &[]).is_empty());
+        assert!(declared_permissions(&raw, &EventDeclarations::default()).is_empty());
+        assert!(declared_permissions(&["totally-made-up".to_string()], &EventDeclarations::default())
+            .is_empty());
+        assert!(declared_permissions(&[], &EventDeclarations::default()).is_empty());
     }
 
     #[test]

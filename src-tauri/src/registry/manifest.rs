@@ -69,14 +69,14 @@ pub struct ModuleManifest {
     /// 权限声明（授权上界，可为空）。注意枚举取值见 [`declared_permissions`] 的说明。
     #[serde(default)]
     pub permissions: Vec<String>,
-    /// 订阅的事件模式（**订阅上界**，可为空）。
+    /// 事件声明（**订阅与发布的各自上界**，可为空）。
     ///
-    /// 支持 `*`（全部）、`<点分段名>.*`（前缀）与 `<点分段名>`（精确）。
-    /// 宿主只按本列表订阅，插件收到的任何事件都必在其中——运行期动态订阅会让模块
-    /// 绕过权限模型去订阅 `account.changed` 这类敏感事件，因此不提供该入口。
-    /// 空数组表示不订阅任何事件（口径与 `permissions` 一致：声明即上界，空 = 不许）。
+    /// 宿主只按 `subscribe` 订阅、只放行 `publish` 里的事件名——运行期动态订阅 / 发布
+    /// 会让模块绕过权限模型去订阅 `account.changed` 或冒充内核事件名对外发布，
+    /// 因此不提供该入口。两个列表都为空表示既不收也不发（口径与 `permissions`
+    /// 一致：声明即上界，空 = 不许）。
     #[serde(default)]
-    pub events: Vec<String>,
+    pub events: EventDeclarations,
     /// 声明的意图处理器（**上界**，可为空）。
     ///
     /// 宿主在模块 `start` 成功后按本列表登记转发处理器；空数组表示不处理任何意图。
@@ -97,6 +97,28 @@ pub struct ModuleManifest {
     pub donation: Option<String>,
     #[serde(default)]
     pub changelog: Option<String>,
+}
+
+/// 事件声明：订阅上界与发布上界。
+///
+/// 两个方向分开声明是必要的：能**收**某事件不代表能**发**它。合成一个列表会让
+/// "订阅 download.status"顺带获得"以 download.status 名义发布"的权力，那等于
+/// 允许模块冒充内核事件源。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EventDeclarations {
+    /// 订阅上界：支持 `*`、`<点分段名>.*` 与精确名。
+    #[serde(default)]
+    pub subscribe: Vec<String>,
+    /// 发布上界：模块可发布的事件名（同样支持通配）。
+    #[serde(default)]
+    pub publish: Vec<String>,
+}
+
+impl EventDeclarations {
+    /// 是否声明了任一方向（用于判定要不要授予 `events` 能力）。
+    pub fn is_empty(&self) -> bool {
+        self.subscribe.is_empty() && self.publish.is_empty()
+    }
 }
 
 /// 单个 locale 的本地化文案。
@@ -266,11 +288,26 @@ impl ModuleManifest {
 
         // 事件模式 / 意图名的形态在装载期就判定：宿主会把这些字符串拼进事件名与
         // 插件命令名（`event.<名>` / `intent.<名>`），形态失控等于让清单决定命令空间。
-        for pattern in &self.events {
-            if !is_event_pattern(pattern) {
+        // 订阅与发布两个方向分别校验：同一个模式出现在哪一侧，权限含义完全不同。
+        for (label, patterns, allow_all) in [
+            ("events.subscribe", &self.events.subscribe, true),
+            ("events.publish", &self.events.publish, false),
+        ] {
+            for pattern in patterns {
+                // 发布上界**不容许裸 `*`**：那等于允许模块以任意名字发布，包括冒充内核
+                // 事件名——而内核事件会被桥接到前端监听器，冒充会直接污染界面状态。
+                // `<自己的域名>.*` 属自证域名，风险可接受，故只禁裸通配。
+                if !is_event_pattern(pattern) || (!allow_all && pattern == "*") {
+                    return Err(KernelError::Module(format!(
+                        "{label} 含非法事件模式 `{pattern}`：只允许 `*`（仅订阅侧）、\
+                         `<点分段名>.*` 或 `<点分段名>`，且每段只含小写字母、数字与连字符\
+                         （总长 ≤ {MAX_DOTTED_NAME_LEN}）"
+                    )));
+                }
+            }
+            if let Some(duplicate) = first_duplicate(patterns) {
                 return Err(KernelError::Module(format!(
-                    "events 含非法事件模式 `{pattern}`：只允许 `*`、`<点分段名>.*` 或 \
-                     `<点分段名>`，且每段只含小写字母、数字与连字符（总长 ≤ {MAX_DOTTED_NAME_LEN}）"
+                    "{label} 含重复模式 `{duplicate}`"
                 )));
             }
         }
@@ -281,12 +318,6 @@ impl ModuleManifest {
                      分段名（总长 ≤ {MAX_DOTTED_NAME_LEN}），且不允许通配"
                 )));
             }
-        }
-        // 重复项拒绝：同一项出现两次不会带来额外语义，只会掩盖作者的笔误。
-        if let Some(duplicate) = first_duplicate(&self.events) {
-            return Err(KernelError::Module(format!(
-                "events 含重复模式 `{duplicate}`"
-            )));
         }
         if let Some(duplicate) = first_duplicate(&self.intents) {
             return Err(KernelError::Module(format!(
@@ -505,9 +536,11 @@ mod tests {
 
     #[test]
     fn events_and_intents_default_to_empty() {
-        // 缺省即"什么都不收、什么都不处理"，与 permissions 的空数组口径一致。
+        // 缺省即"什么都不收、什么都不发、什么都不处理"，与 permissions 的空数组口径一致。
         let m = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
         assert!(m.events.is_empty());
+        assert!(m.events.subscribe.is_empty());
+        assert!(m.events.publish.is_empty());
         assert!(m.intents.is_empty());
         assert!(m.validate().is_ok());
     }
@@ -541,12 +574,25 @@ mod tests {
         let base: ModuleManifest = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
 
         let mut m = base.clone();
-        m.events = vec!["download.*".into(), "*.created".into()];
+        m.events.subscribe = vec!["download.*".into(), "*.created".into()];
         assert!(m.validate().is_err(), "段内通配必须拒绝");
 
         let mut m = base.clone();
-        m.events = vec!["download.created".into(), "download.created".into()];
+        m.events.subscribe = vec!["download.created".into(), "download.created".into()];
         assert!(m.validate().is_err(), "重复模式必须拒绝");
+
+        // 订阅侧允许裸 `*`，发布侧不允许：后者等于允许冒充任意事件名。
+        let mut m = base.clone();
+        m.events.subscribe = vec!["*".into()];
+        assert!(m.validate().is_ok(), "订阅侧的通配是合法上界");
+
+        let mut m = base.clone();
+        m.events.publish = vec!["*".into()];
+        assert!(m.validate().is_err(), "发布侧的裸通配必须拒绝");
+
+        let mut m = base.clone();
+        m.events.publish = vec!["game-download.*".into()];
+        assert!(m.validate().is_ok(), "发布侧的自证域名前缀是合法上界");
 
         let mut m = base.clone();
         m.intents = vec!["Game.List".into()];
@@ -560,11 +606,13 @@ mod tests {
     #[test]
     fn manifest_accepts_declared_events_and_intents() {
         let mut m: ModuleManifest = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
-        m.events = vec!["download.*".into(), "version.installed".into()];
+        m.events.subscribe = vec!["download.*".into(), "version.installed".into()];
+        m.events.publish = vec!["demo-tools.*".into()];
         m.intents = vec!["game.list".into()];
 
         m.validate().expect("合法的事件与意图声明必须通过校验");
-        assert_eq!(m.events.len(), 2);
+        assert_eq!(m.events.subscribe.len(), 2);
+        assert_eq!(m.events.publish.len(), 1);
         assert_eq!(m.intents.len(), 1);
 
         // 回写再解析：新字段必须能往返（模板 schema 与内核表达要能对齐）。

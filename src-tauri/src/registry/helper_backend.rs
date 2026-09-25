@@ -38,7 +38,7 @@ use crate::registry::capability::KernelCapabilities;
 use crate::registry::dylib_backend::resolve_artifact;
 use crate::registry::intents::{IntentHandler, IntentRegistry};
 use crate::registry::loader::ModuleLoadBackend;
-use crate::registry::manifest::ModuleManifest;
+use crate::registry::manifest::{EventDeclarations, ModuleManifest};
 use crate::registry::module_storage::ModuleStorage;
 use crate::registry::modules::{Module, ModuleRegistry};
 use crate::registry::sandbox::{ModuleSandbox, Permission};
@@ -202,8 +202,8 @@ pub struct AddonProxyModule {
     module_dir: PathBuf,
     helper_program: PathBuf,
     plugin_path: PathBuf,
-    /// 清单声明的订阅上界（事件模式）。空表示不订阅任何事件。
-    events: Vec<String>,
+    /// 清单声明的事件上界（订阅 + 发布）。两侧都空表示既不收也不发。
+    events: EventDeclarations,
     /// 清单声明的意图处理器上界。空表示不处理任何意图。
     intents: Vec<String>,
     services: AddonHostServices,
@@ -357,8 +357,8 @@ impl AddonProxyModule {
 
     /// 按清单声明的模式登记事件推送。
     fn register_events(&self) -> Result<(), KernelError> {
-        if self.events.is_empty() {
-            // 空声明 = 什么都不收。不登记，也不申请权限。
+        if self.events.subscribe.is_empty() {
+            // 空声明 = 什么都不收。不登记，也不申请权限（发布方向与本函数无关）。
             return Ok(());
         }
 
@@ -368,13 +368,13 @@ impl AddonProxyModule {
             &self.id,
             Permission::Events,
             "events.subscribe",
-            &self.events.join(","),
+            &self.events.subscribe.join(","),
         )?;
 
         let push = self.with_session(|session| Ok(session.push_handle()))?;
         self.services
             .bridge
-            .register(&self.id, self.events.clone(), Arc::new(push));
+            .register(&self.id, self.events.subscribe.clone(), Arc::new(push));
         Ok(())
     }
 
@@ -496,6 +496,8 @@ pub struct HelperBackend {
     sandbox: Arc<ModuleSandbox>,
     /// 事件推送桥：全体附加模块共用一份（一次 `*` 订阅）。
     bridge: Arc<AddonEventBridge>,
+    /// 事件总线：`events.publish` 能力的落点（与桥共用同一条总线）。
+    event_bus: Arc<EventBus>,
     /// 模块私有存储。全体附加模块共用一个实例，因此缓存与配额判定是全局一致的。
     storage: Arc<ModuleStorage>,
 }
@@ -512,7 +514,8 @@ impl HelperBackend {
             modules,
             intents,
             sandbox,
-            bridge: Arc::new(AddonEventBridge::new(events)),
+            bridge: Arc::new(AddonEventBridge::new(Arc::clone(&events))),
+            event_bus: events,
             storage: Arc::new(ModuleStorage::new(&data_dir)),
         }
     }
@@ -534,6 +537,10 @@ impl ModuleLoadBackend for HelperBackend {
             Arc::clone(&self.modules),
             Arc::clone(&self.intents),
             Arc::clone(&self.storage),
+            Arc::clone(&self.event_bus),
+            Arc::clone(&self.sandbox),
+            // 发布上界按**本模块**的清单注入：能力派发器是每模块一份，不能共用。
+            manifest.events.publish.clone(),
         ));
 
         // 此处只构造代理，不派生进程：进程在 `init` 时按注册表节奏启动，
@@ -660,7 +667,7 @@ mod tests {
             },
             "frontend": { "dist": "frontend/dist", "register": "register.js" },
             "permissions": [],
-            "events": events,
+            "events": { "subscribe": events, "publish": [] },
             "intents": intents
         });
         ModuleManifest::parse_and_validate(&serde_json::to_vec(&raw).unwrap())
