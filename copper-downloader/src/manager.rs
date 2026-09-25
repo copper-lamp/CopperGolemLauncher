@@ -691,9 +691,20 @@ async fn download_once(
 
     let (stream, mut file, mut downloaded) = match status {
         200 => {
+            match tokio::fs::remove_file(&state.part_path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(local_io_error(
+                        "移除旧下载临时文件",
+                        &state.part_path,
+                        error,
+                    ));
+                }
+            }
             let file = tokio::fs::File::create(&state.part_path)
                 .await
-                .map_err(|e| local_io_error("截断下载临时文件", &state.part_path, e))?;
+                .map_err(|e| local_io_error("创建下载临时文件", &state.part_path, e))?;
             state.downloaded_bytes.store(0, Ordering::Relaxed);
             (resp.bytes_stream(), file, 0u64)
         }

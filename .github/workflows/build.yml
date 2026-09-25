@@ -48,13 +48,13 @@ jobs:
       - name: 检查 Windows 打包产物
         if: always()
         shell: pwsh
-        run: Get-ChildItem src-tauri/target/release/bundle -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        run: Get-ChildItem target/release/bundle -Recurse -File -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
 
       - name: 上传 Windows 安装包
         uses: actions/upload-artifact@v4
         with:
           name: windows-installers
-          path: src-tauri/target/release/bundle/
+          path: target/release/bundle/
           if-no-files-found: error
 
   # Linux x64：deb + AppImage。
@@ -103,13 +103,13 @@ jobs:
 
       - name: 检查 Linux 打包产物
         if: always()
-        run: find src-tauri/target/release/bundle -type f -print 2>/dev/null || true
+        run: find target/release/bundle -type f -print 2>/dev/null || true
 
       - name: 上传 Linux 安装包
         uses: actions/upload-artifact@v4
         with:
           name: linux-installers
-          path: src-tauri/target/release/bundle/
+          path: target/release/bundle/
           if-no-files-found: error
 
   # Android arm64：APK。

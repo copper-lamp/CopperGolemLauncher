@@ -204,6 +204,33 @@ async fn server_ignoring_range_restarts_from_zero() {
 }
 
 #[tokio::test]
+async fn server_ignoring_range_replaces_a_stale_part_file() {
+    let payload = b"fresh complete payload".to_vec();
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let addr = start_server_with_range_behavior(
+        Arc::new(payload.clone()),
+        ranges.clone(),
+        true,
+    )
+    .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("out.bin");
+    let part = std::path::PathBuf::from(format!("{}.part", dest.display()));
+    std::fs::write(&part, b"stale partial payload").unwrap();
+    let mgr = manager();
+    let id = mgr
+        .enqueue(format!("http://{addr}/file"), &dest, default_options())
+        .unwrap();
+
+    wait_status(&mgr, id, DownloadStatus::Done).await;
+
+    assert_eq!(std::fs::read(&dest).unwrap(), payload);
+    assert!(!part.exists());
+    assert_eq!(ranges.lock().as_slice(), &["bytes=21-".to_owned()]);
+}
+
+#[tokio::test]
 async fn pause_resume_resumes_from_range() {
     let payload: Vec<u8> = (0..200_000).map(|i| (i % 251) as u8).collect();
     let ranges = Arc::new(Mutex::new(Vec::new()));
