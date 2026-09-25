@@ -25,6 +25,11 @@ pub const SUPPORTED_SCHEMA_VERSION: &str = "1";
 /// 当前内核支持的模块 API 版本。
 pub const SUPPORTED_API_VERSION: u32 = 1;
 
+/// 事件模式 / 意图名的最大长度（点分段名的总长）。
+///
+/// 有界是必要的：这些名字会进事件名、命令名与日志，超长名字没有任何合法用途。
+const MAX_DOTTED_NAME_LEN: usize = 128;
+
 /// `platforms` 权威枚举（与 cgl-libs / 模板 schema 逐字一致）。
 pub const SUPPORTED_PLATFORMS: &[&str] = &[
     "windows-x86_64",
@@ -64,6 +69,21 @@ pub struct ModuleManifest {
     /// 权限声明（授权上界，可为空）。注意枚举取值见 [`declared_permissions`] 的说明。
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// 订阅的事件模式（**订阅上界**，可为空）。
+    ///
+    /// 支持 `*`（全部）、`<点分段名>.*`（前缀）与 `<点分段名>`（精确）。
+    /// 宿主只按本列表订阅，插件收到的任何事件都必在其中——运行期动态订阅会让模块
+    /// 绕过权限模型去订阅 `account.changed` 这类敏感事件，因此不提供该入口。
+    /// 空数组表示不订阅任何事件（口径与 `permissions` 一致：声明即上界，空 = 不许）。
+    #[serde(default)]
+    pub events: Vec<String>,
+    /// 声明的意图处理器（**上界**，可为空）。
+    ///
+    /// 宿主在模块 `start` 成功后按本列表登记转发处理器；空数组表示不处理任何意图。
+    /// 另外，插件**发起**意图请求需要 `permissions` 含 `intents:request`——声明处理器
+    /// 与发起请求是两个方向，各有各的上界。
+    #[serde(default)]
+    pub intents: Vec<String>,
     /// 图标相对路径。
     #[serde(default)]
     pub icon: String,
@@ -244,6 +264,36 @@ impl ModuleManifest {
             return Err(KernelError::Module("backend.entry 不能为空".into()));
         }
 
+        // 事件模式 / 意图名的形态在装载期就判定：宿主会把这些字符串拼进事件名与
+        // 插件命令名（`event.<名>` / `intent.<名>`），形态失控等于让清单决定命令空间。
+        for pattern in &self.events {
+            if !is_event_pattern(pattern) {
+                return Err(KernelError::Module(format!(
+                    "events 含非法事件模式 `{pattern}`：只允许 `*`、`<点分段名>.*` 或 \
+                     `<点分段名>`，且每段只含小写字母、数字与连字符（总长 ≤ {MAX_DOTTED_NAME_LEN}）"
+                )));
+            }
+        }
+        for intent in &self.intents {
+            if !is_dotted_name(intent) {
+                return Err(KernelError::Module(format!(
+                    "intents 含非法意图名 `{intent}`：必须是由点分隔的小写字母/数字/连字符 \
+                     分段名（总长 ≤ {MAX_DOTTED_NAME_LEN}），且不允许通配"
+                )));
+            }
+        }
+        // 重复项拒绝：同一项出现两次不会带来额外语义，只会掩盖作者的笔误。
+        if let Some(duplicate) = first_duplicate(&self.events) {
+            return Err(KernelError::Module(format!(
+                "events 含重复模式 `{duplicate}`"
+            )));
+        }
+        if let Some(duplicate) = first_duplicate(&self.intents) {
+            return Err(KernelError::Module(format!(
+                "intents 含重复意图名 `{duplicate}`"
+            )));
+        }
+
         Ok(())
     }
 
@@ -268,6 +318,41 @@ impl ModuleManifest {
         )
         .unwrap_or(false)
     }
+}
+
+/// 事件模式：`*`、`<点分段名>.*`，或 `<点分段名>` 本身。
+fn is_event_pattern(pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    is_dotted_name(pattern.strip_suffix(".*").unwrap_or(pattern))
+}
+
+/// 点分段名：由 `.` 分隔的若干段，每段非空且只含小写字母 / 数字 / 连字符。
+///
+/// 不允许通配：本函数用于意图名与事件模式的主体部分。`*` 不是合法字符，因此
+/// `a.*.*`、`*.download` 这类"通配出现在段里"的形态会被如实拒绝。
+fn is_dotted_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_DOTTED_NAME_LEN {
+        return false;
+    }
+    name.split('.').all(|segment| {
+        !segment.is_empty()
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    })
+}
+
+/// 返回第一个重复出现的条目（没有则 `None`）。
+fn first_duplicate(entries: &[String]) -> Option<&str> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for entry in entries {
+        if !seen.insert(entry.as_str()) {
+            return Some(entry.as_str());
+        }
+    }
+    None
 }
 
 /// i18n 命名空间：单段、以字母开头、仅含小写字母/数字/连字符、长度 3~32。
@@ -416,5 +501,76 @@ mod tests {
         bounded.launcher.max = Some("0.5.0".into());
         assert!(bounded.accepts_launcher("0.4.0"));
         assert!(!bounded.accepts_launcher("0.6.0"));
+    }
+
+    #[test]
+    fn events_and_intents_default_to_empty() {
+        // 缺省即"什么都不收、什么都不处理"，与 permissions 的空数组口径一致。
+        let m = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
+        assert!(m.events.is_empty());
+        assert!(m.intents.is_empty());
+        assert!(m.validate().is_ok());
+    }
+
+    #[test]
+    fn event_patterns_and_intent_names_are_validated() {
+        // 合法形态。
+        assert!(is_event_pattern("*"));
+        assert!(is_event_pattern("download.*"));
+        assert!(is_event_pattern("download.created"));
+        assert!(is_event_pattern("game-download.installed"));
+        assert!(is_dotted_name("game.list"));
+        assert!(is_dotted_name("a"));
+
+        // 通配只允许整段出现：出现在段里会让"上界"失去意义。
+        assert!(!is_event_pattern("*.download"));
+        assert!(!is_event_pattern("a.*.*"));
+        assert!(!is_event_pattern("Download.*"));
+        assert!(!is_event_pattern("download..created"));
+        assert!(!is_event_pattern(".download"));
+        assert!(!is_event_pattern("download."));
+        assert!(!is_event_pattern("download.*.created"));
+        assert!(!is_event_pattern(""));
+        assert!(!is_event_pattern(&format!("a.{}", "b".repeat(200))));
+        // 意图名不允许通配（is_dotted_name 对 `*` 一律拒绝）。
+        assert!(!is_dotted_name("game.*"));
+    }
+
+    #[test]
+    fn manifest_rejects_malformed_events_and_intents() {
+        let base: ModuleManifest = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
+
+        let mut m = base.clone();
+        m.events = vec!["download.*".into(), "*.created".into()];
+        assert!(m.validate().is_err(), "段内通配必须拒绝");
+
+        let mut m = base.clone();
+        m.events = vec!["download.created".into(), "download.created".into()];
+        assert!(m.validate().is_err(), "重复模式必须拒绝");
+
+        let mut m = base.clone();
+        m.intents = vec!["Game.List".into()];
+        assert!(m.validate().is_err(), "大写意图名必须拒绝");
+
+        let mut m = base.clone();
+        m.intents = vec!["game.list".into(), "game.list".into()];
+        assert!(m.validate().is_err(), "重复意图名必须拒绝");
+    }
+
+    #[test]
+    fn manifest_accepts_declared_events_and_intents() {
+        let mut m: ModuleManifest = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
+        m.events = vec!["download.*".into(), "version.installed".into()];
+        m.intents = vec!["game.list".into()];
+
+        m.validate().expect("合法的事件与意图声明必须通过校验");
+        assert_eq!(m.events.len(), 2);
+        assert_eq!(m.intents.len(), 1);
+
+        // 回写再解析：新字段必须能往返（模板 schema 与内核表达要能对齐）。
+        let round = serde_json::to_vec(&m).unwrap();
+        let parsed = ModuleManifest::parse_and_validate(&round).unwrap();
+        assert_eq!(parsed.events, m.events);
+        assert_eq!(parsed.intents, m.intents);
     }
 }

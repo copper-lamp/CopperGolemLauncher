@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use copper_module_abi::helper_runtime::{
     validate_module_id, validate_plugin_path, HelperChannel, HelperRuntime,
 };
-use copper_module_abi::ipc::{IpcError, IpcMessage};
+use copper_module_abi::ipc::{IpcError, IpcMessage, IpcRequest};
 
 /// 参数或前置校验失败。
 const EXIT_USAGE: u8 = 2;
@@ -45,43 +45,76 @@ fn main() -> ExitCode {
     let channel = Arc::new(Mutex::new(HelperChannel::stdio()));
     let mut runtime = HelperRuntime::with_channel(module_id, plugin_path, Arc::clone(&channel));
 
-    // 单调循环：每轮读一条宿主消息、处理、回一条响应。
-    //
-    // 关键约束：**处理请求期间不持通道锁**。插件在 `invoke` 内发起能力请求时，
-    // 它的回调要借用同一个通道；若此处持锁，双方会死锁。
+    pump(&channel, &mut runtime)
+}
+
+/// 主循环：读一帧 → 处理 → 需要时回帧（单向通知不回）→ 排空被延迟的宿主通知。
+///
+/// 顺序是刻意的：延迟队列里的条目是**上面这次请求的处理过程**产生的——插件在
+/// `invoke` 内发起能力请求时，宿主推来的事件会被能力回调暂存。因此必须先处理完
+/// 当前请求再排空，否则会与正在进行的插件调用重入。
+fn pump(channel: &Arc<Mutex<HelperChannel>>, runtime: &mut HelperRuntime) -> ExitCode {
     loop {
-        let message = {
-            let mut guard = lock_channel(&channel);
-            match guard.recv() {
-                Ok(message) => message,
-                // 宿主关闭管道：正常停机，不视为错误。
-                Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                    return ExitCode::SUCCESS;
-                }
-                Err(error) => {
-                    eprintln!("[helper] failed to read a host frame: {error}");
-                    return ExitCode::from(EXIT_PROTOCOL);
-                }
-            }
+        let request = match read_host_request(channel) {
+            Ok(request) => request,
+            Err(code) => return code,
         };
 
-        let request = match message {
-            IpcMessage::Request(request) => request,
-            IpcMessage::Response(response) => {
-                eprintln!(
-                    "[helper] host sent an unexpected response for `{}`",
-                    response.request_id
-                );
-                return ExitCode::from(EXIT_PROTOCOL);
+        if let Err(code) = deliver(channel, runtime, request) {
+            return code;
+        }
+        for deferred in runtime.drain_deferred() {
+            if let Err(code) = deliver(channel, runtime, deferred) {
+                return code;
             }
-        };
-
-        let response = runtime.handle(request);
-        if let Err(error) = lock_channel(&channel).send(&IpcMessage::Response(response)) {
-            eprintln!("[helper] failed to write a response frame: {error}");
-            return ExitCode::from(EXIT_PROTOCOL);
         }
     }
+}
+
+/// 读一帧宿主请求。宿主关闭管道视为正常停机（helper 没有别的事可做）。
+fn read_host_request(channel: &Arc<Mutex<HelperChannel>>) -> Result<IpcRequest, ExitCode> {
+    let message = {
+        let mut guard = lock_channel(channel);
+        match guard.recv() {
+            Ok(message) => message,
+            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                return Err(ExitCode::SUCCESS);
+            }
+            Err(error) => {
+                eprintln!("[helper] failed to read a host frame: {error}");
+                return Err(ExitCode::from(EXIT_PROTOCOL));
+            }
+        }
+    };
+
+    match message {
+        IpcMessage::Request(request) => Ok(request),
+        IpcMessage::Response(response) => {
+            eprintln!(
+                "[helper] host sent an unexpected response for `{}`",
+                response.request_id
+            );
+            Err(ExitCode::from(EXIT_PROTOCOL))
+        }
+    }
+}
+
+/// 处理一帧宿主请求：请求 / 响应方法回帧，单向通知回 `None`（不回帧）。
+fn deliver(
+    channel: &Arc<Mutex<HelperChannel>>,
+    runtime: &mut HelperRuntime,
+    request: IpcRequest,
+) -> Result<(), ExitCode> {
+    let Some(response) = runtime.handle_host_frame(request) else {
+        // 单向通知：宿主没有人在等响应帧。多写一帧会被宿主当成某个 invoke 的响应，
+        // 把一次成功的调用判成 request id 不匹配失败。
+        return Ok(());
+    };
+    if let Err(error) = lock_channel(channel).send(&IpcMessage::Response(response)) {
+        eprintln!("[helper] failed to write a response frame: {error}");
+        return Err(ExitCode::from(EXIT_PROTOCOL));
+    }
+    Ok(())
 }
 
 fn lock_channel(channel: &Arc<Mutex<HelperChannel>>) -> std::sync::MutexGuard<'_, HelperChannel> {

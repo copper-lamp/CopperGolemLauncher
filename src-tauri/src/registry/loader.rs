@@ -177,15 +177,19 @@ impl ModuleLoader {
         // 即便声明为空也必须登记：`ModuleSandbox::knows` 以「是否登记」区分
         // 附加模块与内置模块，未登记的模块会被当作内核内置而豁免校验。空权限
         // 也要登记，才能让「声明为空 = 什么都不许」成立，而不是「声明为空 = 不受管」。
-        kernel
-            .sandbox()
-            .grant(&module_id, declared_permissions(&manifest.permissions), dir);
+        kernel.sandbox().grant(
+            &module_id,
+            declared_permissions(&manifest.permissions, &manifest.events),
+            dir,
+        );
 
         log::info!(
-            "[loader/{}] 已装载附加模块 `{module_id}`@{}（声明权限 {} 项）",
+            "[loader/{}] 已装载附加模块 `{module_id}`@{}（声明权限 {} 项，事件模式 {} 项，意图 {} 项）",
             self.backend.name(),
             manifest.version,
-            manifest.permissions.len()
+            manifest.permissions.len(),
+            manifest.events.len(),
+            manifest.intents.len()
         );
 
         Ok(manifest.version)
@@ -235,6 +239,13 @@ fn read_manifest(dir: &Path) -> Result<ModuleManifest, KernelError> {
 
 /// 把清单权限字符串映射为沙箱 [`Permission`] 集合。
 ///
+/// # 事件订阅的权限来源
+///
+/// `events` 列表非空即视为申请 [`Permission::Events`]。清单的 `permissions` 枚举里
+/// 没有对应项，而 `events` 列表本身既表达了"要不要订阅"又表达了"订阅哪些"——再加
+/// 一项 `permissions` 条目就是同一语义的第二份真相，两份真相迟早漂移（权限枚举已经
+/// 因为粗细粒度分歧吃过这个亏，见下）。
+///
 /// # 契约分歧（已知，需收口）
 ///
 /// 沙箱枚举（[`Permission`]）为 9 项**粗粒度**取值（`file_system` / `settings` …），
@@ -247,7 +258,7 @@ fn read_manifest(dir: &Path) -> Result<ModuleManifest, KernelError> {
 ///
 /// 该分歧的收口（细粒度化沙箱枚举或补齐映射表）属后续任务，记录在
 /// `docs/铜核心/设计.md`。
-fn declared_permissions(raw: &[String]) -> HashSet<Permission> {
+fn declared_permissions(raw: &[String], events: &[String]) -> HashSet<Permission> {
     let mut set = HashSet::new();
     for name in raw {
         match name.as_str() {
@@ -276,6 +287,12 @@ fn declared_permissions(raw: &[String]) -> HashSet<Permission> {
             }
         }
     }
+
+    // 订阅上界非空 ⇒ 授予 `Events`。空列表不授予，使"空 = 什么都不收"在权限层也成立。
+    if !events.is_empty() {
+        set.insert(Permission::Events);
+    }
+
     set
 }
 
@@ -297,7 +314,7 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let set = declared_permissions(&raw);
+        let set = declared_permissions(&raw, &[]);
         assert!(set.contains(&Permission::FileSystem));
         assert!(set.contains(&Permission::Network));
         assert!(set.contains(&Permission::SpawnProcess));
@@ -305,15 +322,28 @@ mod tests {
         assert!(set.contains(&Permission::Intents));
         // 三类文件系统权限收敛为一项，不应膨胀成三个。
         assert_eq!(set.len(), 5);
+        // 订阅上界为空时不得凭空获得 Events 能力。
+        assert!(!set.contains(&Permission::Events));
+    }
+
+    #[test]
+    fn declared_permissions_grants_events_only_for_a_non_empty_subscription() {
+        // 空 = 什么都不收：权限层也必须一致。
+        assert!(!declared_permissions(&[], &[]).contains(&Permission::Events));
+
+        let patterns = vec!["download.*".to_string()];
+        let set = declared_permissions(&[], &patterns);
+        assert!(set.contains(&Permission::Events));
+        assert_eq!(set.len(), 1, "events 只映射到一项能力");
     }
 
     #[test]
     fn declared_permissions_is_fail_closed_for_unknown() {
         // 尚未有对应能力的清单权限不得被授予。
         let raw = vec!["account:read".to_string(), "download:enqueue".to_string()];
-        assert!(declared_permissions(&raw).is_empty());
-        assert!(declared_permissions(&["totally-made-up".to_string()]).is_empty());
-        assert!(declared_permissions(&[]).is_empty());
+        assert!(declared_permissions(&raw, &[]).is_empty());
+        assert!(declared_permissions(&["totally-made-up".to_string()], &[]).is_empty());
+        assert!(declared_permissions(&[], &[]).is_empty());
     }
 
     #[test]

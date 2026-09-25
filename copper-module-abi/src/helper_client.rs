@@ -12,6 +12,7 @@
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -93,15 +94,83 @@ enum HelperEvent {
     Malformed(String),
 }
 
+/// 单向推送失败的原因。
+#[derive(Debug, thiserror::Error)]
+pub enum PushError {
+    /// 写端已关闭：helper 已停机或已被回收。
+    #[error("helper push channel is closed")]
+    Closed,
+    #[error("helper push frame failed: {0}")]
+    Ipc(#[from] IpcError),
+}
+
+/// 只写的推送句柄：向 helper 发**单向通知**，永不等待响应。
+///
+/// # 为什么必须是只写且不等待
+///
+/// 通知与 [`HelperProcess::request`] 共用同一个 stdin，帧在锁内整体写出，因此不会
+/// 字节交错。但通知**不参与请求 / 响应配对**：helper 对通知一律不回帧。若对端回了
+/// 帧，正在等待某个 invoke 响应的调用方会读到不属于它的响应，把一次成功的调用判成
+/// [`HelperError::RequestIdMismatch`] 并污染后续配对。
+///
+/// 因此本句柄刻意**不持有响应通道**，结构上就无法等待响应。
+#[derive(Clone)]
+pub struct HelperPushHandle {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    /// 通知在会话内的序号，只用于日志可读性（没有响应需要与它配对）。
+    seq: Arc<AtomicU64>,
+    module_id: String,
+}
+
+impl HelperPushHandle {
+    /// 句柄所属的模块身份（宿主下发，插件无法改写）。
+    pub fn module_id(&self) -> &str {
+        &self.module_id
+    }
+
+    /// 推送一条事件通知。
+    ///
+    /// `event.dispatch` 的载荷格式属本 crate 的协议细节，调用方不必自己拼。
+    pub fn push_event(&self, event: &str, payload: &Value) -> Result<(), PushError> {
+        self.notify(
+            crate::ipc::METHOD_EVENT_DISPATCH,
+            json!({ "event": event, "payload": payload }),
+        )
+    }
+
+    /// 发送一条单向通知。失败即表示 helper 已不可用（进程退出或管道关闭）。
+    pub fn notify(&self, method: &str, params: Value) -> Result<(), PushError> {
+        let request = IpcRequest {
+            version: PROTOCOL_VERSION,
+            // `push-` 前缀与请求的 `req-` 前缀分属两个命名空间，日志里一眼可辨。
+            request_id: format!("push-{}", self.seq.fetch_add(1, Ordering::Relaxed)),
+            method: method.to_owned(),
+            params,
+        };
+        let encoded = IpcMessage::Request(request).encode()?;
+
+        let mut guard = self
+            .stdin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let stdin = guard.as_mut().ok_or(PushError::Closed)?;
+        write_frame(stdin, &encoded).and_then(|()| stdin.flush().map_err(IpcError::Io))?;
+        Ok(())
+    }
+}
+
 /// 与一个 helper 子进程的同步会话。
 pub struct HelperProcess {
     child: Child,
-    /// 写端在两个线程间共享：主线程发方法请求，IO 线程回能力响应。
+    /// 写端在两个线程间共享：主线程发方法请求，IO 线程回能力响应；
+    /// [`HelperProcess::push_handle`] 也共享同一份，因此三类帧不会字节交错。
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     events: Receiver<HelperEvent>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     module_id: String,
     request_seq: u64,
+    /// 通知序号，由 [`HelperProcess::push_handle`] 分出的句柄共享。
+    push_seq: Arc<AtomicU64>,
     negotiated_version: Option<u32>,
 }
 
@@ -151,8 +220,21 @@ impl HelperProcess {
             stderr_tail,
             module_id: module_id.to_owned(),
             request_seq: 0,
+            push_seq: Arc::new(AtomicU64::new(0)),
             negotiated_version: None,
         })
+    }
+
+    /// 分出一个可跨线程共享的推送句柄。
+    ///
+    /// 事件发生在任意内核线程上，而 [`HelperProcess`] 的请求路径要求 `&mut self`
+    /// 独占；推送句柄把「写通知」这条只写路径独立出来，两者共用同一把 stdin 锁。
+    pub fn push_handle(&self) -> HelperPushHandle {
+        HelperPushHandle {
+            stdin: Arc::clone(&self.stdin),
+            seq: Arc::clone(&self.push_seq),
+            module_id: self.module_id.clone(),
+        }
     }
 
     /// 会话绑定的模块身份（由宿主下发，helper 无从改写）。

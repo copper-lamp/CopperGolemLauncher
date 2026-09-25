@@ -2,13 +2,17 @@
 //!
 //! 附加模块装载链路的文件分工：
 //! - [`manifest`]：`module.json` 的内核侧契约与校验；
-//! - [`module_entry`]：动态库入口符号契约与导出宏（ABI 触点）；
+//! - [`module_entry`]：动态库入口符号契约与导出宏（ABI 触点，已被 [`helper_backend`] 取代）；
 //! - [`loader`]：装载后端抽象 + 扫描 / 校验 / 注册编排；
-//! - [`dylib_backend`]：同进程动态库装载后端（当前实现）；
+//! - [`helper_backend`]：受监管子进程装载后端（当前实现）：IPC 会话 + [`modules::Module`] 代理；
+//! - [`capability`]：插件能力请求的宿主派发（身份取自会话绑定，未知能力 fail closed）；
+//! - [`module_storage`]：模块私有存储（命名空间由会话身份决定）；
+//! - [`addon_events`]：事件总线的推送桥（有界队列 + 每模块推送线程，见其文件注释）；
 //! - [`package`]：`.cglm` 包的安全解包与原子落位；
 //! - [`install`]：安装链路（下载 → 校验 → 解包 → 落位）；
 //! - [`frontend`]：前端产物自定义协议服务与入口列举。
 
+pub mod addon_events;
 pub mod capability;
 pub mod dylib_backend;
 pub mod events;

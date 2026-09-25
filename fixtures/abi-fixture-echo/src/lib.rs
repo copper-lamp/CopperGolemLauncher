@@ -1,12 +1,14 @@
 //! 测试夹具插件：真实编译为动态库，用于端到端验证 helper 的加载与调用链路。
 //!
-//! 它覆盖三类可观测行为，使集成测试能断言"链路真的通了"而不只是"没有报错"：
+//! 它覆盖四类可观测行为，使集成测试能断言"链路真的通了"而不只是"没有报错"：
 //! 1. `init` 收到的宿主配置会被原样回显（证明 config 通道可用）；
 //! 2. 生命周期回调按顺序被调用（证明 helper 真的在驱动插件，而非空转）；
-//! 3. 能力请求会拿到宿主状态码（当前应被显式拒绝，证明 fail closed 生效）。
+//! 3. 能力请求会拿到宿主状态码（当前应被显式拒绝，证明 fail closed 生效）；
+//! 4. 宿主派发的事件 / 意图被逐条记账（证明推送真的到了插件，而不只是写进了管道）。
 
 use std::ffi::c_void;
 
+use copper_module_abi::ipc::{PLUGIN_COMMAND_EVENT_PREFIX, PLUGIN_COMMAND_INTENT_PREFIX};
 use copper_module_abi::plugin_abi::{
     AbiBuffer, AbiBytes, HostApi, ABI_STATUS_ERROR, ABI_STATUS_OK,
 };
@@ -21,6 +23,8 @@ struct EchoState {
     stopped: bool,
     /// 最近一次能力请求得到的宿主状态码。
     last_capability_status: i32,
+    /// 收到的宿主派发记录（事件与意图），按到达顺序。
+    received: Vec<serde_json::Value>,
 }
 
 unsafe extern "C" fn init(
@@ -47,6 +51,7 @@ unsafe extern "C" fn init(
         started: false,
         stopped: false,
         last_capability_status: ABI_STATUS_OK,
+        received: Vec::new(),
     });
     unsafe { *state_out = Box::into_raw(state) as *mut c_void };
     ABI_STATUS_OK
@@ -80,8 +85,9 @@ unsafe extern "C" fn destroy(state: *mut c_void) {
 
 /// 支持的命令：
 /// - `demo.echo`：回显 `args`，并附带插件收到的配置与启动状态；
-/// - `demo.state`：返回插件侧生命周期与最近一次能力请求的状态码；
-/// - `demo.probe_capability`：向宿主发起一次能力请求并返回其状态码。
+/// - `demo.state`：返回插件侧生命周期、最近一次能力请求的状态码与派发记账；
+/// - `demo.probe_capability`：向宿主发起一次能力请求并返回其状态码；
+/// - `event.<事件名>` / `intent.<意图名>`：宿主保留前缀，派发到此即记账。
 unsafe extern "C" fn invoke(
     state: *mut c_void,
     operation: AbiBytes,
@@ -117,6 +123,7 @@ unsafe extern "C" fn invoke(
             "started": state.started,
             "stopped": state.stopped,
             "last_capability_status": state.last_capability_status,
+            "received": state.received,
         }),
         "demo.probe_capability" => {
             let (status, payload) = unsafe { request_capability(state, "world.read") };
@@ -124,6 +131,17 @@ unsafe extern "C" fn invoke(
             let payload: serde_json::Value =
                 serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
             serde_json::json!({ "capability_status": status, "capability_payload": payload })
+        }
+        other
+            if other.starts_with(PLUGIN_COMMAND_EVENT_PREFIX)
+                || other.starts_with(PLUGIN_COMMAND_INTENT_PREFIX) =>
+        {
+            // 事件与意图都经「保留前缀 + 名」变成一次普通命令调用，因此插件侧只需
+            // 一张路由表。这里记账，供集成测试断言派发真的到达了插件。
+            state
+                .received
+                .push(serde_json::json!({ "command": other, "payload": args }));
+            serde_json::json!({ "handled": other })
         }
         other => serde_json::json!({ "unsupported_command": other }),
     };

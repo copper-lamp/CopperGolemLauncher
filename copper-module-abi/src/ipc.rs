@@ -83,6 +83,28 @@ pub struct CapabilityRequest {
     pub params: Value,
 }
 
+/// 宿主推送一条事件给 helper（**单向通知**，helper 不回帧）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventDispatchRequest {
+    pub event: String,
+    pub payload: Value,
+}
+
+/// 宿主请 helper 把一次意图请求转给插件（请求 / 响应）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntentHandleRequest {
+    pub intent: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntentHandleResponse {
+    pub result: Value,
+}
+
 /// 能力参数**顶层**不得携带 `module_id`。
 ///
 /// 这只是一道廉价的第一道闸：真正的防护是宿主始终使用**会话绑定**的模块身份，从不
@@ -118,6 +140,22 @@ pub const METHOD_MODULE_INVOKE: &str = "module.invoke";
 pub const METHOD_MODULE_HANDSHAKE: &str = "module.handshake";
 /// 插件向宿主请求能力时使用的方法名（方向为 helper → host）。
 pub const METHOD_CAPABILITY_REQUEST: &str = "capability.request";
+/// 宿主向 helper 推送事件的方法名（方向为 host → helper）。
+///
+/// **这是单向通知，不是请求**：helper 派发到插件后**不写任何响应帧**。
+/// 一旦它回了帧，宿主正在等待某个 invoke 响应的调用方会读到不属于它的响应，
+/// 把一次成功的调用判成 [`IpcError::RequestIdMismatch`] 并污染后续配对。
+/// 因此它**不进入** [`ModuleMethod`] 的请求 / 响应方法表。
+pub const METHOD_EVENT_DISPATCH: &str = "event.dispatch";
+/// 宿主请 helper 把一次意图请求转给插件的方法名（请求 / 响应）。
+pub const METHOD_INTENT_HANDLE: &str = "intent.handle";
+
+/// 插件命令命名空间：宿主把事件 / 意图派发转成 `plugin.invoke("<前缀><名>", payload)`。
+///
+/// 插件的命令空间由模块自定（如夹具的 `demo.echo`），不保留命名空间就无法区分
+/// 「宿主派发的通知」与「模块自己的命令」。这两个前缀由宿主保留，模块不得注册同名命令。
+pub const PLUGIN_COMMAND_EVENT_PREFIX: &str = "event.";
+pub const PLUGIN_COMMAND_INTENT_PREFIX: &str = "intent.";
 
 /// 双向通道上的消息信封。
 ///
@@ -149,6 +187,9 @@ pub enum ModuleMethod {
     Stop,
     Health,
     Invoke,
+    /// 把一次意图请求转给插件（请求 / 响应）。与 [`METHOD_EVENT_DISPATCH`] 不同，
+    /// 它有真实响应，因此属于本方法表。
+    IntentHandle,
 }
 
 impl ModuleMethod {
@@ -160,6 +201,7 @@ impl ModuleMethod {
             Self::Stop => METHOD_MODULE_STOP,
             Self::Health => METHOD_MODULE_HEALTH,
             Self::Invoke => METHOD_MODULE_INVOKE,
+            Self::IntentHandle => METHOD_INTENT_HANDLE,
         }
     }
 
@@ -171,6 +213,7 @@ impl ModuleMethod {
             METHOD_MODULE_STOP => Some(Self::Stop),
             METHOD_MODULE_HEALTH => Some(Self::Health),
             METHOD_MODULE_INVOKE => Some(Self::Invoke),
+            METHOD_INTENT_HANDLE => Some(Self::IntentHandle),
             _ => None,
         }
     }
@@ -182,6 +225,7 @@ impl ModuleMethod {
             Self::Start | Self::Stop => serde_json::from_value(params).map(ModuleRequest::Lifecycle),
             Self::Health => serde_json::from_value(params).map(ModuleRequest::Health),
             Self::Invoke => serde_json::from_value(params).map(ModuleRequest::Invoke),
+            Self::IntentHandle => serde_json::from_value(params).map(ModuleRequest::IntentHandle),
         }
     }
 
@@ -192,6 +236,7 @@ impl ModuleMethod {
             Self::Start | Self::Stop => serde_json::from_value(result).map(ModuleResponse::Lifecycle),
             Self::Health => serde_json::from_value(result).map(ModuleResponse::Health),
             Self::Invoke => serde_json::from_value(result).map(ModuleResponse::Invoke),
+            Self::IntentHandle => serde_json::from_value(result).map(ModuleResponse::IntentHandle),
         }
     }
 }
@@ -203,6 +248,7 @@ pub enum ModuleRequest {
     Lifecycle(LifecycleRequest),
     Health(HealthRequest),
     Invoke(InvokeRequest),
+    IntentHandle(IntentHandleRequest),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,6 +258,7 @@ pub enum ModuleResponse {
     Lifecycle(LifecycleResponse),
     Health(HealthResponse),
     Invoke(InvokeResponse),
+    IntentHandle(IntentHandleResponse),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -457,7 +504,7 @@ mod tests {
         use super::{
             ModuleMethod, ModuleRequest, ModuleResponse, METHOD_MODULE_HANDSHAKE,
             METHOD_MODULE_HEALTH, METHOD_MODULE_INITIALIZE, METHOD_MODULE_INVOKE,
-            METHOD_MODULE_START, METHOD_MODULE_STOP,
+            METHOD_MODULE_START, METHOD_MODULE_STOP, METHOD_INTENT_HANDLE,
         };
 
         let cases = [
@@ -467,6 +514,7 @@ mod tests {
             (ModuleMethod::Stop, METHOD_MODULE_STOP),
             (ModuleMethod::Health, METHOD_MODULE_HEALTH),
             (ModuleMethod::Invoke, METHOD_MODULE_INVOKE),
+            (ModuleMethod::IntentHandle, METHOD_INTENT_HANDLE),
         ];
         for (method, name) in cases {
             assert_eq!(method.as_str(), name);
@@ -634,5 +682,58 @@ mod tests {
         let error = write_frame(&mut output, &payload).unwrap_err();
         assert!(matches!(error, IpcError::FrameTooLarge { .. }));
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn event_dispatch_is_not_a_request_response_method() {
+        use super::{ModuleMethod, METHOD_EVENT_DISPATCH, METHOD_INTENT_HANDLE};
+
+        // 事件推送是单向通知：一旦它被登记进方法表，helper 就会按"请求必须回帧"
+        // 的路径给它写响应，而宿主没有任何人在等这一帧——那会打乱请求/响应配对。
+        // 本测试把该设计约束钉在方法表上，防止后来者顺手把它加进去。
+        assert_eq!(ModuleMethod::from_name(METHOD_EVENT_DISPATCH), None);
+        assert_ne!(METHOD_EVENT_DISPATCH, METHOD_INTENT_HANDLE);
+        assert_eq!(
+            ModuleMethod::from_name(METHOD_INTENT_HANDLE),
+            Some(ModuleMethod::IntentHandle)
+        );
+    }
+
+    #[test]
+    fn event_and_intent_dtos_round_trip_and_reject_unknown_fields() {
+        use super::{EventDispatchRequest, IntentHandleRequest, IntentHandleResponse};
+
+        let dispatch = EventDispatchRequest {
+            event: "version.installed".to_owned(),
+            payload: json!({ "slug": "1.21.0" }),
+        };
+        let decoded: EventDispatchRequest =
+            serde_json::from_slice(&serde_json::to_vec(&dispatch).unwrap()).unwrap();
+        assert_eq!(decoded, dispatch);
+
+        let handle = IntentHandleRequest {
+            intent: "game.list".to_owned(),
+            payload: json!({ "installed_only": true }),
+        };
+        let decoded: IntentHandleRequest =
+            serde_json::from_slice(&serde_json::to_vec(&handle).unwrap()).unwrap();
+        assert_eq!(decoded, handle);
+
+        let handled = IntentHandleResponse {
+            result: json!({ "games": [] }),
+        };
+        let decoded: IntentHandleResponse =
+            serde_json::from_slice(&serde_json::to_vec(&handled).unwrap()).unwrap();
+        assert_eq!(decoded, handled);
+
+        // 多余字段必须拒绝：拼错字段名不能变成静默成功。
+        assert!(serde_json::from_value::<EventDispatchRequest>(
+            json!({ "event": "a.b", "payload": null, "extra": 1 })
+        )
+        .is_err());
+        assert!(serde_json::from_value::<IntentHandleRequest>(
+            json!({ "intent": "a.b", "payload": null, "module_id": "forged" })
+        )
+        .is_err());
     }
 }

@@ -47,11 +47,20 @@ impl IntentRegistry {
     }
 
     /// 发起意图。未声明返回错误（调用方决定是否降级提示）。
+    ///
+    /// 处理者在**读锁之外**执行（先克隆 `Arc` 再放锁）。这一点不是优化而是正确性要求：
+    /// - 处理器可能是"转发给附加模块"的转发器，最长会等一个带超时的会话锁；持读锁
+    ///   等待会连带阻塞 `declare` / `withdraw`（写锁）；
+    /// - 处理器内部再声明意图（[`IntentRegistry::declare`] 需要写锁）会与自身持有的
+    ///   读锁形成自锁。
     pub fn request(&self, intent: &str, payload: Value) -> Result<Value, KernelError> {
-        let map = self.handlers.read();
-        let (_, handler) = map
-            .get(intent)
-            .ok_or_else(|| KernelError::Intent(format!("意图 `{intent}` 无模块声明")))?;
+        let handler: IntentHandler = {
+            let map = self.handlers.read();
+            let (_, handler) = map
+                .get(intent)
+                .ok_or_else(|| KernelError::Intent(format!("意图 `{intent}` 无模块声明")))?;
+            Arc::clone(handler)
+        };
         handler(payload)
     }
 
@@ -225,5 +234,40 @@ mod tests {
 
         reg.withdraw("addon");
         assert!(reg.declared().is_empty());
+    }
+
+    #[test]
+    fn a_handler_may_declare_another_intent_without_self_deadlocking() {
+        let reg = Arc::new(IntentRegistry::new());
+        let inner = Arc::clone(&reg);
+        reg.declare(
+            "outer.intent",
+            "home",
+            Arc::new(move |payload| {
+                // 处理者运行期间再声明一个意图：需要写锁。若处理者仍在读锁内执行，
+                // 这里会与自身持有的读锁自锁。
+                inner.declare("inner.intent", "home", Arc::new(|value| Ok(value)))?;
+                Ok(payload)
+            }),
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = {
+            let reg = Arc::clone(&reg);
+            std::thread::spawn(move || {
+                let ok = reg.request("outer.intent", json!({ "n": 1 })).is_ok();
+                let _ = sender.send(ok);
+            })
+        };
+
+        // 用超时而不是无限等待：一旦回归为自锁，测试要以"失败"收场而不是挂住整个套件。
+        let completed = receiver.recv_timeout(std::time::Duration::from_secs(5));
+        let _ = worker.join();
+
+        assert!(
+            completed.unwrap_or(false),
+            "处理者内部不得被自身持有的读锁挡住（5 秒内未完成即视为自锁）"
+        );
     }
 }

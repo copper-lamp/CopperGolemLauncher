@@ -9,6 +9,7 @@
 //! 从不接受插件自报身份。能力 RPC 的授权切片尚未落地，因此 [`deny_capability`]
 //! 一律显式拒绝（fail closed），不使用成功桩。
 
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -17,16 +18,24 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 
 use crate::ipc::{
-    negotiate_handshake, read_frame, validate_version, write_frame, HealthResponse,
-    InitializeResponse, InvokeResponse, IpcError, IpcMessage, IpcRequest, IpcResponse,
-    LifecycleAction, LifecycleResponse, ModuleLifecycleState, ModuleMethod, ModuleRequest,
-    METHOD_CAPABILITY_REQUEST, PROTOCOL_VERSION,
+    negotiate_handshake, read_frame, validate_version, write_frame, EventDispatchRequest,
+    HealthResponse, InitializeResponse, IntentHandleResponse, InvokeResponse, IpcError, IpcMessage,
+    IpcRequest, IpcResponse, LifecycleAction, LifecycleResponse, ModuleLifecycleState, ModuleMethod,
+    ModuleRequest, METHOD_CAPABILITY_REQUEST, METHOD_EVENT_DISPATCH, PLUGIN_COMMAND_EVENT_PREFIX,
+    PLUGIN_COMMAND_INTENT_PREFIX, PROTOCOL_VERSION,
 };
 use crate::module_id::is_valid_module_id;
 use crate::plugin_abi::{
     AbiBuffer, AbiBytes, PluginEntry, PluginInstance, ABI_STATUS_BUFFER_TOO_SMALL,
     ABI_STATUS_ERROR, ABI_STATUS_NOT_SUPPORTED, ABI_STATUS_OK, PLUGIN_ENTRY_SYMBOL,
 };
+
+/// 能力往返期间可暂存的宿主通知上限。
+///
+/// 有界是必须的：插件可能在一次 `invoke` 里长时间不返回，若此时事件洪峰无上限地
+/// 堆在队列里，helper 进程的内存就由宿主的事件速率决定。超限**丢弃并留 stderr**，
+/// 而不是无界增长或阻塞宿主（后者会把宿主线程也拖住）。
+const DEFERRED_NOTIFICATION_CAPACITY: usize = 256;
 
 /// helper 与宿主之间的帧通道。
 ///
@@ -90,6 +99,32 @@ struct HostContext {
     /// 与宿主的帧通道。`None` 表示本运行时没有接宿主（进程内单测），
     /// 此时能力请求一律拒绝而不是假装成功。
     channel: Option<Arc<Mutex<HelperChannel>>>,
+    /// 能力往返期间收到的宿主通知的延迟队列。
+    ///
+    /// 与 [`HelperRuntime`] 共享同一个 `Arc`：回调（插件调用栈内）入队，主循环排空。
+    deferred: Arc<Mutex<VecDeque<IpcRequest>>>,
+}
+
+/// 把能力往返期间收到的宿主通知入队，留待主循环排空。
+///
+/// 两个"显而易见的错法"都要避免：
+/// - **就地派发**会在插件调用栈内重入插件（同一个 `instance` 正被借用），也会在
+///   一次 invoke 里递归执行任意深的事件处理；
+/// - **直接丢弃**会让事件静默消失，且与「至少一次」的语义相悖。
+fn defer_host_notification(queue: &Mutex<VecDeque<IpcRequest>>, request: IpcRequest) {
+    let mut guard = match queue.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if guard.len() >= DEFERRED_NOTIFICATION_CAPACITY {
+        eprintln!(
+            "[helper] deferred notification queue is full ({DEFERRED_NOTIFICATION_CAPACITY}); \
+             dropping `{}`",
+            request.method
+        );
+        return;
+    }
+    guard.push_back(request);
 }
 
 /// 插件能力请求的宿主入口。
@@ -145,7 +180,12 @@ unsafe extern "C" fn plugin_capability(
     let response = loop {
         match guard.recv() {
             Ok(IpcMessage::Response(response)) => break response,
-            // 宿主在能力往返期间不应主动发请求；收到就拒绝，避免把乱序当成响应。
+            // 宿主在能力往返期间主动发来的只应是事件通知：入队延后，继续等响应。
+            // 这样事件推送不会打断一次正在进行的插件调用。
+            Ok(IpcMessage::Request(request)) if request.method == METHOD_EVENT_DISPATCH => {
+                defer_host_notification(&context.deferred, request);
+            }
+            // 其它宿主请求说明协议被违反（谁在等它、谁该回它都无从判断）：如实失败。
             Ok(IpcMessage::Request(request)) => {
                 eprintln!("[helper] host sent a request while a capability call was pending: {}", request.method);
                 return ABI_STATUS_ERROR;
@@ -219,6 +259,8 @@ pub struct HelperRuntime {
     plugin_path: PathBuf,
     /// 与宿主的帧通道；`None` 时能力请求被拒绝（进程内单测用）。
     channel: Option<Arc<Mutex<HelperChannel>>>,
+    /// 能力往返期间收到的宿主通知，由主循环经 [`HelperRuntime::drain_deferred`] 排空。
+    deferred: Arc<Mutex<VecDeque<IpcRequest>>>,
     /// 字段顺序即释放顺序：`instance` 必须先于 `library` 释放，
     /// 因为插件 `destroy` 回调的函数指针属于 `library` 的映像。
     instance: Option<PluginInstance<HostContext>>,
@@ -233,6 +275,7 @@ impl HelperRuntime {
             module_id: module_id.into(),
             plugin_path: plugin_path.into(),
             channel: None,
+            deferred: Arc::new(Mutex::new(VecDeque::new())),
             instance: None,
             library: None,
             handed_over: false,
@@ -295,6 +338,52 @@ impl HelperRuntime {
         }
     }
 
+    /// 处理一帧来自宿主的请求，返回需要写回宿主的响应。
+    ///
+    /// `event.dispatch` 是**单向通知**：派发给插件后返回 `None`。宿主没有任何人在
+    /// 等这一帧，多写一帧就会打乱它的请求 / 响应配对（见 `ipc::METHOD_EVENT_DISPATCH`）。
+    pub fn handle_host_frame(&mut self, request: IpcRequest) -> Option<IpcResponse> {
+        if request.method == METHOD_EVENT_DISPATCH {
+            self.dispatch_event(&request.params);
+            return None;
+        }
+        Some(self.handle(request))
+    }
+
+    /// 排空能力往返期间被延迟的宿主通知，交由主循环逐条处理。
+    pub fn drain_deferred(&mut self) -> Vec<IpcRequest> {
+        let mut guard = match self.deferred.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.drain(..).collect()
+    }
+
+    /// 把一条事件通知转成对插件的一次调用，返回是否成功交付。
+    ///
+    /// 事件名映射为插件命令 `event.<事件名>`（`event.` 是宿主保留前缀，模块不得
+    /// 注册同名命令）。这里**没有响应通道**：失败只能留痕，绝不能反过来向宿主写帧。
+    pub fn dispatch_event(&mut self, params: &Value) -> bool {
+        let decoded: EventDispatchRequest = match serde_json::from_value(params.clone()) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                eprintln!("[helper] malformed event.dispatch params: {error}");
+                return false;
+            }
+        };
+        let command = format!("{PLUGIN_COMMAND_EVENT_PREFIX}{}", decoded.event);
+        match self.call_plugin(&command, &decoded.payload) {
+            Ok(_) => true,
+            Err(failure) => {
+                eprintln!(
+                    "[helper] plugin failed to handle event `{}`: {}",
+                    decoded.event, failure.message
+                );
+                false
+            }
+        }
+    }
+
     fn dispatch(&mut self, request: ModuleRequest) -> Result<Value, Failure> {
         match request {
             ModuleRequest::Handshake(request) => {
@@ -329,21 +418,36 @@ impl HelperRuntime {
                 healthy: self.is_loaded(),
             }),
             ModuleRequest::Invoke(request) => {
-                let input = serde_json::to_vec(&request.args)
-                    .map_err(|error| Failure::new("encode_failed", error.to_string()))?;
-                let output = self
-                    .instance_mut()?
-                    .invoke(&request.command, &input)
-                    .map_err(|error| Failure::new("invoke_failed", error.to_string()))?;
-                let result: Value = serde_json::from_slice(&output).map_err(|error| {
-                    Failure::new(
-                        "invalid_plugin_output",
-                        format!("plugin returned non-JSON output: {error}"),
-                    )
-                })?;
+                let result = self.call_plugin(&request.command, &request.args)?;
                 encode(InvokeResponse { result })
             }
+            ModuleRequest::IntentHandle(request) => {
+                // 意图名进命令名，与事件派发同形：插件的两张路由表形态一致。
+                let command = format!("{PLUGIN_COMMAND_INTENT_PREFIX}{}", request.intent);
+                let result = self.call_plugin(&command, &request.payload)?;
+                encode(IntentHandleResponse { result })
+            }
         }
+    }
+
+    /// 调用插件命令并把其 JSON 输出解析回 [`Value`]。
+    ///
+    /// [`ModuleRequest::Invoke`] 与 [`ModuleRequest::IntentHandle`] 共用：两者只差
+    /// 命令名来源，任何一方能拿到的错误码（未初始化 / 插件失败 / 非法输出）另一方
+    /// 也必须能拿到，否则会出现"某个方向失败了却报成功"。
+    fn call_plugin(&mut self, command: &str, payload: &Value) -> Result<Value, Failure> {
+        let input = serde_json::to_vec(payload)
+            .map_err(|error| Failure::new("encode_failed", error.to_string()))?;
+        let output = self
+            .instance_mut()?
+            .invoke(command, &input)
+            .map_err(|error| Failure::new("invoke_failed", error.to_string()))?;
+        serde_json::from_slice(&output).map_err(|error| {
+            Failure::new(
+                "invalid_plugin_output",
+                format!("plugin returned non-JSON output: {error}"),
+            )
+        })
     }
 
     /// 加载插件产物并完成初始化。重复调用会被拒绝，避免同一会话加载两个实例。
@@ -377,6 +481,7 @@ impl HelperRuntime {
                 HostContext {
                     module_id: self.module_id.clone(),
                     channel: self.channel.clone(),
+                    deferred: Arc::clone(&self.deferred),
                 },
                 plugin_capability,
             )
@@ -613,5 +718,112 @@ mod tests {
         assert!(validate_module_id("../escape").is_err());
         assert!(validate_module_id("single").is_err());
         assert!(validate_module_id("copper-lamp.demo-tools").is_ok());
+    }
+
+    /// 构造一条宿主事件通知帧。
+    fn dispatch_frame(request_id: &str, event: &str) -> IpcRequest {
+        IpcRequest {
+            version: PROTOCOL_VERSION,
+            request_id: request_id.to_owned(),
+            method: METHOD_EVENT_DISPATCH.to_owned(),
+            params: json!({ "event": event, "payload": { "n": 1 } }),
+        }
+    }
+
+    #[test]
+    fn event_dispatch_is_answered_with_nothing() {
+        let mut runtime = runtime();
+        handshake(&mut runtime);
+
+        // 插件未加载时事件无处可派，但依然**不能回帧**：宿主没有人在等它，
+        // 多写一帧就会让宿主把这次通知误当成某个 invoke 的响应。
+        assert!(runtime.handle_host_frame(dispatch_frame("push-0", "demo.activity")).is_none());
+
+        // 普通请求仍然必须回带相同 request id 的响应。
+        let response = runtime
+            .handle_host_frame(request("req-2", ModuleMethod::Health, json!({})))
+            .expect("a request/response method must always produce a response");
+        assert_eq!(response.request_id, "req-2");
+    }
+
+    #[test]
+    fn malformed_event_dispatch_is_dropped_without_a_response() {
+        let mut runtime = runtime();
+        handshake(&mut runtime);
+
+        let frame = IpcRequest {
+            version: PROTOCOL_VERSION,
+            request_id: "push-1".to_owned(),
+            method: METHOD_EVENT_DISPATCH.to_owned(),
+            params: json!({ "event": "demo.activity" }), // 缺 payload
+        };
+        assert!(runtime.handle_host_frame(frame).is_none());
+    }
+
+    #[test]
+    fn deferred_notifications_are_bounded_and_drained_in_order() {
+        let queue = Mutex::new(VecDeque::new());
+        for index in 0..(DEFERRED_NOTIFICATION_CAPACITY + 8) {
+            defer_host_notification(&queue, dispatch_frame(&format!("push-{index}"), "demo.activity"));
+        }
+
+        let drained = {
+            let mut guard = queue.lock().unwrap();
+            guard.drain(..).collect::<Vec<_>>()
+        };
+        // 有界：超出容量的部分被丢弃而不是无界增长。
+        assert_eq!(drained.len(), DEFERRED_NOTIFICATION_CAPACITY);
+        // 顺序：先到的先处理，事件不会被打乱。
+        assert_eq!(drained[0].request_id, "push-0");
+        assert_eq!(
+            drained[DEFERRED_NOTIFICATION_CAPACITY - 1].request_id,
+            format!("push-{}", DEFERRED_NOTIFICATION_CAPACITY - 1)
+        );
+        assert!(queue.lock().unwrap().is_empty(), "排空后队列必须为空");
+    }
+
+    #[test]
+    fn runtime_drains_notifications_deferred_through_its_own_queue() {
+        let mut runtime = runtime();
+        handshake(&mut runtime);
+
+        // 直接写入运行时持有的队列（生产路径里由能力回调写入同一份）。
+        defer_host_notification(&runtime.deferred, dispatch_frame("push-7", "demo.activity"));
+
+        let drained = runtime.drain_deferred();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].request_id, "push-7");
+        // 排空后不再重复交付。
+        assert!(runtime.drain_deferred().is_empty());
+    }
+
+    #[test]
+    fn intent_handle_before_initialize_reports_not_initialized() {
+        let mut runtime = runtime();
+        handshake(&mut runtime);
+
+        let response = runtime.handle(request(
+            "req-9",
+            ModuleMethod::IntentHandle,
+            json!({ "intent": "game.list", "payload": {} }),
+        ));
+
+        // 意图转发是请求 / 响应路径：失败必须如实回带错误码，而不是回一个空结果。
+        let error = response.error.expect("意图转发失败必须回带错误");
+        assert_eq!(error.code, "not_initialized");
+    }
+
+    #[test]
+    fn intent_handle_request_shape_is_enforced() {
+        let mut runtime = runtime();
+        handshake(&mut runtime);
+
+        let response = runtime.handle(request(
+            "req-9",
+            ModuleMethod::IntentHandle,
+            json!({ "intent": "game.list" }), // 缺 payload
+        ));
+
+        assert_eq!(response.error.unwrap().code, "invalid_params");
     }
 }

@@ -7,13 +7,16 @@
 //! 每个测试使用独立命名的产物文件：测试是并行执行的，共享同一路径会互相删除。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use copper_module_abi::helper_client::{
-    CapabilityDispatcher, CapabilityError, HelperError, HelperProcess,
+    CapabilityDispatcher, CapabilityError, HelperError, HelperProcess, HelperPushHandle, PushError,
 };
-use copper_module_abi::ipc::{CapabilityRequest, ModuleMethod, PROTOCOL_VERSION};
+use copper_module_abi::ipc::{
+    CapabilityRequest, ModuleMethod, METHOD_EVENT_DISPATCH, PROTOCOL_VERSION,
+};
 use copper_module_abi::plugin_abi::{ABI_STATUS_NOT_SUPPORTED, ABI_STATUS_OK};
 use serde_json::{json, Value};
 
@@ -331,4 +334,164 @@ fn capability_requests_round_trip_through_the_host() {
             .as_slice(),
         &[MODULE_ID.to_owned()]
     );
+}
+
+/// 启动一个已握手、已初始化并在运行的夹具插件会话。
+fn started_fixture_helper() -> HelperProcess {
+    let plugin = fixture_plugin();
+    let mut helper = spawned(&plugin);
+    helper.handshake(TIMEOUT).unwrap();
+    helper.initialize(&json!({}), TIMEOUT).unwrap();
+    helper.start(TIMEOUT).unwrap();
+    helper
+}
+
+#[test]
+fn pushed_events_reach_the_plugin_without_disturbing_request_pairing() {
+    let mut helper = started_fixture_helper();
+    let push = helper.push_handle();
+
+    push.notify(
+        METHOD_EVENT_DISPATCH,
+        json!({ "event": "demo.activity", "payload": { "n": 1 } }),
+    )
+    .unwrap();
+    push.notify(
+        METHOD_EVENT_DISPATCH,
+        json!({ "event": "version.installed", "payload": { "n": 2 } }),
+    )
+    .unwrap();
+
+    // 事件通知**没有响应帧**。若 helper 回了帧，这里会先读到那一帧，于是 request id
+    // 不匹配、本次调用失败——这正是本测试要守住的配对不变式。
+    let state = helper.invoke("demo.state", &json!({}), TIMEOUT).unwrap();
+    let received = state["received"]
+        .as_array()
+        .expect("demo.state 必须回报派发记账数组")
+        .clone();
+    assert_eq!(received.len(), 2, "两条事件都必须到达插件，实际：{received:?}");
+    assert_eq!(received[0]["command"], json!("event.demo.activity"));
+    assert_eq!(received[0]["payload"]["n"], json!(1));
+    assert_eq!(received[1]["command"], json!("event.version.installed"));
+    assert_eq!(received[1]["payload"]["n"], json!(2));
+
+    assert!(helper.shutdown(TIMEOUT).unwrap());
+}
+
+#[test]
+fn pushing_to_a_stopped_helper_reports_a_closed_channel() {
+    let mut helper = started_fixture_helper();
+    let push = helper.push_handle();
+
+    assert!(helper.shutdown(TIMEOUT).unwrap());
+
+    let error = push
+        .notify(
+            METHOD_EVENT_DISPATCH,
+            json!({ "event": "demo.activity", "payload": null }),
+        )
+        .expect_err("向已停机 helper 推送必须报错，不能静默丢弃");
+    assert!(matches!(error, PushError::Closed), "got {error}");
+}
+
+/// 在能力往返期间顺手推一条事件：验证 helper 把它**延后**而不是打断能力调用。
+struct PushingDispatcher {
+    push: Arc<OnceLock<HelperPushHandle>>,
+    pushed: AtomicBool,
+    failure: Mutex<Option<String>>,
+}
+
+impl PushingDispatcher {
+    fn record_failure(&self, message: String) {
+        *self.failure.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message);
+    }
+}
+
+impl CapabilityDispatcher for PushingDispatcher {
+    fn dispatch(
+        &self,
+        module_id: &str,
+        request: CapabilityRequest,
+    ) -> Result<Value, CapabilityError> {
+        // 只在第一次派发时推：模拟"插件正卡在一次能力往返里，宿主这边又有事件发生"。
+        if !self.pushed.swap(true, Ordering::SeqCst) {
+            match self.push.get() {
+                Some(handle) => {
+                    if let Err(error) = handle.notify(
+                        METHOD_EVENT_DISPATCH,
+                        json!({ "event": "demo.activity", "payload": { "during": "capability" } }),
+                    ) {
+                        self.record_failure(error.to_string());
+                    }
+                }
+                None => self.record_failure(
+                    "push handle was not installed before the first dispatch".to_owned(),
+                ),
+            }
+        }
+        Ok(json!({ "echoed": request.capability, "module": module_id }))
+    }
+}
+
+#[test]
+fn an_event_pushed_during_a_capability_round_trip_is_deferred_not_dropped() {
+    let push_slot: Arc<OnceLock<HelperPushHandle>> = Arc::new(OnceLock::new());
+    let dispatcher = Arc::new(PushingDispatcher {
+        push: Arc::clone(&push_slot),
+        pushed: AtomicBool::new(false),
+        failure: Mutex::new(None),
+    });
+
+    let plugin = fixture_plugin();
+    let mut helper = HelperProcess::spawn_with_dispatcher(
+        &helper_program(),
+        MODULE_ID,
+        &plugin,
+        Arc::clone(&dispatcher) as Arc<dyn CapabilityDispatcher>,
+    )
+    .expect("helper should spawn");
+    push_slot
+        .set(helper.push_handle())
+        .ok()
+        .expect("push slot must be empty before installation");
+
+    helper.handshake(TIMEOUT).unwrap();
+    helper.initialize(&json!({}), TIMEOUT).unwrap();
+    helper.start(TIMEOUT).unwrap();
+
+    // 这次 invoke 会在插件内发起能力请求，宿主在写回响应**之前**先把一条事件推进
+    // 管道——于是 helper 在能力往返窗口内读到它。
+    let probe = helper
+        .invoke("demo.probe_capability", &json!({}), TIMEOUT)
+        .unwrap();
+
+    // 窗口内的事件若被打断处理，这次能力调用会以 ABI_STATUS_ERROR 收场。
+    assert_eq!(
+        probe["capability_status"],
+        json!(ABI_STATUS_OK),
+        "能力往返不得被事件推送打断"
+    );
+    // 先取出再加断言：同一个 std::sync::Mutex 不能在断言表达式与消息里重复加锁。
+    let push_failure = dispatcher
+        .failure
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    assert!(
+        push_failure.is_none(),
+        "宿主在能力往返期间推送失败：{push_failure:?}"
+    );
+
+    // 被延后的事件必须在当前请求处理完成后补派给插件，而不是丢弃。
+    let state = helper.invoke("demo.state", &json!({}), TIMEOUT).unwrap();
+    let received = state["received"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        received.len(),
+        1,
+        "窗口内的事件必须被延后补派，实际：{received:?}"
+    );
+    assert_eq!(received[0]["command"], json!("event.demo.activity"));
+    assert_eq!(received[0]["payload"]["during"], json!("capability"));
+
+    assert!(helper.shutdown(TIMEOUT).unwrap());
 }

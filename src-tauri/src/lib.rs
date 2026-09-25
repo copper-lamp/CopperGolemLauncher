@@ -259,11 +259,16 @@ pub fn run() {
                 .modules()
                 .register(Arc::new(modules::game_download::GameDownloadModule::default()));
 
-            // 附加模块：扫描 `<data_dir>/modules`，逐个校验清单并同进程装载动态库。
+            // 附加模块：扫描 `<data_dir>/modules`，逐个校验清单并装载为受监管子进程。
             // 必须在 `boot()` **之前**完成：装载进来的模块与内置模块一并由 boot 驱动
             // 生命周期；单个失败不影响其它模块（见 loader::ModuleLoader::load_installed）。
+            // 装载后端需要注册表（能力派发）、意图注册表、沙箱（订阅事件前逐次授权）
+            // 与事件总线（推送桥）——四者都从已建好的内核上下文取同一份引用。
             let loader = ModuleLoader::new(Arc::new(HelperBackend::new(
                 modules_for_addons,
+                Arc::clone(kernel.intents()),
+                Arc::clone(kernel.sandbox()),
+                Arc::clone(kernel.events()),
                 paths_for_addons.data_dir().clone(),
             )));
             let reports = loader.load_installed(&kernel);
