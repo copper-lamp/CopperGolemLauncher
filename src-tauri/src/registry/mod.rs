@@ -14,6 +14,7 @@ pub mod events;
 pub mod frontend;
 pub mod install;
 pub mod intents;
+pub mod ipc;
 pub mod loader;
 pub mod manifest;
 pub mod module_entry;

@@ -808,16 +808,20 @@ async fn clear_readonly_part(path: &Path) -> std::io::Result<()> {
                 .chain(std::iter::once(0))
                 .collect::<Vec<_>>();
             let attributes = unsafe {
-                windows::Win32::Storage::FileSystem::GetFileAttributesW(path.as_ptr())
+                windows::Win32::Storage::FileSystem::GetFileAttributesW(
+                    windows::core::PCWSTR(path.as_ptr()),
+                )
             };
             if attributes == u32::MAX {
                 return Err(std::io::Error::last_os_error());
             }
-            let writable = attributes
-                & !windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY;
+            let writable = windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(
+                attributes
+                    & !windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY.0,
+            );
             unsafe {
                 windows::Win32::Storage::FileSystem::SetFileAttributesW(
-                    path.as_ptr(),
+                    windows::core::PCWSTR(path.as_ptr()),
                     writable,
                 )
             }
