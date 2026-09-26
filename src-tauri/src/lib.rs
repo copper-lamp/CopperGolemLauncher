@@ -132,6 +132,7 @@ use services::account::AccountService;
 use services::database::{CORE_MIGRATIONS, DatabaseService};
 use services::download::DownloadService;
 use services::i18n::I18nService;
+use services::llm::LlmConfigService;
 use services::paths::Paths;
 use services::registry::RegistryService;
 use services::settings::{defaults as settings_defaults, SettingsService};
@@ -215,6 +216,11 @@ pub fn run() {
                     platform::as_secret(&backends),
                     runtime.clone(),
                 ));
+            // LLM 配置：非敏感项走设置，密钥走密钥环（内核唯一的 AI 接入读取点）。
+            let llm = Arc::new(LlmConfigService::new(
+                settings.clone(),
+                platform::as_secret(&backends),
+            ));
             let updater = Arc::new(UpdaterService::new(
                 settings.clone(),
                 download.clone(),
@@ -244,6 +250,7 @@ pub fn run() {
                 tips,
                 download,
                 account,
+                llm,
                 updater,
                 events,
                 intents,
@@ -310,6 +317,10 @@ pub fn run() {
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::settings::settings_set_many,
+            commands::llm::llm_status,
+            commands::llm::llm_save_config,
+            commands::llm::llm_set_api_key,
+            commands::llm::llm_clear_api_key,
             commands::i18n::i18n_catalog,
             commands::i18n::i18n_supported_locales,
             commands::i18n::i18n_current_locale,

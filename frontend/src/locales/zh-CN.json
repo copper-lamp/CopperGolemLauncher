@@ -63,7 +63,20 @@
       "download_history_70": "最近 70 条",
       "download_history_100": "最近 100 条",
       "download_history_150": "最近 150 条",
-      "download_history_200": "最近 200 条"
+      "download_history_200": "最近 200 条",
+      "llm": "LLM 配置",
+      "llm_hint": "内核只保存以下三项，供启动器内所有 AI 服务读取；接口地址与具体厂商的匹配由 AI 模块处理",
+      "llm_base_url": "接口地址",
+      "llm_base_url_placeholder": "https://…/v1",
+      "llm_model": "模型名称",
+      "llm_model_placeholder": "例如：gpt-4o-mini",
+      "llm_api_key": "API Key",
+      "llm_api_key_hint": "经系统密钥环加密保存，永不显示明文",
+      "llm_save": "保存",
+      "llm_clear": "清除密钥",
+      "llm_configured": "已配置",
+      "llm_not_configured": "未配置",
+      "llm_saved": "LLM 配置已保存"
     },
     "version": {
       "game_dir": "游戏目录",

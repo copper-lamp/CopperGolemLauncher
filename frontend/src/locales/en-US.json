@@ -63,7 +63,20 @@
       "download_history_70": "Latest 70",
       "download_history_100": "Latest 100",
       "download_history_150": "Latest 150",
-      "download_history_200": "Latest 200"
+      "download_history_200": "Latest 200",
+      "llm": "LLM",
+      "llm_hint": "The kernel stores only these three fields for all AI services in the launcher; matching the base URL to a specific provider is handled by the AI module",
+      "llm_base_url": "Base URL",
+      "llm_base_url_placeholder": "https://…/v1",
+      "llm_model": "Model",
+      "llm_model_placeholder": "e.g. gpt-4o-mini",
+      "llm_api_key": "API Key",
+      "llm_api_key_hint": "Stored encrypted in the system keyring; the plaintext is never shown",
+      "llm_save": "Save",
+      "llm_clear": "Clear key",
+      "llm_configured": "Configured",
+      "llm_not_configured": "Not configured",
+      "llm_saved": "LLM settings saved"
     },
     "version": {
       "game_dir": "Game directory",

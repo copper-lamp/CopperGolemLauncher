@@ -12,6 +12,7 @@ pub mod home;
 pub mod i18n;
 pub mod intents;
 pub mod kernel;
+pub mod llm;
 pub mod modules;
 pub mod registry;
 pub mod settings;

@@ -15,6 +15,7 @@ use crate::services::account::AccountService;
 use crate::services::database::DatabaseService;
 use crate::services::download::DownloadService;
 use crate::services::i18n::I18nService;
+use crate::services::llm::LlmConfigService;
 use crate::services::paths::Paths;
 use crate::services::registry::RegistryService;
 use crate::services::settings::SettingsService;
@@ -35,6 +36,8 @@ pub struct KernelContext {
     tips: Arc<TipsService>,
     download: Arc<DownloadService>,
     account: Arc<AccountService>,
+    /// LLM 配置（内核内任何 AI 相关服务的单一访问器）。
+    llm: Arc<LlmConfigService>,
     updater: Arc<UpdaterService>,
     events: Arc<EventBus>,
     intents: Arc<IntentRegistry>,
@@ -58,6 +61,7 @@ impl KernelContext {
         tips: Arc<TipsService>,
         download: Arc<DownloadService>,
         account: Arc<AccountService>,
+        llm: Arc<LlmConfigService>,
         updater: Arc<UpdaterService>,
         events: Arc<EventBus>,
         intents: Arc<IntentRegistry>,
@@ -76,6 +80,7 @@ impl KernelContext {
             tips,
             download,
             account,
+            llm,
             updater,
             events,
             intents,
@@ -131,6 +136,11 @@ impl KernelContext {
 
     pub fn account(&self) -> &Arc<AccountService> {
         &self.account
+    }
+
+    /// LLM 配置（内核内任何 AI 相关服务的单一访问器）。
+    pub fn llm(&self) -> &Arc<LlmConfigService> {
+        &self.llm
     }
 
     pub fn updater(&self) -> &Arc<UpdaterService> {

@@ -1,4 +1,4 @@
-//! 内核能力服务：路径、数据库、设置、i18n、主题、下载队列、账户、更新、商店授权、提示。
+//! 内核能力服务：路径、数据库、设置、i18n、LLM 配置、主题、下载队列、账户、更新、商店授权、提示。
 //!
 //! 服务之间允许有限依赖（如设置被主题 / i18n 依赖，提示依赖 i18n），
 //! 但不允许反向依赖命令层。
@@ -8,6 +8,7 @@ pub mod database;
 pub mod download;
 pub mod http_client;
 pub mod i18n;
+pub mod llm;
 pub mod paths;
 pub mod registry;
 pub mod settings;
