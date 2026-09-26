@@ -174,6 +174,8 @@ struct File {
 struct FileHash {
     #[serde(default)]
     value: Option<String>,
+    #[serde(default)]
+    algo: Option<i64>,
 }
 
 /// 依赖项（relationType：3=required，2=optional）。
@@ -655,7 +657,7 @@ fn file_to_model(f: &File) -> ContentFile {
     let sha256 = f
         .hashes
         .iter()
-        .find(|h| h.value.is_some())
+        .find(|h| h.algo == Some(3))
         .and_then(|h| h.value.clone());
 
     ContentFile {
@@ -816,6 +818,18 @@ mod tests {
     }
 
     #[test]
+    fn file_to_model_skips_non_sha256_hashes() {
+        let model = file_to_model(&File {
+            hashes: vec![FileHash {
+                value: Some("md5-value".into()),
+                algo: Some(2),
+            }],
+            ..empty_file()
+        });
+        assert_eq!(model.sha256, None);
+    }
+
+    #[test]
     fn file_to_model_maps_dependencies_and_hash() {
         let f = File {
             id: 55,
@@ -824,9 +838,16 @@ mod tests {
             download_url: Some("http://d".into()),
             release_type: 3,
             file_length: Some(2048),
-            hashes: vec![FileHash {
-                value: Some("deadbeef".into()),
-            }],
+            hashes: vec![
+                FileHash {
+                    value: Some("md5".into()),
+                    algo: Some(2),
+                },
+                FileHash {
+                    value: Some("deadbeef".into()),
+                    algo: Some(3),
+                },
+            ],
             game_versions: vec!["1.21".into(), "1.21".into()],
             dependencies: vec![
                 Dependency {
@@ -848,6 +869,21 @@ mod tests {
         assert_eq!(model.game_versions[0], "1.21");
         assert_eq!(model.dependencies.len(), 1);
         assert_eq!(model.dependencies[0].ref_id, "cf:77");
+    }
+
+    fn empty_file() -> File {
+        File {
+            id: 0,
+            display_name: None,
+            file_name: "file.mcpack".into(),
+            download_url: None,
+            release_type: 1,
+            file_length: None,
+            hashes: vec![],
+            game_versions: vec![],
+            dependencies: vec![],
+            mod_id: 0,
+        }
     }
 
     fn empty_mod() -> ModData {

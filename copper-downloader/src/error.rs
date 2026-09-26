@@ -43,7 +43,9 @@ impl DownloadError {
     /// 立即上报，由用户处理占用/权限后再重试。
     pub fn is_transient(&self) -> bool {
         match self {
-            DownloadError::Http(_) | DownloadError::HttpStatus(500..=599) => true,
+            DownloadError::Http(_)
+            | DownloadError::HttpStatus(500..=599)
+            | DownloadError::ChecksumMismatch { .. } => true,
             DownloadError::Io(e) => !is_fatal_io_kind(e.kind()),
             _ => false,
         }

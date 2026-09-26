@@ -29,6 +29,21 @@ use self::model::{
 
 pub use self::lip_install::LipInstallOutcome;
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentDownloadRecord {
+    pub id: String,
+    pub source: String,
+    pub content_type: String,
+    pub name: String,
+    pub version: String,
+    pub state: String,
+    pub dest: Option<String>,
+    pub task_id: Option<u64>,
+    pub error: Option<String>,
+    pub updated_at: i64,
+}
+
 pub mod curseforge;
 pub mod http;
 pub mod lip;
@@ -385,7 +400,8 @@ pub struct LipEnv {
 
 // ---------------------------------------------------------------- 本地下载记录
 
-const MIGRATION: crate::services::database::Migration = crate::services::database::Migration {
+const MIGRATIONS: &[crate::services::database::Migration] = &[
+crate::services::database::Migration {
     version: 1,
     name: "content_download_record",
     sql: "CREATE TABLE IF NOT EXISTS module_content_download_record (
@@ -401,11 +417,48 @@ const MIGRATION: crate::services::database::Migration = crate::services::databas
           );
           CREATE INDEX IF NOT EXISTS idx_content_download_record_updated
             ON module_content_download_record(updated_at);",
-};
+},
+crate::services::database::Migration {
+    version: 2,
+    name: "content_download_record_error",
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN error TEXT;",
+}
+];
+
+pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, KernelError> {
+    kernel.db().with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, source, content_type, name, version, state, dest, task_id, error, updated_at
+             FROM module_content_download_record ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ContentDownloadRecord {
+                id: row.get(0)?,
+                source: row.get(1)?,
+                content_type: row.get(2)?,
+                name: row.get(3)?,
+                version: row.get(4)?,
+                state: row.get(5)?,
+                dest: row.get(6)?,
+                task_id: row.get(7)?,
+                error: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    })
+}
+
+pub fn remove_record(kernel: &KernelContext, id: &str) -> Result<(), KernelError> {
+    kernel.db().with_conn(|conn| {
+        conn.execute("DELETE FROM module_content_download_record WHERE id = ?1", [id])?;
+        Ok(())
+    })
+}
 
 fn record_download(
     kernel: &KernelContext,
-    item: &model::ContentItem,
+    item: &ContentItem,
     version: &str,
     dest: &str,
     task_id: u64,
@@ -645,7 +698,7 @@ impl Module for ContentDownloadModule {
         // 数据库 schema（记录已下载项）。
         kernel
             .db()
-            .migrate_scope("module:content-download", &[MIGRATION])?;
+            .migrate_scope("module:content-download", MIGRATIONS)?;
 
         // i18n：注册模块语言包（源在前端同模块目录）。
         kernel.i18n().register_module_pack(

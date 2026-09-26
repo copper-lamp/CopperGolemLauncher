@@ -7,7 +7,7 @@ use tauri::State;
 use crate::commands::into_command_error;
 use crate::error::CommandResult;
 use crate::modules::content_download::model::{ContentDetail, ContentListPage, ContentListQuery};
-use crate::modules::content_download::{ContentDownloadModule, LipEnv, LipInstallOutcome};
+use crate::modules::content_download::{ContentDownloadModule, ContentDownloadRecord, LipEnv, LipInstallOutcome};
 use crate::state::KernelContext;
 
 /// 列表：按来源 / 类型过滤 + 关键字搜索 + 分页。
@@ -72,6 +72,22 @@ pub async fn content_download_download(
 ) -> CommandResult<u64> {
     ContentDownloadModule::download(kernel.inner(), &id, &file_id)
         .await
+        .map_err(into_command_error)
+}
+
+#[tauri::command]
+pub fn content_download_records(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<ContentDownloadRecord>> {
+    crate::modules::content_download::records(kernel.inner()).map_err(into_command_error)
+}
+
+#[tauri::command]
+pub fn content_download_record_remove(
+    kernel: State<'_, KernelContext>,
+    id: String,
+) -> CommandResult<()> {
+    crate::modules::content_download::remove_record(kernel.inner(), &id)
         .map_err(into_command_error)
 }
 

@@ -1,62 +1,71 @@
-//! LLM 配置命令：状态查询、保存非敏感配置、写入 / 清除 API Key。
+//! LLM 模型表命令：列出、增删改模型，写入 / 清除单条模型的 API Key。
 //!
-//! 密钥绝不回显：`llm_status` 只回「是否已配置」，密钥走独立命令、不进普通设置写入。
+//! 密钥绝不回显：`llm_list_models` 只回「是否已配置」，密钥走独立命令、不进普通
+//! 设置写入。内核不标记「默认 / 当前」模型——调用方按 id 指定要用的条目。
 
-use serde::Serialize;
 use tauri::State;
 
 use crate::commands::into_command_error;
 use crate::error::CommandResult;
-use crate::services::llm::LlmConfig;
+use crate::services::llm::LlmModelRow;
 use crate::state::KernelContext;
 
-/// LLM 配置状态（**不含密钥本体**）。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct LlmStatus {
-    pub base_url: String,
-    pub model: String,
-    pub api_key_configured: bool,
+/// 列出模型表（**不含密钥**，仅标注每条是否已配置）。
+#[tauri::command]
+pub fn llm_list_models(kernel: State<'_, KernelContext>) -> CommandResult<Vec<LlmModelRow>> {
+    Ok(kernel.llm().rows())
 }
 
-/// 读取 LLM 配置状态（密钥只回「是否已配置」）。
+/// 新增模型，返回新生成的 id。
 #[tauri::command]
-pub fn llm_status(kernel: State<'_, KernelContext>) -> CommandResult<LlmStatus> {
-    let config = kernel.llm().config();
-    Ok(LlmStatus {
-        base_url: config.base_url,
-        model: config.model,
-        api_key_configured: kernel.llm().api_key_configured(),
-    })
-}
-
-/// 保存非敏感配置（base URL / 模型名）；密钥走 `llm_set_api_key`。
-#[tauri::command]
-pub fn llm_save_config(
+pub fn llm_add_model(
     kernel: State<'_, KernelContext>,
+    display_name: String,
+    base_url: String,
+    model: String,
+) -> CommandResult<String> {
+    kernel
+        .llm()
+        .add(display_name, base_url, model)
+        .map_err(into_command_error)
+}
+
+/// 按 id 更新模型。
+#[tauri::command]
+pub fn llm_update_model(
+    kernel: State<'_, KernelContext>,
+    id: String,
+    display_name: String,
     base_url: String,
     model: String,
 ) -> CommandResult<()> {
     kernel
         .llm()
-        .save_config(&LlmConfig { base_url, model })
+        .update(&id, display_name, base_url, model)
         .map_err(into_command_error)
 }
 
-/// 写入 API Key（不回显）。
+/// 按 id 删除模型（同时清除其密钥）。
 #[tauri::command]
-pub fn llm_set_api_key(kernel: State<'_, KernelContext>, api_key: String) -> CommandResult<()> {
+pub fn llm_remove_model(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    kernel.llm().remove(&id).map_err(into_command_error)
+}
+
+/// 写入某条模型的 API Key（不回显）。
+#[tauri::command]
+pub fn llm_set_api_key(
+    kernel: State<'_, KernelContext>,
+    id: String,
+    api_key: String,
+) -> CommandResult<()> {
     kernel
         .llm()
-        .set_api_key(&api_key)
+        .set_api_key(&id, &api_key)
         .map_err(into_command_error)
 }
 
-/// 清除 API Key（幂等）。
+/// 清除某条模型的 API Key。
 #[tauri::command]
-pub fn llm_clear_api_key(kernel: State<'_, KernelContext>) -> CommandResult<()> {
-    kernel
-        .llm()
-        .clear_api_key()
-        .map_err(into_command_error)
+pub fn llm_clear_api_key(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    kernel.llm().clear_api_key(&id).map_err(into_command_error)
 }

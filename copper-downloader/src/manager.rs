@@ -541,6 +541,10 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
             }
             Err(e) if e.is_user_interrupt() => break Err(e),
             Err(e) if e.is_transient() && attempt < attempts => {
+                if matches!(e, DownloadError::ChecksumMismatch { .. }) {
+                    let _ = tokio::fs::remove_file(&state.part_path).await;
+                    state.downloaded_bytes.store(0, Ordering::Relaxed);
+                }
                 attempt += 1;
                 state.retry_count.store(attempt, Ordering::Relaxed);
                 state.set_error(format!("{e}（第 {attempt} 次重试）"));
@@ -575,7 +579,6 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
 
     match outcome {
         Ok(_) => {
-            // 校验。
             if let Some(expected) = &state.options.expected_sha256 {
                 match hash_file(&state.part_path).await {
                     Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
@@ -584,6 +587,17 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
                             expected: expected.clone(),
                             actual,
                         };
+                        if attempt < attempts {
+                            let _ = tokio::fs::remove_file(&state.part_path).await;
+                            state.downloaded_bytes.store(0, Ordering::Relaxed);
+                            state.retry_count.store(attempt + 1, Ordering::Relaxed);
+                            state.set_error(format!("{err}（第 {} 次重试）", attempt + 1));
+                            let delay = Duration::from_millis(
+                                (BACKOFF_BASE_MS * 2u64.pow(attempt)).min(BACKOFF_CAP_MS),
+                            );
+                            tokio::time::sleep(delay).await;
+                            return Box::pin(run_task(inner, state)).await;
+                        }
                         state.set_error(err.to_string());
                         state.set_status(DownloadStatus::Failed);
                         inner.emit_status(&state);

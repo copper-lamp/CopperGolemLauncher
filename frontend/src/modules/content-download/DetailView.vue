@@ -27,6 +27,7 @@ import {
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
+import { homeVersionsList, type VersionView } from "../../api/home";
 import TipsRotator from "../../components/TipsRotator.vue";
 import ContentBadge from "./ContentBadge.vue";
 import {
@@ -65,6 +66,7 @@ const settings = useSettings();
 const detail = ref<ContentDetail | null>(null);
 const readmeHtml = ref<string | null>(null);
 const readmeLoading = ref(false);
+const readmeExpanded = ref(false);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const lipEnv = ref<LipEnv | null>(null);
@@ -80,9 +82,16 @@ const installRunning = ref(false);
 const isLip = computed(() => detail.value?.item.source === "lip");
 
 /** lip 安装目标版本（`launch.default_version`，与后端解析口径一致）。 */
-const targetVersion = computed(() =>
-  settings.get<string>("launch.default_version", "").trim(),
-);
+const targetVersion = ref("");
+const targetFolder = ref("");
+
+async function resolveTargetVersion() {
+  const selected = settings.get<string>("launch.default_version", "").trim();
+  const versions = await homeVersionsList();
+  const current = versions.find((version: VersionView) => version.name === selected);
+  targetVersion.value = current?.name ?? "";
+  targetFolder.value = current?.folder ?? "";
+}
 /** 弹窗展示的目标描述：无默认版本时明确提示，避免「默认版本目录」这种含糊说法。 */
 const targetLabel = computed(
   () => targetVersion.value || t(`${KB}.noVersionTarget`),
@@ -187,6 +196,7 @@ async function load() {
 /** 拉取并渲染 readme：CF 与 lip 都支持，格式按来源区分。 */
 async function loadReadme(id: string, data: ContentDetail) {
   readmeLoading.value = true;
+  readmeExpanded.value = false;
   try {
     const raw = await contentDownloadReadme(id, locale.value);
     readmeHtml.value = raw
@@ -276,9 +286,19 @@ async function downloadFile(file: ContentFile, origin?: { x: number; y: number }
 }
 
 /** 打开 lip 安装确认弹窗。 */
-function openInstall(file: ContentFile) {
+async function openInstall(file: ContentFile) {
   if (!lipEnv.value?.lipAvailable) {
     showToast(t(`${KB}.lipNotFound`), "error");
+    return;
+  }
+  try {
+    await resolveTargetVersion();
+  } catch {
+    showToast(t(`${KB}.lipErrTargetNotFound`), "error");
+    return;
+  }
+  if (!targetVersion.value || !targetFolder.value) {
+    showToast(t(`${KB}.lipErrTargetNotFound`), "error");
     return;
   }
   installFile.value = file;
@@ -294,6 +314,7 @@ async function confirmInstall() {
       detail.value.item.id,
       installFile.value.version,
       installFile.value.variant ?? undefined,
+      targetFolder.value,
     );
     if (!outcome.success) {
       showToast(lipErrorMessage(outcome), "error");
@@ -405,7 +426,19 @@ onUnmounted(resetCrumbTitle);
             <LoaderCircle :size="15" class="spin" />
             {{ t(`${KB}.docLoading`) }}
           </div>
-          <div v-else-if="readmeHtml" class="cd-doc" v-html="readmeHtml" />
+          <template v-else-if="readmeHtml">
+            <div class="cd-doc-frame" :class="{ 'is-expanded': readmeExpanded }">
+              <div class="cd-doc" v-html="readmeHtml" />
+            </div>
+            <button
+              class="cd-doc-toggle"
+              type="button"
+              :aria-expanded="readmeExpanded"
+              @click="readmeExpanded = !readmeExpanded"
+            >
+              {{ readmeExpanded ? t(`${KB}.collapse`) : t(`${KB}.expand`) }}
+            </button>
+          </template>
           <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
         </div>
       </section>
@@ -677,14 +710,75 @@ onUnmounted(resetCrumbTitle);
   font-size: var(--copper-font-size-sm);
 }
 
-.cd-doc {
-  /* 阅读型排版：限制行宽并使用更松的行高，保证长文档可读性。 */
+.cd-doc-frame {
+  position: relative;
+  width: min(100%, 74ch);
   max-width: 74ch;
+  margin-inline: auto;
+  max-height: 8.75em;
+  overflow: hidden;
+}
+
+.cd-doc-frame:not(.is-expanded)::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3.5em;
+  background: linear-gradient(to bottom, transparent, var(--copper-surface));
+  content: "";
+  pointer-events: none;
+}
+
+.cd-doc-frame.is-expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.cd-doc {
+  width: 100%;
+  max-width: 74ch;
+  margin-inline: auto;
   color: var(--copper-text);
   font-size: var(--copper-font-size-md);
   line-height: 1.75;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+.cd-doc-toggle {
+  display: flex;
+  margin: var(--copper-space-2) auto 0;
+  padding: 4px 10px;
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-sm);
+  background: var(--copper-surface-2);
+  color: var(--copper-text-secondary);
+  cursor: pointer;
+  font-size: var(--copper-font-size-sm);
+}
+
+.cd-doc-toggle:hover {
+  background: var(--copper-surface-3);
+  color: var(--copper-text);
+}
+
+.cd-doc :deep(.cd-readme-align-center) {
+  text-align: center;
+}
+
+.cd-doc :deep(.cd-readme-align-center > img),
+.cd-doc :deep(.cd-readme-align-center img) {
+  display: inline-block;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.cd-doc :deep(.cd-readme-align-center > table),
+.cd-doc :deep(.cd-readme-align-center table) {
+  margin-right: auto;
+  margin-left: auto;
+  text-align: left;
 }
 
 .cd-doc :deep(h1),

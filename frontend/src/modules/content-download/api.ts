@@ -5,6 +5,19 @@
 
 import { call } from "../../api/core";
 
+export interface ContentDownloadRecord {
+  id: string;
+  source: ContentSource;
+  contentType: ContentType;
+  name: string;
+  version: string;
+  state: string;
+  dest: string | null;
+  taskId: number | null;
+  error: string | null;
+  updatedAt: number;
+}
+
 /** 来源（与后端 `SOURCE_*` 对应）。 */
 export type ContentSource = "curseforge" | "lip";
 
@@ -134,6 +147,14 @@ export function contentDownloadGameVersions(): Promise<string[]> {
 }
 
 /** 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。 */
+export function contentDownloadRecords(): Promise<ContentDownloadRecord[]> {
+  return call<ContentDownloadRecord[]>("content_download_records");
+}
+
+export function contentDownloadRecordRemove(id: string): Promise<void> {
+  return call<void>("content_download_record_remove", { id });
+}
+
 export function contentDownloadDownload(
   id: string,
   fileId: string,

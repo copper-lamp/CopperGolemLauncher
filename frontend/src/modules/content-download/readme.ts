@@ -49,14 +49,26 @@ export function renderReadme(
     html = raw;
   }
 
+  html = normalizeReadmeAlignment(html);
   const clean = DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
-    // 禁止 data: / javascript: 等可执行或内嵌载荷的 URL。
     ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|#|\/(?!\/)|\.\/|\.\.\/)/i,
   }) as string;
 
   return absolutize(clean, baseUrl);
+}
+
+function normalizeReadmeAlignment(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("[align]").forEach((element) => {
+    const align = element.getAttribute("align")?.toLowerCase();
+    if (align === "center" || align === "left" || align === "right" || align === "justify") {
+      element.classList.add(`cd-readme-align-${align}`);
+    }
+    element.removeAttribute("align");
+  });
+  return doc.body.innerHTML;
 }
 
 /** GitHub 告警块类型（`> [!TYPE]`），与 GitHub 官方语法一致。 */

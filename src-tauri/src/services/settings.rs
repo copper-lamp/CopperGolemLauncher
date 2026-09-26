@@ -138,10 +138,9 @@ pub fn defaults() -> HashMap<String, Value> {
     m.insert("theme.accent".into(), Value::String("#c97b3d".into()));
     // 游戏目录（版本根；空 = 使用默认 %APPDATA%/.../versions）
     m.insert("game.directory".into(), Value::String(String::new()));
-    // LLM 配置（非敏感项；空串 = 未配置，内核不预设任何 base URL）。
-    // API Key 不走设置——密钥环存储见 `services::llm`（settings_all 会整表下发前端）。
-    m.insert("llm.base_url".into(), Value::String(String::new()));
-    m.insert("llm.model".into(), Value::String(String::new()));
+    // LLM 模型表（非敏感项）由 `services::llm` 以单键 `llm.models`（JSON 数组）自持，
+    // 缺失即空表，故不在此设默认。API Key 不走设置——密钥环存储见 `services::llm`
+    // （settings_all 会整表下发前端）。内核不预设任何 base URL。
     // 启动
     m.insert("launch.default_version".into(), Value::String(String::new()));
     m.insert("launch.memory_mb".into(), Value::Number(4096.into()));

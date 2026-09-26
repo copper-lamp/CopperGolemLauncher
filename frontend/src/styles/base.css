@@ -50,6 +50,10 @@ html[data-form-factor="mobile"] .app-shell {
   padding-right: var(--copper-safe-right);
 }
 
+html[data-form-factor="mobile"] .tips-rotator {
+  display: none;
+}
+
 /* 统一滚动条 */
 ::-webkit-scrollbar {
   width: 10px;

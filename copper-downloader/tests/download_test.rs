@@ -4,6 +4,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -100,6 +101,45 @@ async fn start_server_with_range_behavior(
     addr
 }
 
+async fn start_server_with_retry_payload(
+    first: Arc<Vec<u8>>,
+    second: Arc<Vec<u8>>,
+    ranges_seen: Arc<Mutex<Vec<String>>>,
+) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let first = first.clone();
+            let second = second.clone();
+            let ranges_seen = ranges_seen.clone();
+            let requests = requests.clone();
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = service_fn(move |req: Request<Incoming>| {
+                    let payload = if requests.fetch_add(1, Ordering::SeqCst) == 0 { first.clone() } else { second.clone() };
+                    let ranges_seen = ranges_seen.clone();
+                    async move {
+                        if let Some(range) = req.headers().get("range").and_then(|v| v.to_str().ok()) {
+                            ranges_seen.lock().push(range.to_owned());
+                        }
+                        let body = chunked_body(payload.to_vec(), CHUNK, CHUNK_DELAY);
+                        Ok::<_, hyper::Error>(Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Length", payload.len())
+                            .body(body)
+                            .unwrap())
+                    }
+                });
+                let _ = AutoBuilder::new(TokioExecutor::new()).serve_connection(io, svc).await;
+            });
+        }
+    });
+    addr
+}
+
 fn chunked_body(
     data: Vec<u8>,
     chunk: usize,
@@ -155,8 +195,10 @@ async fn download_completes_and_verifies() {
     let ranges = Arc::new(Mutex::new(Vec::new()));
     let addr = start_server(Arc::new(payload.clone()), ranges.clone()).await;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("out.bin");
+    let tmp = std::env::temp_dir().join(format!("copper_retry_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let dest = tmp.join("out.bin");
     let mgr = manager();
     let id = mgr
         .enqueue(
@@ -307,6 +349,40 @@ async fn checksum_mismatch_fails() {
     wait_status(&mgr, id, DownloadStatus::Failed).await;
     let snap = mgr.snapshot(id).unwrap();
     assert!(snap.error.unwrap_or_default().contains("校验失败"));
+}
+
+#[tokio::test]
+async fn checksum_failure_retry_restarts_without_range() {
+    let stale = vec![1u8; 64_000];
+    let fresh = vec![2u8; 64_000];
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let addr = start_server_with_retry_payload(
+        Arc::new(stale.clone()),
+        Arc::new(fresh.clone()),
+        ranges.clone(),
+    )
+    .await;
+    let tmp = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("copper_retry_checksum_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let dest = tmp.join("out.bin");
+    let mgr = manager();
+    let id = mgr
+        .enqueue(
+            format!("http://{addr}/file"),
+            &dest,
+            DownloadOptions {
+                expected_sha256: Some(sha256_hex(&fresh)),
+                max_retries: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    wait_status(&mgr, id, DownloadStatus::Done).await;
+    assert_eq!(std::fs::read(&dest).unwrap(), fresh);
+    assert!(ranges.lock().is_empty());
 }
 
 #[tokio::test]
