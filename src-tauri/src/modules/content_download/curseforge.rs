@@ -649,6 +649,12 @@ fn fmt_version((major, minor): (u32, u32)) -> String {
     format!("{major}.{minor}")
 }
 
+fn normalize_sha256_digest(value: &str) -> Option<String> {
+    let value = value.trim();
+    (value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
 fn file_to_model(f: &File) -> ContentFile {
     let mut game_versions: Vec<String> = f.game_versions.clone();
     game_versions.sort();
@@ -657,8 +663,9 @@ fn file_to_model(f: &File) -> ContentFile {
     let sha256 = f
         .hashes
         .iter()
-        .find(|h| h.algo == Some(3))
-        .and_then(|h| h.value.clone());
+        .filter(|h| h.algo == Some(3) || h.algo.is_none())
+        .filter_map(|h| h.value.as_deref())
+        .find_map(normalize_sha256_digest);
 
     ContentFile {
         id: format!("cf-f:{}", f.id),
@@ -830,6 +837,28 @@ mod tests {
     }
 
     #[test]
+    fn file_to_model_accepts_only_explicit_sha256_shape() {
+        let digest = "A".repeat(64);
+        let model = file_to_model(&File {
+            hashes: vec![FileHash {
+                value: Some(format!("  {digest}  ")),
+                algo: None,
+            }],
+            ..empty_file()
+        });
+        assert_eq!(model.sha256.as_deref(), Some(digest.to_ascii_lowercase().as_str()));
+
+        let model = file_to_model(&File {
+            hashes: vec![FileHash {
+                value: Some("a".repeat(64)),
+                algo: Some(2),
+            }],
+            ..empty_file()
+        });
+        assert_eq!(model.sha256, None);
+    }
+
+    #[test]
     fn file_to_model_maps_dependencies_and_hash() {
         let f = File {
             id: 55,
@@ -863,7 +892,7 @@ mod tests {
         };
         let model = file_to_model(&f);
         assert_eq!(model.id, "cf-f:55");
-        assert_eq!(model.sha256.as_deref(), Some("deadbeef"));
+        assert_eq!(model.sha256, None);
         assert_eq!(model.release_type, "alpha");
         assert_eq!(model.game_versions.len(), 1);
         assert_eq!(model.game_versions[0], "1.21");

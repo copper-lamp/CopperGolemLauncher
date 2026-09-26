@@ -71,12 +71,7 @@ pub fn download_enqueue(
 /// 全部任务快照。
 #[tauri::command]
 pub fn download_tasks(kernel: State<'_, KernelContext>) -> CommandResult<Vec<DownloadTaskView>> {
-    Ok(kernel
-        .download()
-        .tasks()
-        .into_iter()
-        .map(DownloadTaskView::from)
-        .collect())
+    Ok(kernel.download().tasks())
 }
 
 /// 单个任务快照。

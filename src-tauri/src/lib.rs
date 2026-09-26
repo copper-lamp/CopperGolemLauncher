@@ -207,6 +207,7 @@ pub fn run() {
                 settings.get_or("download.concurrency", DEFAULT_CONCURRENCY),
                 runtime.clone(),
                 paths.clone(),
+                db.clone(),
                 events.clone(),
             ));
             let account =

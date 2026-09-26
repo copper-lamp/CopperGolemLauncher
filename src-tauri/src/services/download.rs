@@ -9,11 +9,13 @@ use serde_json::Value;
 
 use crate::error::KernelError;
 use crate::registry::events::EventBus;
+use crate::services::database::DatabaseService;
 use crate::services::paths::Paths;
 
 /// 下载队列服务。
 pub struct DownloadService {
     manager: DownloadManager,
+    db: Arc<DatabaseService>,
 }
 
 impl DownloadService {
@@ -22,6 +24,7 @@ impl DownloadService {
         concurrency: usize,
         runtime: tokio::runtime::Handle,
         paths: Arc<Paths>,
+        db: Arc<DatabaseService>,
         events: Arc<EventBus>,
     ) -> Self {
         // 引擎自建 reqwest 客户端，且编译时关闭了 reqwest 默认特性（不读环境变量代理），
@@ -31,17 +34,20 @@ impl DownloadService {
             runtime,
             crate::services::http_client::resolved_proxy(),
         );
-        // 引擎事件 → 内核事件总线（含前端桥接）。
+        let db_for_events = db.clone();
         manager.add_listener(move |ev| {
             let (name, snapshot) = match ev {
                 copper_downloader::DownloadEvent::Created(s) => ("download.created", s),
                 copper_downloader::DownloadEvent::Progress(s) => ("download.progress", s),
                 copper_downloader::DownloadEvent::StatusChanged(s) => ("download.status", s),
             };
+            if !matches!(name, "download.progress") {
+                persist_snapshot(&db_for_events, &snapshot);
+            }
             events.publish(name, serde_json::to_value(&snapshot).unwrap_or(Value::Null));
         });
-        let _ = paths; // 保留参数：未来下载缓存目录策略从这里取
-        Self { manager }
+        let _ = paths;
+        Self { manager, db }
     }
 
     /// 投递下载任务。`dest` 会按需创建父目录。
@@ -55,8 +61,50 @@ impl DownloadService {
     }
 
     /// 全部任务快照。
-    pub fn tasks(&self) -> Vec<TaskSnapshot> {
-        self.manager.snapshots()
+    pub fn tasks(&self) -> Vec<DownloadTaskView> {
+        let active = self
+            .manager
+            .snapshots()
+            .into_iter()
+            .map(DownloadTaskView::from)
+            .collect::<Vec<_>>();
+        let active_ids = active.iter().map(|task| task.id).collect::<std::collections::HashSet<_>>();
+        let mut history = self
+            .db
+            .with_conn(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, url, dest, filename, status, total_bytes, error, created_at
+                     FROM core_download_task ORDER BY created_at ASC",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    let status: DownloadStatus = match row.get::<_, String>(4)?.as_str() {
+                        "queued" => DownloadStatus::Queued,
+                        "downloading" => DownloadStatus::Downloading,
+                        "paused" => DownloadStatus::Paused,
+                        "cancelled" => DownloadStatus::Cancelled,
+                        "done" => DownloadStatus::Done,
+                        _ => DownloadStatus::Failed,
+                    };
+                    Ok(DownloadTaskView {
+                        id: row.get::<_, u64>(0)?,
+                        filename: row.get(3)?,
+                        url: row.get(1)?,
+                        dest: row.get(2)?,
+                        total_bytes: row.get::<_, u64>(5)?,
+                        downloaded_bytes: 0,
+                        speed_bytes_per_sec: 0,
+                        status,
+                        error: row.get(6)?,
+                        retry_count: 0,
+                    })
+                })?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .unwrap_or_default();
+        history.retain(|task| !active_ids.contains(&task.id));
+        history.extend(active);
+        history.sort_by_key(|task| task.id);
+        history
     }
 
     /// 当前并发上限（同时下载的任务数）。
@@ -117,6 +165,31 @@ pub struct DownloadTaskView {
     pub status: DownloadStatus,
     pub error: Option<String>,
     pub retry_count: u32,
+}
+
+fn persist_snapshot(db: &DatabaseService, snapshot: &TaskSnapshot) {
+    let _ = db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO core_download_task
+             (id, url, dest, filename, status, total_bytes, error, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               url = excluded.url, dest = excluded.dest, filename = excluded.filename,
+               status = excluded.status, total_bytes = excluded.total_bytes,
+               error = excluded.error, created_at = excluded.created_at",
+            rusqlite::params![
+                snapshot.id,
+                snapshot.url,
+                snapshot.dest.to_string_lossy(),
+                snapshot.filename,
+                serde_json::to_string(&snapshot.status).unwrap_or_default().trim_matches('"'),
+                snapshot.total_bytes,
+                snapshot.error,
+                snapshot.created_at_ms as i64,
+            ],
+        )?;
+        Ok(())
+    });
 }
 
 impl From<TaskSnapshot> for DownloadTaskView {

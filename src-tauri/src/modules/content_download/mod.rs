@@ -242,7 +242,16 @@ impl ContentDownloadModule {
         variant: Option<&str>,
         dir: Option<&str>,
     ) -> LipInstallOutcome {
-        lip_install::install(kernel, id, version, variant, dir).await
+        let detail = Self::detail(kernel, id).await.ok();
+        if let Some(detail) = detail.as_ref() {
+            let _ = record_lip_install(kernel, &detail.item, version, dir);
+        }
+        let outcome = lip_install::install(kernel, id, version, variant, dir).await;
+        if let Some(detail) = detail.as_ref() {
+            let state = if outcome.success { "installed" } else { "failed" };
+            let _ = update_lip_record(kernel, &detail.item.id, version, state, (!outcome.success).then_some(outcome.stderr.as_str()));
+        }
+        outcome
     }
 }
 
@@ -452,6 +461,40 @@ pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, Ker
 pub fn remove_record(kernel: &KernelContext, id: &str) -> Result<(), KernelError> {
     kernel.db().with_conn(|conn| {
         conn.execute("DELETE FROM module_content_download_record WHERE id = ?1", [id])?;
+        Ok(())
+    })
+}
+
+fn record_lip_install(
+    kernel: &KernelContext,
+    item: &ContentItem,
+    version: &str,
+    dest: Option<&str>,
+) -> Result<(), KernelError> {
+    let now = chrono_now();
+    kernel.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT OR REPLACE INTO module_content_download_record
+             (id, source, content_type, name, version, state, dest, task_id, error, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, ?7)",
+            rusqlite::params![item.id, item.source, item.content_type, item.name, version, dest, now],
+        )?;
+        Ok(())
+    })
+}
+
+fn update_lip_record(
+    kernel: &KernelContext,
+    id: &str,
+    version: &str,
+    state: &str,
+    error: Option<&str>,
+) -> Result<(), KernelError> {
+    kernel.db().with_conn(|conn| {
+        conn.execute(
+            "UPDATE module_content_download_record SET version = ?1, state = ?2, error = ?3, updated_at = ?4 WHERE id = ?5",
+            rusqlite::params![version, state, error, chrono_now(), id],
+        )?;
         Ok(())
     })
 }

@@ -84,7 +84,7 @@ struct TaskState {
     retry_count: AtomicU32,
     created_at_ms: u64,
     pause_requested: AtomicBool,
-    cancel_token: CancellationToken,
+    cancel_token: Mutex<CancellationToken>,
     last_progress_emit: Mutex<Option<Instant>>,
 }
 
@@ -110,7 +110,7 @@ impl TaskState {
             retry_count: AtomicU32::new(0),
             created_at_ms,
             pause_requested: AtomicBool::new(false),
-            cancel_token: CancellationToken::new(),
+            cancel_token: Mutex::new(CancellationToken::new()),
             last_progress_emit: Mutex::new(None),
         }
     }
@@ -398,7 +398,7 @@ impl DownloadManager {
         ) {
             return;
         }
-        state.cancel_token.cancel();
+        state.cancel_token.lock().cancel();
         state.pause_requested.store(false, Ordering::SeqCst);
         state.set_status(DownloadStatus::Cancelled);
         if state.options.remove_on_cancel {
@@ -418,6 +418,10 @@ impl DownloadManager {
             return Ok(());
         }
         state.error.lock().take();
+        *state.cancel_token.lock() = CancellationToken::new();
+        let _ = std::fs::remove_file(&state.part_path);
+        state.downloaded_bytes.store(0, Ordering::Relaxed);
+        state.speed_bytes_per_sec.store(0, Ordering::Relaxed);
         state.pause_requested.store(false, Ordering::SeqCst);
         state.set_status(DownloadStatus::Queued);
         self.spawn_run(state);
@@ -483,7 +487,7 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
         inner.emit_status(&state);
         return Ok(());
     }
-    if state.cancel_token.is_cancelled() {
+    if state.cancel_token.lock().is_cancelled() {
         state.set_status(DownloadStatus::Cancelled);
         inner.emit_status(&state);
         return Ok(());
@@ -512,10 +516,11 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
     // 等待并发名额，期间可响应暂停 / 取消。
     let permit = {
         let acquire = inner.semaphore().acquire_owned();
+        let cancel_token = state.cancel_token.lock().clone();
         tokio::pin!(acquire);
         tokio::select! {
             permit = &mut acquire => permit.expect("semaphore closed"),
-            _ = state.cancel_token.cancelled() => {
+            _ = cancel_token.cancelled() => {
                 state.set_status(DownloadStatus::Cancelled);
                 inner.emit_status(&state);
                 return Ok(());
@@ -557,9 +562,10 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
                     "download {} attempt {}/{} failed: {e}, backing off {delay:?}",
                     state.id, attempt, attempts
                 );
+                let cancel_token = state.cancel_token.lock().clone();
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
-                    _ = state.cancel_token.cancelled() => {
+                    _ = cancel_token.cancelled() => {
                         state.set_status(DownloadStatus::Cancelled);
                         inner.emit_status(&state);
                         return Ok(());
@@ -746,7 +752,7 @@ async fn download_once(
         if state.pause_requested.load(Ordering::SeqCst) {
             return Err(DownloadError::Paused);
         }
-        if state.cancel_token.is_cancelled() {
+        if state.cancel_token.lock().is_cancelled() {
             return Err(DownloadError::Cancelled);
         }
 
