@@ -199,7 +199,8 @@ mod tests {
 
         let error = router
             .load(&manifest("copper-lamp.agent", true), Path::new("."))
-            .expect_err("node 后端失败时必须如实上报，而不是改投 helper 后端");
+            .err()
+            .expect("node 后端失败时必须如实上报，而不是改投 helper 后端");
 
         assert!(error.friendly().contains("node"), "got: {}", error.friendly());
         assert_eq!(node_calls.lock().unwrap().len(), 1);

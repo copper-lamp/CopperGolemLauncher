@@ -356,7 +356,8 @@ mod tests {
 
         let error = backend
             .load(&runtime_manifest(">=22.19.0"), &temp.0)
-            .expect_err("runtime 入口不存在必须装载失败");
+            .err()
+            .expect("runtime 入口不存在必须装载失败");
 
         let message = error.friendly();
         assert!(message.contains("copper-lamp.agent"), "错误必须带模块 id：{message}");
@@ -382,7 +383,8 @@ mod tests {
         // 要求一个任何真实 Node 都不会满足的版本区间：必须在派生进程之前被拒。
         let error = backend
             .load(&runtime_manifest(">=999.0.0"), &temp.0)
-            .expect_err("engines.node 不满足必须装载失败");
+            .err()
+            .expect("engines.node 不满足必须装载失败");
 
         let message = error.friendly();
         assert!(message.contains("copper-lamp.agent"), "错误必须带模块 id：{message}");
