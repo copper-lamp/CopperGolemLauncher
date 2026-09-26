@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 
 use copper_module_abi::helper_client::CapabilityDispatcher;
-use copper_module_abi::ipc::{AGENT_METHODS, METHOD_AGENT_PING};
+use copper_module_abi::ipc::{AGENT_METHODS, METHOD_AGENT_PING, WireFrame};
 
 use crate::error::KernelError;
 use crate::registry::capability::KernelCapabilities;
@@ -41,6 +41,16 @@ use crate::state::KernelContext;
 
 /// 请求 Agent 优雅退出的等待上限。与 helper 停机保持同一量级。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 事件泵单次读取的阻塞上限：空闲这么久就结束本轮，把会话锁让出去，让转发进来的
+/// 命令有机会插进来（泵与请求互斥同一把锁）。
+///
+/// 之所以取一个不大的固定值而不是长阻塞：泵每轮都会重新加锁，长阻塞会让 `invoke`
+/// 白等；而单条帧到达时 `recv_timeout` 会立刻返回，因此这个上限只在**真正空闲**时生效。
+const AGENT_PUMP_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// 事件泵单轮最多投递的帧数：给循环一个上界，避免一次调用把会话锁占太久。
+const AGENT_PUMP_MAX_FRAMES: usize = 64;
 
 /// 把底层原因包装成带模块 id 的装载错误。
 ///
@@ -137,6 +147,9 @@ impl ModuleLoadBackend for NodeBackend {
             entry,
             node_version,
             capabilities,
+            // 事件总线随模块注入：Agent 经 `event` 帧上行的流式事件最终发布到它上面，
+            // 进而桥接给前端（`agent.event` → `agent-event`）。
+            Arc::clone(&self.event_bus),
         )))
     }
 }
@@ -145,6 +158,64 @@ fn not_running_error(module_id: &str) -> KernelError {
     KernelError::Module(format!(
         "模块 `{module_id}` 的受监管 Node 会话未在运行（尚未初始化或已停止）"
     ))
+}
+
+/// 事件泵线程的主体：把受监管会话里 Agent 主动发出的流式事件转发到内核事件总线。
+///
+/// 独立成自由函数而不是 [`NodeAgentProxyModule`] 的方法：泵需要长期持有「会话句柄 +
+/// 事件总线 + 模块 id」，把整个模块塞进闭包会形成自引用（模块 → 泵 → 模块）。
+///
+/// 退出条件只有两个：会话已被 `stop_module` 取走（返回 `None`），或会话本身报错。
+/// 二者都会终止循环——泵不引入额外的停止标志，`stop` 只需要 join 本线程。
+fn pump_agent_events(
+    session: Arc<Mutex<Option<NodeRuntimeSession>>>,
+    events: Arc<EventBus>,
+    module_id: String,
+) {
+    loop {
+        let mut guard = session.lock();
+        let Some(runtime) = guard.as_mut() else {
+            // 会话已被 `stop_module` 取走：泵随之自然退出。
+            return;
+        };
+
+        let mut on_event = |frame: &WireFrame| {
+            if let WireFrame::Event { event, payload, .. } = frame {
+                // 事件名固定 `agent.event`，`moduleId` 让前端区分多个 Agent 类模块；
+                // `payload` 原样透传，不做拆分或重排，保持与线格式逐字一致。
+                events.publish(
+                    "agent.event",
+                    json!({
+                        "moduleId": &module_id,
+                        "name": event,
+                        "payload": payload,
+                    }),
+                );
+            }
+        };
+        let outcome = runtime.pump_events(
+            AGENT_PUMP_IDLE_TIMEOUT,
+            AGENT_PUMP_MAX_FRAMES,
+            &mut on_event,
+        );
+        // 先放锁再处理错误：下面要取走会话，而取走本身需要加锁。
+        drop(guard);
+
+        if let Err(error) = outcome {
+            // 会话已失效：取走它以确保进程被回收（`Drop` 会终止子进程），并把失败原因
+            // 作为诊断事件发出——静默退出会让前端永远等不到事件、也无从知道原因。
+            let _ = session.lock().take();
+            events.publish(
+                "agent.error",
+                json!({
+                    "moduleId": &module_id,
+                    "code": "session_failed",
+                    "message": error.to_string(),
+                }),
+            );
+            return;
+        }
+    }
 }
 
 /// 受监管 Node 模块在注册表中的代理：把 [`Module`] 生命周期映射到 [`NodeRuntimeSession`]。
@@ -156,8 +227,15 @@ pub struct NodeAgentProxyModule {
     /// 已通过校验的 Node 版本，仅用于日志（装载期已经确认满足要求）。
     node_version: semver::Version,
     capabilities: Arc<dyn CapabilityDispatcher>,
+    /// 事件总线：Agent 经 `event` 帧上行的流式事件在此发布，事件名固定 `agent.event`。
+    events: Arc<EventBus>,
     /// 会话只在 `init` 成功后存在；`stop` 会取走它以确保进程被回收。
-    session: Mutex<Option<NodeRuntimeSession>>,
+    ///
+    /// 用 `Arc<Mutex<..>>` 而不是裸 `Mutex`：事件泵线程需要克隆一份共享句柄来读会话，
+    /// 这样它就不必持有整个模块（那会形成自引用）。
+    session: Arc<Mutex<Option<NodeRuntimeSession>>>,
+    /// 事件泵线程句柄；`stop` 会 join 它以确认泵已退出（见 [`Self::join_pump`]）。
+    pump: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl NodeAgentProxyModule {
@@ -167,6 +245,7 @@ impl NodeAgentProxyModule {
         entry: PathBuf,
         node_version: semver::Version,
         capabilities: Arc<dyn CapabilityDispatcher>,
+        events: Arc<EventBus>,
     ) -> Self {
         Self {
             id: manifest.id.clone(),
@@ -175,7 +254,9 @@ impl NodeAgentProxyModule {
             entry,
             node_version,
             capabilities,
-            session: Mutex::new(None),
+            events,
+            session: Arc::new(Mutex::new(None)),
+            pump: Mutex::new(None),
         }
     }
 
@@ -215,6 +296,26 @@ impl NodeAgentProxyModule {
             self.entry.display()
         );
         *self.session.lock() = Some(session);
+
+        // 会话就绪后立刻起事件泵：Agent 会在两次请求之间持续产出流式事件，必须有一条
+        // 主动拉取的线程把它们送上事件总线（前端 `listen("agent-event")`）。
+        // 泵只克隆它真正需要的三样东西，不持有整个模块（避免自引用）。
+        let pump_session = Arc::clone(&self.session);
+        let pump_events = Arc::clone(&self.events);
+        let pump_module_id = self.id.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("node-agent-events-{}", self.id))
+            .spawn(move || pump_agent_events(pump_session, pump_events, pump_module_id))
+            .map_err(|error| {
+                // 起不了泵就无法上行事件；此时宁可整体初始化失败并回收刚起好的会话，
+                // 也不要留下一个「能跑但事件永远出不来」的模块。
+                let _ = self.session.lock().take();
+                KernelError::Module(format!(
+                    "模块 `{}` 的事件泵线程启动失败：{error}",
+                    self.id
+                ))
+            })?;
+        *self.pump.lock() = Some(handle);
         Ok(())
     }
 
@@ -229,10 +330,26 @@ impl NodeAgentProxyModule {
     /// 优雅停机并回收会话（`Module::stop` 的全部内容）。幂等。
     pub fn stop_module(&self) -> Result<(), KernelError> {
         // 先取走会话：无论停机是否报错，进程与 IPC 资源都必须被回收（`Drop` 兜底终止）。
-        let Some(mut session) = self.session.lock().take() else {
+        let session = self.session.lock().take();
+        // 会话一旦取走，事件泵会在下一轮循环看到 `None` 并自行退出；join 一下，保证
+        // `stop` 返回后泵线程**确实**已经结束，不会再有事件从正在拆除的会话里冒出来。
+        self.join_pump();
+        let Some(mut session) = session else {
             return Ok(());
         };
         session.shutdown(SHUTDOWN_TIMEOUT)
+    }
+
+    /// 等待事件泵线程退出。幂等；泵线程不在时不阻塞。
+    fn join_pump(&self) {
+        let Some(handle) = self.pump.lock().take() else {
+            return;
+        };
+        // join 出错只可能是泵线程 panic（正常路径不会）。这里只记日志，不让停机失败——
+        // 回收子进程才是 `stop` 的首要目标。
+        if handle.join().is_err() {
+            log::warn!("[addon/{}] 事件泵线程异常退出", self.id);
+        }
     }
 }
 
@@ -279,6 +396,7 @@ mod tests {
     use std::time::Instant;
 
     use copper_module_abi::helper_client::NoCapabilities;
+    use copper_module_abi::ipc::METHOD_AGENT_PROMPT;
     use serde_json::json;
 
     use super::*;
@@ -403,6 +521,7 @@ mod tests {
             PathBuf::from("runtime/agent.mjs"),
             semver::Version::new(22, 19, 0),
             Arc::new(NoCapabilities),
+            Arc::new(EventBus::new()),
         );
 
         let error = module
@@ -464,6 +583,7 @@ input.on('line', (line) => {
             entry.clone(),
             semver::Version::new(22, 19, 0),
             Arc::new(NoCapabilities),
+            Arc::new(EventBus::new()),
         );
 
         let marker = runtime_dir.join("alive.marker");
@@ -489,5 +609,93 @@ input.on('line', (line) => {
         module.stop_module().expect("重复 stop 必须幂等成功");
         // 会话已停：再调用命令应报「未在运行」，而不是空转。
         assert!(module.invoke(METHOD_AGENT_PING, json!({})).is_err());
+    }
+
+    /// 假 Agent：握手、ping、shutdown 之外，收到 `agent.prompt` 时回 ack 并发 3 条
+    /// `agent.run` 事件。事件只在 prompt 时发一次，故事件来源是确定的。
+    const AGENT_EVENT_SCRIPT: &str = r#"import readline from 'node:readline';
+const input = readline.createInterface({ input: process.stdin });
+const emit = (event, payload) => process.stdout.write(JSON.stringify({ kind: 'event', version: 2, event, payload }) + '\n');
+input.on('line', (line) => {
+  const frame = JSON.parse(line);
+  if (frame.kind === 'hello') {
+    process.stdout.write(JSON.stringify({ kind: 'hello', version: 2, protocol: 'copper-addon.ndjson', supported_versions: [2], runtime: 'test-agent', capabilities: [] }) + '\n');
+  } else if (frame.method === 'agent.ping') {
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: { pong: true } }) + '\n');
+  } else if (frame.method === 'agent.prompt') {
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: { ack: true } }) + '\n');
+    for (let i = 0; i < 3; i++) emit('agent.run', { runId: 'run-1', sequence: i });
+  } else if (frame.method === 'agent.shutdown') {
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: {} }) + '\n');
+    process.exit(0);
+  }
+});"#;
+
+    #[test]
+    fn agent_events_are_published_to_the_event_bus_until_stop() {
+        let temp = TempDir::new();
+        let runtime_dir = temp.0.join("runtime");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        let entry = runtime_dir.join("agent.mjs");
+        fs::write(&entry, AGENT_EVENT_SCRIPT).unwrap();
+
+        let executable = resolve_node_executable(
+            None,
+            &std::env::var_os("PATH").unwrap_or_default(),
+            cfg!(windows),
+        )
+        .expect("本用例要求本机装有 Node");
+
+        let manifest = runtime_manifest(">=22.19.0");
+        let events = Arc::new(EventBus::new());
+        let module = NodeAgentProxyModule::new(
+            &manifest,
+            executable,
+            entry,
+            semver::Version::new(22, 19, 0),
+            Arc::new(NoCapabilities),
+            Arc::clone(&events),
+        );
+
+        module.init_module().expect("会话应能派生并完成握手");
+        module.start_module().expect("ping 应确认会话可用");
+
+        // 只收订阅之后的事件：订阅必须在 prompt 之前，否则会漏掉这次上行。
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let sink = Arc::clone(&seen);
+        events.subscribe_from_now("agent.event", move |_name, payload| {
+            sink.lock().unwrap().push(payload.clone());
+        });
+
+        module
+            .invoke(METHOD_AGENT_PROMPT, json!({ "prompt": "hi" }))
+            .expect("白名单内的 agent.prompt 应被转发");
+
+        // 脚本只在 prompt 时发 3 条事件，故「收满 3 条」即来源已耗尽，可作为确定性基准。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while seen.lock().unwrap().len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let received = seen.lock().unwrap().clone();
+        assert_eq!(received.len(), 3, "泵必须把 3 条事件全部上行：{received:?}");
+        assert_eq!(received[0]["moduleId"], json!("copper-lamp.agent"));
+        assert_eq!(received[0]["name"], json!("agent.run"));
+        assert_eq!(
+            received[0]["payload"],
+            json!({ "runId": "run-1", "sequence": 0 }),
+            "payload 必须与线格式逐字一致"
+        );
+        let sequences: Vec<u64> = received
+            .iter()
+            .map(|payload| payload["payload"]["sequence"].as_u64().unwrap())
+            .collect();
+        assert_eq!(sequences, vec![0, 1, 2], "上行必须保持事件顺序");
+
+        // stop 会 join 事件泵线程：返回后泵已退出，且唯一的事件来源（子进程）已被回收，
+        // 因此这里断言「不再有新事件」是确定性的，不需要靠 sleep 去赌。
+        module.stop_module().expect("停机应成功");
+        assert!(!module.is_running());
+        assert_eq!(seen.lock().unwrap().len(), 3, "stop 之后不得再收到任何事件");
     }
 }

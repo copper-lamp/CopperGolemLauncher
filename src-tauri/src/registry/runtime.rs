@@ -178,8 +178,7 @@ impl NodeRuntimeSession {
                 // 无论派发成功还是被拒，都**不得**终止会话——能力请求是 Agent 正常工作
                 // 的一部分，拒绝只该体现为一次结构化错误响应。
                 WireFrame::Request { id: request_id, method, params, .. } => {
-                    let response = self.answer_capability_request(&request_id, &method, params);
-                    self.write_frame(&response)?;
+                    self.answer_inbound_request(&request_id, &method, params)?;
                 }
                 WireFrame::Notification { method, .. } => {
                     return Err(KernelError::Module(format!(
@@ -242,6 +241,97 @@ impl NodeRuntimeSession {
             serde_json::to_vec(&event).map(|encoded| encoded.len()).unwrap_or(MAX_NODE_INBOUND_FRAME),
         );
         Some(event)
+    }
+
+    /// 应答一条 Agent 主动发来的反向请求：就地派发并把响应帧写回。
+    ///
+    /// [`NodeRuntimeSession::request`] 与 [`NodeRuntimeSession::pump_events`] 共用这一条
+    /// 路径。两处各写一份迟早会漂移，而「反向请求必须被应答、且无论派发结果如何都不得
+    /// 终止会话」是会话的核心不变量，只允许有一个实现。
+    fn answer_inbound_request(
+        &mut self,
+        request_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<(), KernelError> {
+        let response = self.answer_capability_request(request_id, method, params);
+        self.write_frame(&response)
+    }
+
+    /// 主动把 Agent 发来的事件泵出来，逐条交给 `on_event`。
+    ///
+    /// 这是「事件上行」的唯一出口：`request` 只在等响应的间隙**被动**缓冲事件，而长会话
+    /// 里 Agent 会在两次请求之间持续产出流式事件。必须有一条主动拉取的路径，才能把它们
+    /// 送到内核事件总线（进而桥接前端）。
+    ///
+    /// 顺序语义：先排空 `request` 期间缓冲的事件，再读新帧。若不这样，新帧会插到更早的
+    /// 缓冲事件之前——同一条流的两段被重排，前端看到的 `sequence` 就乱了。
+    ///
+    /// 返回本次实际投递（即回调）的事件条数，便于调用方记账与测试断言。
+    pub(crate) fn pump_events(
+        &mut self,
+        idle_timeout: Duration,
+        max_frames: usize,
+        on_event: &mut dyn FnMut(&WireFrame),
+    ) -> Result<usize, KernelError> {
+        let mut delivered = 0usize;
+
+        // 第一段：排空等待响应期间被缓冲的事件，数量口径与 `take_event` 完全一致。
+        while delivered < max_frames {
+            let Some(event) = self.take_event() else { break };
+            on_event(&event);
+            delivered += 1;
+        }
+        // 缓冲没被排空说明本轮预算已用尽：必须立刻返回，否则第二段读到的**更新**帧会越过
+        // 仍在缓冲里的**更早**事件先被投递，顺序语义被破坏。
+        if !self.pending_events.is_empty() {
+            return Ok(delivered);
+        }
+
+        // 第二段：主动读新帧，预算同为 `max_frames`。空闲满 `idle_timeout` 即正常收尾，
+        // 把会话锁让出去给转发命令（泵与 `request` 互斥同一把锁）。
+        for _ in 0..max_frames {
+            let frame = match self.frames.recv_timeout(idle_timeout) {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(error)) => {
+                    return Err(KernelError::Module(format!("Node runtime NDJSON 无效: {error}")));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(KernelError::Module("Node runtime 已退出".into()));
+                }
+            };
+            match frame {
+                WireFrame::Event { .. } => {
+                    on_event(&frame);
+                    delivered += 1;
+                }
+                // 与 `request` 同一套处理：反向能力请求就地应答后继续泵，绝不因此终止会话。
+                WireFrame::Request { id, method, params, .. } => {
+                    self.answer_inbound_request(&id, &method, params)?;
+                }
+                WireFrame::Response { id, .. } => {
+                    // 泵里没有任何在等的请求：此时收到响应帧只能说明两端对请求关联的理解
+                    // 已经错位。继续跑只会让状态越走越偏，如实报错。
+                    return Err(KernelError::Module(format!("收到无人等待的响应帧（id `{id}`）")));
+                }
+                WireFrame::Fatal { error, .. } => {
+                    return Err(KernelError::Module(format!(
+                        "Node runtime 致命错误 {}: {}",
+                        error.code, error.message
+                    )));
+                }
+                WireFrame::Hello { .. } => {
+                    return Err(KernelError::Module("Node runtime 重复握手".into()));
+                }
+                WireFrame::Notification { method, .. } => {
+                    return Err(KernelError::Module(format!(
+                        "Node runtime 发送了通知（{method}）但宿主侧派发尚未实现"
+                    )));
+                }
+            }
+        }
+        Ok(delivered)
     }
 
     fn stderr_tail(&self) -> String {
@@ -574,7 +664,7 @@ mod tests {
     use std::time::Duration;
 
     use copper_module_abi::helper_client::{CapabilityDispatcher, CapabilityError, NoCapabilities};
-    use copper_module_abi::ipc::{CapabilityRequest, METHOD_AGENT_PING};
+    use copper_module_abi::ipc::{CapabilityRequest, METHOD_AGENT_PING, METHOD_AGENT_PROMPT, WireFrame};
 
     use super::{
         inspect_node, parse_node_version, redact_node_stderr, resolve_node_executable,
@@ -852,6 +942,26 @@ input.on('line', (line) => {
         .expect("本用例要求本机装有 Node")
     }
 
+    /// 拉一轮事件泵，把投递到的事件按 `sequence` 记进 `seen`、并累加回调次数。
+    ///
+    /// 抽成函数而不是就地闭包：闭包对 `seen` 的独占借用会一直持续到调用结束，
+    /// 夹在两次调用之间的断言就没法读 `seen`。每次调用现造一个短命闭包即可。
+    fn pump_into(
+        session: &mut super::NodeRuntimeSession,
+        budget: usize,
+        seen: &mut Vec<u64>,
+        callbacks: &mut usize,
+    ) -> usize {
+        session
+            .pump_events(Duration::from_millis(100), budget, &mut |frame| {
+                if let WireFrame::Event { payload, .. } = frame {
+                    *callbacks += 1;
+                    seen.push(payload["sequence"].as_u64().unwrap());
+                }
+            })
+            .unwrap()
+    }
+
     #[test]
     fn a_reverse_capability_request_is_denied_without_killing_the_session() {
         let temp = TempDir::new();
@@ -906,6 +1016,133 @@ input.on('line', (line) => {
             ["copper-lamp.agent".to_string()],
             "派发身份必须来自会话绑定，而非请求内容"
         );
+
+        session.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    /// 假 Agent：收到 `agent.prompt` 时**先**接连发 5 条 `agent.run` 事件，**再**回
+    /// `response`。
+    ///
+    /// 这个顺序专门用来验证「等待响应期间被缓冲的事件」。因为 ack 在最后，宿主读到的
+    /// 前 5 帧全是事件，它们只能被 [`NodeRuntimeSession::request`] 缓冲进 `pending_events`。
+    const EVENTS_BEFORE_ACK_AGENT: &str = r#"import readline from 'node:readline';
+const input = readline.createInterface({ input: process.stdin });
+const emit = (event, payload) => process.stdout.write(JSON.stringify({ kind: 'event', version: 2, event, payload }) + '\n');
+input.on('line', (line) => {
+  const frame = JSON.parse(line);
+  if (frame.kind === 'hello') {
+    process.stdout.write(JSON.stringify({ kind: 'hello', version: 2, protocol: 'copper-addon.ndjson', supported_versions: [2], runtime: 'test-agent', capabilities: [] }) + '\n');
+  } else if (frame.method === 'agent.prompt') {
+    for (let i = 0; i < 5; i++) emit('agent.run', { runId: 'r1', sequence: i });
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: { ack: true } }) + '\n');
+  } else if (frame.method === 'agent.shutdown') {
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: {} }) + '\n');
+    process.exit(0);
+  }
+});"#;
+
+    /// 假 Agent：收到 `agent.prompt` 时**先**回 `response`，**再**发 5 条 `agent.run`
+    /// 事件。这样 `request` 一读完 ack 就返回，事件只能靠泵主动读取。
+    const EVENTS_AFTER_ACK_AGENT: &str = r#"import readline from 'node:readline';
+const input = readline.createInterface({ input: process.stdin });
+const emit = (event, payload) => process.stdout.write(JSON.stringify({ kind: 'event', version: 2, event, payload }) + '\n');
+input.on('line', (line) => {
+  const frame = JSON.parse(line);
+  if (frame.kind === 'hello') {
+    process.stdout.write(JSON.stringify({ kind: 'hello', version: 2, protocol: 'copper-addon.ndjson', supported_versions: [2], runtime: 'test-agent', capabilities: [] }) + '\n');
+  } else if (frame.method === 'agent.prompt') {
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: { ack: true } }) + '\n');
+    for (let i = 0; i < 5; i++) emit('agent.run', { runId: 'r2', sequence: i });
+  } else if (frame.method === 'agent.shutdown') {
+    process.stdout.write(JSON.stringify({ kind: 'response', version: 2, id: frame.id, result: {} }) + '\n');
+    process.exit(0);
+  }
+});"#;
+
+    #[test]
+    fn pump_events_drains_the_events_buffered_while_a_request_waited() {
+        let temp = TempDir::new();
+        let entry = temp.0.join("agent.mjs");
+        fs::write(&entry, EVENTS_BEFORE_ACK_AGENT).unwrap();
+
+        let mut session = super::NodeRuntimeSession::launch(
+            &node_executable(),
+            &entry,
+            Arc::new(NoCapabilities),
+            "copper-lamp.agent",
+        )
+        .unwrap();
+
+        let ack = session
+            .request(METHOD_AGENT_PROMPT, serde_json::json!({ "prompt": "hi" }))
+            .unwrap();
+        assert_eq!(ack["ack"], serde_json::json!(true));
+        assert_eq!(
+            session.pending_events.len(),
+            5,
+            "响应之前的 5 条事件必须在等待响应期间被缓冲下来"
+        );
+
+        let mut seen: Vec<u64> = Vec::new();
+        let mut callbacks = 0usize;
+
+        // 预算小于缓冲量：连拉三次，验证预算生效、且跨次调用顺序不乱。
+        let first = pump_into(&mut session, 2, &mut seen, &mut callbacks);
+        assert_eq!(first, 2);
+        assert_eq!(seen, vec![0, 1]);
+
+        let second = pump_into(&mut session, 2, &mut seen, &mut callbacks);
+        assert_eq!(second, 2);
+        assert_eq!(seen, vec![0, 1, 2, 3]);
+
+        let third = pump_into(&mut session, 2, &mut seen, &mut callbacks);
+        assert_eq!(third, 1, "缓冲只剩最后一条");
+
+        assert_eq!(callbacks, 5, "投递条数必须与回调次数一致");
+        assert_eq!(seen, vec![0, 1, 2, 3, 4], "缓冲事件必须按到达顺序投递");
+        assert!(session.pending_events.is_empty());
+        assert_eq!(session.pending_event_bytes, 0, "缓冲字节计数必须同步归零");
+
+        session.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn pump_events_reads_events_that_arrive_after_the_response() {
+        let temp = TempDir::new();
+        let entry = temp.0.join("agent.mjs");
+        fs::write(&entry, EVENTS_AFTER_ACK_AGENT).unwrap();
+
+        let mut session = super::NodeRuntimeSession::launch(
+            &node_executable(),
+            &entry,
+            Arc::new(NoCapabilities),
+            "copper-lamp.agent",
+        )
+        .unwrap();
+
+        let ack = session
+            .request(METHOD_AGENT_PROMPT, serde_json::json!({ "prompt": "hi" }))
+            .unwrap();
+        assert_eq!(ack["ack"], serde_json::json!(true));
+        assert!(
+            session.pending_events.is_empty(),
+            "响应先到，事件不可能已被缓冲"
+        );
+
+        let mut seen: Vec<u64> = Vec::new();
+        let mut callbacks = 0usize;
+        let delivered = session
+            .pump_events(Duration::from_millis(500), 64, &mut |frame| {
+                if let WireFrame::Event { payload, .. } = frame {
+                    callbacks += 1;
+                    seen.push(payload["sequence"].as_u64().unwrap());
+                }
+            })
+            .unwrap();
+
+        assert_eq!(delivered, 5);
+        assert_eq!(callbacks, 5, "投递条数必须与回调次数一致");
+        assert_eq!(seen, vec![0, 1, 2, 3, 4], "新读事件必须保持到达顺序");
 
         session.shutdown(Duration::from_secs(2)).unwrap();
     }
