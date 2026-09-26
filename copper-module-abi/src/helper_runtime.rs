@@ -18,10 +18,11 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 
 use crate::ipc::{
-    negotiate_handshake, read_frame, validate_version, write_frame, EventDispatchRequest,
+    negotiate_handshake, negotiate_hello, read_frame, validate_version, write_frame, EventDispatchRequest,
+    HostNotification,
     HealthResponse, InitializeResponse, IntentHandleResponse, InvokeResponse, IpcError, IpcMessage,
     IpcRequest, IpcResponse, LifecycleAction, LifecycleResponse, ModuleLifecycleState, ModuleMethod,
-    ModuleRequest, METHOD_CAPABILITY_REQUEST, METHOD_EVENT_DISPATCH, PLUGIN_COMMAND_EVENT_PREFIX,
+    ModuleRequest, WireFrame, METHOD_CAPABILITY_REQUEST, METHOD_EVENT_DISPATCH, PLUGIN_COMMAND_EVENT_PREFIX,
     PLUGIN_COMMAND_INTENT_PREFIX, PROTOCOL_VERSION,
 };
 use crate::module_id::is_valid_module_id;
@@ -102,7 +103,7 @@ struct HostContext {
     /// 能力往返期间收到的宿主通知的延迟队列。
     ///
     /// 与 [`HelperRuntime`] 共享同一个 `Arc`：回调（插件调用栈内）入队，主循环排空。
-    deferred: Arc<Mutex<VecDeque<IpcRequest>>>,
+    deferred: Arc<Mutex<VecDeque<HostNotification>>>,
 }
 
 /// 把能力往返期间收到的宿主通知入队，留待主循环排空。
@@ -111,7 +112,7 @@ struct HostContext {
 /// - **就地派发**会在插件调用栈内重入插件（同一个 `instance` 正被借用），也会在
 ///   一次 invoke 里递归执行任意深的事件处理；
 /// - **直接丢弃**会让事件静默消失，且与「至少一次」的语义相悖。
-fn defer_host_notification(queue: &Mutex<VecDeque<IpcRequest>>, request: IpcRequest) {
+fn defer_host_notification(queue: &Mutex<VecDeque<HostNotification>>, notification: HostNotification) {
     let mut guard = match queue.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -120,11 +121,11 @@ fn defer_host_notification(queue: &Mutex<VecDeque<IpcRequest>>, request: IpcRequ
         eprintln!(
             "[helper] deferred notification queue is full ({DEFERRED_NOTIFICATION_CAPACITY}); \
              dropping `{}`",
-            request.method
+            notification.method
         );
         return;
     }
-    guard.push_back(request);
+    guard.push_back(notification);
 }
 
 /// 插件能力请求的宿主入口。
@@ -182,12 +183,18 @@ unsafe extern "C" fn plugin_capability(
             Ok(IpcMessage::Response(response)) => break response,
             // 宿主在能力往返期间主动发来的只应是事件通知：入队延后，继续等响应。
             // 这样事件推送不会打断一次正在进行的插件调用。
-            Ok(IpcMessage::Request(request)) if request.method == METHOD_EVENT_DISPATCH => {
-                defer_host_notification(&context.deferred, request);
+            Ok(IpcMessage::Notification { version, method, params })
+                if version == PROTOCOL_VERSION && method == METHOD_EVENT_DISPATCH =>
+            {
+                defer_host_notification(&context.deferred, HostNotification { method, params });
             }
             // 其它宿主请求说明协议被违反（谁在等它、谁该回它都无从判断）：如实失败。
             Ok(IpcMessage::Request(request)) => {
                 eprintln!("[helper] host sent a request while a capability call was pending: {}", request.method);
+                return ABI_STATUS_ERROR;
+            }
+            Ok(_) => {
+                eprintln!("[helper] host sent an invalid frame while a capability call was pending");
                 return ABI_STATUS_ERROR;
             }
             Err(error) => {
@@ -260,7 +267,7 @@ pub struct HelperRuntime {
     /// 与宿主的帧通道；`None` 时能力请求被拒绝（进程内单测用）。
     channel: Option<Arc<Mutex<HelperChannel>>>,
     /// 能力往返期间收到的宿主通知，由主循环经 [`HelperRuntime::drain_deferred`] 排空。
-    deferred: Arc<Mutex<VecDeque<IpcRequest>>>,
+    deferred: Arc<Mutex<VecDeque<HostNotification>>>, 
     /// 字段顺序即释放顺序：`instance` 必须先于 `library` 释放，
     /// 因为插件 `destroy` 回调的函数指针属于 `library` 的映像。
     instance: Option<PluginInstance<HostContext>>,
@@ -303,6 +310,7 @@ impl HelperRuntime {
     ///
     /// 任何非法输入都 fail closed：未知方法、错误版本、未握手、非法参数、插件失败
     /// 都返回带错误码的响应，而不是 panic 或静默成功。
+    #[must_use = "the response must be sent to the host"]
     pub fn handle(&mut self, request: IpcRequest) -> IpcResponse {
         let request_id = request.request_id.clone();
 
@@ -342,16 +350,35 @@ impl HelperRuntime {
     ///
     /// `event.dispatch` 是**单向通知**：派发给插件后返回 `None`。宿主没有任何人在
     /// 等这一帧，多写一帧就会打乱它的请求 / 响应配对（见 `ipc::METHOD_EVENT_DISPATCH`）。
-    pub fn handle_host_frame(&mut self, request: IpcRequest) -> Option<IpcResponse> {
-        if request.method == METHOD_EVENT_DISPATCH {
-            self.dispatch_event(&request.params);
-            return None;
+    pub fn handle_host_frame(&mut self, message: IpcMessage) -> Result<Option<IpcResponse>, IpcError> {
+        match message {
+            IpcMessage::Request(request) => Ok(Some(self.handle(request))),
+            IpcMessage::Notification { version, method, params } => {
+                validate_version(version)?;
+                if method != METHOD_EVENT_DISPATCH {
+                    return Err(IpcError::InvalidFrame);
+                }
+                self.dispatch_event(&params);
+                Ok(None)
+            }
+            _ => Err(IpcError::InvalidFrame),
         }
-        Some(self.handle(request))
+    }
+
+    pub fn handle_hello(&mut self, frame: &WireFrame) -> Result<IpcMessage, IpcError> {
+        let version = negotiate_hello(frame)?;
+        self.handed_over = true;
+        Ok(IpcMessage::Hello {
+            version,
+            protocol: crate::ipc::WIRE_PROTOCOL_ID.to_owned(),
+            supported_versions: vec![PROTOCOL_VERSION],
+            runtime: "copper-module-helper".to_owned(),
+            capabilities: Vec::new(),
+        })
     }
 
     /// 排空能力往返期间被延迟的宿主通知，交由主循环逐条处理。
-    pub fn drain_deferred(&mut self) -> Vec<IpcRequest> {
+    pub fn drain_deferred(&mut self) -> Vec<HostNotification> {
         let mut guard = match self.deferred.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -721,10 +748,8 @@ mod tests {
     }
 
     /// 构造一条宿主事件通知帧。
-    fn dispatch_frame(request_id: &str, event: &str) -> IpcRequest {
-        IpcRequest {
-            version: PROTOCOL_VERSION,
-            request_id: request_id.to_owned(),
+    fn dispatch_frame(_request_id: &str, event: &str) -> HostNotification {
+        HostNotification {
             method: METHOD_EVENT_DISPATCH.to_owned(),
             params: json!({ "event": event, "payload": { "n": 1 } }),
         }
@@ -737,11 +762,16 @@ mod tests {
 
         // 插件未加载时事件无处可派，但依然**不能回帧**：宿主没有人在等它，
         // 多写一帧就会让宿主把这次通知误当成某个 invoke 的响应。
-        assert!(runtime.handle_host_frame(dispatch_frame("push-0", "demo.activity")).is_none());
+        let notification = dispatch_frame("push-0", "demo.activity");
+        assert!(runtime.handle_host_frame(IpcMessage::Notification {
+            version: PROTOCOL_VERSION,
+            method: notification.method,
+            params: notification.params,
+        }).unwrap().is_none());
 
-        // 普通请求仍然必须回带相同 request id 的响应。
         let response = runtime
-            .handle_host_frame(request("req-2", ModuleMethod::Health, json!({})))
+            .handle_host_frame(IpcMessage::Request(request("req-2", ModuleMethod::Health, json!({}))))
+            .unwrap()
             .expect("a request/response method must always produce a response");
         assert_eq!(response.request_id, "req-2");
     }
@@ -751,13 +781,36 @@ mod tests {
         let mut runtime = runtime();
         handshake(&mut runtime);
 
-        let frame = IpcRequest {
+        let frame = IpcMessage::Notification {
             version: PROTOCOL_VERSION,
-            request_id: "push-1".to_owned(),
             method: METHOD_EVENT_DISPATCH.to_owned(),
-            params: json!({ "event": "demo.activity" }), // 缺 payload
+            params: json!({ "event": "demo.activity" }),
         };
-        assert!(runtime.handle_host_frame(frame).is_none());
+        assert!(runtime.handle_host_frame(frame).unwrap().is_none());
+    }
+
+    #[test]
+    fn idless_notifications_are_deferred_during_capability_rpc_and_drain_in_order() {
+        use crate::ipc::HostNotification;
+
+        let queue = Mutex::new(VecDeque::new());
+        defer_host_notification(
+            &queue,
+            HostNotification {
+                method: METHOD_EVENT_DISPATCH.to_owned(),
+                params: json!({ "event": "first", "payload": {} }),
+            },
+        );
+        defer_host_notification(
+            &queue,
+            HostNotification {
+                method: METHOD_EVENT_DISPATCH.to_owned(),
+                params: json!({ "event": "second", "payload": {} }),
+            },
+        );
+        let drained = queue.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(drained[0].params["event"], json!("first"));
+        assert_eq!(drained[1].params["event"], json!("second"));
     }
 
     #[test]
@@ -774,11 +827,8 @@ mod tests {
         // 有界：超出容量的部分被丢弃而不是无界增长。
         assert_eq!(drained.len(), DEFERRED_NOTIFICATION_CAPACITY);
         // 顺序：先到的先处理，事件不会被打乱。
-        assert_eq!(drained[0].request_id, "push-0");
-        assert_eq!(
-            drained[DEFERRED_NOTIFICATION_CAPACITY - 1].request_id,
-            format!("push-{}", DEFERRED_NOTIFICATION_CAPACITY - 1)
-        );
+        assert_eq!(drained[0].params["event"], json!("demo.activity"));
+        assert_eq!(drained[DEFERRED_NOTIFICATION_CAPACITY - 1].method, METHOD_EVENT_DISPATCH);
         assert!(queue.lock().unwrap().is_empty(), "排空后队列必须为空");
     }
 
@@ -792,7 +842,8 @@ mod tests {
 
         let drained = runtime.drain_deferred();
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].request_id, "push-7");
+        assert_eq!(drained[0].method, METHOD_EVENT_DISPATCH);
+        assert_eq!(drained[0].params["event"], json!("demo.activity"));
         // 排空后不再重复交付。
         assert!(runtime.drain_deferred().is_empty());
     }

@@ -41,11 +41,19 @@ fn missing_artifact(tag: &str) -> PathBuf {
     fixture_path(tag)
 }
 
+/// 集成测试的临时文件目录。
+///
+/// 使用 cargo 为集成测试提供的 `target/tmp`（`CARGO_TARGET_TMPDIR`），而不是宿主
+/// 全局临时目录：受限环境下对 `%TEMP%` 的写入可能被拒（链接器临时文件也打不开），
+/// 让测试依赖它会变成与环境相关的假失败，掩盖真正的协议问题。
+fn scratch_dir() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&dir).expect("the cargo target temp dir should be creatable");
+    dir
+}
+
 fn fixture_path(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "cgl-helper-fixture-{}-{tag}.bin",
-        std::process::id()
-    ))
+    scratch_dir().join(format!("cgl-helper-fixture-{tag}.bin"))
 }
 
 fn cleanup(path: &Path) {
@@ -78,6 +86,10 @@ fn fixture_plugin() -> PathBuf {
         .get_or_init(|| {
             let status = std::process::Command::new(env!("CARGO"))
                 .args(["build", "-p", "abi-fixture-echo"])
+                // 链接夹具动态库需要一个可写的临时目录；显式指向 target/tmp，
+                // 不依赖宿主全局 %TEMP% 的权限。
+                .env("TMP", scratch_dir())
+                .env("TEMP", scratch_dir())
                 .status()
                 .expect("cargo must be available to build the fixture plugin");
             assert!(status.success(), "failed to build the fixture plugin");
@@ -134,20 +146,26 @@ fn handshake_negotiates_the_protocol_version() {
 }
 
 #[test]
-fn methods_before_handshake_are_refused_over_the_process_boundary() {
-    let artifact = existing_but_invalid_artifact("pre-handshake");
+fn a_business_frame_before_hello_terminates_the_session() {
+    let artifact = existing_but_invalid_artifact("pre-hello");
     let mut helper = spawned(&artifact);
 
+    // 统一协议要求首帧是 hello：未协商就发业务帧属协议错误，直接终止会话。
+    // 既不得把它当成普通的"未握手"错误糊过去，也不得回退到旧的长度前缀协议。
     let error = helper
         .request(ModuleMethod::Health, json!({}), TIMEOUT)
-        .expect_err("health before handshake must be refused");
+        .expect_err("a business frame before hello must not be answered");
 
-    match error {
-        HelperError::Remote { code, .. } => assert_eq!(code, "handshake_required"),
-        other => panic!("expected a remote refusal, got {other}"),
-    }
+    assert!(
+        matches!(error, HelperError::Exited { .. }),
+        "expected the helper to refuse and exit, got {error}"
+    );
+    assert!(
+        wait_for_stderr(&helper, "first frame must be a valid hello"),
+        "stderr tail should explain the refusal, got: {}",
+        helper.stderr()
+    );
 
-    let _ = helper.terminate();
     cleanup(&artifact);
 }
 

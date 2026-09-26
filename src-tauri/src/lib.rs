@@ -120,11 +120,13 @@ fn open_log_file(logs_dir: &Path) -> std::io::Result<std::fs::File> {
 }
 
 use error::KernelError;
-use registry::helper_backend::HelperBackend;
+use registry::backend_router::AddonBackendRouter;
 use registry::events::EventBus;
+use registry::helper_backend::HelperBackend;
 use registry::intents::IntentRegistry;
 use registry::loader::ModuleLoader;
 use registry::modules::ModuleRegistry;
+use registry::node_backend::NodeBackend;
 use registry::sandbox::ModuleSandbox;
 use services::account::AccountService;
 use services::database::{CORE_MIGRATIONS, DatabaseService};
@@ -262,14 +264,28 @@ pub fn run() {
             // 附加模块：扫描 `<data_dir>/modules`，逐个校验清单并装载为受监管子进程。
             // 必须在 `boot()` **之前**完成：装载进来的模块与内置模块一并由 boot 驱动
             // 生命周期；单个失败不影响其它模块（见 loader::ModuleLoader::load_installed）。
-            // 装载后端需要注册表（能力派发）、意图注册表、沙箱（订阅事件前逐次授权）
-            // 与事件总线（推送桥）——四者都从已建好的内核上下文取同一份引用。
-            let loader = ModuleLoader::new(Arc::new(HelperBackend::new(
-                modules_for_addons,
-                Arc::clone(kernel.intents()),
-                Arc::clone(kernel.sandbox()),
-                Arc::clone(kernel.events()),
-                paths_for_addons.data_dir().clone(),
+            //
+            // 路由按清单是否声明 `runtime` 分流到两条后端：未声明的走 helper 子进程，
+            // 声明的走受监管 Node 会话。两条后端需要同一组依赖（注册表（能力派发）、
+            // 意图注册表、沙箱（逐次授权）与事件总线（推送桥）），都从已建好的内核
+            // 上下文取同一份引用。分流是显式的，不因某一后端失败而改投另一后端。
+            let loader = ModuleLoader::new(Arc::new(AddonBackendRouter::new(
+                Arc::new(HelperBackend::new(
+                    Arc::clone(&modules_for_addons),
+                    Arc::clone(kernel.intents()),
+                    Arc::clone(kernel.sandbox()),
+                    Arc::clone(kernel.events()),
+                    paths_for_addons.data_dir().clone(),
+                )),
+                Arc::new(NodeBackend::new(
+                    Arc::clone(&modules_for_addons),
+                    Arc::clone(kernel.intents()),
+                    Arc::clone(kernel.sandbox()),
+                    Arc::clone(kernel.events()),
+                    paths_for_addons.data_dir().clone(),
+                    // 显式 Node 路径留作后续设置项；本批按 `PATH` 自动定位。
+                    None,
+                )),
             )));
             let reports = loader.load_installed(&kernel);
             let loaded = reports.iter().filter(|r| r.loaded).count();

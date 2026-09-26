@@ -12,6 +12,7 @@
 //! 判定漂移导致「清单合法但目录名被拒」这类不一致。
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,11 +20,45 @@ use crate::error::KernelError;
 use crate::registry::modules::is_valid_module_id;
 use crate::services::registry::model;
 
-/// 清单格式版本（当前内核支持值）。高于此值必须拒绝，不做尽力解析。
-pub const SUPPORTED_SCHEMA_VERSION: &str = "1";
+/// 清单格式版本 v1：`runtime` 之前的基础形态。
+pub const SCHEMA_VERSION_V1: &str = "1";
 
-/// 当前内核支持的模块 API 版本。
-pub const SUPPORTED_API_VERSION: u32 = 1;
+/// 清单格式版本 v2：在 v1 基础上新增可选的 `runtime` 声明。
+///
+/// 只允许新增**可选**字段，不修改既有字段语义——已收录的 v1 模块必须继续原样可用，
+/// 这正是"改契约要升版本"的目的：升级一次不会让存量模块批量失效。
+pub const SCHEMA_VERSION_V2: &str = "2";
+
+/// 内核支持的清单格式版本（v1 与 v2 并存）。高于此集合必须拒绝，不做尽力解析。
+pub const SUPPORTED_SCHEMA_VERSIONS: &[&str] = &[SCHEMA_VERSION_V1, SCHEMA_VERSION_V2];
+
+/// 模块 API 版本 v1：无 `runtime` 声明。
+pub const API_VERSION_V1: u32 = 1;
+
+/// 模块 API 版本 v2：允许声明 `runtime`（内核派生并监管的模块专属运行时会话）。
+pub const API_VERSION_V2: u32 = 2;
+
+/// 内核支持的模块 API 版本集合。
+pub const SUPPORTED_API_VERSIONS: &[u32] = &[API_VERSION_V1, API_VERSION_V2];
+
+/// `runtime.kind` 的当前唯一合法取值。
+pub const RUNTIME_KIND_NODE: &str = "node";
+
+/// 进程线协议标识：内核与所有附加进程 runtime 共用。
+///
+/// 唯一来源是 `copper-module-abi::ipc`（内核、helper、Node Agent 三方必须逐字一致），
+/// 这里只做转出，避免内核侧再抄一份字符串。
+pub const WIRE_PROTOCOL_ID: &str = copper_module_abi::ipc::WIRE_PROTOCOL_ID;
+
+/// 内核当前支持的唯一进程线协议主版本。
+pub const WIRE_PROTOCOL_VERSION: u32 = copper_module_abi::ipc::PROTOCOL_VERSION;
+
+/// `runtime.entry` 必须落在模块目录下的这个子目录内。
+///
+/// 约束到固定子目录是刻意的：入口脚本由**内核**固定装载，模块无法在运行期替换它；
+/// 把它约束在 `runtime/` 下，也让发布包结构（见 `cgl-models.md` 2.9）中的该目录
+/// 成为唯一可被内核执行的代码位置。
+pub const RUNTIME_DIR: &str = "runtime";
 
 /// 事件模式 / 意图名的最大长度（点分段名的总长）。
 ///
@@ -66,6 +101,14 @@ pub struct ModuleManifest {
     pub backend: BackendSpec,
     /// 前端产物声明。
     pub frontend: FrontendSpec,
+    /// 受监管运行时声明（可选；缺省表示该模块不使用受监管运行时）。
+    ///
+    /// 一旦声明，内核负责定位运行时、校验版本、派生会话并全程监管；模块自身既不
+    /// 启动进程也不申请 `process:spawn`。它是 API v2 引入的字段，因此声明 `runtime`
+    /// 的清单必须同时把 `schema_version` 升到 "2" 且 `api_version` ≥ 2
+    /// （见 [`ModuleManifest::validate`]）。
+    #[serde(default)]
+    pub runtime: Option<RuntimeSpec>,
     /// 权限声明（授权上界，可为空）。注意枚举取值见 [`declared_permissions`] 的说明。
     #[serde(default)]
     pub permissions: Vec<String>,
@@ -169,6 +212,119 @@ pub struct FrontendSpec {
     pub register: String,
 }
 
+/// 受监管运行时声明。
+///
+/// 语义是「这台机器上要有一份满足 `engines` 的解释器，内核用它跑 `entry`」——
+/// 而**不是**「包内自带一份解释器」。运行时由内核定位（见 `registry/runtime.rs`），
+/// 因此同一份模块包在 Node 版本不同的机器上行为一致：不满足就明确拒绝启动，
+/// 不做降级、也不静默换一个解释器。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSpec {
+    /// 运行时种类；当前唯一合法取值为 [`RUNTIME_KIND_NODE`]。
+    pub kind: String,
+    /// 入口脚本的包内相对路径，必须落在 `runtime/` 子目录内。
+    pub entry: String,
+    /// 解释器版本要求。
+    pub engines: RuntimeEngines,
+    /// 进程线协议声明（必需，见 [`WireProtocolSpec`]）。
+    ///
+    /// 用 `Option` 而不是必填字段：缺失时要给出「缺什么、怎么补」的可操作错误，
+    /// 而不是 serde 那句只提字段名的反序列化失败。
+    #[serde(default)]
+    pub wire_protocol: Option<WireProtocolSpec>,
+}
+
+/// 进程线协议声明。
+///
+/// 带进程后端的模块必须显式声明协议标识与主版本，内核据此在**派生进程之前**判定
+/// 兼容性。它与 `schema_version`、`api_version`、helper-local ABI 版本分别表达不同的
+/// 兼容维度：一个字段不能替代另一个，也不能因为另一个对得上就放行。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireProtocolSpec {
+    /// 协议标识；当前唯一合法取值 [`WIRE_PROTOCOL_ID`]。
+    pub id: String,
+    /// 协议主版本；当前唯一合法取值 [`WIRE_PROTOCOL_VERSION`]。
+    pub version: u32,
+}
+
+/// 解释器版本要求。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeEngines {
+    /// Node 的 semver 区间（如 `>=22.19.0`）。内核据此校验本机 Node 是否可用。
+    pub node: String,
+}
+
+impl RuntimeSpec {
+    /// 校验声明自洽，并返回**规范化后**的入口相对路径。
+    ///
+    /// 返回路径而不是 `()`：`entry` 会被内核拼成磁盘路径去装载，"校验通过"与
+    /// "拿到一条已经过安全规则的路径"必须是同一次调用——否则调用方各自再规范化
+    /// 一次，就出现两套路径规则，而那正是目录穿越类缺陷的温床。
+    pub fn validate(&self) -> Result<PathBuf, KernelError> {
+        if self.kind != RUNTIME_KIND_NODE {
+            return Err(KernelError::Module(format!(
+                "runtime.kind 必须为 `{RUNTIME_KIND_NODE}`，实际为 `{}`",
+                self.kind
+            )));
+        }
+
+        // 协议声明在**派生进程之前**判定：启动后再发现对不上，就已经产生过一个
+        // 可能加载了代码的进程了。三条拒绝路径（缺失/未知标识/不支持版本）都必须
+        // 给出可操作提示，且明确「不回退到旧协议」。
+        let Some(wire) = &self.wire_protocol else {
+            return Err(KernelError::Module(format!(
+                "runtime.wire_protocol 缺失：带进程后端的模块必须声明协议标识 `{WIRE_PROTOCOL_ID}` \
+                 与主版本 {WIRE_PROTOCOL_VERSION}。若是旧版打包脚本生成的包，请用当前模板重新打包"
+            )));
+        };
+        if wire.id != WIRE_PROTOCOL_ID {
+            return Err(KernelError::Module(format!(
+                "runtime.wire_protocol.id 必须为 `{WIRE_PROTOCOL_ID}`，实际为 `{}`；\
+                 旧的长度前缀 helper 协议已不再支持，也不会回退到它，请按新协议重新打包",
+                wire.id
+            )));
+        }
+        if wire.version != WIRE_PROTOCOL_VERSION {
+            return Err(KernelError::Module(format!(
+                "runtime.wire_protocol.version 必须为 {WIRE_PROTOCOL_VERSION}，实际为 {}；\
+                 内核不提供旧协议回退，请用支持 v{WIRE_PROTOCOL_VERSION} 的模板重新打包",
+                wire.version
+            )));
+        }
+
+        let entry = crate::registry::package::safe_relative_path(&self.entry).ok_or_else(|| {
+            KernelError::Module(format!(
+                "runtime.entry `{}` 不是合法的包内相对路径\
+                 （不得为绝对路径、盘符前缀、含 `..` 穿越或空组件）",
+                self.entry
+            ))
+        })?;
+
+        // 必须落在 `runtime/` 内**且指向文件**：`entry` 只写到目录时，内核拿它去执行
+        // 只会得到一个目录错误——在装载期就说清楚，比运行期报一个含糊的系统错误好。
+        if !entry.starts_with(RUNTIME_DIR) || entry.components().count() < 2 {
+            return Err(KernelError::Module(format!(
+                "runtime.entry `{}` 必须位于 `{RUNTIME_DIR}/` 子目录内并指向入口文件",
+                self.entry
+            )));
+        }
+
+        semver::VersionReq::parse(&self.engines.node).map_err(|error| {
+            KernelError::Module(format!(
+                "runtime.engines.node `{}` 不是合法的 semver 区间：{error}",
+                self.engines.node
+            ))
+        })?;
+
+        Ok(entry)
+    }
+
+    /// 解析入口脚本在模块目录下的绝对路径（声明不合法即报错）。
+    pub fn resolve_entry(&self, module_dir: &Path) -> Result<PathBuf, KernelError> {
+        Ok(module_dir.join(self.validate()?))
+    }
+}
+
 impl BackendSpec {
     /// 产物文件名主干（去掉文件名中最后一个扩展名）。
     ///
@@ -214,9 +370,14 @@ impl ModuleManifest {
     /// 每条规则都给出「字段 + 实际值 + 期望」，因为模块作者拿到的是启动日志里的
     /// 一行文本，说不出「哪个字段、错在哪」就等于没报错。
     pub fn validate(&self) -> Result<(), KernelError> {
-        if self.schema_version != SUPPORTED_SCHEMA_VERSION {
+        if !SUPPORTED_SCHEMA_VERSIONS.contains(&self.schema_version.as_str()) {
             return Err(KernelError::Module(format!(
-                "schema_version 必须为 `{SUPPORTED_SCHEMA_VERSION}`，实际为 `{}`",
+                "schema_version 必须为 {}，实际为 `{}`",
+                SUPPORTED_SCHEMA_VERSIONS
+                    .iter()
+                    .map(|version| format!("`{version}`"))
+                    .collect::<Vec<_>>()
+                    .join(" 或 "),
                 self.schema_version
             )));
         }
@@ -260,9 +421,14 @@ impl ModuleManifest {
             )));
         }
 
-        if self.api_version != SUPPORTED_API_VERSION {
+        if !SUPPORTED_API_VERSIONS.contains(&self.api_version) {
             return Err(KernelError::Module(format!(
-                "api_version 必须为 {SUPPORTED_API_VERSION}，实际为 {}",
+                "api_version 必须为 {}，实际为 {}",
+                SUPPORTED_API_VERSIONS
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" 或 "),
                 self.api_version
             )));
         }
@@ -323,6 +489,29 @@ impl ModuleManifest {
             return Err(KernelError::Module(format!(
                 "intents 含重复意图名 `{duplicate}`"
             )));
+        }
+
+        // 运行时声明：字段本身合法还不够，它与所依赖的契约版本必须匹配。
+        // `runtime` 是 API v2 才有的能力，v1 模块声明它属于自相矛盾——那种清单要么是
+        // 作者照抄了新模板却没改版本号，要么是想绕过版本门禁，两种都该在装载期拦下。
+        if let Some(runtime) = &self.runtime {
+            if self.schema_version != SCHEMA_VERSION_V2 {
+                return Err(KernelError::Module(format!(
+                    "声明 runtime 时 schema_version 必须为 `{SCHEMA_VERSION_V2}`，实际为 `{}`",
+                    self.schema_version
+                )));
+            }
+            if self.api_version < API_VERSION_V2 {
+                return Err(KernelError::Module(format!(
+                    "声明 runtime 时 api_version 必须 ≥ {API_VERSION_V2}，实际为 {}",
+                    self.api_version
+                )));
+            }
+            // 带上模块 id：模块作者在启动日志里只看到这一行，不知道是哪个包的
+            // 声明不合格就等于没能报错。
+            runtime.validate().map_err(|error| {
+                KernelError::Module(format!("模块 `{}` 的 runtime 声明不合法：{error}", self.id))
+            })?;
         }
 
         Ok(())
@@ -463,9 +652,10 @@ mod tests {
     fn validation_rejects_bad_fields() {
         let base: ModuleManifest = ModuleManifest::parse(SAMPLE.as_bytes()).unwrap();
 
+        // schema_version 只接受受支持集合内的取值：未知版本必须拒绝（v2 本身已受支持）。
         let mut m = base.clone();
-        m.schema_version = "2".into();
-        assert!(m.validate().is_err());
+        m.schema_version = "3".into();
+        assert!(m.validate().is_err(), "未知 schema_version 必须拒绝");
 
         let mut m = base.clone();
         m.id = "single".into();
@@ -479,9 +669,19 @@ mod tests {
         m.version = "1.0".into();
         assert!(m.validate().is_err(), "非三段 semver 必须拒绝");
 
+        // api_version 同理：受支持的是 {1, 2}，未知值必须拒绝。
         let mut m = base.clone();
-        m.api_version = 2;
-        assert!(m.validate().is_err());
+        m.api_version = 3;
+        assert!(m.validate().is_err(), "未知 api_version 必须拒绝");
+
+        // 不声明 runtime 时，v2 清单格式与 api_version 1 的组合仍合法（格式升版
+        // 不等于强制模块升 API）。
+        let mut m = base.clone();
+        m.schema_version = SCHEMA_VERSION_V2.into();
+        assert!(m.validate().is_ok(), "v2 格式 + api 1 必须合法");
+        let mut m = base.clone();
+        m.api_version = API_VERSION_V2;
+        assert!(m.validate().is_ok(), "api 2 必须合法");
 
         let mut m = base.clone();
         m.platforms = vec!["windows-x64".into()];
@@ -620,5 +820,163 @@ mod tests {
         let parsed = ModuleManifest::parse_and_validate(&round).unwrap();
         assert_eq!(parsed.events, m.events);
         assert_eq!(parsed.intents, m.intents);
+    }
+
+    /// v2 清单：在 v1 基础上声明受监管 Node 运行时（cgl-agent 的形状）。
+    const SAMPLE_V2: &str = r#"{
+      "schema_version": "2",
+      "id": "copper-lamp.agent",
+      "i18n_namespace": "agent",
+      "display_name": "AI 助手",
+      "description": "基于受监管 Node 运行时的 AI 助手模块",
+      "author": { "name": "copper-lamp" },
+      "license": "MIT",
+      "version": "0.1.0",
+      "platforms": ["windows-x86_64", "linux-x86_64"],
+      "launcher": { "min": "0.1.0", "max": null },
+      "api_version": 2,
+      "backend": {
+        "crate": "copper-module-agent",
+        "entry": "copper_module_agent::AgentModule",
+        "artifact_glob": "target/release/copper_module_agent.dll"
+      },
+      "frontend": { "dist": "frontend/dist", "register": "register.js" },
+      "runtime": {
+        "kind": "node",
+        "entry": "runtime/pi-session.mjs",
+        "engines": { "node": ">=22.19.0" },
+        "wire_protocol": { "id": "copper-addon.ndjson", "version": 2 }
+      }
+    }"#;
+
+    #[test]
+    fn v2_manifest_with_runtime_validates_and_round_trips() {
+        let m = ModuleManifest::parse_and_validate(SAMPLE_V2.as_bytes()).expect("v2 清单必须合法");
+        let runtime = m.runtime.as_ref().expect("runtime 必须被解析出来");
+        assert_eq!(runtime.kind, RUNTIME_KIND_NODE);
+        assert_eq!(runtime.engines.node, ">=22.19.0");
+        // 规范化后的路径：分隔符归一，便于断言（Windows 上是 `\`）。
+        assert_eq!(
+            runtime
+                .validate()
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/"),
+            "runtime/pi-session.mjs"
+        );
+
+        // 新字段必须能往返：模板 schema 与内核表达要能对齐。
+        let round = serde_json::to_vec(&m).unwrap();
+        let parsed = ModuleManifest::parse_and_validate(&round).unwrap();
+        assert_eq!(parsed.runtime, m.runtime);
+    }
+
+    #[test]
+    fn v1_manifest_without_runtime_still_validates() {
+        // 存量 v1 模块必须原样可用——升契约版本的目的正是"不批量失效"。
+        let m = ModuleManifest::parse_and_validate(SAMPLE.as_bytes()).unwrap();
+        assert!(m.runtime.is_none());
+        assert_eq!(m.schema_version, SCHEMA_VERSION_V1);
+        assert_eq!(m.api_version, API_VERSION_V1);
+    }
+
+    #[test]
+    fn runtime_declaration_rules_are_enforced() {
+        let base: ModuleManifest = ModuleManifest::parse(SAMPLE_V2.as_bytes()).unwrap();
+        assert!(base.validate().is_ok(), "基准 v2 清单必须合法");
+
+        // 未支持的 kind。
+        let mut m = base.clone();
+        m.runtime.as_mut().unwrap().kind = "deno".into();
+        assert!(m.validate().is_err(), "未知 runtime.kind 必须拒绝");
+
+        // 入口越出 runtime/。
+        let mut m = base.clone();
+        m.runtime.as_mut().unwrap().entry = "frontend/register.js".into();
+        assert!(m.validate().is_err(), "runtime.entry 越出 runtime/ 必须拒绝");
+
+        // 入口只写到目录：拿它执行只会得到目录错误，必须在装载期拦下。
+        let mut m = base.clone();
+        m.runtime.as_mut().unwrap().entry = "runtime".into();
+        assert!(m.validate().is_err(), "runtime.entry 指向目录必须拒绝");
+
+        // 路径穿越与绝对路径。
+        let mut m = base.clone();
+        m.runtime.as_mut().unwrap().entry = "runtime/../escape.mjs".into();
+        assert!(m.validate().is_err(), "runtime.entry 含 `..` 必须拒绝");
+
+        let mut m = base.clone();
+        m.runtime.as_mut().unwrap().entry = "/etc/passwd".into();
+        assert!(m.validate().is_err(), "runtime.entry 绝对路径必须拒绝");
+
+        // engines.node 必须是合法 semver 区间。
+        let mut m = base.clone();
+        m.runtime.as_mut().unwrap().engines.node = "twenty-two".into();
+        assert!(m.validate().is_err(), "非法 engines.node 必须拒绝");
+
+        // 跨字段：runtime 属 v2 能力，低版本声明它必须拒绝。
+        let mut m = base.clone();
+        m.api_version = API_VERSION_V1;
+        assert!(m.validate().is_err(), "api_version 1 不得声明 runtime");
+
+        let mut m = base.clone();
+        m.schema_version = SCHEMA_VERSION_V1.into();
+        assert!(m.validate().is_err(), "schema_version 1 不得声明 runtime");
+    }
+
+    #[test]
+    fn runtime_declaration_requires_the_shared_wire_protocol() {
+        let base: ModuleManifest = ModuleManifest::parse(SAMPLE_V2.as_bytes()).unwrap();
+        let wire = base
+            .runtime
+            .as_ref()
+            .unwrap()
+            .wire_protocol
+            .clone()
+            .expect("基准清单必须带协议声明");
+        assert_eq!(wire.id, WIRE_PROTOCOL_ID);
+        assert_eq!(wire.version, WIRE_PROTOCOL_VERSION);
+
+        // 缺失声明：必须拒绝，且提示里要出现字段名与目标协议。
+        let mut missing = base.clone();
+        missing.runtime.as_mut().unwrap().wire_protocol = None;
+        let error = missing.validate().unwrap_err().to_string();
+        assert!(error.contains("wire_protocol"), "错误应指出缺失字段：{error}");
+        assert!(error.contains(WIRE_PROTOCOL_ID), "错误应给出目标协议标识：{error}");
+
+        // 未知协议标识（含旧的长度前缀 helper 协议）：不得回退，一律拒绝。
+        let mut legacy = base.clone();
+        legacy.runtime.as_mut().unwrap().wire_protocol = Some(super::WireProtocolSpec {
+            id: "copper-addon.length-prefixed".into(),
+            version: WIRE_PROTOCOL_VERSION,
+        });
+        assert!(legacy.validate().is_err(), "旧长度前缀协议标识必须拒绝");
+
+        // 不支持的主版本：拒绝，并说明内核不提供回退。
+        let mut old_version = base.clone();
+        old_version.runtime.as_mut().unwrap().wire_protocol = Some(super::WireProtocolSpec {
+            id: WIRE_PROTOCOL_ID.into(),
+            version: WIRE_PROTOCOL_VERSION - 1,
+        });
+        let error = old_version.validate().unwrap_err().to_string();
+        assert!(error.contains("wire_protocol.version"), "错误应指出版本字段：{error}");
+        assert!(error.contains("回退"), "错误应说明不提供回退：{error}");
+
+        // 报错必须带模块 id：启动日志里只有这一行，缺了它就定位不到是哪个包。
+        let mut identified = base.clone();
+        identified.runtime.as_mut().unwrap().wire_protocol = None;
+        let error = identified.validate().unwrap_err().to_string();
+        assert!(error.contains(&identified.id), "错误应带上模块 id：{error}");
+    }
+
+    #[test]
+    fn runtime_entry_resolves_against_module_dir() {
+        let m: ModuleManifest = ModuleManifest::parse(SAMPLE_V2.as_bytes()).unwrap();
+        let runtime = m.runtime.as_ref().unwrap();
+        let dir = Path::new("modules").join("copper-lamp.agent");
+        assert_eq!(
+            runtime.resolve_entry(&dir).unwrap(),
+            dir.join(RUNTIME_DIR).join("pi-session.mjs")
+        );
     }
 }

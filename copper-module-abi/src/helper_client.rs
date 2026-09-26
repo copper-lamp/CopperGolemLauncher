@@ -12,7 +12,6 @@
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::ipc::{
     read_frame, write_frame, CapabilityRequest, IpcError, IpcErrorDto, IpcMessage, IpcRequest,
-    IpcResponse, ModuleMethod, METHOD_CAPABILITY_REQUEST, PROTOCOL_VERSION,
+    IpcResponse, ModuleMethod, WireFrame, WIRE_PROTOCOL_ID, METHOD_CAPABILITY_REQUEST, PROTOCOL_VERSION,
 };
 
 /// stderr 只保留末尾这么多字节用于诊断，避免无界增长。
@@ -89,7 +88,9 @@ pub enum HelperError {
 
 /// IO 线程交给调用方的消息。
 enum HelperEvent {
+    Hello(WireFrame),
     Response(IpcResponse),
+    Unexpected(String),
     /// 帧能读出但无法解析成响应：协议级故障，不应被当作普通错误吞掉。
     Malformed(String),
 }
@@ -117,8 +118,6 @@ pub enum PushError {
 #[derive(Clone)]
 pub struct HelperPushHandle {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
-    /// 通知在会话内的序号，只用于日志可读性（没有响应需要与它配对）。
-    seq: Arc<AtomicU64>,
     module_id: String,
 }
 
@@ -140,14 +139,12 @@ impl HelperPushHandle {
 
     /// 发送一条单向通知。失败即表示 helper 已不可用（进程退出或管道关闭）。
     pub fn notify(&self, method: &str, params: Value) -> Result<(), PushError> {
-        let request = IpcRequest {
+        let encoded = IpcMessage::Notification {
             version: PROTOCOL_VERSION,
-            // `push-` 前缀与请求的 `req-` 前缀分属两个命名空间，日志里一眼可辨。
-            request_id: format!("push-{}", self.seq.fetch_add(1, Ordering::Relaxed)),
             method: method.to_owned(),
             params,
-        };
-        let encoded = IpcMessage::Request(request).encode()?;
+        }
+        .encode()?;
 
         let mut guard = self
             .stdin
@@ -169,8 +166,6 @@ pub struct HelperProcess {
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     module_id: String,
     request_seq: u64,
-    /// 通知序号，由 [`HelperProcess::push_handle`] 分出的句柄共享。
-    push_seq: Arc<AtomicU64>,
     negotiated_version: Option<u32>,
 }
 
@@ -220,7 +215,6 @@ impl HelperProcess {
             stderr_tail,
             module_id: module_id.to_owned(),
             request_seq: 0,
-            push_seq: Arc::new(AtomicU64::new(0)),
             negotiated_version: None,
         })
     }
@@ -232,7 +226,6 @@ impl HelperProcess {
     pub fn push_handle(&self) -> HelperPushHandle {
         HelperPushHandle {
             stdin: Arc::clone(&self.stdin),
-            seq: Arc::clone(&self.push_seq),
             module_id: self.module_id.clone(),
         }
     }
@@ -249,18 +242,35 @@ impl HelperProcess {
 
     /// 完成版本协商。必须成功后才能调用其它方法。
     pub fn handshake(&mut self, timeout: Duration) -> Result<u32, HelperError> {
-        let result = self.request(
-            ModuleMethod::Handshake,
-            json!({ "supported_versions": [PROTOCOL_VERSION] }),
-            timeout,
-        )?;
-        let version = result
-            .get("version")
-            .and_then(Value::as_u64)
-            .ok_or(HelperError::MissingResult)?;
-        let version = u32::try_from(version).map_err(|_| HelperError::MissingResult)?;
-        self.negotiated_version = Some(version);
-        Ok(version)
+        let hello = IpcMessage::Hello {
+            version: PROTOCOL_VERSION,
+            protocol: WIRE_PROTOCOL_ID.to_owned(),
+            supported_versions: vec![PROTOCOL_VERSION],
+            runtime: "copper-core".to_owned(),
+            capabilities: vec!["event.dispatch".to_owned()],
+        };
+        self.send_message(&hello)?;
+        match self.events.recv_timeout(timeout) {
+            Ok(HelperEvent::Hello(frame)) => {
+                let version = crate::ipc::negotiate_hello(&frame)?;
+                self.negotiated_version = Some(version);
+                Ok(version)
+            }
+            Ok(HelperEvent::Malformed(detail)) => Err(HelperError::Exited {
+                stderr: format!("helper sent a malformed frame: {detail}; {}", self.stderr()),
+            }),
+            Ok(HelperEvent::Response(response)) => Err(HelperError::RequestIdMismatch {
+                expected: "hello".to_owned(),
+                received: response.request_id,
+            }),
+            Ok(HelperEvent::Unexpected(detail)) => Err(HelperError::Exited {
+                stderr: format!("helper sent an unexpected frame during hello: {detail}; {}", self.stderr()),
+            }),
+            Err(RecvTimeoutError::Timeout) => Err(HelperError::Timeout {
+                timeout_ms: timeout.as_millis() as u64,
+            }),
+            Err(RecvTimeoutError::Disconnected) => Err(HelperError::Exited { stderr: self.stderr() }),
+        }
     }
 
     /// 请求 helper 加载并初始化插件。
@@ -335,17 +345,7 @@ impl HelperProcess {
             params,
         };
 
-        let encoded = IpcMessage::Request(request).encode()?;
-        let write_error = {
-            let mut guard = self
-                .stdin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let stdin = guard.as_mut().ok_or(HelperError::MissingPipe)?;
-            write_frame(stdin, &encoded)
-                .and_then(|()| stdin.flush().map_err(IpcError::Io))
-                .err()
-        };
+        let write_error = self.send_message(&IpcMessage::Request(request)).err();
         if let Some(error) = write_error {
             // 写失败通常意味着对端已经退出（例如 helper 启动自检未通过）。把它归为
             // "进程已退出"并带上 stderr，避免调用方只拿到一个没有上下文的 IO 错误。
@@ -354,11 +354,17 @@ impl HelperProcess {
                     stderr: format!("{error}; {}", self.stderr()),
                 });
             }
-            return Err(HelperError::Ipc(error));
+            return Err(error);
         }
 
         let response = match self.events.recv_timeout(timeout) {
             Ok(HelperEvent::Response(response)) => response,
+            Ok(HelperEvent::Hello(_)) => return Err(HelperError::Exited {
+                stderr: format!("helper sent hello while a request was pending; {}", self.stderr()),
+            }),
+            Ok(HelperEvent::Unexpected(detail)) => return Err(HelperError::Exited {
+                stderr: format!("helper sent an unexpected frame: {detail}; {}", self.stderr()),
+            }),
             Ok(HelperEvent::Malformed(detail)) => {
                 return Err(HelperError::Exited {
                     stderr: format!("helper sent a malformed frame: {detail}; {}", self.stderr()),
@@ -390,6 +396,14 @@ impl HelperProcess {
             });
         }
         response.result.ok_or(HelperError::MissingResult)
+    }
+
+    fn send_message(&self, message: &IpcMessage) -> Result<(), HelperError> {
+        let encoded = message.encode()?;
+        let mut guard = self.stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let stdin = guard.as_mut().ok_or(HelperError::MissingPipe)?;
+        write_frame(stdin, &encoded).and_then(|()| stdin.flush().map_err(IpcError::Io))?;
+        Ok(())
     }
 
     /// 优雅停机：请插件停止 → 关闭 stdin → 等待退出，超时则强制终止。
@@ -480,13 +494,25 @@ fn handle_stream(
         };
 
         match IpcMessage::decode(&payload) {
+            Ok(IpcMessage::Hello { .. }) => {
+                let frame = match crate::ipc::WireFrame::decode_line(&payload) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        let _ = sender.send(HelperEvent::Malformed(error.to_string()));
+                        return;
+                    }
+                };
+                if sender.send(HelperEvent::Hello(frame)).is_err() {
+                    return;
+                }
+            }
             Ok(IpcMessage::Response(response)) => {
                 if sender.send(HelperEvent::Response(response)).is_err() {
                     return;
                 }
             }
             Ok(IpcMessage::Request(request)) => {
-                let response = answer_capability_request(&*dispatcher, &module_id, request);
+                let response = answer_capability_request(dispatcher.as_ref(), &module_id, request);
                 let encoded = match IpcMessage::Response(response).encode() {
                     Ok(encoded) => encoded,
                     Err(_) => return,
@@ -501,6 +527,18 @@ fn handle_stream(
                 if write_frame(writer, &encoded).is_err() || writer.flush().is_err() {
                     return;
                 }
+            }
+            Ok(IpcMessage::Notification { .. }) => {
+                let _ = sender.send(HelperEvent::Unexpected("notification from helper".to_owned()));
+                return;
+            }
+            Ok(IpcMessage::Event { .. }) => {
+                let _ = sender.send(HelperEvent::Unexpected("event from helper".to_owned()));
+                return;
+            }
+            Ok(IpcMessage::Fatal { error, .. }) => {
+                let _ = sender.send(HelperEvent::Unexpected(format!("fatal: {}: {}", error.code, error.message)));
+                return;
             }
             Err(error) => {
                 let _ = sender.send(HelperEvent::Malformed(error.to_string()));

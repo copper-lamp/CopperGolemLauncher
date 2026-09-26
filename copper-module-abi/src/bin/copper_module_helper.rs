@@ -1,8 +1,9 @@
 //! `copper-module-helper`：在独立进程中加载并驱动**单个**附加模块插件。
 //!
 //! 契约与职责：
-//! - stdin 只接收宿主请求帧，stdout 只写出响应帧（长度前缀 JSON）。
-//!   **stdout 不允许出现任何日志**，诊断信息一律走 stderr。
+//! - stdin/stdout 承载统一的 `copper-addon.ndjson` v2 帧（UTF-8 NDJSON，一行一帧，
+//!   见 [`copper_module_abi::ipc`]）。首帧必须是 `hello`；非 hello 首帧按协议错误
+//!   终止会话。**stdout 不允许出现任何日志**，诊断信息一律走 stderr。
 //! - 每个 helper 进程只服务一个模块，进程退出即回收该模块的全部资源。
 //! - 宿主关闭管道视为正常结束；协议错误以非零退出码报告，便于 supervisor 区分
 //!   "正常停机"与"协议故障"。
@@ -16,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use copper_module_abi::helper_runtime::{
     validate_module_id, validate_plugin_path, HelperChannel, HelperRuntime,
 };
-use copper_module_abi::ipc::{IpcError, IpcMessage, IpcRequest};
+use copper_module_abi::ipc::{IpcError, IpcMessage};
 
 /// 参数或前置校验失败。
 const EXIT_USAGE: u8 = 2;
@@ -54,17 +55,45 @@ fn main() -> ExitCode {
 /// `invoke` 内发起能力请求时，宿主推来的事件会被能力回调暂存。因此必须先处理完
 /// 当前请求再排空，否则会与正在进行的插件调用重入。
 fn pump(channel: &Arc<Mutex<HelperChannel>>, runtime: &mut HelperRuntime) -> ExitCode {
+    match read_host_message(channel) {
+        Ok(IpcMessage::Hello { version, protocol, supported_versions, runtime: peer_runtime, capabilities }) => {
+            let frame = copper_module_abi::ipc::WireFrame::Hello {
+                version, protocol, supported_versions, runtime: peer_runtime, capabilities,
+            };
+            match runtime.handle_hello(&frame) {
+                Ok(response) => {
+                    if let Err(error) = lock_channel(channel).send(&response) {
+                        eprintln!("[helper] failed to respond to hello: {error}");
+                        return ExitCode::from(EXIT_PROTOCOL);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[helper] invalid hello negotiation: {error}");
+                    return ExitCode::from(EXIT_PROTOCOL);
+                }
+            }
+        }
+        Ok(_) => {
+            eprintln!("[helper] first frame must be a valid hello");
+            return ExitCode::from(EXIT_PROTOCOL);
+        }
+        Err(code) => return code,
+    }
+
     loop {
-        let request = match read_host_request(channel) {
-            Ok(request) => request,
+        let message = match read_host_message(channel) {
+            Ok(message) => message,
             Err(code) => return code,
         };
-
-        if let Err(code) = deliver(channel, runtime, request) {
+        if let Err(code) = deliver(channel, runtime, message) {
             return code;
         }
         for deferred in runtime.drain_deferred() {
-            if let Err(code) = deliver(channel, runtime, deferred) {
+            if let Err(code) = deliver(channel, runtime, IpcMessage::Notification {
+                version: copper_module_abi::ipc::PROTOCOL_VERSION,
+                method: deferred.method,
+                params: deferred.params,
+            }) {
                 return code;
             }
         }
@@ -72,7 +101,7 @@ fn pump(channel: &Arc<Mutex<HelperChannel>>, runtime: &mut HelperRuntime) -> Exi
 }
 
 /// 读一帧宿主请求。宿主关闭管道视为正常停机（helper 没有别的事可做）。
-fn read_host_request(channel: &Arc<Mutex<HelperChannel>>) -> Result<IpcRequest, ExitCode> {
+fn read_host_message(channel: &Arc<Mutex<HelperChannel>>) -> Result<IpcMessage, ExitCode> {
     let message = {
         let mut guard = lock_channel(channel);
         match guard.recv() {
@@ -87,27 +116,20 @@ fn read_host_request(channel: &Arc<Mutex<HelperChannel>>) -> Result<IpcRequest, 
         }
     };
 
-    match message {
-        IpcMessage::Request(request) => Ok(request),
-        IpcMessage::Response(response) => {
-            eprintln!(
-                "[helper] host sent an unexpected response for `{}`",
-                response.request_id
-            );
-            Err(ExitCode::from(EXIT_PROTOCOL))
-        }
-    }
+    Ok(message)
 }
 
 /// 处理一帧宿主请求：请求 / 响应方法回帧，单向通知回 `None`（不回帧）。
 fn deliver(
     channel: &Arc<Mutex<HelperChannel>>,
     runtime: &mut HelperRuntime,
-    request: IpcRequest,
+    message: IpcMessage,
 ) -> Result<(), ExitCode> {
-    let Some(response) = runtime.handle_host_frame(request) else {
-        // 单向通知：宿主没有人在等响应帧。多写一帧会被宿主当成某个 invoke 的响应，
-        // 把一次成功的调用判成 request id 不匹配失败。
+    let response = runtime.handle_host_frame(message).map_err(|error| {
+        eprintln!("[helper] invalid host frame: {error}");
+        ExitCode::from(EXIT_PROTOCOL)
+    })?;
+    let Some(response) = response else {
         return Ok(());
     };
     if let Err(error) = lock_channel(channel).send(&IpcMessage::Response(response)) {

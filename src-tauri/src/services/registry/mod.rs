@@ -45,6 +45,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::error::KernelError;
+use crate::registry::manifest::SUPPORTED_API_VERSIONS;
 use crate::services::paths::Paths;
 use crate::services::settings::SettingsService;
 
@@ -226,7 +227,13 @@ pub fn install_block_reason(
     if !entry.status.is_approved() {
         return Some("module.registry.block.not_approved");
     }
-    if entry.api_version != 1 {
+    // 注意两个"版本"不是一回事，别把它们合并：本函数判的是**模块 API 版本**
+    // （`Module` trait 契约，取自 `registry::manifest`），而 `SUPPORTED_SCHEMA_VERSION`
+    // 是**索引 schema 版本**。前者决定模块能否被内核装载，后者决定索引能否被解析。
+    let supported_api = u32::try_from(entry.api_version)
+        .map(|version| SUPPORTED_API_VERSIONS.contains(&version))
+        .unwrap_or(false);
+    if !supported_api {
         return Some("module.registry.block.api_version");
     }
     let Some(current) = model::Platform::current() else {
@@ -1370,12 +1377,16 @@ mod tests {
         );
         entry.max_launcher = None;
 
-        // api_version 不匹配。
-        entry.api_version = 2;
+        // api_version 不受支持：1 与 2 都受支持，故用 3 触发拒绝。
+        entry.api_version = 3;
         assert_eq!(
             install_block_reason(&entry, Some(&asset), "0.1.0"),
             Some("module.registry.block.api_version")
         );
+
+        // api_version 2（受监管运行时）必须可安装。
+        entry.api_version = 2;
+        assert_eq!(install_block_reason(&entry, Some(&asset), "0.1.0"), None);
         entry.api_version = 1;
 
         // 平台不支持。

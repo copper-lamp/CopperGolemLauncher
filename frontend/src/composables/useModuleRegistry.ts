@@ -25,8 +25,8 @@ import {
 import { useLocaleRef } from "../i18n";
 import { currentPlatform } from "./usePlatform";
 
-/** 内核 `Module` trait 契约版本，当前为 1（2.3.2 `api_version`）。 */
-const SUPPORTED_API_VERSION = 1;
+/** 内核 `Module` trait 契约版本，当前支持 1 与 2（2.3.2 `api_version`）。 */
+const SUPPORTED_API_VERSION = 2;
 
 /**
  * 客户端支持的元数据契约版本（cgl-libs.md 2.5 规则 4 / 3.1）。
