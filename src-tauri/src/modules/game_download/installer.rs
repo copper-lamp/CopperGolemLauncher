@@ -34,7 +34,7 @@ const CACHE_SUBDIR: &str = "game-download";
 /// 商店授权 key 缓存子目录（DPAPI + 账户绑定，离线复用）。
 const STORE_KEY_SUBDIR: &str = "store-key";
 /// 版本根下的整包暂存子目录（同盘复用，独立于解包输出目录）。
-const DOWNLOAD_SUBDIR: &str = ".download";
+pub const DOWNLOAD_SUBDIR: &str = ".download";
 /// 启动续传时单个任务允许的最大自动重投次数（防 failed 无限重下）。
 const MAX_RESUME_ATTEMPTS: i64 = 3;
 
@@ -254,6 +254,23 @@ fn delete_record(ctx: &Ctx, version_id: &str) -> Result<(), KernelError> {
 
 // ---------------------------------------------------------------- 命令核心
 
+/// 给落盘失败补上「版本根来自哪个设置项」这层定位信息。
+///
+/// 裸 `os error 5` 只有一个错误码，用户既不知道是哪个目录，也不知道该去哪里改。
+/// 这里把生效中的版本根一并写进消息，并指向控制它的设置项，让失败可自助修复。
+fn annotate_versions_root(ctx: &Ctx, error: KernelError) -> KernelError {
+    KernelError::Io(std::io::Error::new(
+        match &error {
+            KernelError::Io(e) => e.kind(),
+            _ => std::io::ErrorKind::Other,
+        },
+        format!(
+            "{error}（版本根目录 {}，由设置项 `game.directory` 控制）",
+            ctx.versions_root().display()
+        ),
+    ))
+}
+
 /// 投递下载：查已安装幂等拒绝 → 定目录 → upsert 记录 → 投递全局下载队列 → 回填 task_id → 广播。
 pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
     // 已安装幂等拒绝。
@@ -293,7 +310,17 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
         // installed / failed → 允许重装，重置状态继续。
     }
 
-    std::fs::create_dir_all(dest.parent().unwrap_or(Path::new(".")))?;
+    // 落盘前确认整包暂存目录**真的**可写。
+    //
+    // 这里原本是裸 `create_dir_all(..)?`：目录已存在但不可写时（自定义版本根指向
+    // 受限卷、被收紧的 ACL、占用中的挂载点）`create_dir_all` 会直接成功，直到引擎
+    // 第一次写 `.part` 才失败，而失败会以不带任何路径的 `os error 5` 冒泡到界面，
+    // 用户无从判断是「网络」还是「目录权限」。改为带写探针 + 带路径的报错。
+    crate::services::paths::ensure_writable_dir(
+        dest.parent().unwrap_or(Path::new(".")),
+        "下载暂存",
+    )
+    .map_err(|e| annotate_versions_root(ctx, e))?;
 
     let opts = DownloadOptions {
         resume: true,
@@ -873,7 +900,16 @@ fn recover_orphan_packages(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
     let download_dir = ctx.versions_root().join(DOWNLOAD_SUBDIR);
     let entries = match std::fs::read_dir(&download_dir) {
         Ok(v) => v,
-        Err(_) => return,
+        // 目录不存在是正常态（尚未下载过任何版本），静默跳过；但**不可写**这类
+        // 失败必须留痕，否则自定义版本根权限异常会被当成「没有孤儿包」永久掩盖。
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            log::warn!(
+                "[game-download] 孤儿包回收读取 {} 失败: {e}",
+                download_dir.display()
+            );
+            return;
+        }
     };
     let manifest = match block_load(ctx) {
         Ok(v) => v,

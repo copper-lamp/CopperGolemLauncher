@@ -98,10 +98,27 @@ impl Module for GameDownloadModule {
     }
 
     fn start(&self, kernel: &KernelContext) -> Result<(), KernelError> {
-        // 确保缓存目录存在（下载 / Store 授权缓存）。
         let ctx = Ctx::from_kernel(kernel);
-        std::fs::create_dir_all(ctx.cache_home())?;
-        std::fs::create_dir_all(ctx.store_key_dir())?;
+
+        // 缓存目录（下载 / Store 授权缓存）。用带路径的探测而不是裸 `create_dir_all(..)?`：
+        // 后者在「目录存在但不可写」时会直接成功，把故障推迟到首次落盘，并以不带任何
+        // 路径的 `os error 5` 暴露在下载界面上。
+        crate::services::paths::ensure_writable_dir(&ctx.cache_home(), "下载缓存")?;
+        crate::services::paths::ensure_writable_dir(&ctx.store_key_dir(), "商店授权缓存")?;
+
+        // 生效中的版本根（可能是 `game.directory` 自定义根）。这里**只探测不中断启动**：
+        // 版本根不可用不该让整个启动器打不开，但必须留痕——否则它会以一句裸
+        // `os error 5` 出现在下载按钮上，用户既看不到路径也不知道去哪改。
+        match kernel.paths().ensure_versions_root(kernel.settings()) {
+            Ok(root) => {
+                let downloads = root.join(installer::DOWNLOAD_SUBDIR);
+                if let Err(e) = crate::services::paths::ensure_writable_dir(&downloads, "下载暂存") {
+                    log::warn!("[game-download] 整包暂存目录不可用: {e}");
+                }
+            }
+            Err(e) => log::warn!("[game-download] 版本根目录不可用: {e}"),
+        }
+
         // 续装 / 续传未完成任务。
         installer::resume_pending(&ctx, &self.install_lock);
         Ok(())

@@ -71,25 +71,10 @@ impl<'a> Reader<'a> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-
-    fn peek_u16(&self) -> Result<u16, KernelError> {
-        if self.remaining() < 2 {
-            return Err(invalid("AndroidManifest.xml 意外截断"));
-        }
-        Ok(u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]))
-    }
-
-    fn peek_u8(&self) -> Result<u8, KernelError> {
-        if self.remaining() < 1 {
-            return Err(invalid("AndroidManifest.xml 意外截断"));
-        }
-        Ok(self.data[self.pos])
-    }
 }
 
 struct StringPool {
     strings: Vec<String>,
-    utf8: bool,
 }
 
 impl StringPool {
@@ -103,7 +88,7 @@ impl StringPool {
         let utf8 = flags & POOL_FLAG_UTF8 != 0;
 
         if string_count == 0 {
-            return Ok(Self { strings: Vec::new(), utf8 });
+            return Ok(Self { strings: Vec::new() });
         }
         if strings_start < 28 || strings_start > chunk.len() {
             return Err(invalid("AndroidManifest.xml 字符串池偏移越界"));
@@ -129,7 +114,7 @@ impl StringPool {
             }
             strings.push(read_pool_string(chunk, abs, utf8)?);
         }
-        Ok(Self { strings, utf8 })
+        Ok(Self { strings })
     }
 
     fn get(&self, index: u32) -> Result<&str, KernelError> {
@@ -174,16 +159,18 @@ fn read_utf16_string(reader: &mut Reader<'_>) -> Result<String, KernelError> {
     String::from_utf16(&units).map_err(|_| invalid("AndroidManifest.xml 字符串不是合法 UTF-16"))
 }
 
+/// UTF-8 pool length prefix: 1 byte, or 2 bytes when the high bit is set.
+///
+/// The two-byte form packs `(first & 0x7F) << 8 | second`, so the second
+/// byte is read positionally — going through a `u16` peek here would pick up
+/// the byte order and the first byte again.
 fn read_utf8_length(reader: &mut Reader<'_>) -> Result<usize, KernelError> {
-    let first = reader.peek_u8()?;
+    let first = reader.take(1)?[0];
     if first & 0x80 == 0 {
-        reader.take(1)?;
-        Ok(first as usize)
-    } else {
-        let second = reader.peek_u16()? as u8;
-        reader.take(2)?;
-        Ok((((first & 0x7F) as usize) << 8) | second as usize)
+        return Ok(first as usize);
     }
+    let second = reader.take(1)?[0];
+    Ok((((first & 0x7F) as usize) << 8) | second as usize)
 }
 
 /// Read `package` / `versionName` / `versionCode` from a binary manifest.

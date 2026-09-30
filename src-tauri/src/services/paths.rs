@@ -142,13 +142,46 @@ impl Paths {
 
     /// 解析当前游戏（版本）根目录：优先 `settings.game.directory`（非空），否则默认版本目录。
     ///
-    /// 是版本根目录的**唯一**解析入口；新增自定义根时由调用方负责 `create_dir_all`。
+    /// 是版本根目录的**唯一**解析入口。
+    ///
+    /// 注意：`create_dir_all` 不会在这里做——本方法只做**解析**，因为设置项随时可改，
+    /// 解析阶段创建目录会把启动和用户意图绑死。调用方真正要落盘时必须走
+    /// [`Paths::ensure_versions_root`]，否则受限环境下会以裸 `os error 5` 冒泡。
     pub fn versions_root(&self, settings: &SettingsService) -> PathBuf {
         settings
             .get::<String>("game.directory")
             .filter(|s| !s.trim().is_empty())
             .map(|s| PathBuf::from(s.trim()))
             .unwrap_or_else(|| self.versions_dir.clone())
+    }
+
+    /// 确保**生效中的**版本根目录存在且真的可写。
+    ///
+    /// [`Paths::prepare`] 的写探针只覆盖默认 `versions_dir`，但下载与安装真正写入的是
+    /// [`Paths::versions_root`]（`game.directory` 自定义根）。用户改过设置后，那条路径
+    /// 在启动期从未被创建、也从未被探测，于是首个触碰它的落盘动作才失败，且失败
+    /// 表现为不带任何路径的 `os error 5`。
+    ///
+    /// 这里把该目录提前建好并探测，让不可用的自定义目录在触碰前就带着路径与
+    /// 修复指引报错。
+    pub fn ensure_versions_root(&self, settings: &SettingsService) -> Result<PathBuf, KernelError> {
+        let root = self.versions_root(settings);
+        if root == self.versions_dir {
+            // 默认根已在 `prepare()` 里探测过，不重复写探针。
+            return Ok(root);
+        }
+        ensure_writable(&root, "版本根").map_err(|e| self.annotate_versions_root(e))?;
+        Ok(root)
+    }
+
+    /// 给版本根相关的失败补上「这个路径是被哪个设置项控制的」这层定位信息。
+    fn annotate_versions_root(&self, error: KernelError) -> KernelError {
+        KernelError::Io(std::io::Error::new(
+            error_io_kind(&error),
+            format!(
+                "{error}（该路径由设置项 `game.directory` 控制，可在「设置 → 版本目录」改为可写路径）"
+            ),
+        ))
     }
 
     /// 附加模块目录。
@@ -222,8 +255,30 @@ fn dir_failure(label: &str, dir: &Path, e: &std::io::Error) -> KernelError {
     ))
 }
 
+/// 确保目录存在且**真的**可写，供模块在内核目录之外（如自定义版本根）落盘前复用。
+///
+/// 与 [`ensure_writable`] 同源，公开出来是为了让「目录存在但不可写」这类延迟故障
+/// 在**触碰该目录的那个功能**里就暴露，而不是退化成裸 `os error 5`。
+pub fn ensure_writable_dir(dir: &Path, label: &str) -> Result<(), KernelError> {
+    ensure_writable(dir, label)
+}
+
+/// 取出 `KernelError` 里携带的 `io::ErrorKind`，非 IO 错误回退为 `Other`。
+///
+/// 仅用于**保留原始 kind** 给二次包装（`is_fatal_io_kind` / 重试判定依赖 kind，
+/// 一旦退化成 `Other`，`PermissionDenied` 会被误判成可重试）。
+fn error_io_kind(error: &KernelError) -> std::io::ErrorKind {
+    match error {
+        KernelError::Io(e) => e.kind(),
+        _ => std::io::ErrorKind::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
     use super::*;
 
     /// 造一个互不干扰的临时根目录（并行测试下也不互相踩）。
@@ -286,6 +341,83 @@ mod tests {
 
     #[test]
     fn blank_env_var_is_treated_as_unset() {
-        assert!(non_empty_env("COPPER_PATHS_DEFINITELY_UNSET_VAR").is_none());
+        assert!(non_empty_env("COPPER_PATHS_DEFINITALLY_UNSET_VAR").is_none());
+    }
+
+    /// 造一个只带 `game.directory` 设置项的 SettingsService。
+    fn settings_with_dir(root: &Path) -> SettingsService {
+        let db = crate::services::database::DatabaseService::open(&root.join("t.db"))
+            .expect("打开临时数据库");
+        SettingsService::new(
+            Arc::new(db),
+            Arc::new(super::super::registry::events::EventBus::new()),
+            HashMap::new(),
+        )
+        .expect("创建设置服务")
+    }
+
+    /// 回归：`game.directory` 自定义根此前完全不被校验，下载首次落盘时才以裸
+    /// `os error 5` 失败。这里确保它在 `ensure_versions_root` 阶段就被建好。
+    #[test]
+    fn ensure_versions_root_creates_custom_root() {
+        let root = temp_root("custom-root");
+        std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
+        let paths = Paths::with_root(root.clone());
+        let custom = root.join("elsewhere").join("versions");
+        let settings = settings_with_dir(&root);
+        settings
+            .set("game.directory", custom.to_string_lossy().to_string().as_str())
+            .expect("写入设置");
+
+        let resolved = paths.ensure_versions_root(&settings).expect("自定义根应被创建");
+        assert_eq!(resolved, custom);
+        assert!(custom.is_dir(), "自定义版本根应已创建: {}", custom.display());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回归：自定义根不可用时，错误必须带路径与设置项线索，而不是裸 `os error 5`。
+    #[test]
+    fn ensure_versions_root_error_names_path_and_setting() {
+        let root = temp_root("custom-root-blocked");
+        std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
+        // 用一个**文件**占住自定义根的位置，使其无法被创建为目录。
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, b"").expect("创建占位文件");
+        let custom = blocker.join("versions");
+
+        let paths = Paths::with_root(root.clone());
+        let settings = settings_with_dir(&root);
+        settings
+            .set("game.directory", custom.to_string_lossy().to_string().as_str())
+            .expect("写入设置");
+
+        let error = paths
+            .ensure_versions_root(&settings)
+            .expect_err("占位文件挡住了自定义根，应当失败");
+        let text = error.to_string();
+        assert!(text.contains("game.directory"), "错误应指向设置项: {text}");
+        assert!(
+            text.contains(&custom.display().to_string()),
+            "错误应包含路径: {text}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 默认根已在 `prepare()` 探测过，`ensure_versions_root` 不应重复建目录语义。
+    #[test]
+    fn ensure_versions_root_returns_default_when_unset() {
+        let root = temp_root("default-root");
+        std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
+        let paths = Paths::with_root(root.clone());
+        let settings = settings_with_dir(&root);
+
+        assert_eq!(
+            paths.ensure_versions_root(&settings).expect("默认根"),
+            paths.versions_dir().clone()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
