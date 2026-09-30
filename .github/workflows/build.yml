@@ -129,8 +129,10 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          # Tauri v2 Android 的基线是 17；更高的 JDK 可能与 AGP 冲突。
-          java-version: 17
+          # 必须 >= 21：:app 与 :minecraft 都声明 sourceCompatibility/targetCompatibility
+          # = VERSION_21（jvmTarget 21），JDK 17 的 javac 会报 "invalid source release: 21"。
+          # AGP 8.11 + Kotlin 1.9.25 均支持 JDK 21。
+          java-version: 21
 
       - name: 准备 Android SDK
         uses: android-actions/setup-android@v4

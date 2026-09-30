@@ -348,9 +348,11 @@ mod tests {
     fn settings_with_dir(root: &Path) -> SettingsService {
         let db = crate::services::database::DatabaseService::open(&root.join("t.db"))
             .expect("打开临时数据库");
+        db.migrate_scope("core", crate::services::database::CORE_MIGRATIONS)
+            .expect("执行核心迁移");
         SettingsService::new(
             Arc::new(db),
-            Arc::new(super::super::registry::events::EventBus::new()),
+            Arc::new(crate::registry::events::EventBus::new()),
             HashMap::new(),
         )
         .expect("创建设置服务")
@@ -366,7 +368,7 @@ mod tests {
         let custom = root.join("elsewhere").join("versions");
         let settings = settings_with_dir(&root);
         settings
-            .set("game.directory", custom.to_string_lossy().to_string().as_str())
+            .set("game.directory", &custom.to_string_lossy().to_string())
             .expect("写入设置");
 
         let resolved = paths.ensure_versions_root(&settings).expect("自定义根应被创建");
@@ -389,7 +391,7 @@ mod tests {
         let paths = Paths::with_root(root.clone());
         let settings = settings_with_dir(&root);
         settings
-            .set("game.directory", custom.to_string_lossy().to_string().as_str())
+            .set("game.directory", &custom.to_string_lossy().to_string())
             .expect("写入设置");
 
         let error = paths
