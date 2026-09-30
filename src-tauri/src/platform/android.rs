@@ -25,3 +25,14 @@ pub fn publish_exited(events: &EventBus, instance: &str, reason: &str) {
         "reason": reason,
     }));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_empty_prepare_request() {
+        let events = EventBus::new();
+        assert!(request_prepare(&events, "", "com.mojang.minecraftpe").is_err());
+        assert!(request_prepare(&events, "v", "").is_err());
+    }
+}

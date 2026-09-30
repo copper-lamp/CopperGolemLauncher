@@ -39,11 +39,7 @@
 
         <receiver
             android:name=".GameExitReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.copperlamp.coppergolem.GAME_EXITED" />
-            </intent-filter>
-        </receiver>
+            android:exported="false" />
 
         <provider
           android:name="androidx.core.content.FileProvider"
