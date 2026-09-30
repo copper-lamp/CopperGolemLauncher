@@ -609,15 +609,30 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
                             expected: expected.clone(),
                             actual,
                         };
-                        if attempt < attempts {
+                        // 累计重试次数必须以 `state.retry_count` 为准，不能用本层的
+                        // 局部 `attempt`：后者只统计「传输失败」，整包校验失败走的是
+                        // 这条独立分支。一旦只用 `attempt` 判定，每次递归都会把计数
+                        // 重置为 0，任务将无限重试——既不 `Failed` 也不 `Done`，
+                        // 界面永远停在「下载中」（`checksum_mismatch_fails` 曾稳定挂死）。
+                        let retried = state.retry_count.load(Ordering::Relaxed);
+                        if retried < attempts {
                             let _ = tokio::fs::remove_file(&state.part_path).await;
                             state.downloaded_bytes.store(0, Ordering::Relaxed);
-                            state.retry_count.store(attempt + 1, Ordering::Relaxed);
-                            state.set_error(format!("{err}（第 {} 次重试）", attempt + 1));
+                            state.retry_count.store(retried + 1, Ordering::Relaxed);
+                            state.set_error(format!("{err}（第 {} 次重试）", retried + 1));
+                            inner.emit_status(&state);
                             let delay = Duration::from_millis(
-                                (BACKOFF_BASE_MS * 2u64.pow(attempt)).min(BACKOFF_CAP_MS),
+                                (BACKOFF_BASE_MS * 2u64.pow(retried)).min(BACKOFF_CAP_MS),
                             );
-                            tokio::time::sleep(delay).await;
+                            // 名额已在进入本 `match` 前释放，这里不能重复释放。
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => {}
+                                _ = wait_pause(&state) => {
+                                    state.set_status(DownloadStatus::Paused);
+                                    inner.emit_status(&state);
+                                    return Ok(());
+                                }
+                            }
                             return Box::pin(run_task(inner, state)).await;
                         }
                         state.set_error(err.to_string());
