@@ -18,8 +18,8 @@ import java.util.zip.ZipFile
  * 导入实例的运行时资源与原生库管理者。
  *
  * 职责边界：
- * - 从 `base.apk.levi` 与 `splits/*.apk.levi` 中把 `lib/<abi>/*.so` 解压到
- *   启动器缓存目录，做镜像重写、权限收紧，再交给 [System.load]；
+ * - 从 `base.apk.levi` 与 `splits/` 下的 `*.apk.levi` 中把各 ABI 的 `.so`
+ *   解压到启动器缓存目录，做镜像重写、权限收紧，再交给 [System.load]；
  * - 通过反射 `AssetManager#addAssetPath` 把用户 APK 挂进资源表，让
  *   Mojang 运行时能读到 `assets/` 下的纹理、着色器与语言包；
  * - 把 Conscrypt 插到 JCA 首位（Minecraft 的 TLS 校验依赖）。

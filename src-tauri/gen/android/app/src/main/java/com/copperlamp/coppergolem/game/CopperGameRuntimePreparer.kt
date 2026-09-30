@@ -82,8 +82,9 @@ object CopperGameRuntimePreparer {
         launchIntent.putExtra(EXTRA_DATA_DIR, game.gameDataDir().absolutePath)
         launchIntent.putExtra(EXTRA_CACHE_DIR, game.gameCacheDir().absolutePath)
         launchIntent.putExtra(EXTRA_SOURCE_DIR, info.sourceDir)
-        if (info.splitSourceDirs != null) {
-            launchIntent.putStringArrayListExtra(EXTRA_SPLIT_SOURCE_DIRS, arrayListOf(*info.splitSourceDirs))
+        val splitDirs = info.splitSourceDirs
+        if (splitDirs != null) {
+            launchIntent.putStringArrayListExtra(EXTRA_SPLIT_SOURCE_DIRS, arrayListOf(*splitDirs))
         }
         launchIntent.putExtra(CopperGameInstance.EXTRA_INSTANCE, game.name)
         launchIntent.putExtra(CopperGameInstance.EXTRA_VERSION_CODE, game.versionCode)

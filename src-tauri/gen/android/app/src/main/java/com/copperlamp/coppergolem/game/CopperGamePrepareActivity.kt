@@ -52,7 +52,7 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var returnButton: Button
-    private lateinit var accentColor: Int
+    private val accentColor: Int by lazy { resolveAccentColor() }
 
     private var trace: CopperGameTrace? = null
     private var lastLogMessage: String? = null
@@ -67,7 +67,6 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
         hideSystemUi()
 
         trace = CopperGameTrace.ensure(intent)
-        accentColor = resolveAccentColor()
 
         buildUi()
         CopperGamePackageManager.reset()
@@ -166,7 +165,7 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
             includeFontPadding = false
             typeface = android.graphics.Typeface.MONOSPACE
         }
-        logScroll.addView(logView, ScrollView.LayoutParams(
+        logScroll.addView(logView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ))
@@ -177,7 +176,7 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
 
         returnButton = Button(this).apply {
             setText("返回启动器")
-            isVisible = false
+            isVisible(false)
             backgroundTintList = android.content.res.ColorStateList.valueOf(accentColor)
             setTextColor(Color.WHITE)
             setOnClickListener { returnToLauncher() }
