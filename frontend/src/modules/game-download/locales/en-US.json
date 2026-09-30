@@ -68,5 +68,14 @@
     "cancelled": "Cancelled",
     "refresh_ok": "List refreshed"
   },
+  "import": {
+    "picking": "Choosing a file",
+    "copying": "Copying into app storage",
+    "importing": "Importing",
+    "launching": "Starting the game",
+    "cancelled": "Import cancelled",
+    "failed": "Import failed",
+    "picked": "Imported {name} ({version})"
+  },
   "empty": "No downloadable versions"
 }

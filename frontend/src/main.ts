@@ -15,6 +15,7 @@ import { initSettings } from "./composables/useSettings";
 import { initDownloads } from "./composables/useDownloads";
 import { initAccount } from "./composables/useAccount";
 import { markKernelReady } from "./composables/useKernelReady";
+import { observeAndroidGameExit } from "./composables/useAndroidGameExit";
 import { loadAddonFrontends } from "./modules/addonRuntime";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -55,19 +56,22 @@ void Promise.race([
     app.mount("#app");
   });
 
-void listen<{ instance_name: string; package_name: string }>("android-game-prepare", async (event) => {
-  const instance = encodeURIComponent(event.payload.instance_name);
-  await openExternal(`coppergolem://game?instance_name=${instance}`).catch((error: unknown) => {
-    forward(`android game bridge failed: ${String(error)}`);
-  });
-});
+void listen<{ instance_name: string; package_name: string; version_name: string }>(
+  "android-game-prepare",
+  async (event) => {
+    const instance = encodeURIComponent(event.payload.instance_name);
+    const version = encodeURIComponent(event.payload.version_name ?? "");
+    await openExternal(`coppergolem://game?instance_name=${instance}&version_name=${version}`).catch(
+      (error: unknown) => {
+        forward(`android game bridge failed: ${String(error)}`);
+      },
+    );
+  },
+);
 
-void listen<{ instance_name: string; reason?: string }>("android-game-exited", (event) => {
-  void invoke("debug_log", {
-    level: "info",
-    message: `Android game exited: ${event.payload.instance_name} (${event.payload.reason ?? "unknown"})`,
-  }).catch(() => {});
-});
+// 游戏退出不走事件总线：原生库不可卸载，退出只能由 Java 宿主写文件信箱，
+// 详见 composables/useAndroidGameExit.ts。
+observeAndroidGameExit();
 
 void Promise.allSettled([initSettings(), initDownloads(), initAccount()]);
 

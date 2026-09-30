@@ -68,5 +68,14 @@
     "cancelled": "已取消",
     "refresh_ok": "清单已刷新"
   },
+  "import": {
+    "picking": "正在选择文件",
+    "copying": "正在复制到应用目录",
+    "importing": "正在导入",
+    "launching": "正在启动游戏",
+    "cancelled": "已取消导入",
+    "failed": "导入失败",
+    "picked": "已导入 {name}（{version}）"
+  },
   "empty": "暂无可下载的版本"
 }

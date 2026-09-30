@@ -78,7 +78,13 @@ object CopperGameLayout {
 
     /** 退出记录：Rust 通过 `android_game_take_exit` 读取并删除。 */
     fun exitRecordFile(context: Context): File =
-        File(File(context.filesDir, "data"), EXIT_RECORD)
+        dataFile(context, EXIT_RECORD)
+
+    /** SAF 选择结果：Rust 通过 `android_apk_pick_result` 读取并删除。 */
+    fun dataResultFile(context: Context, name: String): File = dataFile(context, name)
+
+    private fun dataFile(context: Context, name: String): File =
+        File(File(context.filesDir, "data"), name)
 
     /** Android ABI 名 → `System.loadLibrary` 使用的目录名（与 LeviLauncher 一致）。 */
     fun abiToLibDir(abi: String): String = when (abi) {

@@ -55,6 +55,9 @@ pub fn request_prepare(
 /// Exit record written by the Java host, relative to the data root.
 pub const EXIT_RECORD_FILE: &str = "game_exit.json";
 
+/// SAF pick result written by the Java host, relative to the data root.
+pub const APK_PICK_RESULT_FILE: &str = "apk_pick_result.json";
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExitRecord {
@@ -64,23 +67,68 @@ pub struct ExitRecord {
     pub exited_at: i64,
 }
 
+/// Result of a system file-picker round trip performed by the Java host.
+///
+/// `tauri-plugin-dialog` on Android resolves to a `content://` URI and does
+/// not materialise a file, so the host copies the picked stream into
+/// `cache/inbox/` first. Only that private copy is ever handed to the kernel:
+/// the kernel never reads a `content://` URI, and never sees a path outside
+/// app-private storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApkPickResult {
+    pub request_id: String,
+    /// Absolute path inside app-private storage; empty on failure.
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub error: String,
+}
+
+impl ApkPickResult {
+    pub fn is_ok(&self) -> bool {
+        self.error.is_empty() && !self.path.is_empty()
+    }
+}
+
 /// Drain the exit mailbox: read the record and remove it in one step.
 ///
 /// Take semantics matter — the Java host may write again for the next session,
 /// and a read-without-delete would replay an old exit into the UI.
 pub fn take_exit_record(data_root: &std::path::Path) -> Result<Option<ExitRecord>, KernelError> {
-    let path = data_root.join(EXIT_RECORD_FILE);
+    match take_json::<ExitRecord>(data_root, EXIT_RECORD_FILE)? {
+        Some(record) if !record.instance_name.is_empty() => Ok(Some(record)),
+        _ => Ok(None),
+    }
+}
+
+/// Drain the APK pick mailbox, discarding results that belong to an earlier
+/// request so a stale file cannot be attributed to the current pick.
+pub fn take_apk_pick_result(
+    data_root: &std::path::Path,
+    request_id: &str,
+) -> Result<Option<ApkPickResult>, KernelError> {
+    if request_id.is_empty() {
+        return Err(KernelError::InvalidArgument("缺少请求 ID".into()));
+    }
+    Ok(take_json::<ApkPickResult>(data_root, APK_PICK_RESULT_FILE)?
+        .filter(|result| result.request_id == request_id))
+}
+
+fn take_json<T: serde::de::DeserializeOwned>(
+    data_root: &std::path::Path,
+    file_name: &str,
+) -> Result<Option<T>, KernelError> {
+    let path = data_root.join(file_name);
     if !path.is_file() {
         return Ok(None);
     }
     let raw = std::fs::read(&path)?;
     // Remove first: a half-written or unparsable record must not be replayed.
     let _ = std::fs::remove_file(&path);
-    match serde_json::from_slice::<ExitRecord>(&raw) {
-        Ok(record) if !record.instance_name.is_empty() => Ok(Some(record)),
-        Ok(_) => Ok(None),
-        Err(_) => Ok(None),
-    }
+    Ok(serde_json::from_slice::<T>(&raw).ok())
 }
 
 #[cfg(test)]
@@ -128,5 +176,47 @@ mod tests {
         std::fs::write(dir.join(EXIT_RECORD_FILE), b"{not json").unwrap();
         assert!(take_exit_record(&dir).unwrap().is_none());
         assert!(!dir.join(EXIT_RECORD_FILE).exists());
+    }
+
+    #[test]
+    fn take_apk_pick_result_matches_request_id() {
+        let dir = std::env::temp_dir().join(format!("copper_android_pick_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(take_apk_pick_result(&dir, "req-1").unwrap().is_none());
+        assert!(take_apk_pick_result(&dir, "").is_err());
+
+        std::fs::write(
+            dir.join(APK_PICK_RESULT_FILE),
+            br#"{"requestId":"req-1","path":"/data/cache/inbox/a.apk","displayName":"a.apk"}"#,
+        )
+        .unwrap();
+        let result = take_apk_pick_result(&dir, "req-1").unwrap().expect("picked");
+        assert!(result.is_ok());
+        assert_eq!(result.display_name, "a.apk");
+
+        // 另一个 requestId 不得领取同一份结果
+        std::fs::write(
+            dir.join(APK_PICK_RESULT_FILE),
+            br#"{"requestId":"req-1","path":"/data/cache/inbox/a.apk"}"#,
+        )
+        .unwrap();
+        assert!(take_apk_pick_result(&dir, "req-2").unwrap().is_none());
+    }
+
+    #[test]
+    fn apk_pick_result_reports_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("copper_android_pick_err_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(APK_PICK_RESULT_FILE),
+            br#"{"requestId":"r","error":"permission denied"}"#,
+        )
+        .unwrap();
+        let result = take_apk_pick_result(&dir, "r").unwrap().expect("picked");
+        assert!(!result.is_ok());
+        assert_eq!(result.error, "permission denied");
     }
 }

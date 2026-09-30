@@ -129,6 +129,24 @@ export function androidGameTakeExit(): Promise<AndroidGameExit | null> {
   return call<AndroidGameExit | null>("android_game_take_exit");
 }
 
+/** SAF 选择结果（与后端 `platform::android::ApkPickResult` 同构）。 */
+export interface AndroidApkPickResult {
+  request_id: string;
+  /** 应用私有目录内的绝对路径；失败时为空。 */
+  path: string;
+  display_name: string;
+  error: string;
+}
+
+/**
+ * 取走一次 SAF 选择的落盘结果。
+ *
+ * 返回 `null` 表示安卓宿主尚未写回（仍在系统选择器中，或正在复制）。
+ */
+export function androidApkPickResult(request_id: string): Promise<AndroidApkPickResult | null> {
+  return call<AndroidApkPickResult | null>("android_apk_pick_result", { request_id });
+}
+
 /** 格式化字节数（与内核下载页一致）。 */
 export function formatBytes(bytes: number): string {
   if (bytes <= 0) return "0 B";

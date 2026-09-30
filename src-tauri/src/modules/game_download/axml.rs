@@ -138,12 +138,6 @@ impl StringPool {
             .map(|s| s.as_str())
             .ok_or_else(|| invalid(format!("AndroidManifest.xml 字符串索引越界: {index}")))
     }
-
-    /// Byte length of one encoded entry, used to walk style/spacing tables.
-    #[allow(dead_code)]
-    fn is_utf8(&self) -> bool {
-        self.utf8
-    }
 }
 
 fn read_pool_string(chunk: &[u8], offset: usize, utf8: bool) -> Result<String, KernelError> {
@@ -279,12 +273,6 @@ fn parse_start_element(
     if body.len() < body_start + 20 {
         return Err(invalid("AndroidManifest.xml 元素节点损坏"));
     }
-    let name_index = u32::from_le_bytes([
-        body[body_start + 4],
-        body[body_start + 5],
-        body[body_start + 6],
-        body[body_start + 7],
-    ]);
     let attribute_start = u16::from_le_bytes([
         body[body_start + 8],
         body[body_start + 9],

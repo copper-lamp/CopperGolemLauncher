@@ -116,10 +116,28 @@ pub async fn game_download_import_apk(
 pub async fn android_game_take_exit(
     kernel: State<'_, KernelContext>,
 ) -> CommandResult<Option<crate::platform::android::ExitRecord>> {
-    let data_dir = kernel.paths().versions_dir();
-    let root = data_dir
+    crate::platform::android::take_exit_record(&data_root(&kernel)).map_err(into_command_error)
+}
+
+/// 取走一次 SAF 文件选择的落盘结果（take 语义）。
+///
+/// 返回 `None` 表示 Java 宿主尚未写回结果（仍在选择或复制中），
+/// 前端按固定间隔轮询；`error` 非空表示用户在系统选择器里取消或授权失败。
+#[tauri::command]
+pub async fn android_apk_pick_result(
+    kernel: State<'_, KernelContext>,
+    request_id: String,
+) -> CommandResult<Option<crate::platform::android::ApkPickResult>> {
+    crate::platform::android::take_apk_pick_result(&data_root(&kernel), &request_id)
+        .map_err(into_command_error)
+}
+
+/// 数据根目录：`<root>/data`（`Paths::with_root` 布局）。
+fn data_root(kernel: &State<'_, KernelContext>) -> PathBuf {
+    kernel
+        .paths()
+        .versions_dir()
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| data_dir.clone());
-    crate::platform::android::take_exit_record(&root).map_err(into_command_error)
+        .unwrap_or_else(|| kernel.paths().versions_dir().clone())
 }

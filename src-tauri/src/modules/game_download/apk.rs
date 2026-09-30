@@ -78,19 +78,20 @@ fn read_manifest(zip: &mut ZipArchive<File>) -> Result<AndroidManifestIdentity, 
 /// Confirm the APK actually ships native code for the target ABI.
 fn require_target_abi(zip: &mut ZipArchive<File>) -> Result<(), KernelError> {
     let prefix = format!("lib/{TARGET_ABI}/");
-    let found = (0..zip.len())
-        .filter_map(|i| zip.by_index(i).ok())
-        .any(|entry| {
-            let name = entry.name().to_string();
-            name.starts_with(&prefix) && name.ends_with(".so")
-        });
-    if found {
-        Ok(())
-    } else {
-        Err(KernelError::InvalidArgument(format!(
-            "APK 不包含 {TARGET_ABI} 原生库"
-        )))
+    for index in 0..zip.len() {
+        // `by_index` borrows the archive mutably, so the name has to be copied
+        // out before the entry is dropped; a closure would not compile here.
+        let name = match zip.by_index(index) {
+            Ok(entry) => entry.name().to_string(),
+            Err(_) => continue,
+        };
+        if name.starts_with(&prefix) && name.ends_with(".so") {
+            return Ok(());
+        }
     }
+    Err(KernelError::InvalidArgument(format!(
+        "APK 不包含 {TARGET_ABI} 原生库"
+    )))
 }
 
 /// Validate a staged base APK and build its import record.

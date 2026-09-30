@@ -418,6 +418,7 @@ pub fn run() {
             commands::game_download::game_download_import_apk,
             // 安卓游戏宿主（所有平台注册，桌面端返回 None）
             commands::game_download::android_game_take_exit,
+            commands::game_download::android_apk_pick_result,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

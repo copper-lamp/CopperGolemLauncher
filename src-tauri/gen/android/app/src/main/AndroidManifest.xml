@@ -37,8 +37,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="coppergolem" android:host="game" />
+                <data android:scheme="coppergolem" android:host="import-apk" />
             </intent-filter>
         </activity>
+
+        <!-- SAF 收件箱：把系统选择器返回的 content:// 流落盘到 cache/inbox。 -->
+        <activity
+            android:name=".game.CopperApkPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.copper_core" />
 
         <!-- 启动准备：解压原生库、镜像重写、加载 so，全部有进度与错误日志。 -->
         <activity

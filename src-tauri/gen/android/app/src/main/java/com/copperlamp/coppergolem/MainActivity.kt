@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.enableEdgeToEdge
+import com.copperlamp.coppergolem.game.CopperApkPickerActivity
 import com.copperlamp.coppergolem.game.CopperGameExitRecord
 import com.copperlamp.coppergolem.game.CopperGameInstance
 import com.copperlamp.coppergolem.game.CopperGamePrepareActivity
@@ -26,6 +27,7 @@ class MainActivity : TauriActivity() {
 
         private const val TAG = "CopperMainActivity"
         private const val DEEP_LINK_HOST = "game"
+        private const val DEEP_LINK_HOST_IMPORT = "import-apk"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,11 +49,22 @@ class MainActivity : TauriActivity() {
      */
     private fun handleGameIntent(intent: Intent?) {
         if (intent == null) return
+        val data = intent.data
+        if (data?.scheme == "coppergolem" && data.host == DEEP_LINK_HOST_IMPORT) {
+            startActivity(
+                Intent(this, CopperApkPickerActivity::class.java).putExtra(
+                    CopperApkPickerActivity.EXTRA_REQUEST_ID,
+                    data.getQueryParameter("request_id").orEmpty()
+                )
+            )
+            return
+        }
+
         val instance = when {
             intent.action == ACTION_PREPARE_GAME ->
                 intent.getStringExtra(CopperGameInstance.EXTRA_INSTANCE)
-            intent.data?.scheme == "coppergolem" && intent.data?.host == DEEP_LINK_HOST ->
-                intent.data?.getQueryParameter("instance_name")
+            data?.scheme == "coppergolem" && data.host == DEEP_LINK_HOST ->
+                data.getQueryParameter("instance_name")
             else -> null
         } ?: return
 
@@ -59,13 +72,12 @@ class MainActivity : TauriActivity() {
             Log.w(TAG, "启动请求缺少实例名，已忽略")
             return
         }
+        val versionCode = intent.getStringExtra(CopperGameInstance.EXTRA_VERSION_CODE)
+            ?: data?.getQueryParameter("version_name")
         startActivity(
             Intent(this, CopperGamePrepareActivity::class.java)
                 .putExtra(CopperGameInstance.EXTRA_INSTANCE, instance)
-                .putExtra(
-                    CopperGameInstance.EXTRA_VERSION_CODE,
-                    intent.getStringExtra(CopperGameInstance.EXTRA_VERSION_CODE).orEmpty()
-                )
+                .putExtra(CopperGameInstance.EXTRA_VERSION_CODE, versionCode.orEmpty())
         )
     }
 
