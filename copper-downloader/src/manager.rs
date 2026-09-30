@@ -250,6 +250,22 @@ impl DownloadManager {
         }
     }
 
+    pub fn ensure_next_id(&self, next_id: u64) {
+        let target = next_id.max(1);
+        let mut current = self.inner.next_id.load(Ordering::Acquire);
+        while current < target {
+            match self.inner.next_id.compare_exchange_weak(
+                current,
+                target,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     /// 当前并发上限（同时下载的任务数）。
     pub fn concurrency(&self) -> usize {
         self.inner.concurrency.load(Ordering::Relaxed) as usize

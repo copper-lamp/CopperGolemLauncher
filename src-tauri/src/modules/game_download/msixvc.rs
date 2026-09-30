@@ -456,6 +456,13 @@ pub struct ContentKeyLease(Vec<u8>);
 
 impl ContentKeyLease {
     pub fn as_bytes(&self) -> &[u8] { &self.0 }
+
+    /// Create a short-lived lease from an already authenticated local cache.
+    /// The cache layer validates the account binding before calling this.
+    pub(crate) fn from_bytes(bytes: Vec<u8>) -> Result<Self, ParseError> {
+        if bytes.len() != 32 { return Err(ParseError::InvalidKey); }
+        Ok(Self(bytes))
+    }
 }
 
 impl Drop for ContentKeyLease {

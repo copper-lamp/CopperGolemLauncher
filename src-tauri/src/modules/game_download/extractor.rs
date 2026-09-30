@@ -1,90 +1,20 @@
-//! 游戏包解包器：MSIXVC 优先走独立 XVC 校验/提取核心；遇到尚未接入的 Store
-//! content key 时暂时走兼容 DLL，历史 `.appx`（真 ZIP）走 zip crate 回退。
+//! 游戏包解包器：历史 `.appx`（真 ZIP）走 zip crate；新版 MSIXVC 走 `msixvc` 的
+//! 纯 Rust XVC 校验/解密/提取，**不再依赖任何外部 DLL**。
 //!
-//! 技术背景：新版 GDK 游戏包是加密容器，无纯 Rust 开源解包方案。LeviLauncher 靠闭源
-//! `launcher_core.dll`（导出 `Get(in,out)->i32`，ANSI 窄字符串；另有 `GetWithPipe`）
-//! 解包成功；该方案依赖用户曾装过 Store 版并保留授权（返回码 3/4 即缺失）。本模块将该
-//! DLL 内置，首次运行把二进制落地到 `cache_dir()/gdkshared/`（比对 SHA256 + `.tmp` 原子
-//! 落盘），进程内 `OnceLock` 单例装载并保活模块句柄。
+//! 技术背景：新版 GDK 游戏包是加密 XVC 容器，早期方案依赖闭源 `launcher_core.dll`，
+//! 该方案已被上游 LeviLauncher 弃用（其当前版本同样为纯 Go 解包），本模块也已整体
+//! 移除 DLL，改为 `msixvc::extract_xvc`：读 XVD 头 → 验证 SHA256 哈希树 → 取商店授权
+//! 得到的 32 字节 content key → AES-XTS 逐页解密 → staging 目录原子 rename 发布。
+//! 密钥缺失时明确报 `MissingContentKey`，由上层把授权失败原因透传给前端，不回退。
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-use sha2::{Digest, Sha256};
 
 use crate::error::KernelError;
 
 use super::msixvc;
 
-// ---------------------------------------------------------------- 内嵌二进制
-
-/// 需拷落盘的 DLL 清单（顺序影响依赖装载）。
-const DLL_FILES: &[&str] = &[
-    "vcruntime140_1.dll",
-    "launcher_api.dll",
-    "libHttpClient.dll",
-    "launcher_core.dll",
-];
-
-const CORE_DLL: &str = "launcher_core.dll";
-
-macro_rules! embed {
-    ($name:literal) => {
-        include_bytes!(concat!("../../../resources/gdkshared/", $name))
-    };
-}
-
-/// 内嵌 DLL 字节（编译期注入，避免运行期依赖打包目录）。
-struct Embedded;
-impl Embedded {
-    fn bytes(name: &str) -> &'static [u8] {
-        match name {
-            "vcruntime140_1.dll" => embed!("vcruntime140_1.dll"),
-            "launcher_api.dll" => embed!("launcher_api.dll"),
-            "libHttpClient.dll" => embed!("libHttpClient.dll"),
-            "launcher_core.dll" => embed!("launcher_core.dll"),
-            _ => &[],
-        }
-    }
-}
-
-/// 确保 `dir` 下落地全部内嵌 DLL（内容或 SHA256 变化才重写，`.tmp`+rename 原子落盘）。
-pub fn ensure_dll_dir(dir: &Path) -> Result<(), ExtractError> {
-    std::fs::create_dir_all(dir)?;
-    for name in DLL_FILES {
-        let data = Embedded::bytes(name);
-        if data.is_empty() {
-            return Err(ExtractError::DllMissing(format!("缺少内嵌资源 {name}")));
-        }
-        write_if_changed(dir, name, data)?;
-    }
-    Ok(())
-}
-
-fn file_sha256(path: &Path) -> Option<[u8; 32]> {
-    let raw = std::fs::read(path).ok()?;
-    Some(Sha256::digest(&raw).into())
-}
-
-fn write_if_changed(dir: &Path, name: &str, data: &[u8]) -> Result<(), ExtractError> {
-    let target = dir.join(name);
-    let needs_write = match std::fs::metadata(&target) {
-        Ok(m) if m.len() == data.len() as u64 => file_sha256(&target) != Some(Sha256::digest(data).into()),
-        _ => true,
-    };
-    if !needs_write {
-        return Ok(());
-    }
-    let tmp = dir.join(format!("{name}.tmp"));
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(data)?;
-    drop(f);
-    std::fs::rename(&tmp, &target)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------- 错误与返回码
+// ---------------------------------------------------------------- 错误
 
 /// 解包错误。
 #[derive(Debug, thiserror::Error)]
@@ -93,22 +23,18 @@ pub enum ExtractError {
     Io(#[from] std::io::Error),
     #[error("压缩包解析错误: {0}")]
     Zip(#[from] zip::result::ZipError),
-    #[error("原生解包库缺失: {0}")]
-    DllMissing(String),
-    #[error("原生解包库装载失败: {0}")]
-    DllLoad(String),
-    #[error("解包结果码: {0:?}")]
-    Code(ExtractReturnCode),
     /// ZIP 解包后未发现游戏主程序（`Minecraft.Windows.exe`）。
     #[error("解包产物缺少游戏主程序")]
     MissingExecutable,
     /// ZIP 条目路径非法（防路径穿越）。
     #[error("解包条目路径非法: {0}")]
     UnsafeEntry(String),
-    #[error("MSIXVC 原生解析/提取失败: {0}")]
+    /// MSIXVC 原生解析/提取失败。
+    #[error("MSIXVC 解包失败: {0}")]
     Msixvc(String),
-    #[error("不支持的平台（解包需 Windows）")]
-    UnsupportedPlatform,
+    /// 包含加密区域但没有商店 content key。
+    #[error("该包需要商店授权（缺少 content key）")]
+    MissingStoreKey,
 }
 
 impl From<ExtractError> for KernelError {
@@ -117,77 +43,21 @@ impl From<ExtractError> for KernelError {
     }
 }
 
-/// launcher_core.dll 的返回码 → 可读描述（对齐 Leviauncher `core.go::Extract`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtractReturnCode {
-    Success,
-    Exception,
-    InvalidParams,
-    KeyNotFound,
-    UnauthorizedCaller,
-    PipeOpenFailed,
-    InputNotFound,
-    OutputDirInvalid,
-    ParseFailed,
-    ExtractFailed,
-    Unknown(i32),
-}
-
-impl ExtractReturnCode {
-    pub fn from_code(code: i32) -> Self {
-        match code {
-            0 => ExtractReturnCode::Success,
-            1 => ExtractReturnCode::Exception,
-            2 => ExtractReturnCode::InvalidParams,
-            3 => ExtractReturnCode::KeyNotFound,
-            4 => ExtractReturnCode::UnauthorizedCaller,
-            5 => ExtractReturnCode::PipeOpenFailed,
-            6 => ExtractReturnCode::InputNotFound,
-            7 => ExtractReturnCode::OutputDirInvalid,
-            8 => ExtractReturnCode::ParseFailed,
-            9 => ExtractReturnCode::ExtractFailed,
-            c => ExtractReturnCode::Unknown(c),
-        }
-    }
-
-    pub fn is_success(&self) -> bool {
-        matches!(self, ExtractReturnCode::Success)
-    }
-
-    /// 供前端做 i18n 文案映射的稳定键（缺失授权 / 密钥等透传）。
-    pub fn friendly_key(&self) -> &'static str {
-        match self {
-            ExtractReturnCode::Success => "game-download.error.success",
-            ExtractReturnCode::Exception => "game-download.error.exception",
-            ExtractReturnCode::InvalidParams => "game-download.error.invalid_params",
-            ExtractReturnCode::KeyNotFound => "game-download.error.key_not_found",
-            ExtractReturnCode::UnauthorizedCaller => "game-download.error.unauthorized",
-            ExtractReturnCode::PipeOpenFailed => "game-download.error.pipe_open_failed",
-            ExtractReturnCode::InputNotFound => "game-download.error.input_not_found",
-            ExtractReturnCode::OutputDirInvalid => "game-download.error.output_dir_invalid",
-            ExtractReturnCode::ParseFailed => "game-download.error.parse_failed",
-            ExtractReturnCode::ExtractFailed => "game-download.error.extract_failed",
-            ExtractReturnCode::Unknown(_) => "game-download.error.unknown",
-        }
-    }
-}
-
 // ---------------------------------------------------------------- 解包入口
 
-/// 解包 `src` 到 `out_dir`：历史 `.appx` ZIP 直接回退；MSIXVC 先走独立
-/// XVC 校验/提取，遇到尚未接入的 Store content key 时再走兼容 DLL。
-///
-/// `dll_dir` 为兼容 DLL 落盘目录（通常 `cache_dir()/gdkshared`）。
-pub fn extract_package(src: &Path, out_dir: &Path, dll_dir: &Path) -> Result<(), ExtractError> {
-    extract_package_with_key(src, out_dir, dll_dir, None)
+/// 解包 `src` 到 `out_dir`（不带密钥，供无加密区域的历史包 / 未加密包使用）。
+pub fn extract_package(src: &Path, out_dir: &Path) -> Result<(), ExtractError> {
+    extract_package_with_key(src, out_dir, None)
 }
 
-/// Extraction entry point for the future Store entitlement service. The key is
-/// borrowed only for the synchronous extraction call and is never serialized.
+/// 解包入口：真 ZIP（历史 `.appx`）走 zip；MSIXVC 走纯 Rust 提取。
+///
+/// `content_key` 为商店授权链取得的 32 字节 AES-XTS key；为 `None` 时若包含
+/// 加密区域则返回 [`ExtractError::MissingStoreKey`]，由调用方把授权失败原因
+/// 透传给前端（不回退任何 DLL）。
 pub fn extract_package_with_key(
     src: &Path,
     out_dir: &Path,
-    dll_dir: &Path,
     content_key: Option<&[u8]>,
 ) -> Result<(), ExtractError> {
     if let Some(key) = content_key {
@@ -199,10 +69,8 @@ pub fn extract_package_with_key(
         return extract_appx_zip(src, out_dir);
     }
     match msixvc::extract_xvc(src, out_dir, content_key) {
-        Ok(()) => verify_executable(out_dir),
-        Err(msixvc::ParseError::MissingContentKey) if content_key.is_none() => {
-            extract_xvc(src, out_dir, dll_dir)
-        }
+        Ok(()) => verify_package(out_dir),
+        Err(msixvc::ParseError::MissingContentKey) => Err(ExtractError::MissingStoreKey),
         Err(error) => Err(ExtractError::Msixvc(error.to_string())),
     }
 }
@@ -249,7 +117,7 @@ fn extract_appx_zip(src: &Path, out_dir: &Path) -> Result<(), ExtractError> {
     if !found_exe {
         return Err(ExtractError::MissingExecutable);
     }
-    Ok(())
+    verify_package(out_dir)
 }
 
 /// 归一化 ZIP 相对路径并校验防穿越；返回 out_dir 内的安全相对路径。
@@ -277,128 +145,56 @@ fn looks_like_executable(rel: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ---------------------------------------------------------------- 原生 DLL 解 XVC
+// ---------------------------------------------------------------- 解包产物校验
 
-/// XVC 校验产物：目录须含游戏主程序。
-pub fn verify_executable(out_dir: &Path) -> Result<(), ExtractError> {
-    if out_dir.join("Minecraft.Windows.exe").is_file() {
-        Ok(())
-    } else {
-        Err(ExtractError::MissingExecutable)
+/// 校验解包产物完整可启动：主程序存在、`MicrosoftGame.config` 存在、
+/// PE 头为 x64（对照 LeviLauncher `extract_windows.go` 的 PE 架构校验）。
+pub fn verify_package(out_dir: &Path) -> Result<(), ExtractError> {
+    let exe = out_dir.join("Minecraft.Windows.exe");
+    if !exe.is_file() {
+        return Err(ExtractError::MissingExecutable);
     }
+    if !out_dir.join("MicrosoftGame.config").is_file() {
+        return Err(ExtractError::MissingExecutable);
+    }
+    verify_pe_x64(&exe)?;
+    Ok(())
 }
 
-#[cfg(windows)]
-mod native {
-    use super::*;
-    use libloading::Library;
-    use std::ffi::CString;
-    use std::sync::OnceLock;
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::HMODULE;
-    use windows::Win32::System::LibraryLoader::{LoadLibraryW, SetDllDirectoryW};
-
-    /// `launcher_core.dll` 的 ANSI 导出 `Get(in,out)->i32`。
-    /// 注意：该 DLL 实际只导出 `Get` / `GetWithPipe`，**不含** `GetW`（宽字符版），
-    /// 故以窄字节（UTF-8 字节）路径字符串调用 `Get`。
-    type FnGet = unsafe extern "system" fn(*const u8, *const u8) -> i32;
-
-    /// 已装载的 launcher_core.dll 单例（进程生命周期，绝不卸载）。
-    ///
-    /// 只保存扁平 fn 指针（Send+Sync，供静态存放）；库本体经 `&'static Library` 泄漏保活。
-    struct LoadedCore {
-        /// 依赖库句柄保活（vcruntime / libHttpClient / launcher_core）。
-        #[allow(dead_code)]
-        handles: Vec<HMODULE>,
-        get: FnGet,
+/// 校验 PE 文件头 Machine == 0x8664（x64）。读前 4 KiB 即可。
+fn verify_pe_x64(path: &Path) -> Result<(), ExtractError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 4096];
+    let n = file.read(&mut buf)?;
+    if n < 64 {
+        return Err(ExtractError::MissingExecutable);
     }
-
-    // `HMODULE` 是 `*mut c_void` 原生包装，非 `Send+Sync`。本类型仅作为进程级静态单例
-    // （`OnceLock<Arc<LoadedCore>>`）存放、绝不跨线程实例转移，故安全。
-    unsafe impl Send for LoadedCore {}
-    unsafe impl Sync for LoadedCore {}
-
-    /// 首次调用固定的 DLL 落盘目录（先到者胜，进程内固定）。
-    static CORE_DIR: OnceLock<PathBuf> = OnceLock::new();
-    static CORE: OnceLock<Arc<LoadedCore>> = OnceLock::new();
-
-    /// UTF-8 字符串 → NUL 结尾的 UTF-16 缓冲区（供依赖装载 LoadLibraryW 使用）。
-    fn utf16(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(Some(0)).collect()
+    if &buf[0..2] != b"MZ" {
+        return Err(ExtractError::MissingExecutable);
     }
-
-    /// UTF-8 字符串 → NUL 结尾的窄字节字符串（供 ANSI 导出 `Get` 使用）。
-    fn cstr(s: &str) -> Result<CString, ExtractError> {
-        CString::new(s).map_err(|e| ExtractError::DllLoad(e.to_string()))
-    }
-
-    /// 调用 ANSI `Get` 解包。`dll_dir` 为首次装载时固定的落盘目录。
-    pub fn extract_xvc(src: &Path, out_dir: &Path, dll_dir: &Path) -> Result<(), ExtractError> {
-        std::fs::create_dir_all(out_dir)?;
-        let _ = CORE_DIR.set(dll_dir.to_path_buf());
-        let dir = CORE_DIR
-            .get()
-            .ok_or_else(|| ExtractError::DllMissing("DLL 目录未设置".into()))?;
-        ensure_dll_dir(dir)?;
-        let core = Arc::new(load(dir)?);
-        // 并发时以先装载者为准。
-        if CORE.get().is_some() {
-            // 已有装载：用现成实例。
-        } else {
-            let _ = CORE.set(core.clone());
+    let pe_off = u32::from_le_bytes([buf[60], buf[61], buf[62], buf[63]]) as usize;
+    if pe_off + 6 > n {
+        // PE 头在 4 KiB 之外（极罕见），再读一次覆盖。
+        let mut file2 = std::fs::File::open(path)?;
+        let mut buf2 = vec![0u8; pe_off + 64];
+        let n2 = file2.read(&mut buf2)?;
+        if n2 < pe_off + 6 || &buf2[pe_off..pe_off + 4] != b"PE\0\0" {
+            return Err(ExtractError::MissingExecutable);
         }
-        let core = CORE.get().cloned().unwrap_or(core);
-
-        let ws = cstr(&src.to_string_lossy())?;
-        let wo = cstr(&out_dir.to_string_lossy())?;
-        let code = unsafe { (core.get)(ws.as_ptr() as *const u8, wo.as_ptr() as *const u8) };
-        let rc = ExtractReturnCode::from_code(code);
-        if !rc.is_success() {
-            return Err(ExtractError::Code(rc));
+        let machine = u16::from_le_bytes([buf2[pe_off + 4], buf2[pe_off + 5]]);
+        if machine != 0x8664 {
+            return Err(ExtractError::MissingExecutable);
         }
-        verify_executable(out_dir)
+        return Ok(());
     }
-
-    fn load(dir: &Path) -> Result<LoadedCore, ExtractError> {
-        // —— 依赖装载：先按全路径预载 vcruntime / libHttpClient，再设置 DLL 搜索目录。
-        let mut handles = Vec::new();
-        unsafe {
-            for dep in ["vcruntime140_1.dll", "libHttpClient.dll"] {
-                let path = utf16(&dir.join(dep).to_string_lossy());
-                if let Ok(h) = LoadLibraryW(PCWSTR(path.as_ptr())) {
-                    handles.push(h);
-                }
-            }
-            let dir_w = utf16(&dir.to_string_lossy());
-            let _ = SetDllDirectoryW(PCWSTR(dir_w.as_ptr()));
-        }
-
-        // —— 装载主库并解析 `Get`（本 DLL 实际仅导出 `Get`/`GetWithPipe`，无宽字符 `GetW`）。
-        // 库一旦装载即永久泄漏保活，故 fn 指针在进程内始终有效。
-        // `Library::new` 在 libloading 0.8 起为 unsafe（装载外部代码）。
-        let lib: &'static Library = Box::leak(Box::new(
-            unsafe { Library::new(dir.join(CORE_DLL)) }
-                .map_err(|e| ExtractError::DllLoad(e.to_string()))?,
-        ));
-        let sym = unsafe { lib.get::<FnGet>(b"Get\0") }
-            .map_err(|e| ExtractError::DllLoad(format!("缺少导出 Get: {e}")))?;
-        let get: FnGet = *sym;
-
-        Ok(LoadedCore { handles, get })
+    if &buf[pe_off..pe_off + 4] != b"PE\0\0" {
+        return Err(ExtractError::MissingExecutable);
     }
-}
-
-#[cfg(not(windows))]
-mod native {
-    use super::*;
-    /// 非 Windows 平台提供存根（模块仍可编译，解包运行时返回不支持）。
-    pub fn extract_xvc(_src: &Path, _out_dir: &Path, _dll_dir: &Path) -> Result<(), ExtractError> {
-        Err(ExtractError::UnsupportedPlatform)
+    let machine = u16::from_le_bytes([buf[pe_off + 4], buf[pe_off + 5]]);
+    if machine != 0x8664 {
+        return Err(ExtractError::MissingExecutable);
     }
-}
-
-fn extract_xvc(src: &Path, out_dir: &Path, dll_dir: &Path) -> Result<(), ExtractError> {
-    native::extract_xvc(src, out_dir, dll_dir)
+    Ok(())
 }
 
 // ---------------------------------------------------------------- 测试
@@ -415,17 +211,33 @@ mod tests {
         dir
     }
 
-    fn make_appx_zip(path: &Path, with_exe: bool, traversal: bool) {
+    /// 构造一个最小可校验的 x64 PE（DOS 头 + PE 签名 + COFF 头 Machine=0x8664）。
+    fn write_min_pe(path: &Path) {
+        let mut pe = vec![0u8; 256];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        pe[60] = 0x80; // e_lfanew = 0x80
+        pe[0x80] = b'P';
+        pe[0x81] = b'E';
+        pe[0x84] = 0x64;
+        pe[0x85] = 0x86; // Machine = 0x8664
+        std::fs::write(path, &pe).unwrap();
+    }
+
+    fn make_appx_zip(path: &Path, with_exe: bool, with_config: bool, traversal: bool) {
         let file = std::fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let opts = SimpleFileOptions::default();
         zip.start_file("AppxMetadata/AppxManifest.xml", opts).unwrap();
         zip.write_all(b"<manifest metadata/>").unwrap();
         if with_exe {
+            // ZIP 里塞假 exe 不满足 PE 校验 → 只用于验证 MissingExecutable 分支。
             zip.start_file("Minecraft.Windows.exe", opts).unwrap();
-            zip.write_all(b"PE").unwrap();
-            zip.start_file("Windows/Minecraft.Windows.pdb", opts).unwrap();
-            zip.write_all(b"symbols").unwrap();
+            zip.write_all(b"MZ").unwrap();
+        }
+        if with_config {
+            zip.start_file("MicrosoftGame.config", opts).unwrap();
+            zip.write_all(b"<config/>").unwrap();
         }
         if traversal {
             zip.start_file("../../evil.txt", opts).unwrap();
@@ -435,25 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn return_code_mapping() {
-        assert_eq!(ExtractReturnCode::from_code(0), ExtractReturnCode::Success);
-        assert!(ExtractReturnCode::from_code(0).is_success());
-        assert_eq!(ExtractReturnCode::from_code(3), ExtractReturnCode::KeyNotFound);
-        assert_eq!(ExtractReturnCode::from_code(4), ExtractReturnCode::UnauthorizedCaller);
-        assert_eq!(ExtractReturnCode::from_code(9), ExtractReturnCode::ExtractFailed);
-        assert_eq!(ExtractReturnCode::from_code(99), ExtractReturnCode::Unknown(99));
-        assert!(!ExtractReturnCode::from_code(4).is_success());
-        // 每个返回码都有稳定文案键。
-        for c in 0..10 {
-            assert!(!ExtractReturnCode::from_code(c).friendly_key().is_empty());
-        }
-    }
-
-    #[test]
     fn detects_zip_magic() {
         let dir = temp_dir("magic");
         let p = dir.join("pkg.msixvc");
-        make_appx_zip(&p, true, false);
+        make_appx_zip(&p, true, true, false);
         assert!(is_appx_zip(&p));
         let not_zip = dir.join("plain.bin");
         std::fs::write(&not_zip, b"\x00\x01\x02\x03blah").unwrap();
@@ -464,22 +261,41 @@ mod tests {
     fn extract_appx_drops_metadata_and_finds_exe() {
         let dir = temp_dir("appx");
         let pkg = dir.join("pkg.appx");
-        make_appx_zip(&pkg, true, false);
+        // ZIP 内假 exe 不是合法 PE → 期望 MissingExecutable（PE 校验生效）。
+        make_appx_zip(&pkg, true, true, false);
         let out = dir.join("out");
-        extract_appx_zip(&pkg, &out).unwrap();
-        assert!(out.join("Minecraft.Windows.exe").is_file());
-        assert!(out.join("Windows/Minecraft.Windows.pdb").is_file());
-        // AppxMetadata 被跳过。
+        let err = extract_appx_zip(&pkg, &out).unwrap_err();
+        assert!(matches!(err, ExtractError::MissingExecutable), "{err:?}");
+        // 但元数据目录确实被跳过、config 被解出。
         assert!(!out.join("AppxMetadata").exists());
+        assert!(out.join("MicrosoftGame.config").is_file());
     }
 
     #[test]
-    fn extract_appx_rejects_missing_exe() {
-        let dir = temp_dir("noexe");
-        let pkg = dir.join("pkg.appx");
-        make_appx_zip(&pkg, false, false);
-        let err = extract_appx_zip(&pkg, &dir.join("out")).unwrap_err();
-        assert!(matches!(err, ExtractError::MissingExecutable));
+    fn verify_package_requires_config_and_pe() {
+        let dir = temp_dir("verify");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        // 缺主程序。
+        assert!(matches!(
+            verify_package(&out),
+            Err(ExtractError::MissingExecutable)
+        ));
+        // 有主程序但缺 config。
+        write_min_pe(&out.join("Minecraft.Windows.exe"));
+        assert!(matches!(
+            verify_package(&out),
+            Err(ExtractError::MissingExecutable)
+        ));
+        // 补 config → 通过。
+        std::fs::write(out.join("MicrosoftGame.config"), b"<config/>").unwrap();
+        assert!(verify_package(&out).is_ok());
+        // 非 PE 的主程序被拒。
+        std::fs::write(out.join("Minecraft.Windows.exe"), b"not a pe").unwrap();
+        assert!(matches!(
+            verify_package(&out),
+            Err(ExtractError::MissingExecutable)
+        ));
     }
 
     #[test]
@@ -491,15 +307,24 @@ mod tests {
     }
 
     #[test]
-    fn write_if_changed_skips_identical() {
-        let dir = temp_dir("dll");
-        let data = b"hello-dll-bytes";
-        write_if_changed(&dir, "dep.dll", data).unwrap();
-        assert_eq!(std::fs::read(dir.join("dep.dll")).unwrap(), data);
-        // 再次写入不落盘（内容一致）。
-        std::fs::write(dir.join("dep.dll"), b"tampered").unwrap();
-        write_if_changed(&dir, "dep.dll", data).unwrap();
-        assert_eq!(std::fs::read(dir.join("dep.dll")).unwrap(), data);
-        assert!(!dir.join("dep.dll.tmp").exists());
+    fn missing_key_is_explicit_not_a_fallback() {
+        // 构造非 ZIP 的假 MSIXVC：纯 Rust 路径解析失败 → Msixvc 错误（不回退）。
+        let dir = temp_dir("nokey");
+        let pkg = dir.join("pkg.msixvc");
+        std::fs::write(&pkg, b"\x00\x01\x02\x03not-a-zip-or-xvd").unwrap();
+        let err = extract_package_with_key(&pkg, &dir.join("out"), None).unwrap_err();
+        match err {
+            ExtractError::MissingStoreKey | ExtractError::Msixvc(_) => {}
+            other => panic!("预期 MissingStoreKey 或 Msixvc，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bad_key_length_rejected_upfront() {
+        let dir = temp_dir("badkey");
+        let pkg = dir.join("pkg.msixvc");
+        std::fs::write(&pkg, b"not-a-zip").unwrap();
+        let err = extract_package_with_key(&pkg, &dir.join("out"), Some(&[0u8; 16])).unwrap_err();
+        assert!(matches!(err, ExtractError::Msixvc(_)));
     }
 }

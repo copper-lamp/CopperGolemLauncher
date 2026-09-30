@@ -15,6 +15,18 @@ pub const META_FILE: &str = "version.json";
 /// 版本图标文件名（与 LeviLauncher 一致，256×256 PNG）。
 pub const LOGO_FILE: &str = "LargeLogo.png";
 
+/// Android APK 运行时元数据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidVersionMeta {
+    pub package_name: String,
+    pub version_code: u64,
+    pub abi: String,
+    pub package_dir: String,
+    #[serde(default)]
+    pub lib_cache_dir: String,
+}
+
 /// 版本元数据。
 ///
 /// 字段与 LeviLauncher `versions.VersionMeta` 对应，`created_at` 以
@@ -24,6 +36,9 @@ pub const LOGO_FILE: &str = "LargeLogo.png";
 pub struct VersionMeta {
     pub name: String,
     pub game_version: String,
+    /// Android runtime metadata. Omitted on desktop versions for compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android: Option<AndroidVersionMeta>,
     #[serde(rename = "type")]
     pub version_type: String,
     #[serde(default)]

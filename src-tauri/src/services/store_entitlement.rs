@@ -59,7 +59,16 @@ impl Drop for StoreTicket { fn drop(&mut self) { unsafe { self.value.as_bytes_mu
 
 /// Internal key lease. It cannot cross a command, event, or persistence boundary.
 pub(crate) struct ContentKeyLease { key_id: String, license_type: LicenseType, key: MsixContentKeyLease }
-impl ContentKeyLease { pub(crate) fn key_id(&self) -> &str { &self.key_id } pub(crate) fn license_type(&self) -> LicenseType { self.license_type } pub(crate) fn key(&self) -> &[u8] { self.key.as_bytes() } }
+impl ContentKeyLease {
+    pub(crate) fn key_id(&self) -> &str { &self.key_id }
+    pub(crate) fn license_type(&self) -> LicenseType { self.license_type }
+    pub(crate) fn key(&self) -> &[u8] { self.key.as_bytes() }
+    pub(crate) fn from_cached(key_id: String, key: Vec<u8>) -> Result<Self, StoreEntitlementError> {
+        if key.len() != 32 { return Err(StoreEntitlementError::NoContentKey); }
+        let key = MsixContentKeyLease::from_bytes(key).map_err(|_| StoreEntitlementError::NoContentKey)?;
+        Ok(Self { key_id, license_type: LicenseType::Full, key })
+    }
+}
 /// Never renders the key bytes; only the non-secret identity is shown.
 impl fmt::Debug for ContentKeyLease { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_struct("ContentKeyLease").field("key_id", &self.key_id).field("license_type", &self.license_type).finish_non_exhaustive() } }
 impl Drop for ContentKeyLease { fn drop(&mut self) { unsafe { self.key_id.as_bytes_mut().fill(0); } } }

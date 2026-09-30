@@ -5,7 +5,9 @@
 // `groups` 按大版本降序分组。行内下载 / 进度 / 取消复用 `VersionRow`。
 
 import { onMounted, ref, watch } from "vue";
-import { RefreshCw, Rocket, LoaderCircle, Layers } from "@lucide/vue";
+import { RefreshCw, Rocket, LoaderCircle, Layers, Upload } from "@lucide/vue";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { gameImportApk } from "./api";
 
 import { useI18n } from "../../i18n";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
@@ -64,12 +66,32 @@ onMounted(async () => {
 });
 
 watch(gd.manifest, () => (loadError.value = null));
+
+async function importApk() {
+  const selected = await openDialog({
+    multiple: false,
+    filters: [{ name: "Minecraft package", extensions: ["apk", "apks", "application/vnd.android.package-archive"] }],
+    fileAccessMode: "copy",
+  });
+  if (typeof selected !== "string") return;
+  const fileName = selected.split(/[\\/]/).pop() || "imported.apk";
+  const version = fileName.replace(/\.(apks|apk)$/i, "") || "imported";
+  try {
+    await gameImportApk(selected, version, "com.mojang.minecraftpe", version, 0);
+    await gd.loadManifest(false);
+  } catch (e) {
+    loadError.value = String(e);
+  }
+}
 </script>
 
 <template>
   <div class="gd-page">
     <!-- 刷新按钮注入全局标题栏操作区 -->
     <Teleport to="#copper-titlebar-actions">
+      <button class="gd-page__refresh" :title="t(`${MB_KEY}.actions.import`)" @click="importApk">
+        <Upload :size="15" />
+      </button>
       <button
         class="gd-page__refresh"
         :title="t(`${MB_KEY}.actions.refresh`)"

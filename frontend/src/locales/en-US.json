@@ -262,7 +262,8 @@
       "paused": "Paused",
       "cancelled": "Cancelled",
       "failed": "Failed",
-      "done": "Done"
+      "done": "Done",
+      "installing": "Installing"
     },
     "actions": {
       "pause": "Pause",

@@ -7,7 +7,7 @@
 // - 历史区展示上限取设置 `download.history_limit`（0 = 不显示），
 //   只影响展示窗口，不删除任何记录（历史记录本身仅存在于内核内存）。
 
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   X,
   Play,
@@ -25,6 +25,7 @@ import { useSettings } from "../composables/useSettings";
 import { useI18n } from "../i18n";
 import { formatBytes, formatSpeed, type DownloadTask } from "../api/download";
 import { showToast } from "../composables/useToast";
+import { contentDownloadRecords, type ContentDownloadRecord } from "../modules/content-download/api";
 import CoSelect from "../components/ui/CoSelect.vue";
 import CoButton from "../components/ui/CoButton.vue";
 
@@ -50,19 +51,57 @@ const ACTIVE_STATUSES = new Set(["queued", "downloading"]);
 /** 按 id 倒序（最新在前）。 */
 const sorted = computed(() => [...tasks.value].sort((a, b) => b.id - a.id));
 
-const activeTasks = computed(() => sorted.value.filter((task) => ACTIVE_STATUSES.has(task.status)));
-
 const historyLimit = computed(() => get<number>("download.history_limit", 50));
 
 /**
  * 历史下载：暂停 / 失败 / 取消 / 已完成的任务，按倒序取前 N 条。
  * 上限为 0 时整区不渲染（用户选择「不显示」）。
  */
+const contentRecords = ref<ContentDownloadRecord[]>([]);
+let refreshContentRecords: (() => void) | undefined;
+
 const historyTasks = computed(() => {
   const limit = historyLimit.value;
   if (limit <= 0) return [];
-  return sorted.value.filter((task) => !ACTIVE_STATUSES.has(task.status)).slice(0, limit);
+  const contentHistory: DownloadTask[] = contentRecords.value
+    .filter((record) => !record.taskId)
+    .map((record, index) => ({
+      id: Number.MAX_SAFE_INTEGER - index,
+      filename: record.name,
+      url: `${record.source}:${record.id}`,
+      dest: record.dest ?? "",
+      total_bytes: 0,
+      downloaded_bytes: 0,
+      speed_bytes_per_sec: 0,
+      status:
+        record.state === "installing"
+          ? "installing"
+          : record.state === "installed"
+            ? "done"
+            : "failed",
+      error: record.error,
+      retry_count: 0,
+    }));
+  return [...sorted.value.filter((task) => !ACTIVE_STATUSES.has(task.status)), ...contentHistory].slice(0, limit);
 });
+
+const activeTasks = computed(() => [
+  ...sorted.value.filter((task) => ACTIVE_STATUSES.has(task.status)),
+  ...contentRecords.value
+    .filter((record) => record.state === "installing")
+    .map((record, index) => ({
+      id: Number.MAX_SAFE_INTEGER - index,
+      filename: record.name,
+      url: `${record.source}:${record.id}`,
+      dest: record.dest ?? "",
+      total_bytes: 0,
+      downloaded_bytes: 0,
+      speed_bytes_per_sec: 0,
+      status: "installing" as const,
+      error: record.error,
+      retry_count: 0,
+    })),
+]);
 
 const hasAnyActive = computed(() => activeCount() > 0);
 
@@ -92,6 +131,8 @@ function statusIcon(task: DownloadTask) {
       return { icon: CheckCircle2, cls: "is-done" };
     case "cancelled":
       return { icon: Ban, cls: "is-cancelled" };
+    case "installing":
+      return { icon: LoaderCircle, cls: "is-downloading" };
     default:
       return { icon: LoaderCircle, cls: "is-queued" };
   }
@@ -134,6 +175,22 @@ function openDetail(task: DownloadTask) {
 function closeDetail() {
   detailTask.value = null;
 }
+
+onMounted(() => {
+  const load = () => {
+    void contentDownloadRecords()
+      .then((records) => (contentRecords.value = records))
+      .catch(() => null);
+  };
+  refreshContentRecords = load;
+  load();
+  window.addEventListener("content-download-records-updated", load);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("content-download-records-updated", refreshContentRecords ?? (() => null));
+  refreshContentRecords = undefined;
+});
 </script>
 
 <template>

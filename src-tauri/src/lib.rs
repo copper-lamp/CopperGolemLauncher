@@ -415,6 +415,7 @@ pub fn run() {
             commands::game_download::game_download_refresh_source,
             commands::game_download::game_download_cancel,
             commands::game_download::game_download_status,
+            commands::game_download::game_download_import_apk,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

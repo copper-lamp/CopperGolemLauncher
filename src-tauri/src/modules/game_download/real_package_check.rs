@@ -45,10 +45,8 @@ fn real_package_reaches_authorization_boundary() {
 
     // 无密钥时提取必须停在授权边界，而不是报解析错误。
     let out = std::env::temp_dir().join(format!("copper-real-{}", std::process::id()));
-    let dll_dir = std::env::temp_dir().join(format!("copper-real-dll-{}", std::process::id()));
-    let outcome = super::extractor::extract_package_with_key(path, &out, &dll_dir, None);
+    let outcome = super::extractor::extract_package_with_key(path, &out, None);
     let _ = std::fs::remove_dir_all(&out);
-    let _ = std::fs::remove_dir_all(&dll_dir);
     match outcome {
         Ok(()) => eprintln!("无密钥却提取成功（包未加密或已回退到兼容后端）"),
         Err(error) => {

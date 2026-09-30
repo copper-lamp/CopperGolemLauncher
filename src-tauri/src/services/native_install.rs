@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::modules::game_download::msixvc;
 
 pub(crate) use crate::services::store_entitlement::ContentKeyLease;
+use crate::services::store_key_cache::{self, KeyCacheError};
 
 /// Markets are exactly two uppercase ASCII letters.
 const MARKET_LEN: usize = 2;
@@ -125,6 +126,29 @@ pub fn read_identity(package: &Path) -> Result<PackageIdentity, NativeInstallErr
     let identifiers = msixvc::read_package_identifiers(package)
         .map_err(|error| NativeInstallError::Package(error.to_string()))?;
     Ok(PackageIdentity { content_id: identifiers.content_id, key_id: identifiers.key_id })
+}
+
+/// Alias used by the game installer; keeps package identity terminology consistent.
+pub fn read_identifiers(package: &Path) -> Result<PackageIdentity, NativeInstallError> {
+    read_identity(package)
+}
+
+/// Load a cached Full content key bound to the current account.
+pub fn load_cached_key(
+    ctx: &crate::modules::game_download::installer::Ctx,
+    key_id: &str,
+    xuid: &str,
+) -> Result<Option<ContentKeyLease>, KeyCacheError> {
+    store_key_cache::load(&ctx.store_key_dir(), key_id, xuid)
+}
+
+/// Save a Full content key for offline reinstall.
+pub fn save_cached_key(
+    ctx: &crate::modules::game_download::installer::Ctx,
+    lease: &ContentKeyLease,
+    xuid: &str,
+) -> Result<(), KeyCacheError> {
+    store_key_cache::save(&ctx.store_key_dir(), lease.key_id(), lease, xuid)
 }
 
 /// Device state persisted under DPAPI. Every field is secret except the PUID,

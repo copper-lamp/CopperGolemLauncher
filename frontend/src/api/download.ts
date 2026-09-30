@@ -11,7 +11,8 @@ export type DownloadStatus =
   | "paused"
   | "cancelled"
   | "failed"
-  | "done";
+  | "done"
+  | "installing";
 
 /** 任务快照（与后端 `DownloadTaskView` 同构）。 */
 export interface DownloadTask {

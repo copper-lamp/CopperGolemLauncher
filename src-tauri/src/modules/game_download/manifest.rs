@@ -120,14 +120,31 @@ impl VersionEntry {
         }
     }
 
-    /// 首选下载直链。`urls` 中含多条 CDN，优先取国内可达的 `.xboxlive.cn`
-    /// 域名（assets1.cn / d1.cn 等），海外 `.xboxlive.com` 在部分网络被墙，仅兜底。
+    /// 首选下载直链（兼容旧调用）：`all_urls()` 的第一个。
     pub fn primary_url(&self) -> Option<String> {
-        self.urls
+        self.all_urls().and_then(|mut v| v.pop())
+    }
+
+    /// 全部候选下载直链，按可达性排序：国内 `.xboxlive.cn`（assets1.cn / d1.cn 等）
+    /// 在前，海外 `.xboxlive.com` 垫底（部分网络被墙）。上层逐个投递实现 CDN 故障转移。
+    pub fn all_urls(&self) -> Option<Vec<String>> {
+        if self.urls.is_empty() {
+            return None;
+        }
+        let mut cn: Vec<String> = self
+            .urls
             .iter()
-            .find(|u| u.contains("xboxlive.cn"))
-            .or_else(|| self.urls.first())
+            .filter(|u| u.contains("xboxlive.cn"))
             .cloned()
+            .collect();
+        let mut rest: Vec<String> = self
+            .urls
+            .iter()
+            .filter(|u| !u.contains("xboxlive.cn"))
+            .cloned()
+            .collect();
+        cn.append(&mut rest);
+        Some(cn)
     }
 }
 

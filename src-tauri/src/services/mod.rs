@@ -16,6 +16,7 @@ pub mod native_install;
 pub mod store_entitlement;
 pub mod store_wam;
 pub mod store_device;
+pub mod store_key_cache;
 pub mod store_rst;
 pub mod store_rst_transport;
 pub mod theme;

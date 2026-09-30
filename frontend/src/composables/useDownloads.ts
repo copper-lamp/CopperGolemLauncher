@@ -6,6 +6,7 @@ import { readonly, ref } from "vue";
 
 import {
   downloadTasks,
+  type DownloadTask,
   downloadPause,
   downloadResume,
   downloadCancel,
@@ -15,7 +16,6 @@ import {
   downloadResumeAll,
   downloadConcurrency,
   downloadSetConcurrency,
-  type DownloadTask,
 } from "../api/download";
 import { onDownload } from "../events";
 import { showToast } from "./useToast";

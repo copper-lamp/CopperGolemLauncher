@@ -305,8 +305,29 @@ async function openInstall(file: ContentFile) {
   installing.value = true;
 }
 
+function publishInstallingRecord() {
+  if (!detail.value || !installFile.value) return;
+  window.dispatchEvent(
+    new CustomEvent("content-download-installing", {
+      detail: {
+        id: detail.value.item.id,
+        source: detail.value.item.source,
+        contentType: detail.value.item.contentType,
+        name: detail.value.item.name,
+        version: installFile.value.version,
+        state: "installing",
+        dest: targetFolder.value,
+        taskId: null,
+        error: null,
+        updatedAt: Date.now(),
+      },
+    }),
+  );
+}
+
 async function confirmInstall() {
   if (!detail.value || !installFile.value) return;
+  publishInstallingRecord();
   installRunning.value = true;
   try {
     // variant 必须独立下发：后端据此拼 `github.com/owner/repo#<variant>@<version>`。
@@ -316,6 +337,7 @@ async function confirmInstall() {
       installFile.value.variant ?? undefined,
       targetFolder.value,
     );
+    window.dispatchEvent(new Event("content-download-records-updated"));
     if (!outcome.success) {
       showToast(lipErrorMessage(outcome), "error");
     } else {

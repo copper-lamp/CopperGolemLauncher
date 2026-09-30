@@ -16,6 +16,7 @@ use crate::registry::events::Subscription;
 use crate::registry::modules::Module;
 use crate::state::KernelContext;
 
+pub mod apk;
 pub mod extractor;
 pub mod installer;
 pub mod manifest;
@@ -66,7 +67,7 @@ impl Module for GameDownloadModule {
         // 数据库 schema（下载任务→版本）。
         kernel
             .db()
-            .migrate_scope("module:game-download", &[installer::MIGRATION])?;
+            .migrate_scope("module:game-download", installer::MIGRATIONS)?;
 
         // i18n：注册模块语言包（源在前端同模块目录）。
         kernel.i18n().register_module_pack(
@@ -96,10 +97,10 @@ impl Module for GameDownloadModule {
     }
 
     fn start(&self, kernel: &KernelContext) -> Result<(), KernelError> {
-        // 确保缓存目录存在（下载 / DLL 落盘）。
+        // 确保缓存目录存在（下载 / Store 授权缓存）。
         let ctx = Ctx::from_kernel(kernel);
         std::fs::create_dir_all(ctx.cache_home())?;
-        std::fs::create_dir_all(ctx.gdk_dir())?;
+        std::fs::create_dir_all(ctx.store_key_dir())?;
         // 续装 / 续传未完成任务。
         installer::resume_pending(&ctx, &self.install_lock);
         Ok(())

@@ -34,7 +34,17 @@ impl DownloadService {
             runtime,
             crate::services::http_client::resolved_proxy(),
         );
-        let db_for_events = db.clone();
+        let persisted_max_id = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(MAX(id), 0) FROM core_download_task",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )
+            })
+            .unwrap_or(0);
+        manager.ensure_next_id(persisted_max_id.saturating_add(1));
+        let db_for_events = Arc::clone(&db);
         manager.add_listener(move |ev| {
             let (name, snapshot) = match ev {
                 copper_downloader::DownloadEvent::Created(s) => ("download.created", s),

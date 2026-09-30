@@ -262,7 +262,8 @@
       "paused": "已暂停",
       "cancelled": "已取消",
       "failed": "失败",
-      "done": "已完成"
+      "done": "已完成",
+      "installing": "安装中"
     },
     "actions": {
       "pause": "暂停",

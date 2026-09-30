@@ -90,6 +90,19 @@ export function gameStatus(id: string): Promise<GameTaskView | null> {
   return call<GameTaskView | null>("game_download_status", { id });
 }
 
+export interface ApkPackageInfo {
+  package_name: string;
+  version_code: number;
+  version_name: string;
+  abi: string;
+  sha256: string;
+  has_splits: boolean;
+}
+
+export function gameImportApk(source_path: string, name: string, package_name: string, version_name: string, version_code: number): Promise<ApkPackageInfo> {
+  return call<ApkPackageInfo>("game_download_import_apk", { source_path, name, package_name, version_name, version_code });
+}
+
 /** 格式化字节数（与内核下载页一致）。 */
 export function formatBytes(bytes: number): string {
   if (bytes <= 0) return "0 B";

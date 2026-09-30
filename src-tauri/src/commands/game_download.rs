@@ -1,76 +1,47 @@
-//! 游戏下载模块命令：清单 / 详情 / 投递下载 / 刷新源 / 取消 / 状态。
+//! 游戏下载模块命令：清单 / 下载 / APK 导入。
 
+use std::path::PathBuf;
 use tauri::State;
-
 use crate::commands::into_command_error;
 use crate::error::CommandResult;
-use crate::modules::game_download::installer::{self, Ctx};
+use crate::modules::game_download::{apk, installer::{self, Ctx}};
+use crate::modules::home::meta::{self, AndroidVersionMeta, VersionMeta};
 use crate::modules::game_download::manifest::{self, ManifestView};
 use crate::state::KernelContext;
 
-/// 版本清单（含已安装 / 下载中状态）。
 #[tauri::command]
-pub async fn game_download_manifest(
-    kernel: State<'_, KernelContext>,
-    refresh: Option<bool>,
-) -> CommandResult<ManifestView> {
+pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: Option<bool>) -> CommandResult<ManifestView> {
     let ctx = Ctx::from_kernel(&kernel);
-    let versions = match manifest::load_manifest(&ctx, refresh.unwrap_or(false)).await {
-        Ok(v) => v,
-        Err(e) => return Err(into_command_error(e)),
-    };
+    let versions = manifest::load_manifest(&ctx, refresh.unwrap_or(false)).await.map_err(into_command_error)?;
     Ok(manifest::build_view(&ctx, &versions))
 }
-
-/// 单版本详情（任务状态）。
 #[tauri::command]
-pub async fn game_download_detail(
-    kernel: State<'_, KernelContext>,
-    id: String,
-) -> CommandResult<Option<installer::TaskView>> {
-    let ctx = Ctx::from_kernel(&kernel);
-    installer::status(&ctx, &id).map_err(into_command_error)
-}
-
-/// 投递下载（幂等），返回下载任务 id。
+pub async fn game_download_detail(kernel: State<'_, KernelContext>, id: String) -> CommandResult<Option<installer::TaskView>> { installer::status(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
 #[tauri::command]
-pub async fn game_download_enqueue(
-    kernel: State<'_, KernelContext>,
-    id: String,
-) -> CommandResult<u64> {
-    let ctx = Ctx::from_kernel(&kernel);
-    installer::enqueue(&ctx, &id)
-        .await
-        .map_err(into_command_error)
-}
-
-/// 强制刷新版本清单源。
+pub async fn game_download_enqueue(kernel: State<'_, KernelContext>, id: String) -> CommandResult<u64> { installer::enqueue(&Ctx::from_kernel(&kernel), &id).await.map_err(into_command_error) }
 #[tauri::command]
-pub async fn game_download_refresh_source(
-    kernel: State<'_, KernelContext>,
-) -> CommandResult<()> {
-    let ctx = Ctx::from_kernel(&kernel);
-    installer::refresh_source(&ctx)
-        .await
-        .map_err(into_command_error)
-}
-
-/// 取消下载任务。
+pub async fn game_download_refresh_source(kernel: State<'_, KernelContext>) -> CommandResult<()> { installer::refresh_source(&Ctx::from_kernel(&kernel)).await.map_err(into_command_error) }
 #[tauri::command]
-pub async fn game_download_cancel(
-    kernel: State<'_, KernelContext>,
-    id: String,
-) -> CommandResult<()> {
-    let ctx = Ctx::from_kernel(&kernel);
-    installer::cancel(&ctx, &id).map_err(into_command_error)
-}
-
-/// 单版本任务状态。
+pub async fn game_download_cancel(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> { installer::cancel(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
 #[tauri::command]
-pub async fn game_download_status(
-    kernel: State<'_, KernelContext>,
-    id: String,
-) -> CommandResult<Option<installer::TaskView>> {
+pub async fn game_download_status(kernel: State<'_, KernelContext>, id: String) -> CommandResult<Option<installer::TaskView>> { installer::status(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
+
+/// Import an APK/APKS already copied into the app sandbox by the Android file picker.
+#[tauri::command]
+pub async fn game_download_import_apk(
+    kernel: State<'_, KernelContext>, source_path: String, name: String,
+    package_name: String, version_name: String, version_code: u64,
+) -> CommandResult<apk::ApkPackageInfo> {
     let ctx = Ctx::from_kernel(&kernel);
-    installer::status(&ctx, &id).map_err(into_command_error)
+    let root = ctx.versions_root();
+    let staging = root.join(".import").join(format!("{}-{}", name.replace(['/', '\\\\'], "_"), std::process::id()));
+    let result = apk::import_file(&PathBuf::from(source_path), &staging, &package_name, &version_name, version_code).map_err(into_command_error);
+    if let Ok(ref info) = result {
+        let instance_dir = root.join(&name);
+        if instance_dir.exists() { let _ = std::fs::remove_dir_all(&instance_dir); }
+        std::fs::rename(&staging, &instance_dir).map_err(|e| crate::error::CommandError::from_kernel(&crate::error::KernelError::Io(e)))?;
+        let meta = VersionMeta { name: name.clone(), game_version: version_name, version_type: "release".into(), enable_isolation: true, created_at: meta::now_rfc3339(), android: Some(AndroidVersionMeta { package_name: info.package_name.clone(), version_code: info.version_code, abi: info.abi.clone(), package_dir: name.clone(), lib_cache_dir: format!("runtime_libs/{}", name) }), ..Default::default() };
+        VersionMeta::write(&instance_dir, &meta).map_err(into_command_error)?;
+    } else { let _ = std::fs::remove_dir_all(&staging); }
+    result
 }

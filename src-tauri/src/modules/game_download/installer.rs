@@ -3,9 +3,9 @@
 //! 生命周期：
 //! - `enqueue`：幂等投递下载（防重复安装 / 防重复排队），返回下载任务 id。
 //! - 订阅 `download.status`：任务 `Done` → 触发异步安装（单飞锁串行）；`Failed/Cancelled` → 落失败。
-//! - `finish_install`：md5 自验 → `extractor::extract_package` → 写 `version.json` → 清理整包 → 广播
-//!   `version.installed`（开始页据此刷新可启动版本）与 `game-download.installed`。
-//! - `resume_pending`：`start` 时续传没有完成的下载 / 续装中断的解包。
+//! - `finish_install`：商店授权取 content key（失败**显式落错**，不静默回退）→ md5 自验
+//!   → 纯 Rust 解包 → 写 `version.json` → 清理整包 → 广播 `version.installed`。
+//! - `resume_pending`：`start` 时续传未完成下载 / 续装中断解包 / 回收孤儿整包 / 失败重试限次。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -31,10 +31,12 @@ use super::meta_bridge;
 
 /// 模块在 cache 下的下载子目录。
 const CACHE_SUBDIR: &str = "game-download";
-/// 原生解包 DLL 落盘子目录。
-const GDK_SUBDIR: &str = "gdkshared";
+/// 商店授权 key 缓存子目录（DPAPI + 账户绑定，离线复用）。
+const STORE_KEY_SUBDIR: &str = "store-key";
 /// 版本根下的整包暂存子目录（同盘复用，独立于解包输出目录）。
 const DOWNLOAD_SUBDIR: &str = ".download";
+/// 启动续传时单个任务允许的最大自动重投次数（防 failed 无限重下）。
+const MAX_RESUME_ATTEMPTS: i64 = 3;
 
 /// 安装流水线上下文：把 `KernelContext` 需要跨 async 捕获的能力拆出为可克隆 Arcs。
 #[derive(Clone)]
@@ -76,9 +78,9 @@ impl Ctx {
         self.paths.cache_dir().join(CACHE_SUBDIR)
     }
 
-    /// 原生 DLL 落盘目录（`cache/gdkshared`）。
-    pub fn gdk_dir(&self) -> PathBuf {
-        self.paths.cache_dir().join(GDK_SUBDIR)
+    /// 商店授权 key 缓存目录（`cache/game-download/store-key`）。
+    pub fn store_key_dir(&self) -> PathBuf {
+        self.cache_home().join(STORE_KEY_SUBDIR)
     }
 
     /// 某版本整包暂存路径（`versions_root/.download/<slug>.msixvc`）。
@@ -129,6 +131,18 @@ pub const MIGRATION: crate::services::database::Migration = crate::services::dat
           );",
 };
 
+/// 启动续传重投计数（防 failed 状态无限自动重下）。
+pub const MIGRATION_ATTEMPTS: crate::services::database::Migration =
+    crate::services::database::Migration {
+        version: 2,
+        name: "game_download_attempts",
+        sql: "ALTER TABLE module_game_download_task ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
+    };
+
+/// 本模块全部迁移（按版本升序执行）。
+pub const MIGRATIONS: &[crate::services::database::Migration] =
+    &[MIGRATION, MIGRATION_ATTEMPTS];
+
 /// 任务 DB 记录。
 #[derive(Debug, Clone)]
 pub struct TaskRecord {
@@ -140,6 +154,7 @@ pub struct TaskRecord {
     pub state: String,
     pub error: Option<String>,
     pub task_id: Option<u64>,
+    pub attempts: i64,
 }
 
 fn row_to_record(r: &rusqlite::Row) -> rusqlite::Result<TaskRecord> {
@@ -152,13 +167,14 @@ fn row_to_record(r: &rusqlite::Row) -> rusqlite::Result<TaskRecord> {
         state: r.get(5)?,
         error: r.get(6)?,
         task_id: r.get(7)?,
+        attempts: r.get(8)?,
     })
 }
 
 fn get_record(ctx: &Ctx, version_id: &str) -> Result<Option<TaskRecord>, KernelError> {
     ctx.db.with_conn(|conn| -> Result<Option<TaskRecord>, KernelError> {
         let mut stmt = conn.prepare(
-            "SELECT version_id, kind, folder, dest, md5, state, error, task_id
+            "SELECT version_id, kind, folder, dest, md5, state, error, task_id, attempts
              FROM module_game_download_task WHERE version_id = ?1",
         )?;
         let mut rows = stmt.query_map([version_id], row_to_record)?;
@@ -174,7 +190,7 @@ fn list_records(ctx: &Ctx, states: &[&str]) -> Result<Vec<TaskRecord>, KernelErr
     ctx.db.with_conn(|conn| {
         let placeholders = states.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT version_id, kind, folder, dest, md5, state, error, task_id
+            "SELECT version_id, kind, folder, dest, md5, state, error, task_id, attempts
              FROM module_game_download_task WHERE state IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -192,11 +208,12 @@ fn upsert_record(ctx: &Ctx, rec: &TaskRecord) -> Result<(), KernelError> {
     ctx.db.with_conn(|conn| -> Result<(), KernelError> {
         conn.execute(
             "INSERT INTO module_game_download_task
-               (version_id, kind, folder, dest, md5, state, error, task_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               (version_id, kind, folder, dest, md5, state, error, task_id, attempts, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(version_id) DO UPDATE SET
                kind=excluded.kind, folder=excluded.folder, dest=excluded.dest,
-               md5=excluded.md5, state=excluded.state, error=excluded.error, task_id=excluded.task_id",
+               md5=excluded.md5, state=excluded.state, error=excluded.error,
+               task_id=excluded.task_id, attempts=excluded.attempts",
             rusqlite::params![
                 rec.version_id,
                 rec.kind,
@@ -206,6 +223,7 @@ fn upsert_record(ctx: &Ctx, rec: &TaskRecord) -> Result<(), KernelError> {
                 rec.state,
                 rec.error,
                 rec.task_id,
+                rec.attempts,
                 Ctx::now()
             ],
         )?;
@@ -248,9 +266,16 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
     let entry = versions
         .find_by_id(id)
         .ok_or_else(|| KernelError::InvalidArgument(format!("清单中找不到版本 `{id}`")))?;
-    let url = entry
-        .primary_url()
+    // CDN 故障转移：取全部候选 URL，首个投递成功即停（引擎侧也有 3 次重试，这里只挑 host）。
+    let urls = entry
+        .all_urls()
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{id}` 没有可用下载链接")))?;
+    // md5 是唯一的完整性防线（引擎只校验 sha256，清单只给 md5）——缺失直接拒绝，避免空值恒校验失败。
+    if entry.md5.trim().is_empty() {
+        return Err(KernelError::InvalidArgument(format!(
+            "版本 `{id}` 的清单条目缺少 MD5 校验值，无法安全安装"
+        )));
+    }
     let slug = entry.slug();
     let kind = match entry.kind() {
         manifest::VersionKind::Release => "release",
@@ -277,7 +302,32 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
         filename: Some(format!("{slug}.msixvc")),
         ..Default::default()
     };
-    let task_id = ctx.download.enqueue(&url, &dest, opts)?;
+    // 逐个候选 URL 投递：引擎内部对瞬时错误有 3 次指数退避重试，这里在 host 粒度再兜一层。
+    let mut enqueued: Option<u64> = None;
+    let mut last_err: Option<KernelError> = None;
+    for (i, url) in urls.iter().enumerate() {
+        match ctx.download.enqueue(url, &dest, opts.clone()) {
+            Ok(task_id) => {
+                if i > 0 {
+                    log::info!("[game-download] 主链路失败，已切到备用 CDN: {url}");
+                }
+                enqueued = Some(task_id);
+                break;
+            }
+            Err(error) => {
+                log::warn!("[game-download] CDN 投递失败 {url}: {error}");
+                last_err = Some(KernelError::from(error));
+            }
+        }
+    }
+    let task_id = match enqueued {
+        Some(id) => id,
+        None => {
+            return Err(last_err.unwrap_or_else(|| {
+                KernelError::Module("下载队列投递失败".into())
+            }))
+        }
+    };
 
     let rec = TaskRecord {
         version_id: slug.clone(),
@@ -288,6 +338,7 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
         state: "downloading".into(),
         error: None,
         task_id: Some(task_id),
+        attempts: 0,
     };
     upsert_record(ctx, &rec)?;
 
@@ -432,7 +483,7 @@ fn find_by_task_id(ctx: &Ctx, task_id: u64) -> Option<TaskRecord> {
         .with_conn(
             |conn| -> Result<Option<TaskRecord>, KernelError> {
                 let mut stmt = conn.prepare(
-                    "SELECT version_id, kind, folder, dest, md5, state, error, task_id
+                    "SELECT version_id, kind, folder, dest, md5, state, error, task_id, attempts
                      FROM module_game_download_task WHERE task_id = ?1",
                 )?;
                 let mut rows = stmt.query_map([task_id], row_to_record)?;
@@ -465,6 +516,10 @@ fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) {
 /// md5 自验。分块流式读取，**绝不在内存中一次性载入整包**（GDK 整包可达数 GB，
 /// `fs::read` 会在设置 `extracting` 后因连续大分配失败而 panic，导致安装静默中断）。
 fn md5_matches(path: &Path, expected: &str) -> Result<bool, KernelError> {
+    // 清单条目缺 md5 → 恒校验失败会进入无限重试循环，这里显式区分“未提供”。
+    if expected.trim().is_empty() {
+        return Err(KernelError::Config("清单缺少 MD5 校验值，拒绝安装".into()));
+    }
     let mut file = std::fs::File::open(path).map_err(KernelError::Io)?;
     let mut digest = Md5::new();
     // 堆上缓冲（1 MiB）。不可用栈上大数组：启动时 `resume_pending` 会在主线程
@@ -486,22 +541,63 @@ pub async fn finish_install(
     lock: &Arc<tokio::sync::Mutex<()>>,
     rec: TaskRecord,
 ) -> Result<(), KernelError> {
-    // 受保护的 MSIXVC 需要微软商店授权的内容密钥。授权不可用时保持 `None`，
-    // 由 extractor 回退到兼容后端；此处**绝不伪造密钥**。
-    let lease = store_content_key(ctx, &rec.dest).await;
+    // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不再静默回退：
+    // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
+    let lease = store_content_key(ctx, &rec.dest).await?;
     let content_key = lease.as_ref().map(|lease| lease.key());
     finish_install_with_key(ctx, lock, rec, content_key).await
 }
 
+/// 商店授权可复用的缓存 key 文件路径（`store-key/<key_id>.dpapi`）。
+fn cached_key_path(ctx: &Ctx, key_id: &str) -> PathBuf {
+    let safe: String = key_id
+        .chars()
+        .map(|c| if c.is_ascii_hexdigit() || c == '-' { c } else { '_' })
+        .collect();
+    ctx.store_key_dir().join(format!("{safe}.dpapi"))
+}
+
+/// 授权失败的结构化错误：i18n 键 + 用户可读详情（不含票据/密钥）。
+fn auth_error(stage: &'static str, detail: String) -> KernelError {
+    KernelError::Config(format!("商店授权失败[{stage}]: {detail}"))
+}
+
 /// 为加密 MSIXVC 走完 Store 授权链，取得打包绑定的内容密钥。
 ///
-/// 返回 `None` 表示授权不适用或不可用（未登录、非 Windows、包为 ZIP、WAM 需要
-/// 交互、网络失败等）。密钥只在本函数返回的租约内存活，退出作用域即清零。
-async fn store_content_key(ctx: &Ctx, dest: &Path) -> Option<native_install::ContentKeyLease> {
+/// 顺序：本地 key 缓存命中（离线）→ 在线授权链。任一步失败都返回**结构化错误**
+/// 供 `finish_install` 落库并广播，绝不静默回退。密钥只在返回的租约内存活。
+async fn store_content_key(
+    ctx: &Ctx,
+    dest: &Path,
+) -> Result<Option<native_install::ContentKeyLease>, KernelError> {
     if !native_install::requires_store_key(dest) {
-        return None;
+        return Ok(None);
     }
-    let xuid = ctx.account.current().and_then(|account| account.xuid)?;
+
+    let identifiers = native_install::read_identifiers(dest)
+        .map_err(|e| auth_error("package", e.to_string()))?;
+
+    // 1) 本地缓存命中 → 离线安装（账户未变时有效，账户不匹配会走下面在线链）。
+    let xuid = match ctx.account.current().and_then(|a| a.xuid.clone()) {
+        Some(x) => x,
+        None => {
+            return Err(auth_error(
+                "account",
+                "未登录微软账户，请先登录后重试".into(),
+            ))
+        }
+    };
+    if let Ok(Some(lease)) =
+        native_install::load_cached_key(ctx, &identifiers.key_id, &xuid)
+    {
+        log::info!(
+            "[game-download] 命中本地授权缓存 key_id={}（离线）",
+            identifiers.key_id
+        );
+        return Ok(Some(lease));
+    }
+
+    // 2) 在线授权链。
     let request = native_install::StoreInstallRequest::new(
         xuid,
         store_market(ctx),
@@ -514,12 +610,16 @@ async fn store_content_key(ctx: &Ctx, dest: &Path) -> Option<native_install::Con
                 lease.key_id(),
                 lease.license_type()
             );
-            Some(lease)
+            // 缓存失败不影响安装（下次再走在线链）。
+            if let Err(e) = native_install::save_cached_key(ctx, &lease, &xuid) {
+                log::warn!("[game-download] 授权缓存写入失败（不影响本次安装）: {e}");
+            }
+            Ok(Some(lease))
         }
         Err(error) => {
-            // 授权失败不阻断安装：兼容后端仍可能完成。错误文本不含票据或密钥。
-            log::warn!("[game-download] 商店授权未完成，回退兼容后端: {error}");
-            None
+            // 错误文本不含票据或密钥；透传给前端定位是哪一步挂了。
+            log::warn!("[game-download] 商店授权失败: {error}");
+            Err(auth_error("online", error.to_string()))
         }
     }
 }
@@ -573,6 +673,22 @@ pub async fn finish_install_with_key(
         return Ok(());
     }
 
+    // 半成品输出目录自愈：上次失败可能留下空目录（remove_dir_all 自身失败 / 用户手建），
+    // `extract_xvc` 遇到已存在输出必失败。这里对“未完成安装的残留目录”先清理。
+    // 真冲突（已有 version.json 的完整安装）由上面的幂等分支拦住，走不到这里。
+    if install_dir.exists() && !meta_bridge::is_installed(&install_dir) {
+        log::warn!(
+            "[game-download] 清理上次失败残留的半成品目录 {}",
+            install_dir.display()
+        );
+        std::fs::remove_dir_all(&install_dir).map_err(|e| {
+            KernelError::Io(std::io::Error::new(
+                e.kind(),
+                format!("无法清理残留安装目录 {}: {e}", install_dir.display()),
+            ))
+        })?;
+    }
+
     set_state(ctx, &rec.version_id, "extracting", None)?;
     log::info!(
         "[game-download] 开始安装 {} <- {}",
@@ -588,16 +704,10 @@ pub async fn finish_install_with_key(
         )));
     }
 
-    // 解包（.msixvc 原生校验/提取，授权缺口时兼容后端；历史 .appx → zip 回退）→ 校验主程序 → 写元数据。
-    // 失败时清理输出目录：原生解包受微软商店授权约束（如缺少 content key），
-    // 解包可能创建空的安装目录后失败返回。对齐 Levilauncher 的 `os.RemoveAll(outDir)`，
-    // 去掉残留的“半安装”目录，避免前端看到名为已装、实则空目录的假成功。
-    let extract_result = extractor::extract_package_with_key(
-        &rec.dest,
-        &install_dir,
-        &ctx.gdk_dir(),
-        content_key,
-    );
+    // 解包（MSIXVC → 纯 Rust 提取；历史 .appx → zip）→ 校验主程序（exe + config + PE x64）→ 写元数据。
+    // 失败时清理输出目录，去掉残留的“半安装”目录，避免前端看到名为已装、实则空目录的假成功。
+    let extract_result =
+        extractor::extract_package_with_key(&rec.dest, &install_dir, content_key);
     if let Err(e) = extract_result {
         let _ = std::fs::remove_dir_all(&install_dir);
         return Err(KernelError::from(e));
@@ -636,7 +746,7 @@ fn cleanup_package(dest: &Path) {
 
 // ---------------------------------------------------------------- 续传
 
-/// 启动恢复：对未完成的记录续传/续装。
+/// 启动恢复：对未完成的记录续传/续装，回收孤儿整包，失败任务限次重投。
 pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
     let recs = match list_records(ctx, &["downloading", "extracting", "failed"]) {
         Ok(v) => v,
@@ -674,6 +784,33 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
             delete_record(ctx, &rec.version_id).ok();
             continue;
         }
+        // failed 限次重投：连续 N 次启动重试仍失败 → 标记为永久失败，不再自动重下。
+        if rec.state == "failed" {
+            if rec.attempts >= MAX_RESUME_ATTEMPTS {
+                log::warn!(
+                    "[game-download] {} 已自动重试 {} 次仍失败，停止自动重试",
+                    rec.version_id,
+                    rec.attempts
+                );
+                let _ = ctx.db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE module_game_download_task SET state = 'failed_permanent' WHERE version_id = ?1",
+                        [rec.version_id.as_str()],
+                    )
+                    .map(|_| ())
+                    .map_err(KernelError::from)
+                });
+                continue;
+            }
+            let _ = ctx.db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE module_game_download_task SET attempts = attempts + 1 WHERE version_id = ?1",
+                    [rec.version_id.as_str()],
+                )
+                .map(|_| ())
+                .map_err(KernelError::from)
+            });
+        }
         // 重新投递续传（引擎按 `.part` Range 续传）。
         let entry = match block_load(ctx).and_then(|v| {
             v.find_by_id(&rec.version_id)
@@ -689,8 +826,9 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
                 continue;
             }
         };
-        let Some(url) = entry.primary_url() else {
-            continue;
+        let urls = match entry.all_urls() {
+            Some(v) => v,
+            None => continue,
         };
         let opts = DownloadOptions {
             resume: true,
@@ -699,8 +837,18 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
             filename: Some(format!("{}.msixvc", rec.version_id)),
             ..Default::default()
         };
-        match ctx.download.enqueue(&url, &rec.dest, opts) {
-            Ok(task_id) => {
+        let mut new_task: Option<u64> = None;
+        for url in &urls {
+            match ctx.download.enqueue(url, &rec.dest, opts.clone()) {
+                Ok(task_id) => {
+                    new_task = Some(task_id);
+                    break;
+                }
+                Err(e) => log::warn!("[game-download] 续传 {} CDN 失败 {url}: {e}", rec.version_id),
+            }
+        }
+        match new_task {
+            Some(task_id) => {
                 set_state(ctx, &rec.version_id, "downloading", None).ok();
                 let _ = ctx.db.with_conn(|conn| {
                     conn.execute(
@@ -711,8 +859,94 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
                     .map_err(KernelError::from)
                 });
             }
-            Err(e) => log::warn!("[game-download] 续传 {} 投递失败: {e}", rec.version_id),
+            None => log::warn!("[game-download] 续传 {} 全部 CDN 投递失败", rec.version_id),
         }
+    }
+
+    // 回收孤儿整包：DB 记录丢失但 `.download/*.msixvc` 完整且清单 md5 命中
+    // → 补建记录直接续装（不重新下载），救回历史会话留下的包。
+    recover_orphan_packages(ctx, lock);
+}
+
+/// 扫描 `versions_root/.download/*.msixvc`，对无 DB 记录但 md5 命中清单的整包补建任务并安装。
+fn recover_orphan_packages(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
+    let download_dir = ctx.versions_root().join(DOWNLOAD_SUBDIR);
+    let entries = match std::fs::read_dir(&download_dir) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let manifest = match block_load(ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[game-download] 孤儿包回收取清单失败: {e}");
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("msixvc") {
+            continue;
+        }
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        // 已有记录的交给上面的续传逻辑。
+        match get_record(ctx, &stem) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!("[game-download] 孤儿包回收查记录失败 {stem}: {e}");
+                continue;
+            }
+        }
+        // 已安装的包直接清理。
+        if meta_bridge::is_installed(&ctx.install_dir(&stem)) {
+            cleanup_package(&path);
+            continue;
+        }
+        let Some(v) = manifest.find_by_id(&stem) else {
+            // 清单里没有 → 无法校验，保留但不自动安装。
+            log::info!("[game-download] 发现孤儿包 {stem}，清单无此版本，保留待手动处理");
+            continue;
+        };
+        if v.md5.trim().is_empty() {
+            continue;
+        }
+        // md5 命中才认领（分块流式，避免整包读内存）。
+        if !md5_matches(&path, &v.md5).unwrap_or(false) {
+            log::warn!("[game-download] 孤儿包 {stem} md5 不符清单，跳过");
+            continue;
+        }
+        let kind = match v.kind() {
+            manifest::VersionKind::Release => "release",
+            manifest::VersionKind::Preview => "preview",
+        };
+        let rec = TaskRecord {
+            version_id: stem.clone(),
+            kind: kind.to_string(),
+            folder: stem.clone(),
+            dest: path.clone(),
+            md5: v.md5.clone(),
+            state: "extracting".into(),
+            error: None,
+            task_id: None,
+            attempts: 0,
+        };
+        if let Err(e) = upsert_record(ctx, &rec) {
+            log::warn!("[game-download] 孤儿包 {stem} 补建记录失败: {e}");
+            continue;
+        }
+        log::info!("[game-download] 回收孤儿整包 {stem}（{} 字节），直接续装", entry.metadata().map(|m| m.len()).unwrap_or(0));
+        let next_ctx = ctx.clone();
+        let next_lock = lock.clone();
+        let vid = stem.clone();
+        ctx.runtime.spawn(async move {
+            if let Err(e) = finish_install(&next_ctx, &next_lock, rec).await {
+                log::error!("[game-download] 孤儿包 {vid} 续装失败: {e}");
+                mark_failed(&next_ctx, &vid, &e.to_string());
+            }
+        });
     }
 }
 
