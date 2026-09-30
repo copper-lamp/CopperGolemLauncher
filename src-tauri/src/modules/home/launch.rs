@@ -253,11 +253,14 @@ pub fn launch_game(
 
 #[cfg(target_os = "android")]
 fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &AndroidVersionMeta) -> Result<LaunchOutcome, KernelError> {
-    let base = dir.join("base.apk");
+    let base = crate::modules::game_download::apk::base_apk_path(dir);
     if !base.is_file() {
-        return Err(KernelError::InvalidArgument(format!("实例 `{name}` 缺少 base.apk")));
+        return Err(KernelError::InvalidArgument(format!(
+            "实例 `{name}` 缺少 {}",
+            crate::modules::game_download::apk::BASE_APK
+        )));
     }
-    crate::platform::android::request_prepare(&ctx.events, name, &android.package_name)?;
+    crate::platform::android::request_prepare(&ctx.events, name, &android.package_name, android.version_name.as_str())?;
     Ok(LaunchOutcome::Spawned)
 }
 

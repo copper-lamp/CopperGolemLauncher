@@ -90,6 +90,7 @@ export function gameStatus(id: string): Promise<GameTaskView | null> {
   return call<GameTaskView | null>("game_download_status", { id });
 }
 
+/** APK 导入记录（与后端 `apk::ApkPackageInfo` 同构，camelCase→原样）。 */
 export interface ApkPackageInfo {
   package_name: string;
   version_code: number;
@@ -99,8 +100,33 @@ export interface ApkPackageInfo {
   has_splits: boolean;
 }
 
-export function gameImportApk(source_path: string, name: string, package_name: string, version_name: string, version_code: number): Promise<ApkPackageInfo> {
-  return call<ApkPackageInfo>("game_download_import_apk", { source_path, name, package_name, version_name, version_code });
+/**
+ * 导入一个 APK / APKS。
+ *
+ * `source_path` 必须是应用私有目录内的路径：安卓端先由 `importApkToInbox`
+ * 把系统选择器返回的 URI 复制进 `cache/inbox/`。
+ *
+ * 包名、版本号由后端从二进制 `AndroidManifest.xml` 解码，前端不参与——
+ * 这些值决定原生库加载顺序。
+ */
+export function gameImportApk(source_path: string, name: string): Promise<ApkPackageInfo> {
+  return call<ApkPackageInfo>("game_download_import_apk", { source_path, name });
+}
+
+/** 安卓游戏退出记录（与后端 `platform::android::ExitRecord` 同构）。 */
+export interface AndroidGameExit {
+  instance_name: string;
+  reason: string;
+  exited_at: number;
+}
+
+/**
+ * 取走安卓游戏退出记录（take 语义，读后即删）。
+ *
+ * 桌面端恒返回 `null`，因此调用方无需按平台分支。
+ */
+export function androidGameTakeExit(): Promise<AndroidGameExit | null> {
+  return call<AndroidGameExit | null>("android_game_take_exit");
 }
 
 /** 格式化字节数（与内核下载页一致）。 */

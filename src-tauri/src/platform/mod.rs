@@ -16,7 +16,11 @@
 //! 详见 docs/平台适配.md 3.3 TODO。
 
 pub mod secret;
-#[cfg(target_os = "android")]
+// Android host bridge. Compiled on every target on purpose: the module holds no
+// native code, only event publishing and a file-mailbox read. Keeping it
+// unconditional means the command surface stays identical across platforms
+// (desktop returns `None` for the exit mailbox) and the frontend needs no
+// platform branching to decide which commands exist.
 pub mod android;
 
 use std::sync::Arc;

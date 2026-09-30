@@ -17,6 +17,7 @@ use crate::registry::modules::Module;
 use crate::state::KernelContext;
 
 pub mod apk;
+pub mod axml;
 pub mod extractor;
 pub mod installer;
 pub mod manifest;

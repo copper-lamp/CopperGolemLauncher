@@ -20,7 +20,13 @@ pub const LOGO_FILE: &str = "LargeLogo.png";
 #[serde(rename_all = "camelCase")]
 pub struct AndroidVersionMeta {
     pub package_name: String,
+    /// 来自二进制 AndroidManifest 的 `versionCode`。
     pub version_code: u64,
+    /// 来自二进制 AndroidManifest 的 `versionName`（例如 `1.21.130.20`）。
+    ///
+    /// 该值决定安卓运行时加载哪一套原生库，必须持久化：加载顺序
+    /// 在 `CopperGameRuntimePreparer` 中按版本号分支。
+    pub version_name: String,
     pub abi: String,
     pub package_dir: String,
     #[serde(default)]
