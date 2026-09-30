@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+use crate::modules::home::meta::AndroidVersionMeta;
+
 use serde::Serialize;
 
 use crate::error::KernelError;
@@ -189,6 +192,10 @@ pub fn launch_game(
     let dir = resolve_launch_dir(&ctx.paths, &ctx.settings, name)?;
     let meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
+    #[cfg(target_os = "android")]
+    if let Some(android) = meta.android.as_ref() {
+        return launch_android(ctx, name, &dir, android);
+    }
     let exe = dir.join(GAME_EXE);
     if !exe.is_file() {
         return Err(KernelError::InvalidArgument(format!(
@@ -241,6 +248,16 @@ pub fn launch_game(
     })?;
 
     monitor_after_launch(&ctx.events, &ctx.runtime, name, dir);
+    Ok(LaunchOutcome::Spawned)
+}
+
+#[cfg(target_os = "android")]
+fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &AndroidVersionMeta) -> Result<LaunchOutcome, KernelError> {
+    let base = dir.join("base.apk");
+    if !base.is_file() {
+        return Err(KernelError::InvalidArgument(format!("实例 `{name}` 缺少 base.apk")));
+    }
+    ctx.events.publish("game.prepare", serde_json::json!({ "name": name, "package": android.package_name, "base": base.to_string_lossy() }));
     Ok(LaunchOutcome::Spawned)
 }
 

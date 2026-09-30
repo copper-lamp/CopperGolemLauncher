@@ -3,7 +3,7 @@
 //! unpacked into the instance package, so the Android runtime can mount them later.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use sha2::{Digest, Sha256};

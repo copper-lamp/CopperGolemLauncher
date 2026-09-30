@@ -122,7 +122,7 @@ impl VersionEntry {
 
     /// 首选下载直链（兼容旧调用）：`all_urls()` 的第一个。
     pub fn primary_url(&self) -> Option<String> {
-        self.all_urls().and_then(|mut v| v.pop())
+        self.all_urls().and_then(|v| v.into_iter().next())
     }
 
     /// 全部候选下载直链，按可达性排序：国内 `.xboxlive.cn`（assets1.cn / d1.cn 等）

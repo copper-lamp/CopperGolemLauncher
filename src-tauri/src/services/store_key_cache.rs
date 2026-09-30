@@ -145,7 +145,9 @@ pub fn load(dir: &Path, key_id: &str, xuid: &str) -> Result<Option<ContentKeyLea
     if key.len() != 32 {
         return Err(KeyCacheError::Corrupt("key 长度非 32 字节".into()));
     }
-    Ok(Some(ContentKeyLease::from_cached(key_id.to_string(), key)))
+    ContentKeyLease::from_cached(key_id.to_string(), key)
+        .map(Some)
+        .map_err(|e| KeyCacheError::Corrupt(e.to_string()))
 }
 
 fn drop_zero(data: &mut [u8]) {

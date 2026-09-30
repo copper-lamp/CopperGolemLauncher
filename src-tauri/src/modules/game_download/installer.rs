@@ -574,7 +574,7 @@ async fn store_content_key(
         return Ok(None);
     }
 
-    let identifiers = native_install::read_identifiers(dest)
+    let identifiers = native_install::read_identity(dest)
         .map_err(|e| auth_error("package", e.to_string()))?;
 
     // 1) 本地缓存命中 → 离线安装（账户未变时有效，账户不匹配会走下面在线链）。
