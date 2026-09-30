@@ -70,7 +70,7 @@ pub fn cache_path(dir: &Path, key_id: &str) -> PathBuf {
 }
 
 /// 落盘一个 `Full` content key（DPAPI + 账户绑定）。Trial 不缓存。
-pub fn save(dir: &Path, key_id: &str, lease: &ContentKeyLease, xuid: &str) -> Result<(), KeyCacheError> {
+pub(crate) fn save(dir: &Path, key_id: &str, lease: &ContentKeyLease, xuid: &str) -> Result<(), KeyCacheError> {
     if lease.license_type() != LicenseType::Full || xuid.trim().is_empty() {
         return Ok(());
     }
@@ -106,7 +106,7 @@ pub fn save(dir: &Path, key_id: &str, lease: &ContentKeyLease, xuid: &str) -> Re
 
 /// 读取缓存 key。命中且账户一致时返回租约；任何不一致/损坏都按「未命中」处理
 /// （这里只返回 `Ok(None)` 表示可安全回退在线链）。
-pub fn load(dir: &Path, key_id: &str, xuid: &str) -> Result<Option<ContentKeyLease>, KeyCacheError> {
+pub(crate) fn load(dir: &Path, key_id: &str, xuid: &str) -> Result<Option<ContentKeyLease>, KeyCacheError> {
     let path = cache_path(dir, key_id);
     if !path.is_file() {
         return Ok(None);
@@ -169,7 +169,7 @@ mod tests {
             .ends_with("33EC8436-5A0E-4F0D-B1CE-3F29C3955039.dpapi"));
         let p2 = cache_path(dir, "bad/key\\name");
         assert!(!p2.to_string_lossy().contains('/'));
-        assert!(!p2.to_string_lossy().contains('\\'));
+        assert!(!p2.file_name().unwrap().to_string_lossy().contains('\\'));
     }
 
     #[test]

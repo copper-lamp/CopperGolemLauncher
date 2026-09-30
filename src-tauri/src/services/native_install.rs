@@ -134,7 +134,7 @@ pub fn read_identifiers(package: &Path) -> Result<PackageIdentity, NativeInstall
 }
 
 /// Load a cached Full content key bound to the current account.
-pub fn load_cached_key(
+pub(crate) fn load_cached_key(
     ctx: &crate::modules::game_download::installer::Ctx,
     key_id: &str,
     xuid: &str,
@@ -143,7 +143,7 @@ pub fn load_cached_key(
 }
 
 /// Save a Full content key for offline reinstall.
-pub fn save_cached_key(
+pub(crate) fn save_cached_key(
     ctx: &crate::modules::game_download::installer::Ctx,
     lease: &ContentKeyLease,
     xuid: &str,

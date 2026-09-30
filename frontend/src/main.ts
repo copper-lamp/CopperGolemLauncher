@@ -17,6 +17,8 @@ import { initAccount } from "./composables/useAccount";
 import { markKernelReady } from "./composables/useKernelReady";
 import { loadAddonFrontends } from "./modules/addonRuntime";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open as openExternal } from "@tauri-apps/plugin-opener";
 
 // 临时诊断：把前端 JS 运行错误 / 未处理 rejection 转发到内核日志，便于定位白屏。
 function forward(detail: string) {
@@ -52,6 +54,20 @@ void Promise.race([
   .finally(() => {
     app.mount("#app");
   });
+
+void listen<{ instance_name: string; package_name: string }>("android-game-prepare", async (event) => {
+  const instance = encodeURIComponent(event.payload.instance_name);
+  await openExternal(`coppergolem://game?instance_name=${instance}`).catch((error) => {
+    forward(`android game bridge failed: ${String(error)}`);
+  });
+});
+
+void listen<{ instance_name: string; reason?: string }>("android-game-exited", (event) => {
+  void invoke("debug_log", {
+    level: "info",
+    message: `Android game exited: ${event.payload.instance_name} (${event.payload.reason ?? "unknown"})`,
+  }).catch(() => {});
+});
 
 void Promise.allSettled([initSettings(), initDownloads(), initAccount()]);
 

@@ -599,7 +599,7 @@ async fn store_content_key(
 
     // 2) 在线授权链。
     let request = native_install::StoreInstallRequest::new(
-        xuid,
+        &xuid,
         store_market(ctx),
         ctx.cache_home().join("store-device"),
     );

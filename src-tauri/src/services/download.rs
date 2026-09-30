@@ -34,13 +34,13 @@ impl DownloadService {
             runtime,
             crate::services::http_client::resolved_proxy(),
         );
-        let persisted_max_id = db
+        let persisted_max_id: u64 = db
             .with_conn(|conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT COALESCE(MAX(id), 0) FROM core_download_task",
                     [],
                     |row| row.get::<_, u64>(0),
-                )
+                )?)
             })
             .unwrap_or(0);
         manager.ensure_next_id(persisted_max_id.saturating_add(1));

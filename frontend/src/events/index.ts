@@ -11,6 +11,14 @@ import type { JsonValue } from "../api/types";
 /** 订阅取消函数。 */
 export type Unlisten = () => void;
 
+export function onGameLaunched(handler: (payload: { name: string }) => void): Promise<Unlisten> {
+  return listen<{ name: string }>("game-launched", (e) => handler(e.payload));
+}
+
+export function onGameExited(handler: (payload: { name: string; reason?: string }) => void): Promise<Unlisten> {
+  return listen<{ name: string; reason?: string }>("game-exited", (e) => handler(e.payload));
+}
+
 /** 订阅下载事件（created / progress / status）。 */
 export function onDownload(
   event: "created" | "progress" | "status",

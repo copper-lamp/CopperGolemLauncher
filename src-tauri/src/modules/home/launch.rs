@@ -257,7 +257,7 @@ fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &
     if !base.is_file() {
         return Err(KernelError::InvalidArgument(format!("实例 `{name}` 缺少 base.apk")));
     }
-    ctx.events.publish("game.prepare", serde_json::json!({ "name": name, "package": android.package_name, "base": base.to_string_lossy() }));
+    crate::platform::android::request_prepare(&ctx.events, name, &android.package_name)?;
     Ok(LaunchOutcome::Spawned)
 }
 

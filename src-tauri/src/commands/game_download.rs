@@ -34,14 +34,20 @@ pub async fn game_download_import_apk(
 ) -> CommandResult<apk::ApkPackageInfo> {
     let ctx = Ctx::from_kernel(&kernel);
     let root = ctx.versions_root();
-    let staging = root.join(".import").join(format!("{}-{}", name.replace(['/', '\\\\'], "_"), std::process::id()));
+    crate::modules::home::meta::validate_version_name(&root, &name).map_err(into_command_error)?;
+    let staging = root.join(".import").join(format!("{}-{}", name.replace(['/', '\\'], "_"), std::process::id()));
     let result = apk::import_file(&PathBuf::from(source_path), &staging, &package_name, &version_name, version_code).map_err(into_command_error);
     if let Ok(ref info) = result {
         let instance_dir = root.join(&name);
-        if instance_dir.exists() { let _ = std::fs::remove_dir_all(&instance_dir); }
-        std::fs::rename(&staging, &instance_dir).map_err(|e| crate::error::CommandError::from_kernel(&crate::error::KernelError::Io(e)))?;
+        if instance_dir.exists() {
+            return Err(crate::commands::into_command_error(crate::error::KernelError::Conflict(format!("实例 `{name}` 已存在，请先删除或重命名"))));
+        }
+        std::fs::rename(&staging, &instance_dir).map_err(|e| crate::commands::into_command_error(crate::error::KernelError::Io(e)))?;
         let meta = VersionMeta { name: name.clone(), game_version: version_name, version_type: "release".into(), enable_isolation: true, created_at: meta::now_rfc3339(), android: Some(AndroidVersionMeta { package_name: info.package_name.clone(), version_code: info.version_code, abi: info.abi.clone(), package_dir: name.clone(), lib_cache_dir: format!("runtime_libs/{}", name) }), ..Default::default() };
         VersionMeta::write(&instance_dir, &meta).map_err(into_command_error)?;
     } else { let _ = std::fs::remove_dir_all(&staging); }
+    if result.is_ok() {
+        kernel.events().publish("version.installed", serde_json::json!({ "name": name, "platform": "android" }));
+    }
     result
 }

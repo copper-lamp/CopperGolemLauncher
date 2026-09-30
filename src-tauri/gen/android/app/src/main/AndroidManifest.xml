@@ -19,10 +19,31 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-                <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="coppergolem" android:host="game" />
+            </intent-filter>
         </activity>
+        <activity
+            android:name=".GamePrepareActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+        <activity
+            android:name=".GameActivityHost"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+
+        <receiver
+            android:name=".GameExitReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.copperlamp.coppergolem.GAME_EXITED" />
+            </intent-filter>
+        </receiver>
 
         <provider
           android:name="androidx.core.content.FileProvider"

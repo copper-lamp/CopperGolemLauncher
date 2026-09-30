@@ -16,6 +16,8 @@
 //! 详见 docs/平台适配.md 3.3 TODO。
 
 pub mod secret;
+#[cfg(target_os = "android")]
+pub mod android;
 
 use std::sync::Arc;
 

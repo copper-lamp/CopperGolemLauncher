@@ -8,6 +8,7 @@ import { onMounted, ref, watch } from "vue";
 import { RefreshCw, Rocket, LoaderCircle, Layers, Upload } from "@lucide/vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { gameImportApk } from "./api";
+import { homeLaunch } from "../../api/home";
 
 import { useI18n } from "../../i18n";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
@@ -79,6 +80,7 @@ async function importApk() {
   try {
     await gameImportApk(selected, version, "com.mojang.minecraftpe", version, 0);
     await gd.loadManifest(false);
+    await homeLaunch(version);
   } catch (e) {
     loadError.value = String(e);
   }
