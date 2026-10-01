@@ -63,6 +63,11 @@ impl log::Log for KernelLogger {
             record.args()
         );
         println!("{line}");
+        // Android：stdout 不进 logcat，必须另走 android.util.Log（见 platform::logging）。
+        // 放在 println 之后、文件之前：logcat 是唯一「永远可达」的出口，
+        // 优先级高于可能尚未挂载的文件句柄。
+        #[cfg(target_os = "android")]
+        platform::logging::write(record.level(), record.target(), &line);
         if let Some(file) = self.sink.lock().as_mut() {
             use std::io::Write;
             // 不做缓冲：崩溃现场正是最需要日志的时刻，缓冲会把它一起丢掉。
@@ -81,12 +86,45 @@ impl log::Log for KernelLogger {
 /// 安装全局日志后端（幂等：重复调用只生效一次）。
 ///
 /// 此处只装 stdout 部分；文件部分由 [`attach_file_sink`] 在路径就绪后补挂。
+/// Android 上同时把 `platform::logging` 接进 `log` 门面（见 `KernelLogger::log`）。
 fn init_logging() {
     let logger = LOGGER.get_or_init(|| KernelLogger {
         sink: parking_lot::Mutex::new(None),
         started: std::time::Instant::now(),
     });
     let _ = log::set_logger(logger).map(|()| log::set_max_level(log::LevelFilter::Info));
+    // panic 必须在任何业务代码之前被接管：真机上 `setup()` 未跑完且无任何输出的
+    // 现场，就是靠这条钩子才能定位（见 install_panic_hook 的说明）。
+    install_panic_hook();
+}
+
+/// 让 panic 现场进入日志。
+///
+/// 背景（真机实测）：Android 上出现过「`setup()` 没走到 `app.manage(kernel)`，
+/// 所有命令以 `state not managed` 失败，但一条输出都没有」的现场。Rust 的 panic
+/// 默认只写 stderr，而 Android 上 stderr 不进 logcat、文件日志那时也还没挂上，
+/// 于是最需要的信息恰好丢失。
+///
+/// 这里把 panic 统一走 `log::error!`：它同时进 stdout、logcat 与（若已挂载的）文件。
+/// `RUST_BACKTRACE=1` 时附带回溯——Android 上默认不设该变量，故只在显式开启时抓。
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "非字符串 panic 负载".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "未知位置".to_string());
+        log::error!("[kernel] PANIC @ {location}: {message}");
+        if std::env::var("RUST_BACKTRACE").is_ok_and(|v| v != "0") {
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            log::error!("[kernel] PANIC backtrace:\n{backtrace}");
+        }
+    }));
 }
 
 /// 挂载文件日志（须在目录就绪后调用，即 `Paths::prepare` 之后）。

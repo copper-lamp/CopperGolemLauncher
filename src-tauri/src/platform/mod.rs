@@ -19,6 +19,9 @@ pub mod secret;
 /// Android Keystore 凭证存储：经 JNI 调用 Kotlin 桥（见 `keystore.rs` 顶部说明）。
 #[cfg(target_os = "android")]
 pub mod keystore;
+/// Android 日志后端：把内核日志与 panic 送回 logcat（见 `logging.rs` 顶部说明）。
+#[cfg(target_os = "android")]
+pub mod logging;
 // Android host bridge. Compiled on every target on purpose: the module holds no
 // native code, only event publishing and a file-mailbox read. Keeping it
 // unconditional means the command surface stays identical across platforms
