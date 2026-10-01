@@ -239,11 +239,16 @@ impl AccountService {
 
     /// 退出登录：清除安全存储中的凭证与数据库记录。
     pub fn logout(&self) -> Result<(), KernelError> {
+        // 清除凭证的失败必须留痕：登出的语义是「令牌不再可用」，静默忽略会让
+        // 「点了登出但令牌仍留在盘上」这种安全事件完全不可见。
+        // 仍继续执行库清理——否则一次密钥环故障会把用户卡在「登不出去」的状态。
         if let Some(account) = self.current() {
-            let _ = self.secret.delete(KEYRING_SERVICE, &account.id);
-            let _ = self
-                .secret
-                .delete(&access_service(), &account.id);
+            if let Err(e) = self.secret.delete(KEYRING_SERVICE, &account.id) {
+                log::warn!("[account] 登出时清除刷新令牌失败: {e}");
+            }
+            if let Err(e) = self.secret.delete(&access_service(), &account.id) {
+                log::warn!("[account] 登出时清除访问令牌失败: {e}");
+            }
         }
         self.db.with_conn(|conn| {
             conn.execute("DELETE FROM core_account", [])?;
@@ -353,9 +358,19 @@ impl AccountService {
             .get("refresh_token")
             .and_then(Value::as_str)
             .unwrap_or(&refresh_token);
-        let _ = self.secret.set(&access_service(), &account.id, access);
+
+        // MSA 每次刷新都可能轮换 refresh_token，**旧的随即失效**：轮换值没落盘
+        // 就等于本地留了一个死令牌，下次刷新必然失败。因此这里必须上抛，而不是
+        // 像此前那样 `let _ =` 吞掉——吞掉的代价是用户过一会儿莫名其妙掉登录。
         if new_refresh != refresh_token {
-            let _ = self.secret.set(KEYRING_SERVICE, &account.id, new_refresh);
+            self.secret
+                .set(KEYRING_SERVICE, &account.id, new_refresh)
+                .map_err(|e| KernelError::Secret(format!("保存轮换后的刷新令牌失败: {e}")))?;
+        }
+        // access_token 是短期的可再生产物：写失败只影响下一次刷新的时机，故不致命，
+        // 但仍要留痕，避免「每次启动都刷新」这类问题无从定位。
+        if let Err(e) = self.secret.set(&access_service(), &account.id, access) {
+            log::warn!("[account] 写入 access_token 失败（不影响登录状态）: {e}");
         }
         Ok(())
     }
@@ -449,11 +464,41 @@ async fn poll_login_completion(
                 gamertag,
                 xuid,
             };
-            // 加密存 refresh_token；access_token 短期有效，也一并加密存储。
+            // 先把凭证写进安全存储，**写失败即视为登录失败**。
+            //
+            // 此前这里用 `let _ =` 吞掉写入错误，再照常往数据库插账户行：结果是界面
+            // 显示「已登录」，但 `core_account` 有行、安全存储里没令牌，用户重启后
+            // 掉登录且没有任何线索（本仓库的「假成功」问题）。
+            // 顺序上先写 refresh_token（唯一不可再生的一条），再写 access_token：
+            // access_token 可用 refresh_token 重新换发，反之不成立。
+            let mut stored_refresh = false;
             if let Some(refresh) = &ms_token.1 {
-                let _ = secret.set(KEYRING_SERVICE, &id, refresh);
+                if let Err(e) = secret.set(KEYRING_SERVICE, &id, refresh) {
+                    finish_login(
+                        &events,
+                        &pending,
+                        LoginState::Failed,
+                        Some(&format!("保存登录凭证失败: {e}")),
+                    );
+                    return;
+                }
+                stored_refresh = true;
             }
-            let _ = secret.set(&access_service(), &id, &ms_token.0);
+            if let Err(e) = secret.set(&access_service(), &id, &ms_token.0) {
+                // 回滚已写入的 refresh_token：宁可让用户重新登录，也不留下「半套
+                // 凭证」——那会在下次刷新时以「本地凭证缺失」的形式误导排查。
+                let _ = secret.delete(&access_service(), &id);
+                if stored_refresh {
+                    let _ = secret.delete(KEYRING_SERVICE, &id);
+                }
+                finish_login(
+                    &events,
+                    &pending,
+                    LoginState::Failed,
+                    Some(&format!("保存登录凭证失败: {e}")),
+                );
+                return;
+            }
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -467,6 +512,9 @@ async fn poll_login_completion(
                 Ok(())
             });
             if let Err(e) = result {
+                // 库写入失败同样不能留下孤儿凭证。
+                let _ = secret.delete(KEYRING_SERVICE, &account.id);
+                let _ = secret.delete(&access_service(), &account.id);
                 finish_login(&events, &pending, LoginState::Failed, Some(&format!("保存账户失败: {e}")));
                 return;
             }

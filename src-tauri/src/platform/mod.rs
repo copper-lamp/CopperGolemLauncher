@@ -9,13 +9,16 @@
 //!    `Cargo.toml` 按 target 引入，避免拖累 Android 交叉编译。
 //!
 //! 当前已落地的后端：
-//! - [`SecretStore`]：系统安全存储（桌面密钥环 / Android 待接 Keystore）。
+//! - [`SecretStore`]：系统安全存储（桌面密钥环 / Android Keystore + AES/GCM）。
 //!
 //! 尚未抽象（等对应平台实现就位再抽，避免空接口）：
 //! GameBackend / AuthBackend / StoreBackend / ProcessBackend / UpdaterBackend，
 //! 详见 docs/平台适配.md 3.3 TODO。
 
 pub mod secret;
+/// Android Keystore 凭证存储：经 JNI 调用 Kotlin 桥（见 `keystore.rs` 顶部说明）。
+#[cfg(target_os = "android")]
+pub mod keystore;
 // Android host bridge. Compiled on every target on purpose: the module holds no
 // native code, only event publishing and a file-mailbox read. Keeping it
 // unconditional means the command surface stays identical across platforms
@@ -30,6 +33,8 @@ use secret::{SecretStore, SharedSecretStore};
 use secret::KeyringStore;
 #[cfg(target_os = "android")]
 use secret::UnsupportedStore;
+#[cfg(target_os = "android")]
+use keystore::KeystoreStore;
 
 /// 平台标识字符串（与 `cgl-models` / `cgl-libs` 的 `platforms` 枚举逐字一致）。
 ///
@@ -87,17 +92,26 @@ impl Backends {
         }
     }
 
-    /// 装配凭证存储：桌面走系统密钥环；Android 暂无安全存储，显式不支持。
+    /// 装配凭证存储：桌面走系统密钥环，Android 走 Android Keystore。
     #[cfg(not(target_os = "android"))]
     fn assemble_secret_store() -> SharedSecretStore {
         Arc::new(KeyringStore::new())
     }
 
+    /// Android：优先接 Android Keystore；不可用时退回**显式失败**的实现。
+    ///
+    /// 退回 `UnsupportedStore` 而不是伪造一个内存实现，是刻意的：这里失败意味着
+    /// 「本设备上令牌无法安全持久化」，必须让用户在登录那一刻就看到，而不是先
+    /// 提示登录成功、重启后掉登录（这正是 P1-4 要消灭的假成功）。
     #[cfg(target_os = "android")]
     fn assemble_secret_store() -> SharedSecretStore {
-        // 未接入 Android Keystore 前，登录无法持久化；此处显式失败而非降级为
-        // 明文存储（见 docs/平台适配.md 3.1 风险与 3.3 TODO）。
-        Arc::new(UnsupportedStore::new())
+        match KeystoreStore::new() {
+            Ok(store) => Arc::new(store),
+            Err(reason) => {
+                log::error!("[platform] Android Keystore 不可用，凭证将无法持久化: {reason}");
+                Arc::new(UnsupportedStore::new())
+            }
+        }
     }
 
     /// 凭证安全存储。

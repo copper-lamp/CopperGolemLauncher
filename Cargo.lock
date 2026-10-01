@@ -561,6 +561,8 @@ dependencies = [
  "copper-downloader",
  "copper-module-abi",
  "ed25519-dalek",
+ "embed-resource",
+ "jni",
  "keyring",
  "libloading 0.8.9",
  "log",
@@ -3165,7 +3167,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

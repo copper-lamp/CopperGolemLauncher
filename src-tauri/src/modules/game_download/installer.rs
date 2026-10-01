@@ -340,7 +340,7 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
 
     // 已存在进行中任务 → 幂等返回原 task_id，避免重复排队。
     if let Some(rec) = get_record(ctx, &slug)? {
-        if rec.state == "downloading" || rec.state == "extracting" {
+        if rec.state == "downloading" || rec.state == "authorizing" || rec.state == "extracting" {
             return rec.task_id.ok_or_else(|| {
                 KernelError::Module(format!("版本 {slug} 已有任务但缺 task_id"))
             });
@@ -481,8 +481,12 @@ pub fn install(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
     let rec = get_record(ctx, id)?
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{id}` 没有下载记录，无法安装")))?;
 
-    // 正在解包：重复点击直接返回，不排队、不打断。
-    if rec.state == "extracting" {
+    // 正在授权 / 解包：重复点击直接返回，不排队、不打断。
+    //
+    // `authorizing` 必须一并拦住：授权阶段同样独占设备凭据并驱动系统账户界面，
+    // 放行会让连点变成多条并发授权链，最终以「设备缓存被占用」这种与用户操作
+    // 无关的失败收场。
+    if rec.state == "extracting" || rec.state == "authorizing" {
         return Ok(());
     }
     // 已安装即无需动作。
@@ -671,11 +675,22 @@ pub async fn finish_install(
     lock: &Arc<tokio::sync::Mutex<()>>,
     rec: TaskRecord,
 ) -> Result<(), KernelError> {
+    // The single-flight lock must cover Store authorization too, not just the
+    // unpack. Authorization registers a device credential and drives a system
+    // account UI; running several at once made them race on the device cache
+    // and each surface the same "another installation is using this device
+    // cache" failure. It also meant several concurrent account prompts.
+    let _guard = lock.lock().await;
+
+    // Mark the authorizing phase so a second manual trigger is rejected with a
+    // reason instead of queueing another full authorization chain.
+    set_state(ctx, &rec.version_id, "authorizing", None)?;
+
     // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不再静默回退：
     // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
     let lease = store_content_key(ctx, &rec.dest).await?;
     let content_key = lease.as_ref().map(|lease| lease.key());
-    finish_install_with_key(ctx, lock, rec, content_key).await
+    install_locked(ctx, rec, content_key).await
 }
 
 /// 商店授权可复用的缓存 key 文件路径（`store-key/<key_id>.dpapi`）。
@@ -790,7 +805,19 @@ pub async fn finish_install_with_key(
         }
     }
     let _guard = lock.lock().await;
+    install_locked(ctx, rec, content_key).await
+}
 
+/// The install body, with the single-flight lock already held.
+///
+/// Split out so the authorization phase and the unpack phase run under **one**
+/// acquisition. Calling the locked body from a path that already holds the lock
+/// would deadlock on this non-reentrant mutex.
+async fn install_locked(
+    ctx: &Ctx,
+    rec: TaskRecord,
+    content_key: Option<&[u8]>,
+) -> Result<(), KernelError> {
     // 取消竞态：若记录已被取消删除，放弃本次安装（取消已完成清理）。
     if get_record(ctx, &rec.version_id)?.is_none() {
         return Ok(());
@@ -880,7 +907,9 @@ fn cleanup_package(dest: &Path) {
 
 /// 启动恢复：对未完成的记录续传/续装，回收孤儿整包，失败任务限次重投。
 pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
-    let recs = match list_records(ctx, &["downloading", "extracting", "failed"]) {
+    // `authorizing` 一并纳入：进程在授权阶段崩溃会留下该状态，不恢复就会永远
+    // 卡在「正在授权」，用户既看不到也重试不了。
+    let recs = match list_records(ctx, &["downloading", "authorizing", "extracting", "failed"]) {
         Ok(v) => v,
         Err(e) => {
             log::warn!("[game-download] resume_pending 读取记录失败: {e}");

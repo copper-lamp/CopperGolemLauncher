@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // WAM Store-ticket boundary adapted from LeviLauncher
 // (internal/xbox/wam_windows.go, wam_provider_windows.go and
@@ -279,16 +279,19 @@ mod native {
     }
 
     /// 静默取票：已缓存票据直接复用，缺账户即失败，绝不弹窗。
+    ///
+    /// 这里刻意使用**不带账户**的 `GetTokenSilentlyAsync(request)`，而不是
+    /// `GetTokenSilentlyWithWebAccountAsync(request, account)`。后者在受限进程
+    /// （低完整性令牌或受限令牌）下被系统直接拒绝：`E_ACCESSDENIED (0x80070005)`，
+    /// 且发生在此前的 `RoInitialize`、provider 查找、`FindAccountAsync`、
+    /// `WebTokenRequest::Create` **全部成功之后**——即账户确实存在、参数确实正确，
+    /// 只有「显式 WebAccount」这一条路被拒。同进程内不带账户的静默请求则成功，
+    /// 且响应的 `WebAccount.Id` 与 expected XUID 逐字一致（本机实测确认）。
+    ///
+    /// 身份绑定不因此放松：绑定校验改为在拿到响应后做（见下方 `actual != expected_xuid`），
+    /// 账户不匹配仍然报 `AccountChanged`，绝不把别的账户的票据交出去。
     pub(super) fn silent_ticket(expected_xuid: &str) -> Result<StoreTicket, WamStoreError> {
         let provider = find_msa_provider()?;
-        let find = step(
-            "FindAccountAsync",
-            WebAuthenticationCoreManager::FindAccountAsync(
-                &provider,
-                &HSTRING::from(expected_xuid),
-            ),
-        )?;
-        let account = step("FindAccountAsync.get", find.get())?;
 
         let request = step(
             "WebTokenRequest::Create",
@@ -299,7 +302,7 @@ mod native {
             ),
         )?;
 
-        let operation = silent_token_request(&request, &account)?;
+        let operation = silent_token_request(&request)?;
         let result = wait_operation(&operation, SILENT_TIMEOUT, "GetTokenSilently")?;
         let (token, actual) = read_success(&result, false)?;
         if actual != expected_xuid {
@@ -308,18 +311,20 @@ mod native {
         Ok(StoreTicket::from_wam(token, actual))
     }
 
-    /// 静默取票请求：系统在此处可能直接拒绝。
+    /// 静默取票请求：不带账户，只复用 WAM 当前缓存的默认账户。
     ///
-    /// 这是静默路径独有的失败点——同进程的交互路径能拿到票据，静默路径却可能被
-    /// 拒。已知 `E_ACCESSDENIED` 出现在这里，而同样的参数在 LeviLauncher 上可
-    /// 以通过，因此原因不在 scope/clientID/账户这些显式参数上。
+    /// 曾经的失败假设：`GetTokenSilentlyWithWebAccountAsync(request, account)`
+    /// 在本机被系统以 `E_ACCESSDENIED` 拒绝，而同样参数在参考实现上可以通过。
+    /// 已排除的原因：提权、scope/clientID/provider、账户口径（响应的
+    /// `WebAccount.Id` 与数据库中的 XUID 逐字一致）。真正的原因是**显式传入
+    /// WebAccount 的那条重载在受限进程下会被拒绝**：同一个进程里换成不带账户的
+    /// 重载即可拿到票据，并且响应账户仍与 expected XUID 一致。
     fn silent_token_request(
         request: &WebTokenRequest,
-        account: &windows::Security::Credentials::WebAccount,
     ) -> Result<IAsyncOperation<WebTokenRequestResult>, WamStoreError> {
         step(
-            "GetTokenSilentlyWithWebAccountAsync",
-            WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(request, account),
+            "GetTokenSilentlyAsync",
+            WebAuthenticationCoreManager::GetTokenSilentlyAsync(request),
         )
     }
 
