@@ -17,6 +17,8 @@ use crate::registry::modules::Module;
 use crate::state::KernelContext;
 
 pub mod content;
+/// 触控层布局（屏幕控件）的事实源：`<版本目录>/controls.json`。
+pub mod controls;
 pub mod launch;
 pub mod meta;
 pub mod mods;

@@ -23,7 +23,8 @@
   "tab": {
     "basic": "Basic",
     "content": "Content",
-    "mods": "Mods"
+    "mods": "Mods",
+    "controls": "Controls"
   },
   "basic": {
     "cover": "Cover",
@@ -32,7 +33,55 @@
     "folders": "Folder shortcuts",
     "folders_hint": "Open in file explorer"
   },
-  "dir": {
+  "controls": {
+    "android_only": "The on-screen control layer only applies to Android instances: desktop instances have no game Activity, so no in-game controls are rendered.",
+    "hint": "Drag controls in the preview to adjust position; values are screen fractions, so they survive device changes and rotation. Areas not covered by a control still pass through to the game, so you can tap to mine and drag to look around.",
+    "add": "Add control",
+    "reset": "Restore defaults",
+    "save": "Save",
+    "saving": "Saving",
+    "dirty": "Unsaved changes",
+    "loading": "Loading layout",
+    "load_failed": "Failed to load the control layout: ",
+    "save_failed": "Failed to save the control layout: ",
+    "saved": "Control layout saved; it takes effect on the next game launch",
+    "show": "Show",
+    "hide": "Hide",
+    "remove": "Remove",
+    "no_action": "No action bound",
+    "kind": {
+      "dpad": "D-pad",
+      "joystick": "Joystick",
+      "button": "Button",
+      "look": "Look area"
+    },
+    "action": {
+      "forward": "Forward",
+      "back": "Back",
+      "left": "Strafe left",
+      "right": "Strafe right",
+      "jump": "Jump",
+      "sneak": "Sneak",
+      "sprint": "Sprint",
+      "inventory": "Inventory",
+      "drop": "Drop",
+      "attack": "Attack",
+      "use": "Use",
+      "toggle_fly": "Toggle fly",
+      "chat": "Chat",
+      "menu": "Menu"
+    },
+    "field": {
+      "id": "Control ID",
+      "kind": "Kind",
+      "action": "Bound action",
+      "label": "Label",
+      "x": "Left %",
+      "y": "Top %",
+      "w": "Width %",
+      "h": "Height %"
+    }
+  },  "dir": {
     "version": "Version folder",
     "mods": "Mods folder",
     "worlds": "Worlds folder"

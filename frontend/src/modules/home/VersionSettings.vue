@@ -25,6 +25,7 @@ import { showToast } from "../../composables/useToast";
 import CoTabs from "../../components/ui/CoTabs.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import ContentTab from "./ContentTab.vue";
+import ControlsTab from "./ControlsTab.vue";
 import ModTab from "./ModTab.vue";
 import VersionBasicTab from "./VersionBasicTab.vue";
 import IconEditDialog from "./IconEditDialog.vue";
@@ -35,8 +36,9 @@ import {
   type VersionView,
 } from "../../api/home";
 import { onVersionInstalled, onVersionRemoved, onVersionsChanged } from "../../events";
+import { usePlatform } from "../../composables/usePlatform";
 
-type SectionTab = "basic" | "content" | "mods";
+type SectionTab = "basic" | "content" | "mods" | "controls";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -46,6 +48,8 @@ const versions = ref<VersionView[]>([]);
 const current = ref<VersionView | null>(null);
 const loading = ref(true);
 const activeTab = ref<SectionTab>("basic");
+// 平台标识决定「屏幕触控层」标签页是否可用：只有安卓实例有游戏 Activity。
+const { platform } = usePlatform();
 const contentSearch = ref("");
 const modsSearch = ref("");
 const iconDialogOpen = ref(false);
@@ -69,6 +73,7 @@ const sectionTabs = computed(() => [
   { value: "basic", label: t("module.home.tab.basic") },
   { value: "content", label: t("module.home.tab.content") },
   { value: "mods", label: t("module.home.tab.mods") },
+  { value: "controls", label: t("module.home.tab.controls") },
 ]);
 
 /** 面板工具栏搜索框：位置共用，值按分区独立。 */
@@ -214,7 +219,10 @@ async function deleteVersion() {
 
     <!-- 主面板：与左标签页同处网格第 2 行，顶边天然对齐 -->
     <section class="version-settings__panel">
-      <div v-if="activeTab !== 'basic'" class="version-settings__panel-top">
+            <div
+        v-if="activeTab === 'content' || activeTab === 'mods'"
+        class="version-settings__panel-top"
+      >
         <div class="version-settings__search">
           <Search :size="14" class="version-settings__search-icon" />
           <CoTextField v-model="activeSearch" :placeholder="searchPlaceholder" />
@@ -235,7 +243,16 @@ async function deleteVersion() {
             :version-name="currentName"
             :search="contentSearch"
           />
-          <ModTab v-else :version-name="currentName" :search="modsSearch" />
+          <ModTab
+            v-else-if="activeTab === 'mods'"
+            :version-name="currentName"
+            :search="modsSearch"
+          />
+          <ControlsTab
+            v-else
+            :name="currentName"
+            :platform="platform"
+          />
         </template>
         <div v-else class="version-settings__empty">
           <p>{{ t("module.home.empty") }}</p>

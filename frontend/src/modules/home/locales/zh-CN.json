@@ -23,7 +23,8 @@
   "tab": {
     "basic": "基本设置",
     "content": "内容管理",
-    "mods": "模组管理"
+    "mods": "模组管理",
+    "controls": "控制层"
   },
   "basic": {
     "cover": "版本封面",
@@ -32,7 +33,55 @@
     "folders": "目录快捷方式",
     "folders_hint": "在文件资源管理器中打开"
   },
-  "dir": {
+  "controls": {
+    "android_only": "屏幕触控层只对安卓实例生效：桌面端实例没有游戏 Activity，不渲染游戏内控件。",
+    "hint": "预览区可直接拖动控件粗调位置；数值为屏幕比例（相对视口宽高），换机与旋转后自动还原。未被控件覆盖的区域仍然直通游戏，可以点屏幕挖掘与转视角。",
+    "add": "新增控件",
+    "reset": "恢复默认",
+    "save": "保存",
+    "saving": "保存中",
+    "dirty": "有未保存的改动",
+    "loading": "正在读取布局",
+    "load_failed": "读取触控布局失败：",
+    "save_failed": "保存触控布局失败：",
+    "saved": "触控布局已保存，下次启动游戏生效",
+    "show": "显示",
+    "hide": "隐藏",
+    "remove": "删除",
+    "no_action": "未绑定动作",
+    "kind": {
+      "dpad": "方向键",
+      "joystick": "摇杆",
+      "button": "按钮",
+      "look": "视角区"
+    },
+    "action": {
+      "forward": "前进",
+      "back": "后退",
+      "left": "左移",
+      "right": "右移",
+      "jump": "跳跃",
+      "sneak": "潜行",
+      "sprint": "疾跑",
+      "inventory": "背包",
+      "drop": "丢弃",
+      "attack": "攻击",
+      "use": "使用",
+      "toggle_fly": "切换飞行",
+      "chat": "聊天",
+      "menu": "菜单"
+    },
+    "field": {
+      "id": "控件 ID",
+      "kind": "类型",
+      "action": "绑定动作",
+      "label": "显示文字",
+      "x": "左边距 %",
+      "y": "上边距 %",
+      "w": "宽度 %",
+      "h": "高度 %"
+    }
+  },  "dir": {
     "version": "版本目录",
     "mods": "模组目录",
     "worlds": "存档目录"

@@ -6,6 +6,12 @@ import android.content.res.AssetManager
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.view.MotionEvent
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import com.copperlamp.coppergolem.game.controls.ControlLayout
+import com.copperlamp.coppergolem.game.controls.ControlOverlayView
+import com.copperlamp.coppergolem.game.controls.InjectingInputSink
 import com.mojang.minecraftpe.MainActivity
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -13,13 +19,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * 真正的游戏宿主 Activity。
  *
- * 继承 Mojang `MainActivity`（编译自 `:minecraft` 模块），
- * 职责只有两件：
+ * 继承 Mojang `MainActivity`（编译自 `:minecraft` 模块），职责只有三件：
  *
  * 1. **存储重定向** —— `getFilesDir` / `getDataDir` / `getCacheDir` /
  *    `getDatabasePath` / `getExternalFilesDir` 全部指向当前实例目录，
  *    让每个导入实例拥有独立且互不干扰的存档 worlds、resource_packs 与数据库。
  * 2. **资源重定向** —— `getAssets` 返回挂载了用户 APK 的 `AssetManager`。
+ * 3. **屏幕触控层** —— 在游戏视图之上叠一层 [ControlOverlayView]，并把控件操作
+ *    翻译成合成输入交给游戏（见 [setupControls] 与 `controls/` 包）。
  *
  * 其余生命周期行为（`super.onCreate` 触发 native `MainActivity_create`、
  * `onPause` 的 `nativeSuspend`、`onDestroy` 的 `nativeShutdown`）全部交给父类。
@@ -37,6 +44,11 @@ class CopperGameActivity : MainActivity() {
     private val exitReported = AtomicBoolean(false)
     private var runtimeStarted = false
     private var instanceName: String = ""
+
+    /** 触控层（为空表示本次启动没挂上；游戏仍可玩，只是没有屏幕控件）。 */
+    private var controls: ControlOverlayView? = null
+    private var inputSink: InjectingInputSink? = null
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         trace().mark("游戏 Activity onCreate 进入")
@@ -70,6 +82,8 @@ class CopperGameActivity : MainActivity() {
             runtimeStarted = true
             super.onCreate(savedInstanceState)
             trace().milestone("父类 onCreate 完成，游戏运行时已启动")
+            // 触控层必须在父类建好游戏视图之后再挂，否则拿不到它作为注入目标。
+            setupControls(game)
         } catch (error: Throwable) {
             CopperGameRuntimePreparer.logFailure("游戏 Activity 初始化", error)
             trace().error("父类 onCreate 失败", error.message ?: error.javaClass.simpleName)
@@ -118,6 +132,85 @@ class CopperGameActivity : MainActivity() {
         return dir
     }
 
+    // -------------------------------------------------------------- 屏幕触控层
+
+    /**
+     * 挂载触控层。
+     *
+     * 布局读自实例目录的 `controls.json`（由 Rust 原子写入）；文件缺失或损坏时
+     * [ControlLayout.load] 会退回默认布局并给出原因，因此这里**不会**因为没有
+     * 布局而让游戏没法操作。
+     *
+     * 挂载失败（拿不到内容视图等）只记日志不抛：触控层是增强，游戏本体不该被它
+     * 拖垮——玩家至少还能用真实触摸屏操作（未被控件覆盖的区域仍然直通游戏）。
+     */
+    private fun setupControls(game: CopperGameInstance) {
+        try {
+            val content = findViewById<ViewGroup>(android.R.id.content) ?: run {
+                trace().warning("找不到 android.R.id.content，跳过触控层挂载")
+                return
+            }
+            val loaded = ControlLayout.load(game.root)
+            if (loaded.reason != null) {
+                trace().warning("触控布局已兜底: ${loaded.reason}")
+            }
+
+            val sink = InjectingInputSink(this, gameSurfaceView())
+            val overlay = ControlOverlayView(this, sink).apply {
+                setLayout(loaded.layout)
+            }
+            // 作为内容视图的最后一个子 View = 最上层；只占自己控件的区域，
+            // 未被控件覆盖的地方靠 onTouchEvent 返回 false 让事件透到游戏。
+            content.addView(
+                overlay,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+
+            inputSink = sink
+            controls = overlay
+            trace().milestone("触控层已挂载：${loaded.layout.controls.size} 个控件")
+        } catch (error: Throwable) {
+            trace().error("触控层挂载失败（游戏仍可继续）", error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    /**
+     * 取 AGDK 的游戏 SurfaceView 作为触摸注入目标。
+     *
+     * 它是 `GameActivity` 的 `protected` 字段，子类可直接读；这里用反射是为了在
+     * AGDK 改字段名时**优雅退化**（退回窗口 DecorView）而不是编译不过或崩溃。
+     */
+    private fun gameSurfaceView(): android.view.View? = try {
+        val field = com.google.androidgamesdk.GameActivity::class.java
+            .getDeclaredField("mSurfaceView")
+            .apply { isAccessible = true }
+        field.get(this) as? android.view.View
+    } catch (error: Throwable) {
+        trace().mark("未能取得游戏 SurfaceView，触摸注入退回 DecorView: ${error.javaClass.simpleName}")
+        null
+    }
+
+    /**
+     * 触摸分发：先给触控层，未被吃掉才交给游戏。
+     *
+     * 两层保护缺一不可：
+     * 1. 触控层返回 `false`（未命中控件）时**不拦截**，真实触摸照常进游戏；
+     * 2. 触控层为空时直接走父类，行为与未引入触控层前完全一致。
+     *
+     * 回环防护在 [InjectingInputSink.isInjectingTouch]（覆盖层自己放行注入中的事件），
+     * 这里不再重复判断——同一件事只有一处真相，避免两处判断不一致。
+     */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val overlay = controls ?: return super.dispatchTouchEvent(event)
+        if (overlay.onTouchEvent(event)) {
+            return true
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
     // ------------------------------------------------------------ Mojang 契约
 
     override fun getAssets(): AssetManager {
@@ -159,6 +252,18 @@ class CopperGameActivity : MainActivity() {
         trace().mark("游戏 Activity onResume")
     }
 
+    /**
+     * 切到后台时释放所有按下的键。
+     *
+     * 不做这一步，玩家「按住 W 时被来电打断」会让 W 在游戏里一直按着（合成输入的
+     * up 事件永远不会来），回到游戏后角色自己往前走。
+     */
+    override fun onPause() {
+        controls?.releaseAll()
+        inputSink?.releaseAll()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         // isChangingConfigurations：旋转/分屏导致重建，不算玩家退出。
         // 正常退出时 isFinishing 为 true，这才是要上报的信号。
@@ -166,8 +271,12 @@ class CopperGameActivity : MainActivity() {
         if (normalExit) {
             reportExitOnce(CopperGameExitRecord.Reason.NORMAL)
         } else if (runtimeStarted) {
-            trace().warning("Activity 销毁但非正常退出: finishing=$isFinishing changing=${isChangingConfigurations}")
+            trace().warning("Activity 销毁但非正常退出: finishing=$isFinishing changing=$isChangingConfigurations")
         }
+        controls?.releaseAll()
+        inputSink?.releaseAll()
+        controls = null
+        inputSink = null
         CopperGameSession.clear()
         trace().milestone("游戏 Activity onDestroy")
         try {

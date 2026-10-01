@@ -7,6 +7,7 @@ use tauri::State;
 use crate::commands::into_command_error;
 use crate::error::{CommandResult, KernelError};
 use crate::modules::home::content;
+use crate::modules::home::controls;
 use crate::modules::home::launch::LaunchOutcome;
 use crate::modules::home::mods;
 use crate::modules::home::{meta, OpenDirKind, VersionMetaUpdate, VersionView};
@@ -120,6 +121,27 @@ pub fn home_content_remove(
     item_id: String,
 ) -> CommandResult<()> {
     content::remove_content(kernel.inner(), &name, &item_id).map_err(into_command_error)
+}
+
+// ---------------------------------------------------------------- 触控层布局
+
+/// 读取某实例的屏幕触控布局（缺文件返回默认布局）。
+#[tauri::command]
+pub fn home_controls_get(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<controls::ControlLayout> {
+    controls::load(kernel.inner(), &name).map_err(into_command_error)
+}
+
+/// 保存某实例的屏幕触控布局（校验 + 原子写，返回规整后的布局）。
+#[tauri::command]
+pub fn home_controls_save(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    layout: controls::ControlLayout,
+) -> CommandResult<controls::ControlLayout> {
+    controls::save(kernel.inner(), &name, &layout).map_err(into_command_error)
 }
 
 // ---------------------------------------------------------------- 模组管理

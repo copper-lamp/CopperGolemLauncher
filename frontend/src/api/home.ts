@@ -220,3 +220,96 @@ export type VersionDirKind = "version" | "mods" | "worlds";
 export function homeVersionOpenDir(name: string, kind: VersionDirKind): Promise<string> {
   return call<string>("home_version_open_dir", { name, kind });
 }
+
+// ---------------------------------------------------------------- 屏幕触控层
+
+/**
+ * 控件类型（与 Rust `home::controls` 的常量一致）。
+ *
+ * `dpad` / `joystick` 绑定方向动作，`button` 绑定单动作，`look` 是视角区。
+ */
+export type ControlKind = "dpad" | "joystick" | "button" | "look";
+
+/**
+ * 控件绑定的**游戏动作**（不是按键码）。
+ *
+ * 用动作而非按键码：按键码是平台细节，写进用户布局会把布局绑死在某个平台上。
+ */
+export type ControlAction =
+  | "forward"
+  | "back"
+  | "left"
+  | "right"
+  | "jump"
+  | "sneak"
+  | "sprint"
+  | "inventory"
+  | "drop"
+  | "attack"
+  | "use"
+  | "toggle_fly"
+  | "chat"
+  | "menu";
+
+/** 归一化矩形：0..1，相对屏幕；换机与旋转后仍能还原。 */
+export interface ControlRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface ControlItem {
+  /** 实例内唯一 id；增删改用它定位，不用下标。 */
+  id: string;
+  kind: ControlKind;
+  rect: ControlRect;
+  /** 显示名；空则按 action 取默认缩写。 */
+  label: string;
+  action: ControlAction | null;
+  opacity: number;
+  visible: boolean;
+}
+
+/** 一份触控布局（与后端 `controls::ControlLayout` 同构）。 */
+export interface ControlLayout {
+  version: number;
+  coordinateSpace: string;
+  controls: ControlItem[];
+}
+
+/** 方向动作（只能绑在 dpad / joystick 上）。 */
+export const DIRECTIONAL_ACTIONS: ControlAction[] = ["forward", "back", "left", "right"];
+
+/** 单动作（只能绑在 button 上）。 */
+export const BUTTON_ACTIONS: ControlAction[] = [
+  "jump",
+  "sneak",
+  "sprint",
+  "inventory",
+  "drop",
+  "attack",
+  "use",
+  "toggle_fly",
+  "chat",
+  "menu",
+];
+
+/**
+ * 读取某实例的屏幕触控布局。
+ *
+ * 布局文件缺失时后端返回默认布局（**不落盘**），因此这里恒能拿到可用布局。
+ */
+export function homeControlsGet(name: string): Promise<ControlLayout> {
+  return call<ControlLayout>("home_controls_get", { name });
+}
+
+/**
+ * 保存某实例的屏幕触控布局。
+ *
+ * 后端会做完整校验（类型与动作匹配、id 唯一、坐标夹取）并**原子写**，返回规整后
+ * 的布局——请用返回值刷新界面，而不是沿用提交的那份。
+ */
+export function homeControlsSave(name: string, layout: ControlLayout): Promise<ControlLayout> {
+  return call<ControlLayout>("home_controls_save", { name, layout });
+}
