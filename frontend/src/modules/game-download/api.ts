@@ -130,6 +130,18 @@ export interface ApkPackageInfo {
 }
 
 /**
+ * APK 导入结果（与后端 `apk::ApkImportResult` 同构）。
+ *
+ * `instance_name` 是内核规整后的**权威实例名**，也就是版本目录名。调用方必须
+ * 用它（而不是自己提交的名字）去启动 / 引用实例：安卓宿主按同一个名字定位
+ * `data/versions/<name>`，两边各推导一次就会分叉。
+ */
+export interface ApkImportResult {
+  instance_name: string;
+  package_info: ApkPackageInfo;
+}
+
+/**
  * 导入一个 APK / APKS。
  *
  * `source_path` 必须是应用私有目录内的路径：安卓端先由 `importApkToInbox`
@@ -137,9 +149,12 @@ export interface ApkPackageInfo {
  *
  * 包名、版本号由后端从二进制 `AndroidManifest.xml` 解码，前端不参与——
  * 这些值决定原生库加载顺序。
+ *
+ * `name` 会由后端规整（空格 / 中文 / 通配符收敛为 `_`），后续流程请使用返回的
+ * `instance_name`。
  */
-export function gameImportApk(source_path: string, name: string): Promise<ApkPackageInfo> {
-  return call<ApkPackageInfo>("game_download_import_apk", { source_path, name });
+export function gameImportApk(source_path: string, name: string): Promise<ApkImportResult> {
+  return call<ApkImportResult>("game_download_import_apk", { source_path, name });
 }
 
 /** 安卓游戏退出记录（与后端 `platform::android::ExitRecord` 同构）。 */

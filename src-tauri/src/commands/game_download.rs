@@ -53,6 +53,11 @@ pub fn game_download_task_bindings(
 /// 桌面端由文件对话框直接给出绝对路径。命令不接受任意外部路径，
 /// 避免把「用户选了一个文件」变成「内核可以读设备上任意文件」。
 ///
+/// `name` 会被 [`meta::sanitize_instance_name`] 规整成**唯一权威**的实例名，
+/// 并以 `instance_name` 原样回传：安卓宿主按同一个名字定位
+/// `data/versions/<name>`，前端不许再自己推导一遍（两侧推导不一致就会出现
+/// 「列表里看得到、点启动却说实例不存在」）。
+///
 /// 包名与版本号由 [`apk::import_file`] 从二进制 `AndroidManifest.xml` 中
 /// 解码，前端不参与、也不允许覆盖：这些值决定安卓运行时加载哪一套
 /// 原生库。
@@ -61,9 +66,12 @@ pub async fn game_download_import_apk(
     kernel: State<'_, KernelContext>,
     source_path: String,
     name: String,
-) -> CommandResult<apk::ApkPackageInfo> {
+) -> CommandResult<apk::ApkImportResult> {
     let ctx = Ctx::from_kernel(&kernel);
     let root = ctx.versions_root();
+    // 先规整再校验：调用方给的名字带空格 / 中文时在这里统一收敛，而不是
+    // 让安卓宿主在定位目录时再改一次名字。
+    let name = meta::sanitize_instance_name(&name);
     meta::validate_version_name(&root, &name).map_err(into_command_error)?;
 
     let source = PathBuf::from(source_path);
@@ -122,11 +130,68 @@ pub async fn game_download_import_apk(
         return Err(into_command_error(error));
     }
 
+    // 导入后自检：目录名 / 元数据 / 安卓宿主定位规则三者必须一致。
+    // 这一步失败必须回滚——留着它只会让实例在列表里可见却永远起不来。
+    if let Err(error) = verify_imported_instance(&instance_dir, &name) {
+        let _ = std::fs::remove_dir_all(&instance_dir);
+        return Err(into_command_error(error));
+    }
+
     kernel.events().publish(
         "version.installed",
         serde_json::json!({ "name": name, "platform": "android" }),
     );
-    Ok(imported)
+    Ok(apk::ApkImportResult {
+        instance_name: name,
+        package_info: imported,
+    })
+}
+
+/// 导入落位后的自检：目录名与 `version.json` 必须互相印证。
+///
+/// 覆盖三类真实故障：
+/// - 元数据里的 `name` / `packageDir` 与目录名不一致：安卓宿主按目录名
+///   定位、内核按元数据展示，两者一旦分叉就会指向不同实例；
+/// - 原生库缓存路径不按 `runtime_libs/<实例名>` 约定：宿主下一次启动
+///   会另建一份缓存目录，等于白解压一遍；
+/// - 缺 `android.versionName` / `packageName`：安卓运行时靠版本号决定
+///   原生库加载顺序、靠包名校验游戏包身份，缺了只能静默降级。
+fn verify_imported_instance(instance_dir: &std::path::Path, name: &str) -> Result<(), KernelError> {
+    let meta = VersionMeta::read(instance_dir).ok_or_else(|| {
+        KernelError::InvalidArgument(format!("实例 `{name}` 的 version.json 无法读取"))
+    })?;
+    if meta.name != name {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例元数据名 `{}` 与目录名 `{name}` 不一致",
+            meta.name
+        )));
+    }
+    let android = meta.android.ok_or_else(|| {
+        KernelError::InvalidArgument(format!("实例 `{name}` 缺少安卓元数据，无法作为安卓实例启动"))
+    })?;
+    if android.package_dir != name {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例 `{name}` 的 packageDir `{}` 与目录名不一致",
+            android.package_dir
+        )));
+    }
+    if android.lib_cache_dir != format!("runtime_libs/{name}") {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例 `{name}` 的原生库缓存路径 `{}` 不符合 runtime_libs/<实例名> 约定",
+            android.lib_cache_dir
+        )));
+    }
+    if android.version_name.trim().is_empty() {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例 `{name}` 缺少版本号，无法确定原生库加载顺序"
+        )));
+    }
+    if android.package_name.trim().is_empty() {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例 `{name}` 缺少包名，无法校验游戏包身份"
+        )));
+    }
+    Ok(())
 }
 
 /// 取走安卓游戏退出记录（文件信箱，take 语义）。

@@ -15,6 +15,63 @@ pub const META_FILE: &str = "version.json";
 /// 版本图标文件名（与 LeviLauncher 一致，256×256 PNG）。
 pub const LOGO_FILE: &str = "LargeLogo.png";
 
+/// 实例名（= 版本目录名）允许出现的字符集。
+///
+/// 这套规则不是审美选择，而是**跨语言可移植性约束**：安卓宿主里存在
+/// 同一条规则的 Kotlin 实现（`CopperGameLayout.instanceId`），用来按名字
+/// 定位 `data/versions/<name>`。两侧只要不完全一致，带空格或非 ASCII 的
+/// 实例名就会出现「列表里看得到、点启动却说实例不存在」。见
+/// [安卓端能力差距与优先级](../../../../docs/安卓端能力差距与优先级.md) P0-2。
+pub const INSTANCE_NAME_ALPHABET: &str = "A-Za-z0-9._-";
+
+/// 实例名长度上限（按**字符**计）。
+pub const INSTANCE_NAME_MAX_CHARS: usize = 96;
+
+/// 把任意字符串规整为合法实例名（目录名）。
+///
+/// 与 Kotlin 侧 `CopperGameLayout.sanitizeInstance` 逐条对应，任一侧改动
+/// 都必须同时改另一侧：
+/// 1. 去掉首尾空白；
+/// 2. 字符集外的字符替换为 `_`；
+/// 3. 连续 `_` 折叠为一个；
+/// 4. 去掉首尾的 `.`、`_`、`-`（Windows 不允许目录名以点结尾，`.` / `..` 更是路径逃逸）；
+/// 5. 按字符截断到 [`INSTANCE_NAME_MAX_CHARS`]；
+/// 6. 结果为空则回落 `instance`。
+pub fn sanitize_instance_name(name: &str) -> String {
+    let mut cleaned = String::with_capacity(name.len());
+    let mut last_underscore = false;
+    for ch in name.trim().chars() {
+        let mapped = if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            ch
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if last_underscore {
+                continue;
+            }
+            last_underscore = true;
+        } else {
+            last_underscore = false;
+        }
+        cleaned.push(mapped);
+    }
+    let trimmed = cleaned.trim_matches(|c| c == '.' || c == '_' || c == '-');
+    if trimmed.is_empty() {
+        return "instance".to_string();
+    }
+    let take = trimmed.chars().count().min(INSTANCE_NAME_MAX_CHARS);
+    trimmed.chars().take(take).collect()
+}
+
+/// 判断名字是否已是规整形态（规整后与自身一致）。
+///
+/// 导入与重命名用它做**自检**：只要提交的名字通过了，安卓宿主就一定
+/// 能按同一个名字定位到目录，不需要宿主再猜一次。
+pub fn is_instance_name_canonical(name: &str) -> bool {
+    !name.trim().is_empty() && sanitize_instance_name(name) == name
+}
+
 /// Android APK 运行时元数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -252,6 +309,42 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn instance_name_sanitizer_is_canonical() {
+        // 空格、中文、路径分隔符、通配符全部收敛为下划线。
+        assert_eq!(sanitize_instance_name("Minecraft 1.21.130"), "Minecraft_1.21.130");
+        assert_eq!(sanitize_instance_name("我的世界"), "instance");
+        assert_eq!(sanitize_instance_name("a/b\\c"), "a_b_c");
+        assert_eq!(sanitize_instance_name("a??b"), "a_b");
+        // 连续下划线折叠，首尾不留下划线 / 点 / 横线。
+        assert_eq!(sanitize_instance_name("a   b"), "a_b");
+        assert_eq!(sanitize_instance_name("__a__"), "a");
+        assert_eq!(sanitize_instance_name("..a.."), "a");
+        assert_eq!(sanitize_instance_name("-1.21.0-"), "1.21.0");
+        // 空 / 纯非法字符回落，绝不允许产出空目录名或 `.` / `..`。
+        assert_eq!(sanitize_instance_name(""), "instance");
+        assert_eq!(sanitize_instance_name("   "), "instance");
+        assert_eq!(sanitize_instance_name("..."), "instance");
+        assert_eq!(sanitize_instance_name("中"), "instance");
+        // 长度按字符截断。
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_instance_name(&long).chars().count(), INSTANCE_NAME_MAX_CHARS);
+    }
+
+    #[test]
+    fn canonical_check_rejects_what_the_android_host_cannot_resolve() {
+        assert!(is_instance_name_canonical("MC_1.21.130-preview"));
+        assert!(is_instance_name_canonical("instance"));
+        assert!(!is_instance_name_canonical("Minecraft 1.21"));
+        assert!(!is_instance_name_canonical("我的世界"));
+        assert!(!is_instance_name_canonical(""));
+        assert!(!is_instance_name_canonical(".."));
+        // 规整结果必须能通过自检：导入写目录名与宿主定位目录名因此必然一致。
+        for raw in ["Minecraft 1.21", "我的世界", "a//b", "___", "x y z"] {
+            assert!(is_instance_name_canonical(&sanitize_instance_name(raw)), "{raw}");
+        }
     }
 
     #[test]

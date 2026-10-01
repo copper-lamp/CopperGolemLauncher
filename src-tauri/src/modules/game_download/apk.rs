@@ -53,6 +53,19 @@ pub struct ApkPackageInfo {
     pub has_splits: bool,
 }
 
+/// 导入结果：**规整后的实例名** + 从包内解出的身份信息。
+///
+/// 实例名必须由内核回传，而不是让调用方沿用自己提交的名字：这个名字同时是
+/// 版本目录名与安卓宿主定位实例的键，两侧各推导一次就会分叉
+/// （见 `docs/安卓端能力差距与优先级.md` P0-2）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApkImportResult {
+    /// 权威实例名（= `<versions>/<instance_name>` 目录名）。
+    pub instance_name: String,
+    pub package_info: ApkPackageInfo,
+}
+
 fn sha256_file(path: &Path) -> Result<String, KernelError> {
     let mut f = File::open(path)?;
     let mut h = Sha256::new();
