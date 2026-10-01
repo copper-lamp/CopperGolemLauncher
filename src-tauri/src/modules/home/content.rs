@@ -58,6 +58,10 @@ pub struct ContentRoots {
 
 /// 共享内容目录名（`resource_packs` / `behavior_packs`）。
 const SHARED_GAME_DIR: &str = "games/com.mojang";
+/// 安卓实例内的游戏数据目录名（与 `CopperGameLayout.GAME_DATA_DIR` 一致）。
+const ANDROID_GAME_DIR: &str = "game";
+/// 安卓实例内 Minecraft 的 files 目录名（`CopperGameLayout.gameFilesDir`）。
+const ANDROID_FILES_DIR: &str = "files";
 /// 世界目录名。
 const WORLDS_DIR: &str = "minecraftWorlds";
 
@@ -69,6 +73,18 @@ pub fn content_roots(kernel: &KernelContext, name: &str) -> Result<ContentRoots,
     let dir = resolve_version_dir(&kernel.versions_root(), name)?;
     let meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
+
+    // 安卓实例：游戏按官方布局在 files 根下找 `games/com.mojang`。
+    // 该 files 根由 `CopperGameLayout.gameFilesDir()` 决定（`<root>/game/files`），
+    // 并作为 `EXTRA_FILES_DIR` 传入游戏 Activity（见 CopperGameRuntimePreparer），
+    // 故不能复用桌面的隔离布局，也不能走 AppX 分支。
+    if meta.android.is_some() {
+        let files_root = dir.join(ANDROID_GAME_DIR).join(ANDROID_FILES_DIR);
+        return Ok(ContentRoots {
+            com_mojang: files_root.join(SHARED_GAME_DIR),
+            users_root: files_root,
+        });
+    }
 
     if meta.enable_isolation {
         let game_dir = game_dir_name(&meta);

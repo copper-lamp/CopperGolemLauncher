@@ -229,6 +229,18 @@ pub fn run() {
                 events.clone(),
             ));
 
+            // 主窗口句柄登记：WAM 交互式授权需要真实窗口作为界面归属目标。
+            // 命令层与后台安装链读同一份，避免各自去猜窗口。
+            let window = Arc::new(services::window::MainWindow::new());
+            if let Some(main) = app.get_webview_window("main") {
+                match main.hwnd() {
+                    Ok(hwnd) => window.set(hwnd.0 as isize),
+                    Err(error) => log::warn!(
+                        "[core] 主窗口句柄不可用，交互式商店授权将不可用：{error}"
+                    ),
+                }
+            }
+
             let intents = Arc::new(IntentRegistry::new());
             let modules = Arc::new(ModuleRegistry::new());
             // 装载后端要用注册表构造能力派发器；KernelContext 会另行接管一份引用。
@@ -251,6 +263,7 @@ pub fn run() {
                 tips,
                 download,
                 account,
+                window,
                 llm,
                 updater,
                 events,

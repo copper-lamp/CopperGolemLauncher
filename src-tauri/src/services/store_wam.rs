@@ -121,6 +121,42 @@ pub fn acquire_store_ticket(expected_xuid: &str) -> Result<StoreTicket, StoreEnt
     acquire_store_ticket_for_xuid(expected_xuid).map_err(Into::into)
 }
 
+/// 交互式取 Store 票据，归属到本进程窗口 `hwnd`。
+///
+/// 静默取票被系统拒绝时的回落路径：同一次请求改用窗口作用域的
+/// `RequestTokenForWindowAsync`，由系统账户界面当场签发票据。票据与
+/// `expected_xuid` 显式绑定，用户在界面上切换账户会被拒绝而不是被静默接受。
+///
+/// 阻塞调用，会等待用户在系统界面上完成，可能长达数分钟，必须放在阻塞线程上执行。
+/// `hwnd` 必须属于本进程（由 [`crate::services::window::MainWindow`] 登记），
+/// 因此系统账户界面会归属到本应用的窗口。
+#[cfg(windows)]
+pub fn acquire_store_ticket_for_window(
+    hwnd: isize,
+    expected_xuid: &str,
+) -> Result<StoreTicket, WamStoreError> {
+    if expected_xuid.trim().is_empty() {
+        return Err(WamStoreError::InvalidIdentity);
+    }
+    native::validate_owner_window(hwnd)?;
+    native::initialize()?;
+    let result = native::interactive_ticket(hwnd, expected_xuid);
+    native::uninitialize();
+    result
+}
+
+/// 非 Windows 平台没有窗口作用域的 WAM，回落路径显式不支持。
+#[cfg(not(windows))]
+pub fn acquire_store_ticket_for_window(
+    _hwnd: isize,
+    expected_xuid: &str,
+) -> Result<StoreTicket, WamStoreError> {
+    if expected_xuid.trim().is_empty() {
+        return Err(WamStoreError::InvalidIdentity);
+    }
+    Err(WamStoreError::WindowsOnly)
+}
+
 /// 交互式账户授权：把系统账户界面归属到 `hwnd`，返回用户选定账户的 XUID。
 ///
 /// 阻塞调用，可能停留数分钟等待用户操作，必须放在阻塞线程上执行。
@@ -158,11 +194,6 @@ mod native {
         WebAuthenticationCoreManager, WebTokenRequest, WebTokenRequestPromptType,
         WebTokenRequestResult, WebTokenRequestStatus,
     };
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{
-        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
-    };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::Win32::System::WinRT::{
         RoGetActivationFactory, RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED,
     };
@@ -236,40 +267,6 @@ mod native {
         result.map_err(|error| WamStoreError::Native(format!("{name}: {error}")))
     }
 
-    /// 当前进程是否处于提权状态（高完整性级别）。
-    ///
-    /// WAM 的静默取票在提权进程上会被系统拒绝，交互路径则不会。这个差异是
-    /// 「同进程内交互授权成功、静默取票失败」这类现象的关键判据，因此失败时
-    /// 必须带上，否则日志无法区分权限问题与票据问题。
-    ///
-    /// 取不到令牌时返回 `false`：这是诊断信息而非授权判据，宁可缺失也不能
-    /// 因此让正常的取票路径失败。
-    pub(super) fn is_elevated() -> bool {
-        let mut token = HANDLE::default();
-        // SAFETY: 传入当前进程伪句柄与 TOKEN_QUERY 访问权，输出令牌句柄由本函数负责关闭。
-        let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
-        if opened.is_err() {
-            return false;
-        }
-
-        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut returned = 0u32;
-        // SAFETY: 令牌句柄有效，缓冲区大小与类型匹配，实际写入量由 returned 回报。
-        let queried = unsafe {
-            GetTokenInformation(
-                token,
-                TokenElevation,
-                Some(&mut elevation as *mut _ as *mut c_void),
-                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-                &mut returned,
-            )
-        };
-        // SAFETY: token 由本函数打开，成功打开一次后必须成对关闭；关闭失败不改变
-        // 已取得的提权判据。
-        let _ = unsafe { CloseHandle(token) };
-        queried.is_ok() && elevation.TokenIsElevated != 0
-    }
-
     /// 句柄必须可用，否则系统账户界面无处归属。
     ///
     /// 句柄只由内核从自身主窗口取得（见 `commands::account::main_window_hwnd`），
@@ -311,37 +308,58 @@ mod native {
         Ok(StoreTicket::from_wam(token, actual))
     }
 
-    /// 静默取票请求：系统在此处可能因为进程被提权而直接拒绝。
+    /// 静默取票请求：系统在此处可能直接拒绝。
     ///
-    /// 这是静默路径独有的失败点——同进程的交互路径能拿到票据，静默路径却返回
-    /// `E_ACCESSDENIED`。因此这里把提权状态一并写进错误，让日志能自证原因，
-    /// 而不是让上层去猜「拒绝访问」到底来自权限还是票据。
+    /// 这是静默路径独有的失败点——同进程的交互路径能拿到票据，静默路径却可能被
+    /// 拒。已知 `E_ACCESSDENIED` 出现在这里，而同样的参数在 LeviLauncher 上可
+    /// 以通过，因此原因不在 scope/clientID/账户这些显式参数上。
     fn silent_token_request(
         request: &WebTokenRequest,
         account: &windows::Security::Credentials::WebAccount,
     ) -> Result<IAsyncOperation<WebTokenRequestResult>, WamStoreError> {
-        WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(request, account).map_err(
-            |error| {
-                let hint = if is_elevated() {
-                    "（当前进程处于提权状态，高完整性进程不被允许静默取 Store 票据；\
-                     请以普通用户身份运行）"
-                } else {
-                    ""
-                };
-                WamStoreError::Native(format!(
-                    "GetTokenSilentlyWithWebAccountAsync: {error}{hint}"
-                ))
-            },
+        step(
+            "GetTokenSilentlyWithWebAccountAsync",
+            WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(request, account),
         )
     }
 
     /// 交互取身份：先以默认提示请求，若 WAM 未呈现界面则强制提示重试一次。
     pub(super) fn interactive_identity(hwnd: isize) -> Result<WamIdentity, WamStoreError> {
         let provider = find_msa_provider()?;
-        match request_with_prompt(&provider, hwnd, WebTokenRequestPromptType::Default) {
-            Ok(identity) => Ok(identity),
+        let (_, actual, result) = request_token_interactively(&provider, hwnd)?;
+        Ok(WamIdentity {
+            xuid: actual,
+            gamertag: display_name(&result),
+        })
+    }
+
+    /// 交互取票：与身份路径同一套请求，只是把票据交给安装链。
+    ///
+    /// 静默取票被系统拒绝时的回落路径。票据与 `expected_xuid` 显式绑定，用户在
+    /// 系统界面上换账户不会被静默接受。
+    pub(super) fn interactive_ticket(
+        hwnd: isize,
+        expected_xuid: &str,
+    ) -> Result<StoreTicket, WamStoreError> {
+        let provider = find_msa_provider()?;
+        let (token, actual, _) = request_token_interactively(&provider, hwnd)?;
+        if actual != expected_xuid {
+            return Err(WamStoreError::AccountChanged);
+        }
+        Ok(StoreTicket::from_wam(token, actual))
+    }
+
+    /// 先以默认提示请求；WAM 未呈现界面时用强制提示重试一次。
+    ///
+    /// 返回票据、实际账户 ID 与原始响应（供身份路径取展示名）。
+    fn request_token_interactively(
+        provider: &windows::Security::Credentials::WebAccountProvider,
+        hwnd: isize,
+    ) -> Result<(String, String, WebTokenRequestResult), WamStoreError> {
+        match request_with_prompt(provider, hwnd, WebTokenRequestPromptType::Default) {
+            Ok(granted) => Ok(granted),
             Err(WamStoreError::InteractionRequired) => request_with_prompt(
-                &provider,
+                provider,
                 hwnd,
                 WebTokenRequestPromptType::ForceAuthentication,
             ),
@@ -353,7 +371,7 @@ mod native {
         provider: &windows::Security::Credentials::WebAccountProvider,
         hwnd: isize,
         prompt: WebTokenRequestPromptType,
-    ) -> Result<WamIdentity, WamStoreError> {
+    ) -> Result<(String, String, WebTokenRequestResult), WamStoreError> {
         let request = step(
             "WebTokenRequest::CreateWithPromptType",
             WebTokenRequest::CreateWithPromptType(
@@ -372,10 +390,7 @@ mod native {
                 "WAM returned an empty token or account".into(),
             ));
         }
-        Ok(WamIdentity {
-            xuid: actual,
-            gamertag: display_name(&result),
-        })
+        Ok((token, actual, result))
     }
 
     /// 系统侧账户显示名。

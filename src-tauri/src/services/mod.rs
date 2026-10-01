@@ -22,3 +22,4 @@ pub mod store_rst_transport;
 pub mod theme;
 pub mod tips;
 pub mod updater;
+pub mod window;

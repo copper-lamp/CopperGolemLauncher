@@ -19,6 +19,11 @@ pub const TYPE_LL_MOD: &str = "ll_mod";
 /// 内容来源。
 pub const SOURCE_CURSEFORGE: &str = "curseforge";
 pub const SOURCE_LIP: &str = "lip";
+/// 安卓 LL 模组（LeviModHub 目录，`.so` / `.levipack` 直装）。
+///
+/// 与 [`SOURCE_LIP`] 分开的原因见 `ll_android.rs` 模块文档：lip 依赖 lipd +
+/// BDS，且 lipr 资产全为 `win-x64`，安卓上既不可执行也无产物。
+pub const SOURCE_LL_ANDROID: &str = "lla";
 
 /// 排序方式：按下载量降序（默认）。
 pub const SORT_DOWNLOADS_DESC: &str = "downloads_desc";
@@ -63,6 +68,11 @@ pub struct ContentItem {
     pub latest_version: String,
     /// 下载量（近似热度，用于排序）。
     pub download_count: u64,
+    /// 最近一次发布时间（ISO8601）。仅安卓目录源有此项，用于「最近更新」排序。
+    ///
+    /// 缺省不序列化，避免桌面来源（lipr 无更新时间）向下游泄漏空字段。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub latest_published_at: String,
 }
 
 /// 详情页内的一个可下载文件 / 版本。
@@ -91,6 +101,9 @@ pub struct ContentFile {
     /// `github.com/owner/repo#<variant>@<version>`），不能只藏在 `id` 里。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+    /// 该版本的发布时间（ISO8601）。仅安卓目录源有此项，供详情按时间排序。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub published_at_hint: String,
 }
 
 /// 依赖项（前置模组跳转 / 可选依赖）。

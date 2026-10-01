@@ -22,6 +22,7 @@ use crate::services::settings::SettingsService;
 use crate::services::theme::ThemeService;
 use crate::services::tips::TipsService;
 use crate::services::updater::UpdaterService;
+use crate::services::window::MainWindow;
 
 /// 内核上下文。
 pub struct KernelContext {
@@ -34,10 +35,11 @@ pub struct KernelContext {
     i18n: Arc<I18nService>,
     theme: Arc<ThemeService>,
     tips: Arc<TipsService>,
-    download: Arc<DownloadService>,
-    account: Arc<AccountService>,
-    /// LLM 配置（内核内任何 AI 相关服务的单一访问器）。
-    llm: Arc<LlmConfigService>,
+        download: Arc<DownloadService>,
+        account: Arc<AccountService>,
+        window: Arc<MainWindow>,
+        /// LLM 配置（内核内任何 AI 相关服务的单一访问器）。
+        llm: Arc<LlmConfigService>,
     updater: Arc<UpdaterService>,
     events: Arc<EventBus>,
     intents: Arc<IntentRegistry>,
@@ -61,6 +63,7 @@ impl KernelContext {
         tips: Arc<TipsService>,
         download: Arc<DownloadService>,
         account: Arc<AccountService>,
+        window: Arc<MainWindow>,
         llm: Arc<LlmConfigService>,
         updater: Arc<UpdaterService>,
         events: Arc<EventBus>,
@@ -80,6 +83,7 @@ impl KernelContext {
             tips,
             download,
             account,
+            window,
             llm,
             updater,
             events,
@@ -136,6 +140,11 @@ impl KernelContext {
 
     pub fn account(&self) -> &Arc<AccountService> {
         &self.account
+    }
+
+    /// 主窗口句柄登记（WAM 交互式授权的窗口作用域来源）。
+    pub fn window(&self) -> &Arc<MainWindow> {
+        &self.window
     }
 
     /// LLM 配置（内核内任何 AI 相关服务的单一访问器）。

@@ -98,11 +98,31 @@ pub struct StoreInstallRequest {
     pub xuid: String,
     pub market: String,
     pub cache_dir: PathBuf,
+    /// Own-process window that owns the system account UI, or `0` when none.
+    ///
+    /// Only used as the fallback owner for an interactive ticket: the silent
+    /// token request can be refused by the system, and re-issuing the same
+    /// request against a window is the one path known to present the system
+    /// account UI. Without a window there is no fallback, and a refused silent
+    /// request stays a hard failure rather than blocking on a dialog nobody can
+    /// own.
+    pub owner_window: isize,
 }
 
 impl StoreInstallRequest {
     pub fn new(xuid: impl Into<String>, market: impl Into<String>, cache_dir: impl Into<PathBuf>) -> Self {
-        Self { xuid: xuid.into(), market: market.into(), cache_dir: cache_dir.into() }
+        Self {
+            xuid: xuid.into(),
+            market: market.into(),
+            cache_dir: cache_dir.into(),
+            owner_window: 0,
+        }
+    }
+
+    /// Sets the window that owns the system account UI for the fallback path.
+    pub fn with_owner_window(mut self, hwnd: isize) -> Self {
+        self.owner_window = hwnd;
+        self
     }
 }
 
@@ -484,15 +504,47 @@ pub(crate) async fn acquire_package_content_key(
     // Serialize device-credential access for the whole operation.
     let _lock = DeviceLock::acquire(&request.cache_dir)?;
 
-    // WAM 是阻塞式 WinRT 调用：内部轮询异步操作直到完成，直接在异步任务里调用会
-    // 占住 tokio 工作线程。放到阻塞线程池，与交互授权路径保持同一执行模型。
+    // WAM is a blocking WinRT call: it polls its async operation to completion.
+    // Running it on a tokio worker would park that worker for the whole timeout,
+    // so both paths go to the blocking pool, the same execution model as the
+    // interactive sign-in command.
     let xuid = request.xuid.clone();
-    let ticket = tokio::task::spawn_blocking(move || {
+    let silent = tokio::task::spawn_blocking(move || {
         crate::services::store_wam::acquire_store_ticket_for_xuid(&xuid)
     })
     .await
-    .map_err(|error| NativeInstallError::Auth(format!("WAM ticket task failed: {error}")))?
-    .map_err(|error| NativeInstallError::Auth(error.to_string()))?;
+    .map_err(|error| NativeInstallError::Auth(format!("WAM ticket task failed: {error}")))?;
+
+    let ticket = match silent {
+        Ok(ticket) => ticket,
+        // The silent request can be refused by the system even though the same
+        // parameters work interactively (observed as E_ACCESSDENIED with a valid
+        // account already resolved). Re-issue it against our own window, which is
+        // the one path that presents the system account UI. The ticket stays bound
+        // to the same XUID, so an account switch is still rejected.
+        Err(silent_error) => {
+            if request.owner_window == 0 {
+                return Err(NativeInstallError::Auth(format!(
+                    "{silent_error} (no owner window available, cannot fall back to interactive)"
+                )));
+            }
+            log::warn!("[native-install] silent ticket refused, falling back to interactive: {silent_error}");
+            let hwnd = request.owner_window;
+            let xuid = request.xuid.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::services::store_wam::acquire_store_ticket_for_window(hwnd, &xuid)
+            })
+            .await
+            .map_err(|error| {
+                NativeInstallError::Auth(format!("WAM interactive ticket task failed: {error}"))
+            })?
+            .map_err(|error| {
+                NativeInstallError::Auth(format!(
+                    "{silent_error}; interactive fallback failed too: {error}"
+                ))
+            })?
+        }
+    };
 
     let state = ensure_device_state(client, &request.cache_dir, &request.xuid).await?;
     let material = derive_device_material(&state.license)?;

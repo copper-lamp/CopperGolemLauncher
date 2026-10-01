@@ -604,6 +604,7 @@ fn mod_to_item(m: &ModData, content_type: &str) -> ContentItem {
         max_game_version,
         latest_version: latest_version_of(m),
         download_count: m.download_count.max(0) as u64,
+        latest_published_at: String::new(),
     }
 }
 
@@ -688,6 +689,7 @@ fn file_to_model(f: &File) -> ContentFile {
             .collect(),
         release_type: release_type_name(f.release_type).to_string(),
         variant: None,
+        published_at_hint: String::new(),
     }
 }
 

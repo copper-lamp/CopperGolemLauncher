@@ -66,6 +66,8 @@ pub struct Ctx {
     /// 避免票据被转发到非目标主机。
     pub store_http: Arc<reqwest::Client>,
     pub runtime: tokio::runtime::Handle,
+    /// 主窗口句柄登记：静默取票被系统拒绝时，交互回落的界面归属目标。
+    pub window: Arc<crate::services::window::MainWindow>,
 }
 
 impl Ctx {
@@ -85,6 +87,7 @@ impl Ctx {
                     .expect("failed to build store http client"),
             ),
             runtime: kernel.runtime().clone(),
+            window: kernel.window().clone(),
         }
     }
 
@@ -695,12 +698,14 @@ async fn store_content_key(
         return Ok(Some(lease));
     }
 
-    // 2) 在线授权链。
+    // 2) 在线授权链。窗口句柄仅用于「静默取票被拒 → 交互回落」，
+    // 静默路径本身不需要窗口，也不会弹窗。
     let request = native_install::StoreInstallRequest::new(
         &xuid,
         store_market(ctx),
         ctx.cache_home().join("store-device"),
-    );
+    )
+    .with_owner_window(ctx.window.get());
     match native_install::acquire_package_content_key(&ctx.store_http, &request, dest).await {
         Ok(lease) => {
             log::info!(

@@ -336,6 +336,7 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
                 release_type: "release".into(),
                 // variant 独立下发给 lipd（包引用 `github.com/owner/repo#<variant>`）。
                 variant: Some(variant.key.clone()),
+                published_at_hint: String::new(),
             });
         }
     }
@@ -581,6 +582,7 @@ fn package_to_item(p: &Package) -> ContentItem {
         max_game_version: None,
         latest_version: latest,
         download_count: p.hotness.max(0) as u64,
+        latest_published_at: String::new(),
     }
 }
 

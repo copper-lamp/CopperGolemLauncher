@@ -24,10 +24,20 @@ use crate::state::KernelContext;
 
 use self::model::{
     ContentDetail, ContentItem, ContentListPage, ContentListQuery, PAGE_SIZE, SOURCE_LIP,
-    TYPE_BEHAVIOR_PACK, TYPE_LL_MOD, TYPE_SHADER, TYPE_TEXTURE_PACK,
+    SOURCE_LL_ANDROID, TYPE_BEHAVIOR_PACK, TYPE_LL_MOD, TYPE_SHADER, TYPE_TEXTURE_PACK,
 };
 
 pub use self::lip_install::LipInstallOutcome;
+
+/// 安卓平台的 LL 模组来源（LeviModHub 目录 `.so` 直装）。
+///
+/// lipr 索引的资产全为 `win-x64`，lipd 又依赖 .NET + BDS，安卓两者皆不可用；
+/// 详见 [`ll_android`] 模块文档。用函数而非 `cfg!` 常量，是为了让**同一份
+/// 逻辑在两个平台都可编译可单测**，只有路由点才做平台判断。
+#[inline]
+fn android_ll_source() -> bool {
+    cfg!(target_os = "android")
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +57,7 @@ pub struct ContentDownloadRecord {
 pub mod curseforge;
 pub mod http;
 pub mod lip;
+pub mod ll_android;
 pub mod lip_install;
 pub mod lipd;
 pub mod model;
@@ -68,6 +79,25 @@ impl Default for ContentDownloadModule {
     }
 }
 
+// ---------------------------------------------------------------- 平台路由
+
+/// 请求是否指向 LL 模组（按来源或按类型任一命中）。
+fn ll_mod_requested(source: Option<&str>, content_type: Option<&str>) -> bool {
+    matches!(source, Some(SOURCE_LIP) | Some(SOURCE_LL_ANDROID))
+        || content_type == Some(TYPE_LL_MOD)
+}
+
+/// LL 模组列表：安卓走 LeviModHub 目录，桌面走 lipr 索引导。
+async fn ll_list(
+    kernel: &KernelContext,
+    query: &ContentListQuery,
+) -> Result<ContentListPage, KernelError> {
+    if android_ll_source() {
+        return ll_android::list(kernel, query).await;
+    }
+    lip::list(kernel, query).await
+}
+
 // ---------------------------------------------------------------- 对外业务
 
 impl ContentDownloadModule {
@@ -81,17 +111,14 @@ impl ContentDownloadModule {
     ) -> Result<ContentListPage, KernelError> {
         let source = query.source.as_deref();
         let ctype = query.content_type.as_deref();
-        // 全部来源 + 全部类型 → 四类混排。
-        let result = if source.is_none() || source == Some("") {
+        let result = if ll_mod_requested(source, ctype) {
+            ll_list(kernel, query).await
+        } else if source.is_none() || source == Some("") {
             if ctype.is_none() || ctype == Some("") {
                 mixed_list(kernel, query).await
-            } else if ctype == Some(TYPE_LL_MOD) {
-                lip::list(kernel, query).await
             } else {
                 curseforge::list(kernel, query).await
             }
-        } else if source == Some(SOURCE_LIP) || ctype == Some(TYPE_LL_MOD) {
-            lip::list(kernel, query).await
         } else {
             curseforge::list(kernel, query).await
         };
@@ -116,7 +143,7 @@ impl ContentDownloadModule {
         result
     }
 
-    /// 详情：按跨源 id（`cf:` / `lip:` 前缀）路由。
+    /// 详情：按跨源 id（`cf:` / `lip:` / `lla:` 前缀）路由。
     pub async fn detail(kernel: &KernelContext, id: &str) -> Result<ContentDetail, KernelError> {
         if let Some(cf_id) = id.strip_prefix("cf:") {
             let mod_id: i64 = cf_id
@@ -125,6 +152,8 @@ impl ContentDownloadModule {
             curseforge::detail(kernel, mod_id).await
         } else if let Some(ident) = id.strip_prefix("lip:") {
             lip::detail(kernel, ident).await
+        } else if let Some(ident) = ll_android::parse_mod_id(id) {
+            ll_android::detail(kernel, ident).await
         } else {
             Err(KernelError::InvalidArgument(format!("无法识别的内容 id `{id}`")))
         }
@@ -134,6 +163,8 @@ impl ContentDownloadModule {
     ///
     /// - `cf:` → CurseForge 项目描述（HTML 片段）。
     /// - `lip:` → 对应 GitHub 仓库的 readme（Markdown 原文），按 `locale` 优先匹配语言变体。
+    /// - `lla:` → 同 `lip:`；目录条目的 `homepage_url` 指向发布方 GitHub 仓库，
+    ///   复用同一抓取器（镜像优先、直连回退）。
     ///
     /// 返回的是「原文」而非渲染结果：CF 为 HTML、lip 为 Markdown，两者都需前端
     /// 经安全过滤后渲染。无文档时返回 `None`，不伪造内容。
@@ -149,6 +180,13 @@ impl ContentDownloadModule {
             curseforge::description(kernel, mod_id).await
         } else if let Some(ident) = id.strip_prefix("lip:") {
             lip::readme(kernel, ident, locale).await
+        } else if ll_android::parse_mod_id(id).is_some() {
+            // 目录条目的 `homepage_url` 即发布仓库，复用 lip 的抓取器。
+            let repo_url = Self::detail(kernel, id).await.ok().and_then(|d| d.repo_url);
+            match repo_url {
+                Some(url) => Ok(lip::fetch_github_readme(&url, locale).await),
+                None => Ok(None),
+            }
         } else {
             Err(KernelError::InvalidArgument(format!("无法识别的内容 id `{id}`")))
         }
@@ -161,14 +199,21 @@ impl ContentDownloadModule {
         curseforge::game_versions(kernel).await
     }
 
-    /// 下载投递：CurseForge 文件直链 → 内核下载队列，并落库一条下载记录。
+    /// 下载投递：文件直链 → 内核下载队列，并落库一条下载记录。
     ///
-    /// LIP 无直链，返回明确错误提示需经 lip 安装。
+    /// 按来源分三条链路：
+    /// - `cf:` → CurseForge 直链，投递到版本内容根（行为包 / 材质包 / 光影）；
+    /// - `lip:` → lip 无直链，提示改用「lip 安装」；
+    /// - `lla:` → 安卓目录直链，投递到 `cache` 暂存，由下载完成钩子解包到
+    ///   `<versions>/<name>/mods/<modId>`（见 [`install_ll_android_mod`]）。
     pub async fn download(
         kernel: &KernelContext,
         id: &str,
         file_id: &str,
     ) -> Result<u64, KernelError> {
+        if ll_android::parse_mod_id(id).is_some() {
+            return enqueue_ll_android(kernel, id, file_id).await;
+        }
         let cf_id = id
             .strip_prefix("cf:")
             .ok_or_else(|| {
@@ -254,6 +299,121 @@ impl ContentDownloadModule {
         outcome
     }
 }
+
+// ---------------------------------------------------------------- 安卓 LL 模组安装
+
+/// 安卓 LL 模组投递：解析直链 → 落`cache` 暂存 → 投递下载队列。
+///
+/// **不直接解压到目标目录**：`.levipack` 是 zip，必须先完整下载并通过
+/// sha256 校验，因此投递到暂存路径，再由 `download.status` 钩子
+/// （[`install_ll_android_mod`]）完成解包与原子落位。
+async fn enqueue_ll_android(
+    kernel: &KernelContext,
+    id: &str,
+    file_id: &str,
+) -> Result<u64, KernelError> {
+    let detail = ContentDownloadModule::detail(kernel, id).await?;
+    let mod_id = ll_android::parse_mod_id(id)
+        .ok_or_else(|| KernelError::InvalidArgument(format!("无效内容 id `{id}`")))?
+        .to_string();
+
+    let Some(file) = detail.files.iter().find(|f| f.id == file_id) else {
+        return Err(KernelError::InvalidArgument(format!("找不到文件 `{file_id}`")));
+    };
+    if file.download_url.trim().is_empty() {
+        // `browser` / `ad` 类型的发布没有直链（对齐 ModCatalogInstaller
+        // 的 opensInBrowser / isAdDownload）：只能引导用户去发布页。
+        return Err(KernelError::InvalidArgument(
+            "该版本未提供安卓直链，请前往项目发布页手动下载".into(),
+        ));
+    }
+
+    // 落点先校验：mods 目录与游戏目录平行，下错位置 mod 不会生效且用户无感。
+    let version = kernel
+        .settings()
+        .get::<String>("launch.default_version")
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            KernelError::InvalidArgument("请先在设置中指定默认版本，再安装安卓模组".into())
+        })?;
+    let target = ll_android::resolve_install_target(kernel, &version, &mod_id)
+        .map_err(|(code, message)| {
+            log::warn!("[content-download] 安卓模组落点不可用({code}): {message}");
+            KernelError::InvalidArgument(message)
+        })?;
+
+    // 兼容性判定：目录为每个发布声明 minecraft_versions，不含当前实例版本时
+    // 直接拒绝投递，避免装上一个必然被 loader 跳过的包。取不到实例版本
+    // （元数据异常）时不拦截，由loader 侧的兼容性检查兜底。
+    if !file.game_versions.is_empty() {
+        if let Some(instance_version) = instance_game_version(kernel, &version) {
+            let compatible = file
+                .game_versions
+                .iter()
+                .any(|pattern| ll_android::matches_minecraft_version(pattern, &instance_version));
+            if !compatible {
+                return Err(KernelError::InvalidArgument(format!(
+                    "该模组版本不支持当前实例的 Minecraft 版本 `{instance_version}`"
+                )));
+            }
+        }
+    }
+
+    let staging = staging_path(kernel, &mod_id, &file.version);
+    let opts = DownloadOptions {
+        filename: file.filename.clone().into(),
+        resume: true,
+        expected_sha256: file.sha256.clone(),
+        ..Default::default()
+    };
+
+    let task_id = kernel
+        .download()
+        .enqueue(&file.download_url, &staging, opts)?;
+
+    // 记录里带上目标版本名与落点，供下载完成钩子定位（无需再次读设置，
+    // 避免用户中途改默认版本导致落错实例）。
+    record_ll_android_download(
+        kernel,
+        &detail.item,
+        &file.version,
+        staging.to_string_lossy().as_ref(),
+        target.mod_dir.to_string_lossy().as_ref(),
+        &target.version,
+        file.game_versions.clone(),
+        task_id,
+    )?;
+    Ok(task_id)
+}
+
+/// 安卓模组暂存路径：`cache/content/lla/<modId>-<version><ext>`。
+fn staging_path(kernel: &KernelContext, mod_id: &str, version: &str) -> PathBuf {
+    let dir = kernel.paths().cache_dir().join("content").join("lla");
+    let _ = std::fs::create_dir_all(&dir);
+    let ext = if version.is_empty() { "" } else { ".levipack" };
+    dir.join(format!(
+        "{}-{}{}",
+        sanitize_filename(mod_id),
+        sanitize_filename(version),
+        ext
+    ))
+}
+
+/// 实例自身的 MC 版本（取 `version.json` 的 `gameVersion` / `android.versionName`）。
+fn instance_game_version(kernel: &KernelContext, version: &str) -> Option<String> {
+    let dir = crate::modules::home::meta::resolve_version_dir(&kernel.versions_root(), version).ok()?;
+    let meta = crate::modules::home::meta::VersionMeta::read(&dir)?;
+    meta.android
+        .as_ref()
+        .map(|a| a.version_name.clone())
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            let gv = meta.game_version.trim().to_string();
+            (!gv.is_empty()).then_some(gv)
+        })
+}
+
+
 
 /// 「4 : 4 : 1 : 1」混排的一轮（共 10 个槽位）：行为包 ×4、材质包 ×4、光影 ×1、LL 模组 ×1。
 ///
@@ -431,14 +591,44 @@ crate::services::database::Migration {
     version: 2,
     name: "content_download_record_error",
     sql: "ALTER TABLE module_content_download_record ADD COLUMN error TEXT;",
-}
+},
+crate::services::database::Migration {
+    version: 3,
+    name: "content_download_record_android_mod",
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN target TEXT;",
+},
 ];
+
+/// 安卓模组记录的附加信息（`target` 列内容；下载完成钩子据此解包落位）。
+///
+/// 落位所需的全部信息都在投递时冻结在此：不在钩子里重读设置或重新拉目录，
+/// 避免用户中途改默认版本、或目录条目已更新导致装到别处 / manifest 与实际不符。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AndroidModPending {
+    /// `lla:<modId>`（记录 id）。
+    item_id: String,
+    /// 暂存归档绝对路径。
+    archive: String,
+    /// 目标模组目录绝对路径（`.../mods/<modId>`）。
+    mod_dir: String,
+    /// 目标实例名。
+    version: String,
+    /// 写入规范化 manifest 的展示名。
+    name: String,
+    /// 写入规范化 manifest 的作者。
+    author: String,
+    /// 发布版本号。
+    release_version: String,
+    /// 该发布声明的 MC 版本（写回规范化 manifest）。
+    game_versions: Vec<String>,
+}
 
 pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, KernelError> {
     kernel.db().with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, source, content_type, name, version, state, dest, task_id, error, updated_at
              FROM module_content_download_record ORDER BY updated_at DESC",
+            // `target` 是内部列（安卓模组待落位信息），不对外暴露。
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ContentDownloadRecord {
@@ -463,6 +653,75 @@ pub fn remove_record(kernel: &KernelContext, id: &str) -> Result<(), KernelError
         conn.execute("DELETE FROM module_content_download_record WHERE id = ?1", [id])?;
         Ok(())
     })
+}
+
+/// 记录一次安卓模组投递（`target` 列存 JSON 化的 [`AndroidModPending`]）。
+fn record_ll_android_download(
+    kernel: &KernelContext,
+    item: &ContentItem,
+    version: &str,
+    archive: &str,
+    mod_dir: &str,
+    target_version: &str,
+    game_versions: Vec<String>,
+    task_id: u64,
+) -> Result<(), KernelError> {
+    let pending = AndroidModPending {
+        item_id: item.id.clone(),
+        archive: archive.to_string(),
+        mod_dir: mod_dir.to_string(),
+        version: target_version.to_string(),
+        name: item.name.clone(),
+        author: item.author.clone().unwrap_or_default(),
+        release_version: version.to_string(),
+        game_versions,
+    };
+    let target = serde_json::to_string(&pending)?;
+    let now = chrono_now();
+    kernel.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT OR REPLACE INTO module_content_download_record
+              (id, source, content_type, name, version, state, dest, task_id, target, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                item.id,
+                item.source,
+                item.content_type,
+                item.name,
+                version,
+                archive,
+                task_id,
+                target,
+                now
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+/// 读取并清空某个任务的安卓模组待落位信息。
+///
+/// take 语义：返回后即从库里移除，避免下载完成事件重放导致重复解包。
+fn take_android_mod_pending(db: &DatabaseService, task_id: u64) -> Option<AndroidModPending> {
+    db.with_conn(|conn| -> Result<Option<AndroidModPending>, KernelError> {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT target FROM module_content_download_record WHERE task_id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        conn.execute(
+            "UPDATE module_content_download_record SET target = NULL WHERE task_id = ?1",
+            [task_id],
+        )?;
+        Ok(serde_json::from_str::<AndroidModPending>(&raw).ok())
+    })
+    .ok()
+    .flatten()
 }
 
 fn record_lip_install(
@@ -622,6 +881,11 @@ fn apply_download_status(
     };
     match payload.get("status").and_then(Value::as_str) {
         Some("done") => {
+            // 安卓 LL 模组：下载完成 ≠ 安装完成，需先解包落位再置 installed。
+            if let Some(pending) = take_android_mod_pending(db, task_id) {
+                install_ll_android_mod(db, events, pending);
+                return;
+            }
             mark_record_state(db, task_id, "installed", None);
             // 安装入版本的资源 → 通知版本页重扫内容。
             if let Some((item_id, target)) = find_record_target(db, task_id) {
@@ -637,11 +901,107 @@ fn apply_download_status(
                 .and_then(Value::as_str)
                 .unwrap_or("下载失败")
                 .to_string();
+            // 失败也要清掉待落位信息，否则残留会在下次同id 事件里被误当作待装。
+            let _ = take_android_mod_pending(db, task_id);
             mark_record_state(db, task_id, "failed", Some(&msg));
         }
         _ => {}
     }
 }
+
+/// 下载完成后把安卓模组归档解包并原子落位到 `mods/<modId>`。
+///
+/// 落位成功才置`installed`；失败则记录 `failed` 并删暂存归档，
+/// 绝不留下「记录说成功、磁盘上没有」的假状态。
+fn install_ll_android_mod(
+    db: &Arc<DatabaseService>,
+    events: &Arc<EventBus>,
+    pending: AndroidModPending,
+) {
+    let archive = PathBuf::from(&pending.archive);
+    let mod_dir = PathBuf::from(&pending.mod_dir);
+
+    // 暂存文件缺失：任务可能被清理或应用被杀，明确失败而非静默跳过。
+    if !archive.is_file() {
+        let message = format!("模组归档不存在：{}", archive.display());
+        log::error!("[content-download] {message}");
+        mark_record_state_by_id(db, &pending.item_id, "failed", Some(&message));
+        events.publish(
+            "content-download.location",
+            serde_json::json!({ "error": message }),
+        );
+        return;
+    }
+
+    let display = ll_android::ModDisplay {
+        name: pending.name.clone(),
+        author: pending.author.clone(),
+        version: pending.release_version.clone(),
+        minecraft_versions: pending.game_versions.clone(),
+    };
+
+    match ll_android::install_archive(&archive, &mod_dir, &display) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&archive);
+            mark_record_state_by_id(
+                db,
+                &pending.item_id,
+                "installed",
+                None,
+            );
+            // dest 从暂存路径改为真实落点，便于用户在下载中心查看。
+            let _ = set_record_dest(db, &pending.item_id, &mod_dir.to_string_lossy());
+            events.publish(
+                "content-download.location",
+                serde_json::json!({
+                    "id": pending.item_id,
+                    "version": pending.version,
+                    "mod_dir": mod_dir.to_string_lossy(),
+                }),
+            );
+        }
+        Err((code, message)) => {
+            let text = format!("[{code}] {message}");
+            log::error!("[content-download] 安卓模组安装失败：{text}");
+            let _ = std::fs::remove_file(&archive);
+            mark_record_state_by_id(db, &pending.item_id, "failed", Some(&text));
+            events.publish(
+                "content-download.location",
+                serde_json::json!({ "id": pending.item_id, "error": text }),
+            );
+        }
+    }
+}
+
+fn mark_record_state_by_id(
+    db: &Arc<DatabaseService>,
+    id: &str,
+    state: &str,
+    error: Option<&str>,
+) {
+    let _ = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE module_content_download_record
+             SET state = ?1, error = ?2, updated_at = ?3
+             WHERE id = ?4",
+            rusqlite::params![state, error, chrono_now(), id],
+        )?;
+        Ok(())
+    });
+}
+
+/// 更新记录的真实落点（安装成功后从暂存路径改为模组目录）。
+fn set_record_dest(db: &Arc<DatabaseService>, id: &str, dest: &str) -> Result<(), KernelError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE module_content_download_record SET dest = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![dest, chrono_now(), id],
+        )?;
+        Ok(())
+    })
+}
+
+
 
 /// 查询记录里是否存在目标版本，用于下载完成后提示落点。
 fn find_record_target(db: &Arc<DatabaseService>, task_id: u64) -> Option<(String, String)> {
