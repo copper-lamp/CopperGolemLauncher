@@ -8,12 +8,16 @@
 // - 桌面：左导航 + 标题栏（含窗口控件）+ 内容区；
 // - 移动：标题栏（无窗口控件，无左导航）+ 内容区 + 底部标签栏。
 // 内容区与页面组件完全共用，仅外壳取向不同。
+//
+// 诊断面板与两态布局平级：引导失败时它必须能盖在加载页之上（安卓现场里
+// 「永远加载中」曾是不可诊断的黑洞，见 boot.ts 的说明）。
 
 import TitleBar from "./components/TitleBar.vue";
 import SideNav from "./components/SideNav.vue";
 import MobileNav from "./components/MobileNav.vue";
 import ToastHost from "./components/ToastHost.vue";
 import LoadingScreen from "./components/LoadingScreen.vue";
+import DiagnosticOverlay from "./components/DiagnosticOverlay.vue";
 import { useKernelReady } from "./composables/useKernelReady";
 import { usePlatform } from "./composables/usePlatform";
 
@@ -48,6 +52,9 @@ const { isMobile } = usePlatform();
     <MobileNav />
     <ToastHost />
   </div>
+
+  <!-- 启动诊断面板：覆盖在最上层，引导失败时自动出现 -->
+  <DiagnosticOverlay />
 </template>
 
 <style scoped>

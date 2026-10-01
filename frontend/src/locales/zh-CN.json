@@ -32,6 +32,39 @@
     "restore": "还原",
     "close": "关闭"
   },
+  "boot": {
+    "error": {
+      "title": "启动未完成",
+      "lead": "启动过程中有步骤失败或没有响应，界面因此可能暂时不可用。下方信息可帮助定位问题，请复制后反馈给开发者。",
+      "step": {
+        "addons": "附加模块前端",
+        "kernel": "内核连通性",
+        "theme": "主题",
+        "i18n": "语言包",
+        "platform": "平台形态",
+        "settings": "设置",
+        "downloads": "下载任务",
+        "account": "账户"
+      }
+    },
+    "diag": {
+      "title": "启动诊断",
+      "lead": "这是本次启动的引导记录，用于定位界面卡住或功能无响应。",
+      "ipc": "内核连通性",
+      "errors": "错误条数",
+      "steps": "引导步骤",
+      "show_log": "查看原始日志",
+      "hide_log": "收起原始日志",
+      "copy": "复制报告",
+      "dismiss": "关闭"
+    },
+    "state": {
+      "running": "进行中",
+      "ok": "完成",
+      "failed": "失败",
+      "timeout": "超时"
+    }
+  },
   "nav": {
     "settings": "设置",
     "downloads": "下载"
