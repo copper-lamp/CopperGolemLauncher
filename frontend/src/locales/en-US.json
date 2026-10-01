@@ -38,6 +38,7 @@
       "lead": "One or more startup steps failed or never responded, so parts of the interface may be unavailable. The details below help locate the problem - please copy them and report to the developers.",
       "step": {
         "addons": "Add-on frontends",
+        "bridge": "Host IPC bridge",
         "kernel": "Kernel connectivity",
         "theme": "Theme",
         "i18n": "Language packs",
@@ -56,6 +57,7 @@
       "show_log": "Show raw log",
       "hide_log": "Hide raw log",
       "copy": "Copy report",
+      "bridge_missing": "The IPC bridge injected by the host (Tauri) was never found, so no kernel command can answer. This usually means incomplete app resources or an outdated WebView. Please reinstall a complete build, and if it still fails, send this report to the developers.",
       "dismiss": "Close"
     },
     "state": {

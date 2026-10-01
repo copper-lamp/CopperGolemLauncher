@@ -45,6 +45,23 @@ const steps = ref<BootStep[]>([]);
 const logEntries = ref<BootLogEntry[]>([]);
 const ipcState = ref<IpcState>("unknown");
 
+/** 宿主 IPC 桥探测的步骤 id（多处引用，避免字面量漂移）。 */
+const BRIDGE_STEP_ID = "bridge";
+
+/** 桥就绪轮询间隔（与 Tauri 自身等待 ipc 桥的节奏一致）。 */
+const BRIDGE_POLL_INTERVAL_MS = 50;
+
+/**
+ * 宿主 IPC 桥是否确认缺失。
+ *
+ * 这是最坏的一类失败：桥不在，所有 `invoke` 都只会静默排队，界面必然点不动。
+ * 单独暴露给诊断面板，是为了把「原始报错串」换成用户能照着做的说明。
+ */
+const bridgeMissing = ref(false);
+
+/** 宿主 IPC 桥是否确认缺失（只读语义）。 */
+export const isBridgeMissing = readonly(bridgeMissing);
+
 /** 日志条数上限：报告要能一眼看完，且不允许无界增长。 */
 const MAX_LOG_ENTRIES = 120;
 
@@ -81,6 +98,7 @@ export function endStep(id: string): void {
   if (!step) return;
   step.state = "ok";
   step.endedAt = now();
+  if (id === BRIDGE_STEP_ID) bridgeMissing.value = false;
 }
 
 /** 标记步骤失败（业务失败：后端明确报错）。 */
@@ -104,6 +122,7 @@ export function timeoutStep(id: string, ms: number): void {
   step.state = "timeout";
   step.endedAt = now();
   step.error = `timeout after ${ms}ms`;
+  if (id === BRIDGE_STEP_ID) bridgeMissing.value = true;
 }
 
 /** 追加一条启动期日志。 */
@@ -134,6 +153,7 @@ export function useBootDiagnostics() {
     steps: readonly(steps),
     logEntries: readonly(logEntries),
     ipcState: readonly(ipcState),
+    bridgeMissing: readonly(bridgeMissing),
   };
 }
 
@@ -200,6 +220,30 @@ declare global {
  */
 export function hasIpcBridge(): boolean {
   return typeof window.__TAURI_INTERNALS__?.ipc === "function";
+}
+
+/**
+ * 等待 Tauri 的 `ipc` 桥出现。
+ *
+ * 为什么要轮询而不是只看一眼：宿主初始化脚本的注入时机**不保证早于应用脚本**。
+ * wry 在 Android 上优先用 `WebViewCompat.addDocumentStartJavaScript` 注入，但该特性
+ * 不受支持时会退化成 `onPageStarted` 里 `evaluateJavascript`（见 wry 的
+ * `RustWebView.kt` / `RustWebViewClient.kt`），此时初始化脚本可能晚于模块脚本执行。
+ * 桥缺失期间 `invoke` 只会静默排队（Tauri `core.js` 每 50ms 轮询），所以必须等一小段。
+ *
+ * @returns 桥是否在期限内出现。
+ */
+export async function waitForIpcBridge(timeoutMs: number): Promise<boolean> {
+  if (hasIpcBridge()) return true;
+  // 轮询次数而非绝对时刻：`Date.now()` 与定时器在不同宿主下的推进关系并不一致
+  // （受限 WebView、虚拟时钟等）。用「固定次数 × 固定间隔」表达期限，行为在所有
+  // 宿主下都可预期；这也是 Tauri 自己等待 ipc 桥的写法。
+  const attempts = Math.max(1, Math.ceil(timeoutMs / BRIDGE_POLL_INTERVAL_MS));
+  for (let i = 0; i < attempts; i += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, BRIDGE_POLL_INTERVAL_MS));
+    if (hasIpcBridge()) return true;
+  }
+  return hasIpcBridge();
 }
 
 /**

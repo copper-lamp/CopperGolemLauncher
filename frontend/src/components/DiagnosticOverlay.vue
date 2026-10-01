@@ -12,7 +12,7 @@
 import { computed, ref } from "vue";
 import { AlertTriangle, Check, Copy, Info, RefreshCw, X, XCircle, Clock } from "@lucide/vue";
 
-import { bootReport, useBootDiagnostics } from "../boot";
+import { bootReport, isBridgeMissing, useBootDiagnostics } from "../boot";
 import { diagnosticAutoOpened, diagnosticOpen, setDiagnosticOpen } from "../diag";
 import { useI18n } from "../i18n";
 
@@ -30,6 +30,14 @@ const failedSteps = computed(() =>
 );
 
 const stepErrorCount = computed(() => logEntries.value.filter((e) => e.level === "error").length);
+
+/**
+ * 宿主 IPC 桥完全缺失是「所有命令都不会有响应」的硬故障。
+ *
+ * 它的原始错误串（`Cannot read properties of undefined`）对用户毫无意义，
+ * 因此单独给一句能照着做的说明，而不是让用户去读堆栈。
+ */
+const bridgeMissing = isBridgeMissing;
 
 /** 步骤状态文案与图标语义（失败与超时分开：超时更可能是链路问题）。 */
 function stepStateKey(state: string): string {
@@ -98,6 +106,9 @@ function retry(): void {
           <span v-if="step.error" class="diag__failure-error">{{ step.error }}</span>
         </li>
       </ul>
+
+      <!-- 桥缺失是最坏情况：原始堆栈对用户无意义，给一句可照做的说明 -->
+      <p v-if="bridgeMissing" class="diag__hint">{{ t("boot.diag.bridge_missing") }}</p>
 
       <p class="diag__meta">
         {{ t("boot.diag.ipc") }}: <strong>{{ ipcState }}</strong>
@@ -248,6 +259,16 @@ function retry(): void {
   flex-basis: 100%;
   color: var(--copper-text-secondary);
   word-break: break-word;
+}
+
+.diag__hint {
+  padding: var(--copper-space-2) var(--copper-space-3);
+  background: color-mix(in srgb, var(--copper-warning) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--copper-warning) 40%, transparent);
+  border-radius: var(--copper-radius-md);
+  color: var(--copper-text);
+  font-size: var(--copper-font-size-sm);
+  line-height: 1.6;
 }
 
 .diag__meta {

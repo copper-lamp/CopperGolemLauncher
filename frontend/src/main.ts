@@ -39,16 +39,27 @@ import {
   endStep,
   failStep,
   forward,
+  hasIpcBridge,
   hasTauriInternals,
   installBootDiagnostics,
   logBoot,
   setIpcState,
   timeoutStep,
   useBootDiagnostics,
+  waitForIpcBridge,
 } from "./boot";
 import { hasBootFailure, openDiagnosticOnFailure, setDiagnosticOpen } from "./diag";
+
 /** 内核能力装配的单步超时：超过即降级，不再等（界面已经可见，等待无意义）。 */
 const KERNEL_STEP_TIMEOUT_MS = 5000;
+
+/**
+ * 等待宿主注入 ipc 桥的期限。
+ *
+ * 刻意长于单步超时：桥的注入时机受 WebView 能力影响，可能晚于应用脚本，
+ * 但一旦确认缺失就是「所有命令都不会有响应」的硬故障，值得多等一会儿再下结论。
+ */
+const IPC_BRIDGE_TIMEOUT_MS = 10000;
 
 /** 附加模块前端装载超时（与改造前保持一致：模块不该拖慢启动）。 */
 const ADDON_BOOTSTRAP_TIMEOUT_MS = 3000;
@@ -92,6 +103,35 @@ async function withTimeout(id: string, labelKey: string, task: () => Promise<voi
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+/**
+ * 桥存在性判定。
+ *
+ * 与内核探活分开：桥从未出现说明宿主初始化脚本没跑到应用脚本之前（安卓上
+ * wry 的注入方式会随 WebView 特性支持度退化），桥在而命令不回则是内核处理
+ * 侧的问题。两者修复方向完全不同，报告里必须能一眼区分。
+ */
+async function probeBridge(): Promise<void> {
+  beginStep("bridge", "boot.error.step.bridge");
+  logBoot(
+    "info",
+    `tauri globals: internals=${hasTauriInternals()} ipc=${hasIpcBridge()}`,
+  );
+  if (await waitForIpcBridge(IPC_BRIDGE_TIMEOUT_MS)) {
+    endStep("bridge");
+    setIpcState("ready");
+    logBoot("info", "Tauri ipc 桥可用");
+    return;
+  }
+  // 桥始终没出现：所有 invoke 都会静默排队（既不 resolve 也不 reject），
+  // 界面必然点不动。这类失败必须点名，否则用户只能看到「一直加载中」。
+  timeoutStep("bridge", IPC_BRIDGE_TIMEOUT_MS);
+  setIpcState("unavailable");
+  logBoot(
+    "error",
+    `Tauri 初始化脚本未注入 ipc 桥（internals=${hasTauriInternals()}），内核命令将无响应`,
+  );
 }
 
 /**
@@ -151,6 +191,7 @@ logBoot("info", "界面已挂载，开始装配内核能力");
 
 // 2) 内核能力并行装配：任何一项失败 / 超时都只影响它自己的能力。
 void Promise.all([
+  probeBridge(),
   probeKernel(),
   withTimeout("theme", "boot.error.step.theme", initTheme),
   withTimeout("i18n", "boot.error.step.i18n", initI18n),

@@ -18,6 +18,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import { waitForIpcBridge } from "../boot";
+
 /** 后端命令错误（与 Rust `CommandError` 同构）。 */
 export interface CommandErrorPayload {
   kind: string;
@@ -82,6 +84,14 @@ const LONG_RUNNING_COMMANDS: Record<string, number> = {
   module_invoke: 600_000,
 };
 
+/**
+ * 调用前等待宿主 IPC 桥出现的上限。
+ *
+ * 取值与引导里的桥探测同量级（引导探测 10s）：这里只为覆盖「初始化脚本略晚于
+ * 应用脚本」的启动竞态，不为「桥永远不来」买单——那属于硬故障，应尽快报错。
+ */
+const BRIDGE_WAIT_MS = 2000;
+
 /** 单次调用的可选项。 */
 export interface CallOptions {
   /** 覆盖无响应上限（毫秒）。 */
@@ -97,7 +107,8 @@ function timeoutFor(cmd: string, overrides?: CallOptions): number {
 /**
  * 调用内核命令，统一错误归一化为 `KernelApiError`。
  *
- * 两种失败都归一到同一个错误类型，业务层不必分别处理：
+ * 三种失败都归一到同一个错误类型，业务层不必分别处理：
+ * - 宿主 IPC 桥缺失 → kind: "ipc-unavailable"（见下文的早期返回）；
  * - 后端明确报错 → 原样保留 `kind` / `message`；
  * - 超时无响应 → `kind: "timeout"`，消息里带上命令名与等待时长，
  *   便于用户反馈时直接说明是哪一步卡住。
@@ -121,6 +132,18 @@ export async function call<T>(
   });
 
   try {
+    // 关键：桥缺失时 **必须** 在调用之前就返回错误，不能交给 invoke 去等。
+    //
+    // `@tauri-apps/api` 的 invoke 在桥缺失时会把调用压进队列并每 50ms 轮询
+    // `window.__TAURI_INTERNALS__.ipc`（Tauri `scripts/core.js`）。那个 Promise
+    // **永不 settle**，于是 `Promise.race` 永远等不到超时分支——实测 120s 仍停在
+    // 加载态。超时保护只对「已发出的调用」有效，桥没起来这条路径必须在源头拦住。
+    if (!(await waitForIpcBridge(BRIDGE_WAIT_MS))) {
+      throw new KernelApiError({
+        kind: "ipc-unavailable",
+        message: `宿主 IPC 桥未注入，内核命令 ${cmd} 无法送达`,
+      });
+    }
     return await Promise.race([invoke<T>(cmd, args), timeout]);
   } catch (e) {
     if (e instanceof KernelApiError) throw e;
