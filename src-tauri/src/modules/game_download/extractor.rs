@@ -7,8 +7,8 @@
 //! 得到的 32 字节 content key → AES-XTS 逐页解密 → staging 目录原子 rename 发布。
 //! 密钥缺失时明确报 `MissingContentKey`，由上层把授权失败原因透传给前端，不回退。
 
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::Path;
 
 use crate::error::KernelError;
 
@@ -202,6 +202,7 @@ fn verify_pe_x64(path: &Path) -> Result<(), ExtractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use zip::write::SimpleFileOptions;
 
     fn temp_dir(tag: &str) -> PathBuf {

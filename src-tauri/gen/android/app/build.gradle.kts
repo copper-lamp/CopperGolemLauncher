@@ -55,6 +55,28 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    packaging {
+        resources {
+            // :minecraft 拉入的 httpclient / httpcore / spongycastle 等 jar 各自带一份
+            // META-INF 元数据，不去重时 :app:mergeJavaResource 会因重复条目直接失败。
+            // 这些文件只是各库的许可证清单，与运行时行为无关，保留任意一份即可。
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/license.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/notice.txt",
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/INDEX.LIST",
+                "META-INF/ASL2.0",
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/*.kotlin_module"
+            )
+        }
+    }
 }
 
 rust {

@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 use base64::Engine as _;
+#[cfg(windows)]
 use serde::{Deserialize, Serialize};
 
 use crate::modules::game_download::msixvc;

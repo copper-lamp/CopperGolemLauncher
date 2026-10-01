@@ -2,13 +2,13 @@
 // 账户菜单：头像入口，弹出登录 / 账户信息 / 退出。
 
 import { ref, computed } from "vue";
-import { UserRound, LogIn, LogOut, LoaderCircle } from "@lucide/vue";
+import { UserRound, LogIn, LogOut, LoaderCircle, ShieldCheck } from "@lucide/vue";
 
 import { useAccount } from "../composables/useAccount";
 import { useI18n } from "../i18n";
 
 const { t } = useI18n();
-const { account, loginWaiting, beginLogin, logout } = useAccount();
+const { account, loginWaiting, beginLogin, beginWamSignIn, logout } = useAccount();
 
 const open = ref(false);
 
@@ -21,6 +21,11 @@ const avatarText = computed(() => {
 function toggle() {
   if (loginWaiting.value) return;
   open.value = !open.value;
+}
+
+async function handleWamSignIn() {
+  // 不关闭菜单：系统账户界面就叠加在本窗口上，菜单状态由 finally 复位。
+  await beginWamSignIn();
 }
 
 async function handleLogin() {
@@ -55,6 +60,15 @@ async function handleLogout() {
               {{ account.xuid }}
             </div>
           </div>
+          <div class="account-menu__hint">{{ t("account.store_authorized") }}</div>
+          <button
+            class="account-menu__action"
+            :disabled="loginWaiting"
+            @click="handleWamSignIn"
+          >
+            <ShieldCheck :size="15" />
+            <span>{{ t("account.store_reauthorize") }}</span>
+          </button>
           <button class="account-menu__action" @click="handleLogout">
             <LogOut :size="15" />
             <span>{{ t("account.logout") }}</span>
@@ -64,6 +78,14 @@ async function handleLogout() {
           <div class="account-menu__info">
             <div class="account-menu__name">{{ t("account.not_logged_in") }}</div>
           </div>
+          <button
+            class="account-menu__action account-menu__action--primary"
+            :disabled="loginWaiting"
+            @click="handleWamSignIn"
+          >
+            <ShieldCheck :size="15" />
+            <span>{{ t("account.store_sign_in") }}</span>
+          </button>
           <button class="account-menu__action" @click="handleLogin">
             <LogIn :size="15" />
             <span>{{ t("account.login_microsoft") }}</span>
@@ -154,6 +176,13 @@ async function handleLogout() {
   white-space: nowrap;
 }
 
+.account-menu__hint {
+  padding: 0 var(--copper-space-3) var(--copper-space-2);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
+  line-height: 1.5;
+}
+
 .account-menu__action {
   display: flex;
   align-items: center;
@@ -172,5 +201,26 @@ async function handleLogout() {
 
 .account-menu__action:hover {
   background: var(--copper-hover);
+}
+
+/* 商店授权是下载正版整包的前置条件，视觉上高于设备码登录。
+   只用既有主题令牌，避免与主题系统割裂。 */
+.account-menu__action--primary {
+  background: var(--copper-surface-3);
+  color: var(--copper-text);
+  font-weight: 500;
+}
+
+.account-menu__action--primary:hover {
+  background: var(--copper-hover);
+}
+
+.account-menu__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.account-menu__action:disabled:hover {
+  background: transparent;
 }
 </style>

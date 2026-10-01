@@ -278,6 +278,9 @@
   "account": {
     "login": "登录",
     "login_microsoft": "登录正版（Microsoft）",
+    "store_sign_in": "授权 Microsoft 账户（商店）",
+    "store_reauthorize": "重新授权商店账户",
+    "store_authorized": "已授权商店账户，可下载正版整合包",
     "logout": "退出登录",
     "logged_in_as": "已登录：{name}",
     "not_logged_in": "未登录",

@@ -9,6 +9,7 @@ import {
   accountBeginLogin,
   accountCurrent,
   accountLogout,
+  accountWamSignIn,
   type AccountInfo,
 } from "../api/account";
 import { onAccountChanged, onAccountLoginState } from "../events";
@@ -58,6 +59,25 @@ export function useAccount() {
     }
   }
 
+  /**
+ * Microsoft 账户授权（WAM）。
+ *
+ * 会弹出系统账户界面并阻塞到用户完成或取消，因此与设备码登录共用
+ * `loginWaiting`，避免两条流程并发互相顶掉状态。
+ */
+async function beginWamSignIn() {
+    if (loginWaiting.value) return;
+    loginWaiting.value = true;
+    try {
+      account.value = await accountWamSignIn();
+      showToast(t("account.store_authorized"), "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      loginWaiting.value = false;
+    }
+  }
+
   async function logout() {
     try {
       await accountLogout();
@@ -71,6 +91,7 @@ export function useAccount() {
     account: readonly(account),
     loginWaiting: readonly(loginWaiting),
     beginLogin,
+    beginWamSignIn,
     logout,
   };
 }

@@ -278,6 +278,9 @@
   "account": {
     "login": "Sign in",
     "login_microsoft": "Sign in (Microsoft)",
+    "store_sign_in": "Authorize Microsoft account (Store)",
+    "store_reauthorize": "Re-authorize Store account",
+    "store_authorized": "Store account authorized; retail packages can be downloaded",
     "logout": "Sign out",
     "logged_in_as": "Signed in as {name}",
     "not_logged_in": "Not signed in",

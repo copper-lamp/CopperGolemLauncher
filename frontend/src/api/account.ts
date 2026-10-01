@@ -34,6 +34,11 @@ export function accountBeginLogin(): Promise<DeviceCodeInfo> {
   return call<DeviceCodeInfo>("account_begin_login");
 }
 
+/** Microsoft 账户授权（WAM）：弹出系统账户界面，返回选定账户身份。 */
+export function accountWamSignIn(): Promise<AccountInfo> {
+  return call<AccountInfo>("account_wam_sign_in");
+}
+
 /** 退出登录。 */
 export function accountLogout(): Promise<void> {
   return call<void>("account_logout");

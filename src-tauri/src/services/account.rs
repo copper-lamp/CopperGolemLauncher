@@ -194,6 +194,49 @@ impl AccountService {
         Ok(info)
     }
 
+    /// Microsoft 账户授权（WAM 交互路径）：把系统账户界面归属到本进程窗口 `hwnd`，
+    /// 用户选定账户后落库 XUID 并广播。
+    ///
+    /// 这是**商店授权的唯一身份来源**：`native_install` 取 Store content key 所需的
+    /// WAM 票据只能由 WAM 签发，而 XUID 是授权的结果而非前提，因此无法在授权前提供。
+    /// 设备码登录（[`AccountService::begin_login`]）与之并列而非串行：前者服务商店授权，
+    /// 后者为启动游戏提供 MSA/XSTS 凭据。
+    ///
+    /// 阻塞时长不可控（用户在系统界面上操作），因此放到阻塞线程池执行。
+    pub async fn begin_wam_sign_in(&self, hwnd: isize) -> Result<AccountInfo, KernelError> {
+        self.publish_login_state(LoginState::Waiting, None);
+        let outcome = self
+            .runtime
+            .spawn_blocking(move || crate::services::store_wam::sign_in_interactive(hwnd))
+            .await
+            .map_err(|e| KernelError::Account(format!("账户授权任务异常退出: {e}")))?;
+
+        let identity = match outcome {
+            Ok(identity) => identity,
+            // 用户主动关闭系统界面是正常退出，不应报成失败。
+            Err(crate::services::store_wam::WamStoreError::UserCancelled) => {
+                self.publish_login_state(LoginState::Failed, Some("已取消账户授权"));
+                return Err(KernelError::Account("已取消账户授权".into()));
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                self.publish_login_state(LoginState::Failed, Some(&reason));
+                return Err(KernelError::Account(reason));
+            }
+        };
+
+        // WAM 只签发 XUID 形态的身份；UserName 可能为空，此时以 XUID 作为展示名，
+        // 避免出现「已登录但无名可显」的半状态记录。
+        let display_name = if identity.gamertag.trim().is_empty() {
+            identity.xuid.clone()
+        } else {
+            identity.gamertag.clone()
+        };
+        let account = self.save_account(display_name, Some(identity.xuid))?;
+        self.publish_login_state(LoginState::Done, None);
+        Ok(account)
+    }
+
     /// 退出登录：清除安全存储中的凭证与数据库记录。
     pub fn logout(&self) -> Result<(), KernelError> {
         if let Some(account) = self.current() {
@@ -272,7 +315,15 @@ impl AccountService {
         self.secret
             .get(&access_service(), &account.id)
             .map_err(KernelError::Secret)?
-            .ok_or_else(|| KernelError::Account("本地凭证缺失，请重新登录".into()))
+            .ok_or_else(|| {
+                // 两条登录路径写入的是同一张 `core_account` 行，但只有设备码登录会往
+                // 密钥环写 MSA 令牌。仅完成商店授权（WAM）时必然落到这里，因此文案
+                // 必须同时点出两种成因，不能笼统说成「凭证过期」。
+                KernelError::Account(
+                    "缺少启动正版所需的 MSA 凭据：若仅完成了商店授权，请改用「登录正版（Microsoft）」完成设备码登录；若已登录过，可能是凭证已失效，请重新登录"
+                        .into(),
+                )
+            })
     }
 
     async fn do_refresh(&self, account: &AccountInfo) -> Result<(), KernelError> {
