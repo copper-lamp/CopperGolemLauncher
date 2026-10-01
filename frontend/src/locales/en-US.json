@@ -249,6 +249,8 @@
     "history_section": "History",
     "history_empty": "No download history yet",
     "actions_view": "View details",
+    "actions_install": "Install this version",
+    "actions_install_hint": "The full package is already local; re-run the install without downloading again",
     "detail_title": "Download details",
     "detail_name": "File name",
     "detail_url": "URL",

@@ -249,6 +249,8 @@
     "history_section": "历史下载",
     "history_empty": "暂无历史下载记录",
     "actions_view": "查看详情",
+    "actions_install": "安装此版本",
+    "actions_install_hint": "整包已在本地，直接重跑安装（不重新下载）",
     "detail_title": "下载详情",
     "detail_name": "文件名",
     "detail_url": "下载地址",

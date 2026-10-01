@@ -102,6 +102,23 @@ export function gameInstall(id: string): Promise<void> {
   return call<void>("game_download_install", { id });
 }
 
+/** 下载任务 → 游戏版本的绑定（下载中心据此显示「安装」入口）。 */
+export interface GameTaskBinding {
+  task_id: number;
+  version_id: string;
+}
+
+/**
+ * 取「下载任务 → 游戏版本」绑定。
+ *
+ * 下载中心列出的是核心下载任务 id，安装却按版本 id 取记录。这个映射由内核给出，
+ * 前端不依据 dest / 文件名猜测——猜错会把安装指向另一个版本。只有确实存在
+ * 游戏下载记录的任务才会出现。
+ */
+export function gameTaskBindings(): Promise<GameTaskBinding[]> {
+  return call<GameTaskBinding[]>("game_download_task_bindings");
+}
+
 /** APK 导入记录（与后端 `apk::ApkPackageInfo` 同构，camelCase→原样）。 */
 export interface ApkPackageInfo {
   package_name: string;

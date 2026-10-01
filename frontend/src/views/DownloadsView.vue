@@ -21,6 +21,7 @@ import {
   Ban,
   RotateCw,
   Info,
+  PackageCheck,
 } from "@lucide/vue";
 
 import { useDownloads } from "../composables/useDownloads";
@@ -29,6 +30,7 @@ import { useI18n } from "../i18n";
 import { formatBytes, formatSpeed, type DownloadTask } from "../api/download";
 import { showToast } from "../composables/useToast";
 import { contentDownloadRecords, type ContentDownloadRecord } from "../modules/content-download/api";
+import { gameInstall, gameTaskBindings } from "../modules/game-download/api";
 import CoSelect from "../components/ui/CoSelect.vue";
 import CoButton from "../components/ui/CoButton.vue";
 
@@ -62,6 +64,22 @@ const historyLimit = computed(() => get<number>("download.history_limit", 50));
  */
 const contentRecords = ref<ContentDownloadRecord[]>([]);
 let refreshContentRecords: (() => void) | undefined;
+
+/**
+ * 下载任务 id → 游戏版本 id。
+ *
+ * 下载中心列的是核心下载任务，安装流水线却按版本 id 取记录。映射由内核给出
+ * （见 `gameTaskBindings`），前端不依据 dest / 文件名猜测——猜错会把安装指向
+ * 另一个版本。缺失的条目不显示安装按钮，而不是显示一个点了就报错的按钮。
+ */
+const gameBindings = ref<Record<number, string>>({});
+
+/** 该条目是否可手动触发安装：整包已落盘、且不处于下载中 / 安装中。 */
+function installableVersion(task: DownloadTask): string | null {
+  if (task.status === "installing") return null;
+  if (task.status !== "done" && task.status !== "failed") return null;
+  return gameBindings.value[task.id] ?? null;
+}
 
 const historyTasks = computed(() => {
   const limit = historyLimit.value;
@@ -168,6 +186,22 @@ async function handleRemove(id: number) {
   }
 }
 
+/**
+ * 手动触发安装（只重装，不重下）。
+ *
+ * 失败原因原样呈现给用户：安装链的失败原因（商店授权、设备注册、解包）才是
+ * 用户下一步要依据的信息，替换成统一文案等于把排查线索丢掉。
+ */
+async function handleInstall(task: DownloadTask) {
+  const versionId = installableVersion(task);
+  if (!versionId) return;
+  try {
+    await gameInstall(versionId);
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
 /** 查看详情弹窗：只展示快照字段，不做任何写操作。 */
 const detailTask = ref<DownloadTask | null>(null);
 
@@ -183,6 +217,14 @@ onMounted(() => {
   const load = () => {
     void contentDownloadRecords()
       .then((records) => (contentRecords.value = records))
+      .catch(() => null);
+    // 绑定关系与记录同源刷新：新增一次游戏下载后映射才会出现，无需另接事件。
+    void gameTaskBindings()
+      .then((bindings) => {
+        const map: Record<number, string> = {};
+        for (const binding of bindings) map[binding.task_id] = binding.version_id;
+        gameBindings.value = map;
+      })
       .catch(() => null);
   };
   refreshContentRecords = load;
@@ -300,6 +342,14 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="downloads__item-actions">
+            <button
+              v-if="installableVersion(task)"
+              class="downloads__action downloads__action--accent"
+              :title="t('download.actions_install_hint')"
+              @click="handleInstall(task)"
+            >
+              <PackageCheck :size="15" />
+            </button>
             <button
               v-if="task.status === 'paused'"
               class="downloads__action"
@@ -595,6 +645,16 @@ onBeforeUnmount(() => {
 .downloads__action:hover {
   background: var(--copper-hover);
   color: var(--copper-text);
+}
+
+/* 安装入口是主动作，与暂停 / 重试等次级操作区分开 */
+.downloads__action--accent {
+  color: var(--copper-accent);
+}
+
+.downloads__action--accent:hover {
+  background: color-mix(in srgb, var(--copper-accent) 16%, transparent);
+  color: var(--copper-accent);
 }
 
 .downloads__dialog {

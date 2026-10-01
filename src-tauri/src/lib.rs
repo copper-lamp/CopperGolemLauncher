@@ -231,13 +231,20 @@ pub fn run() {
 
             // 主窗口句柄登记：WAM 交互式授权需要真实窗口作为界面归属目标。
             // 命令层与后台安装链读同一份，避免各自去猜窗口。
+            // `hwnd()` 只在 Windows 上存在，其它平台（Android/Linux/macOS）没有
+            // 窗口作用域的 WAM，句柄保持 0 表示不可用。
             let window = Arc::new(services::window::MainWindow::new());
+            #[cfg(windows)]
             if let Some(main) = app.get_webview_window("main") {
                 match main.hwnd() {
-                    Ok(hwnd) => window.set(hwnd.0 as isize),
-                    Err(error) => log::warn!(
-                        "[core] 主窗口句柄不可用，交互式商店授权将不可用：{error}"
-                    ),
+                    Ok(hwnd) => {
+                        if !window.set(hwnd.0 as isize) {
+                            log::warn!("[core] 主窗口句柄不可用，交互式商店授权将不可用");
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("[core] 主窗口句柄不可用，交互式商店授权将不可用：{error}")
+                    }
                 }
             }
 
@@ -429,6 +436,7 @@ pub fn run() {
             commands::game_download::game_download_cancel,
             commands::game_download::game_download_status,
             commands::game_download::game_download_install,
+            commands::game_download::game_download_task_bindings,
             commands::game_download::game_download_import_apk,
             // 安卓游戏宿主（所有平台注册，桌面端返回 None）
             commands::game_download::android_game_take_exit,

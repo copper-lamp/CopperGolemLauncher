@@ -204,6 +204,35 @@ fn get_record(ctx: &Ctx, version_id: &str) -> Result<Option<TaskRecord>, KernelE
     })
 }
 
+/// 下载任务 → 游戏版本的绑定关系（供下载中心提供「安装」入口）。
+///
+/// 下载中心列出的是核心下载引擎的任务，而安装流水线按**版本 id** 取记录。
+/// 这个映射由内核给出，前端不去猜 dest 或文件名：猜错就会把安装指向另一个
+/// 版本。只有确实存在游戏下载记录的任务才在这里出现。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskBinding {
+    pub task_id: u64,
+    pub version_id: String,
+}
+
+/// 列出所有「下载任务 → 游戏版本」绑定。
+pub fn task_bindings(ctx: &Ctx) -> Result<Vec<TaskBinding>, KernelError> {
+    ctx.db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT task_id, version_id FROM module_game_download_task
+             WHERE task_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(TaskBinding {
+                task_id: row.get::<_, i64>(0)? as u64,
+                version_id: row.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(KernelError::from)
+    })
+}
+
 fn list_records(ctx: &Ctx, states: &[&str]) -> Result<Vec<TaskRecord>, KernelError> {
     ctx.db.with_conn(|conn| {
         let placeholders = states.iter().map(|_| "?").collect::<Vec<_>>().join(",");

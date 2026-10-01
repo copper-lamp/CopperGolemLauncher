@@ -35,6 +35,17 @@ pub async fn game_download_install(kernel: State<'_, KernelContext>, id: String)
     installer::install(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error)
 }
 
+/// 下载任务 → 游戏版本的绑定关系。
+///
+/// 下载中心按核心下载任务展示条目，而安装按版本 id 取记录；这个映射由内核给出，
+/// 前端不依据 dest / 文件名猜测，避免把安装指向另一个版本。
+#[tauri::command]
+pub fn game_download_task_bindings(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<installer::TaskBinding>> {
+    installer::task_bindings(&Ctx::from_kernel(&kernel)).map_err(into_command_error)
+}
+
 /// 导入一个 APK / APKS。
 ///
 /// `source_path` 必须是**应用私有目录内**的路径：安卓端由系统文件选择器

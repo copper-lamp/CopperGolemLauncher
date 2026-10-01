@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 const CACHE_VERSION: u32 = 1;
 const DEVICE_PROVISION_URL: &str = "https://login.live.com/ppsecure/deviceaddcredential.srf";
 const DEVICE_RESPONSE_LIMIT: u64 = 1024 * 1024;
+/// Client identification sent to the legacy MSA device endpoint.
+///
+/// The endpoint answers legacy MSA clients and keys off the announced OS /
+/// IDE build, so a bare version string is answered with an error document
+/// rather than a credential.
+const DEVICE_USER_AGENT: &str = "MSAWindows/55 (OS 10.0.26100.0.0 ge_release; IDK 10.0.26100.5074 ge_release; Cfg 16.000.29325.00; Test 0)";
 
 #[cfg(windows)]
 use base64::Engine;
@@ -18,6 +24,8 @@ use base64::Engine;
 use quick_xml::events::Event;
 #[cfg(windows)]
 use quick_xml::Reader;
+#[cfg(windows)]
+use quick_xml::XmlVersion;
 #[cfg(windows)]
 use reqwest::Client;
 
@@ -90,7 +98,11 @@ pub async fn provision_device(
     let body = format!("<?xml version=\"1.0\"?><DeviceAddRequest><ClientInfo name=\"IDCRL\" version=\"1.0\"><BinaryVersion>55</BinaryVersion></ClientInfo><Authentication><Membername>{member}</Membername><Password>{password}</Password></Authentication>{device_info_xml}</DeviceAddRequest>");
     let mut response = client.post(DEVICE_PROVISION_URL)
         .header("Content-Type", "application/soap+xml")
-        .header("User-Agent", "MSAWindows/55")
+        // Full client identification, not a bare version. The endpoint answers
+        // legacy MSA clients; a truncated agent is answered with an error
+        // document instead of a credential, which the reference client does not
+        // hit because it always sends the complete string.
+        .header("User-Agent", DEVICE_USER_AGENT)
         .body(body).send().await.map_err(|e| DeviceProvisionError::Http(e.to_string()))?;
     let status = response.status();
     if !status.is_success() { return Err(DeviceProvisionError::HttpStatus(status)); }
@@ -103,20 +115,119 @@ pub async fn provision_device(
         if next as u64 > DEVICE_RESPONSE_LIMIT { return Err(DeviceProvisionError::ResponseTooLarge); }
         bytes.extend_from_slice(&chunk);
     }
+
     let mut reader = Reader::from_reader(bytes.as_slice());
-    let mut buf = Vec::new(); let mut success = false; let mut puid = None; let mut block = None; let mut current = None;
+    let mut buf = Vec::new();
+    let mut root: Option<String> = None;
+    let mut success_attr: Option<String> = None;
+    let mut puid = None;
+    let mut block = None;
+    let mut current = None;
+    // Element names only, capped: enough to recognize an error document while
+    // keeping a hostile response from growing the log without bound.
+    let mut elements: Vec<String> = Vec::new();
     loop { match reader.read_event_into(&mut buf) {
-        Ok(Event::Start(e)) => { current = Some(e.name().as_ref().to_vec()); }
+        Ok(Event::Start(e)) => {
+            if root.is_none() {
+                root = Some(String::from_utf8_lossy(e.name().as_ref()).into_owned());
+                // `Success` is an attribute of the response root. Without it a
+                // service-side refusal is indistinguishable from a missing
+                // license, and every refusal gets reported as "malformed".
+                for attribute in e.attributes().flatten() {
+                    if attribute.key.as_ref() == b"Success" {
+                        success_attr = attribute
+                            .normalized_value(XmlVersion::Implicit1_0)
+                            .ok()
+                            .map(|value| value.into_owned());
+                    }
+                }
+            }
+            if elements.len() < 24 {
+                elements.push(String::from_utf8_lossy(e.name().as_ref()).into_owned());
+            }
+            current = Some(e.name().as_ref().to_vec());
+        }
         Ok(Event::Text(e)) => { let text = e.decode().map_err(|_| DeviceProvisionError::MalformedResponse)?.into_owned(); match current.as_deref() { Some(b"puid") => puid = Some(text), Some(b"SPLicenseBlock") => block = Some(text), _ => {} } }
         Ok(Event::Empty(_)) => {}
-        Ok(Event::End(e)) => { if e.name().as_ref() == b"DeviceAddResponse" { success = true; } current = None; }
+        Ok(Event::End(_)) => { current = None; }
         Ok(Event::Eof) => break,
         Err(_) => return Err(DeviceProvisionError::MalformedResponse), _ => {}
     }; buf.clear(); }
-    if !success { return Err(DeviceProvisionError::Rejected); }
-    let puid = puid.filter(|v| !v.trim().is_empty()).ok_or(DeviceProvisionError::MalformedResponse)?;
-    let license_block = base64::engine::general_purpose::STANDARD.decode(block.ok_or(DeviceProvisionError::MalformedResponse)?.trim()).map_err(|_| DeviceProvisionError::MalformedResponse)?;
-    if license_block.is_empty() { return Err(DeviceProvisionError::MalformedResponse); }
+
+    // Owns its labels so it does not borrow `puid` / `block`, which are moved
+    // out below once the response is accepted.
+    let describe = {
+        let body_len = bytes.len();
+        let root_label = root.clone();
+        let success_label = success_attr.clone();
+        let element_labels = elements.join(",");
+        move |outcome: &str, puid_state: &str, block_state: &str| {
+            format!(
+                "{outcome} (http={status}, bytes={body_len}, root={}, success={}, puid={puid_state}, license_block={block_state}, elements=[{element_labels}])",
+                root_label.as_deref().unwrap_or("-"),
+                success_label.as_deref().unwrap_or("-"),
+            )
+        }
+    };
+    let puid_state = |value: Option<&String>| match value {
+        Some(text) if text.trim().is_empty() => "empty",
+        Some(_) => "present",
+        None => "absent",
+    };
+    let block_state = if block.is_some() { "present" } else { "absent" };
+
+    // An explicit `Success="false"` is a refusal, not a malformed document.
+    if success_attr.as_deref().is_some_and(|value| {
+        value.eq_ignore_ascii_case("false") || value.eq_ignore_ascii_case("0")
+    }) {
+        log::warn!(
+            "[store-device] device provisioning refused: {}",
+            describe("refused", puid_state(puid.as_ref()), block_state)
+        );
+        return Err(DeviceProvisionError::Rejected);
+    }
+    if root.as_deref() != Some("DeviceAddResponse") {
+        log::warn!(
+            "[store-device] device provisioning root mismatch: {}",
+            describe("bad root", puid_state(puid.as_ref()), block_state)
+        );
+        return Err(DeviceProvisionError::MalformedResponse);
+    }
+    let puid = match puid.filter(|v| !v.trim().is_empty()) {
+        Some(value) => value,
+        None => {
+            log::warn!(
+                "[store-device] device provisioning returned no puid: {}",
+                describe("no puid", "absent", block_state)
+            );
+            return Err(DeviceProvisionError::MalformedResponse);
+        }
+    };
+    let license_block = match block {
+        Some(encoded) => base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .map_err(|_| {
+                log::warn!(
+                    "[store-device] license block is not base64: {}",
+                    describe("bad base64", "present", "present")
+                );
+                DeviceProvisionError::MalformedResponse
+            })?,
+        None => {
+            log::warn!(
+                "[store-device] device provisioning returned no license block: {}",
+                describe("no license", "present", "absent")
+            );
+            return Err(DeviceProvisionError::MalformedResponse);
+        }
+    };
+    if license_block.is_empty() {
+        log::warn!(
+            "[store-device] license block decoded empty: {}",
+            describe("empty license", "present", "present")
+        );
+        return Err(DeviceProvisionError::MalformedResponse);
+    }
     Ok(ProvisionedDevice { binding: DeviceCacheBinding { account_id, device_id: puid.clone() }, member, password, puid, license_block })
 }
 const MAX_PROTECTED_BYTES: usize = 1024 * 1024;

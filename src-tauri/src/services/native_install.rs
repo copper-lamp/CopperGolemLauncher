@@ -528,7 +528,11 @@ pub(crate) async fn acquire_package_content_key(
                     "{silent_error} (no owner window available, cannot fall back to interactive)"
                 )));
             }
-            log::warn!("[native-install] silent ticket refused, falling back to interactive: {silent_error}");
+            log::warn!(
+                "[native-install] silent ticket refused, falling back to interactive: \
+                 {silent_error} (owner_window=0x{:x})",
+                request.owner_window
+            );
             let hwnd = request.owner_window;
             let xuid = request.xuid.clone();
             tokio::task::spawn_blocking(move || {

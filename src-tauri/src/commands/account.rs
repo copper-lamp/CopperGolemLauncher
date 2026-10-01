@@ -1,14 +1,17 @@
 //! 账户命令：当前账户、发起登录、退出登录、刷新令牌、取启动凭证。
 
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
+#[cfg(windows)]
+use tauri::Manager;
 
 use crate::commands::into_command_error;
 use crate::error::CommandResult;
 use crate::services::account::{AccountInfo, DeviceCodeInfo};
 use crate::state::KernelContext;
 
-/// 承载系统账户界面的主窗口标签。
+/// 承载系统账户界面的主窗口标签；只有取句柄的 Windows 路径用得到。
+#[cfg(windows)]
 const MAIN_WINDOW: &str = "main";
 
 /// 当前登录账户。
@@ -43,6 +46,10 @@ pub async fn account_wam_sign_in(
 }
 
 /// 取主窗口句柄；窗口尚未就绪时给出可操作的原因，而不是把 0 交给 WAM。
+///
+/// `WebviewWindow::hwnd` 只在 Windows 上存在，WAM 本身也是 Windows 独占能力，
+/// 所以其它平台在这里直接拒绝，避免把「无句柄」当成可交互授权的前提。
+#[cfg(windows)]
 fn main_window_hwnd(app: &AppHandle) -> Result<isize, crate::error::KernelError> {
     let window = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| {
         crate::error::KernelError::Account("主窗口尚未就绪，无法呈现账户授权界面".into())
@@ -51,6 +58,14 @@ fn main_window_hwnd(app: &AppHandle) -> Result<isize, crate::error::KernelError>
         crate::error::KernelError::Account(format!("无法获取主窗口句柄: {e}"))
     })?;
     Ok(hwnd.0 as isize)
+}
+
+/// 非 Windows 平台没有窗口作用域的 WAM，交互式授权显式不支持。
+#[cfg(not(windows))]
+fn main_window_hwnd(_app: &AppHandle) -> Result<isize, crate::error::KernelError> {
+    Err(crate::error::KernelError::Account(
+        "当前平台不支持 Microsoft 账户授权（WAM），请使用设备码登录".into(),
+    ))
 }
 
 /// 退出登录（清除密钥环与数据库记录）。
