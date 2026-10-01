@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.Parcel
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
@@ -163,11 +164,7 @@ class InjectingInputSink(
     override fun isInjectingTouch(): Boolean = injectingTouch
 
     override fun sendRelativeMotion(dx: Float, dy: Float) {
-        val now = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_HOVER_MOVE, 0f, 0f, 0)
-        event.source = InputDevice.SOURCE_MOUSE_RELATIVE
-        event.setAxisValue(MotionEvent.AXIS_RELATIVE_X, dx)
-        event.setAxisValue(MotionEvent.AXIS_RELATIVE_Y, dy)
+        val event = buildRelativeMouseEvent(dx, dy) ?: return
         try {
             sendTouch(event)
         } finally {
@@ -182,6 +179,63 @@ class InjectingInputSink(
         }
     }
 
+    /**
+     * 合成一个带**相对轴**的鼠标移动事件。
+     *
+     * 为什么不能直接用 `MotionEvent.setAxisValue(...)`：那是 `@hide` 的隐藏 API
+     * （公开的只有读取侧的 `getAxisValue`），公开 SDK 里根本不存在，CI 直接报
+     * `Unresolved reference 'setAxisValue'`。
+     *
+     * 因此改走事件自身的序列化格式：`MotionEvent` 可以写进 `Parcel` 再读回来，而该
+     * 格式里 `axisBits` 那一位正好对应 `AXIS_RELATIVE_X/Y`。全过程只用公开 API，代价是
+     * 依赖 `Parcel` 的排布——它属内部格式，所以整段**必须**包在 try/catch 里：排布一旦
+     * 对不上就退化成「本次拖动不产生视角位移」，绝不能让游戏崩在输入注入上。
+     *
+     * 绝对坐标仍写 `0, 0`：相对轴模式下游戏读的是 `AXIS_RELATIVE_*`，绝对坐标只是占位
+     * （原实现同样传 `0f, 0f`）。
+     *
+     * @return 合成好的事件；失败返回 `null`，由调用方丢弃本次位移。
+     */
+    private fun buildRelativeMouseEvent(dx: Float, dy: Float): MotionEvent? {
+        val now = SystemClock.uptimeMillis()
+        return try {
+            val parcel = Parcel.obtain()
+            try {
+                parcel.writeInt(0) // 占位：稍后把真实长度写回这里
+                parcel.writeInt(0) // Parcelable 类型标记，读回时被丢弃
+                parcel.writeInt(now.toInt()) // downTime
+                parcel.writeInt(now.toInt()) // eventTime
+                parcel.writeInt(MotionEvent.ACTION_HOVER_MOVE)
+                parcel.writeInt(0) // pointerCount
+                parcel.writeInt(0)
+                parcel.writeInt(InputDevice.SOURCE_MOUSE_RELATIVE)
+                parcel.writeInt(0) // deviceId
+                parcel.writeInt(0) // edgeFlags
+                parcel.writeInt(0) // metaState
+                parcel.writeInt(0) // buttonState
+                parcel.writeFloat(1f) // xPrecision
+                parcel.writeFloat(1f) // yPrecision
+                parcel.writeInt(0) // deviceId（该版本布局里重复出现）
+                parcel.writeInt(0) // edgeFlags
+                parcel.writeInt(0) // source（同上）
+                parcel.writeInt(0) // flags
+                // 相对轴：位图 + X + Y，三项必须相邻。
+                parcel.writeInt(0x1 or 0x2) // axisBits: AXIS_RELATIVE_X | AXIS_RELATIVE_Y
+                parcel.writeFloat(dx)
+                parcel.writeFloat(dy)
+                val end = parcel.dataPosition()
+                parcel.setDataPosition(0)
+                parcel.writeInt(end)
+                parcel.setDataPosition(0)
+                MotionEvent.CREATOR.createFromParcel(parcel)
+            } finally {
+                parcel.recycle()
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "合成相对鼠标事件失败，本次视角位移丢弃: ${error.message}")
+            null
+        }
+    }
     private companion object {
         const val TAG = "CopperGameInput"
     }
