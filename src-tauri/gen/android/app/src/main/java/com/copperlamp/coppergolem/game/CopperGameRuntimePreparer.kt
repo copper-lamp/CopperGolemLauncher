@@ -1,8 +1,8 @@
 package com.copperlamp.coppergolem.game
 
-import android.content.Context
 import android.content.Intent
 import android.util.Log
+import java.util.ArrayList
 
 /**
  * 原生库加载顺序策略。
@@ -71,7 +71,7 @@ object CopperGameRuntimePreparer {
      * [CopperGameActivity] 的 `getFilesDir` 等重写消费；两者缺一都会导致
      * 「能启动但读不到资源」或「存档写错目录」。
      */
-    fun fillLaunchExtras(context: Context, launchIntent: Intent, game: CopperGameInstance, manager: CopperGamePackageManager) {
+    fun fillLaunchExtras(launchIntent: Intent, game: CopperGameInstance, manager: CopperGamePackageManager) {
         val info = manager.getApplicationInfo()
         game.gameFilesDir().mkdirs()
         game.gameDataDir().mkdirs()
@@ -84,7 +84,10 @@ object CopperGameRuntimePreparer {
         launchIntent.putExtra(EXTRA_SOURCE_DIR, info.sourceDir)
         val splitDirs = info.splitSourceDirs
         if (splitDirs != null) {
-            launchIntent.putStringArrayListExtra(EXTRA_SPLIT_SOURCE_DIRS, arrayListOf(*splitDirs))
+            launchIntent.putStringArrayListExtra(
+                EXTRA_SPLIT_SOURCE_DIRS,
+                ArrayList(splitDirs.asList())
+            )
         }
         launchIntent.putExtra(CopperGameInstance.EXTRA_INSTANCE, game.name)
         launchIntent.putExtra(CopperGameInstance.EXTRA_VERSION_CODE, game.versionCode)
@@ -172,7 +175,7 @@ object CopperGameRuntimePreparer {
     }
 
     private fun shouldLoadPlayFab(versionCode: String): Boolean =
-        isVersionAtLeast(versionCode, betaAwareTarget(versionCode, HTTP_CLIENT_VERSION, HTTP_CLIENT_BETA_VERSION))
+        isVersionAtLeast(versionCode, betaAwareTarget(versionCode, MAESDK_VERSION, MAESDK_BETA_VERSION))
 
     private fun toLibraryFileName(name: String): String =
         if (name.startsWith("lib") && name.endsWith(".so")) name else "lib${name.removePrefix("lib").removeSuffix(".so")}.so"

@@ -16,12 +16,7 @@ const moduleNav = getModuleNav();
   <nav class="side-nav">
     <div class="side-nav__top">
       <RouterLink to="/" class="side-nav__logo" :title="t('app.name')">
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-          <path
-            d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm3 8h8v2H8v-2Zm0 4h5v2H8v-2Zm0-8h8v2H8V7Z"
-            fill="currentColor"
-          />
-        </svg>
+        <img src="/app-64.png" width="26" height="26" alt="" aria-hidden="true" />
       </RouterLink>
       <RouterLink
         v-for="item in moduleNav"
@@ -72,23 +67,32 @@ const moduleNav = getModuleNav();
   gap: var(--copper-space-3);
 }
 
+/* 透明底图标，容器只负责 hover 反馈与点击区，不加底色以免切掉图标透明边缘 */
 .side-nav__logo {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--copper-radius-md);
-  color: var(--copper-accent);
-  background: color-mix(in srgb, var(--copper-accent) 12%, transparent);
   text-decoration: none;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
-    color var(--copper-duration-fast) var(--copper-easing);
+    transform var(--copper-duration-fast) var(--copper-easing);
+}
+
+.side-nav__logo img {
+  width: 26px;
+  height: 26px;
 }
 
 .side-nav__logo:hover {
-  background: color-mix(in srgb, var(--copper-accent) 20%, transparent);
+  background: var(--copper-hover);
+  transform: scale(1.06);
+}
+
+.side-nav__logo:active {
+  transform: scale(0.96);
 }
 
 .side-nav__bottom {

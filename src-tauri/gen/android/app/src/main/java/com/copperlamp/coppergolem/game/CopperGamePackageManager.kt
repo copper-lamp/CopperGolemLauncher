@@ -258,6 +258,15 @@ class CopperGamePackageManager private constructor(
     private fun cacheRequiredLibs(): Array<String> =
         if (shouldLoadHttpClient()) requiredLibs + optionalLibs else requiredLibs
 
+    /**
+     * 当前实例是否需要 `libHttpClient.Android.so`。
+     *
+     * 版本判定规则集中在 [CopperGameRuntimePreparer]，这里只负责把当前实例
+     * 的 versionCode 传进去，避免每个调用点漏传导致编译失败或误判。
+     */
+    private fun shouldLoadHttpClient(): Boolean =
+        CopperGameRuntimePreparer.shouldLoadHttpClient(instance.versionCode)
+
     // ------------------------------------------------------------------ 加载
 
     fun resolveLibraryPath(name: String): String? {
@@ -325,17 +334,15 @@ class CopperGamePackageManager private constructor(
     ): List<LibraryLoadResult> {
         val allLibs = requiredLibs + systemLoadedLibs
         val loadable = allLibs.filterNot { lib ->
-            excludeLibs.contains(normalizeLibraryName(lib)) || excludeLibs.contains(lib)
+            val skipped = excludeLibs.contains(normalizeLibraryName(lib)) || excludeLibs.contains(lib)
+            if (skipped) listener?.onLog("跳过原生库: $lib")
+            skipped
         }
         val total = loadable.size.coerceAtLeast(1)
         var loadIndex = 0
         val results = mutableListOf<LibraryLoadResult>()
-        for (lib in allLibs) {
+        for (lib in loadable) {
             val libName = normalizeLibraryName(lib)
-            if (excludeLibs.contains(libName) || excludeLibs.contains(lib)) {
-                listener?.onLog("跳过原生库: $lib")
-                continue
-            }
             loadIndex += 1
             val progress = progressStart + ((progressEnd - progressStart) * (loadIndex - 1) / total)
             listener?.onProgress(progress, "加载原生库", "$loadIndex/$total")

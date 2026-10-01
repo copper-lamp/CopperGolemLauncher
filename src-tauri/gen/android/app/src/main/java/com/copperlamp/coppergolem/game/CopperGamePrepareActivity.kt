@@ -234,7 +234,7 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
                 onProgress(40, "准备启动", game.versionCode)
 
                 val gameIntent = Intent(intent).setClass(this, CopperGameActivity::class.java)
-                CopperGameRuntimePreparer.fillLaunchExtras(applicationContext, gameIntent, game, manager)
+                CopperGameRuntimePreparer.fillLaunchExtras(gameIntent, game, manager)
                 CopperGameRuntimePreparer.configureFirebaseExtras(gameIntent, manager)
                 trace?.mark("启动 Intent 已填充")
 

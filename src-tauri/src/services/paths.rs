@@ -144,9 +144,9 @@ impl Paths {
     ///
     /// 是版本根目录的**唯一**解析入口。
     ///
-    /// 注意：`create_dir_all` 不会在这里做——本方法只做**解析**，因为设置项随时可改，
-    /// 解析阶段创建目录会把启动和用户意图绑死。调用方真正要落盘时必须走
-    /// [`Paths::ensure_versions_root`]，否则受限环境下会以裸 `os error 5` 冒泡。
+    /// 注意：这里只做**解析**，不做 `create_dir_all`——设置项随时可改，解析阶段创建目录
+    /// 会把启动和用户意图绑死。调用方真正要落盘时必须走 [`Paths::ensure_versions_root`]，
+    /// 否则目录不可写时会以裸 `os error 5` 冒泡（不带路径，等于没给任何线索）。
     pub fn versions_root(&self, settings: &SettingsService) -> PathBuf {
         settings
             .get::<String>("game.directory")
@@ -174,7 +174,9 @@ impl Paths {
         Ok(root)
     }
 
-    /// 给版本根相关的失败补上「这个路径是被哪个设置项控制的」这层定位信息。
+    /// 给版本根相关的失败补上「这个路径是被什么控制的」这层定位信息。
+    ///
+    /// 裸 `os error 5` 只有一个错误码，用户既不知道是哪个目录，也不知道该去哪里改。
     fn annotate_versions_root(&self, error: KernelError) -> KernelError {
         KernelError::Io(std::io::Error::new(
             error_io_kind(&error),

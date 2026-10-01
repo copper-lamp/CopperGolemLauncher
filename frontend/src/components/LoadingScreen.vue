@@ -15,19 +15,15 @@ const { t } = useI18n();
 <template>
   <div class="loading-screen">
     <div class="loading-screen__content">
-      <!-- 软件图标：与左导航栏同一路径，保证品牌一致 -->
-      <svg
+      <!-- 软件图标：与左导航栏共用 /app-64.png，保证品牌一致 -->
+      <img
         class="loading-screen__logo"
-        viewBox="0 0 24 24"
+        src="/app-64.png"
         width="56"
         height="56"
+        alt=""
         aria-hidden="true"
-      >
-        <path
-          d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm3 8h8v2H8v-2Zm0 4h5v2H8v-2Zm0-8h8v2H8V7Z"
-          fill="currentColor"
-        />
-      </svg>
+      />
 
       <div class="loading-screen__name">{{ t("app.name") }}</div>
 
@@ -59,7 +55,9 @@ const { t } = useI18n();
 }
 
 .loading-screen__logo {
-  color: var(--copper-accent);
+  width: 56px;
+  height: 56px;
+  border-radius: var(--copper-radius-md);
   /* 轻微呼吸：表达进程存活，同时不喧宾夺主 */
   animation: logo-pulse 2.4s var(--copper-easing) infinite;
 }
