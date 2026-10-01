@@ -19,3 +19,5 @@ Thumbs.db
 docs
 # 开发期隔离数据根（dev.cmd 使用：内核数据 + WebView2 profile）
 .devdata/
+# 本仓库内的 cargo home（安卓出包需要可写的 registry，见 scripts/build-android-apk.cmd）
+.cargohome/

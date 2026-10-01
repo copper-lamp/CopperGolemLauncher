@@ -45,3 +45,117 @@ jobs:
           releaseBody: '自动生成的发布。'
           releaseDraft: true
           prerelease: false
+
+  # Android arm64：debug APK，作为 **Release 资产** 直接给出。
+  #
+  # 为什么不用 upload-artifact：GitHub 的 artifact 一律被打包成 zip（这是它的固定
+  # 行为），想要「下载下来就是一个 apk、不套一层 zip」只能挂成 Release 资产。
+  #
+  # 与桌面版共用同一个草稿 Release：两个 job 用同一个 tagName，谁先到谁建，
+  # 后到的把文件追加进去；`gh release upload --clobber` 保证重跑不冲突。
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # 必须 >= 21：:app 与 :minecraft 都声明 VERSION_21，JDK 17 会报
+          # "invalid source release: 21"。
+          java-version: 21
+
+      - name: 准备 Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: 安装 Android SDK 组件与 NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.3.13750724"
+          {
+            echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+            echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+          } >> "$GITHUB_ENV"
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-arm64
+
+      - name: 安装依赖
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: 打包 Android APK
+        # Android 无系统 OpenSSL，openssl 需从源码交叉编译（openssl-src 支持 NDK）。
+        run: npx tauri android build --apk --debug --target aarch64 --features vendored-openssl
+
+      - name: 收集 APK
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "未找到 APK，列出产物目录以便排查："
+            find src-tauri/gen/android/app/build/outputs -type f || true
+            exit 1
+          fi
+          mkdir -p dist
+          # 可读文件名，下载后一眼能看出是什么
+          cp "${files[0]}" "dist/CopperGolem-${GITHUB_REF_NAME}-android-arm64-debug.apk"
+          ls -l dist
+
+      - name: 创建草稿 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release create "$TAG_NAME" --draft --title "铜傀儡 $TAG_NAME" --notes "自动生成的发布。"
+          fi
+          {
+            echo "## Android APK"
+            echo ""
+            echo "草稿 Release \`$TAG_NAME\` 的资产（发布后即为直链下载）："
+            echo "\`CopperGolem-$TAG_NAME-android-arm64-debug.apk\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 把 APK 挂成 Release 资产
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          gh release upload "$TAG_NAME" dist/*.apk --clobber
+          gh release view "$TAG_NAME" --json assets --jq '.assets[].name'
+
+      - name: 兜底 artifact（Release 权限不可用时至少能拿到包）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-fallback
+          path: dist/*.apk
+          if-no-files-found: warn

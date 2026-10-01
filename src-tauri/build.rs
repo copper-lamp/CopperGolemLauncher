@@ -1,6 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
 //! 构建脚本：Tauri 代码生成 + 应用清单。
+//!
+//! ## 平台判定必须用「目标」而不是 `cfg(windows)`
+//!
+//! 这个文件是**构建脚本**，永远由**宿主**编译器编译。因此在 Windows 上做
+//! `cargo build --target aarch64-linux-android` 时，`cfg(windows)` 仍然为真——
+//! 用它会走进「编译并链接 Windows 资源」的分支，产出的 COFF `.lib` 被塞进安卓链接
+//! 命令，lld 直接报 `unknown file type`，表现为 `could not compile copper-core`。
+//!
+//! 所以下面一律用 `cfg!(target_os = "windows")` 与 cargo 提供的
+//! `CARGO_CFG_TARGET_OS`（它们描述的是**目标**平台）来判断。
+
+/// 本次构建的目标平台是否为 Windows。
+///
+/// 构建脚本里 `cfg!(target_os = ...)` 对**宿主**求值（cargo 用宿主的 rustc 编译构建
+/// 脚本，且不会为目标平台设置 `--cfg`），所以唯一可靠的事实源是 cargo 注入的
+/// `CARGO_CFG_TARGET_OS`。
+fn target_is_windows() -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+}
 
 /// Common Controls v6 应用清单内容。
 ///
@@ -11,7 +30,10 @@
 /// （测试二进制根本没机会执行）。
 ///
 /// 内容与 `tauri-build` 自带的清单逐字一致。
-#[cfg(windows)]
+///
+/// 无条件编译：本文件的 `cfg` 描述的都是宿主，而这份清单只在**目标**是 Windows 时才
+/// 使用（判断见 `target_is_windows`）。宿主非 Windows 时它是死代码。
+#[allow(dead_code)]
 const APP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
@@ -47,7 +69,10 @@ const APP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="y
 ///
 /// 注意：`embed-resource` 自己的 `compile()` 只有在**没有** bin 目标时才退回全目标
 /// 链接，本 crate 有 `src/main.rs`，所以那条路走不通。
-#[cfg(windows)]
+///
+/// 无条件编译，由 `main` 用 `target_is_windows()` 决定是否调用（原因见文件头：
+/// 这里的 `cfg` 只描述宿主，而「要不要嵌 Windows 资源」取决于目标）。
+#[allow(dead_code)]
 fn embed_app_manifest() {
     let out_dir =
         std::path::PathBuf::from(std::env::var("OUT_DIR").expect("cargo 必须提供 OUT_DIR"));
@@ -82,20 +107,19 @@ fn embed_app_manifest() {
     println!("cargo:rustc-link-arg={}", object.display());
 }
 
-#[cfg(not(windows))]
-fn embed_app_manifest() {}
-
 fn main() {
-    embed_app_manifest();
-    #[cfg(windows)]
-    {
-        use tauri_build::{Attributes, WindowsAttributes};
-        let attributes =
-            Attributes::new().windows_attributes(WindowsAttributes::new_without_app_manifest());
-        if let Err(error) = tauri_build::try_build(attributes) {
-            panic!("tauri-build 失败: {error:#}");
-        }
+    // 只在目标平台是 Windows 时嵌清单：构建脚本跑在宿主上，用 `cfg(windows)` 会在
+    // 「Windows 宿主 + 安卓目标」时错误地嵌进一份 COFF 资源库（见文件头说明）。
+    if target_is_windows() {
+        embed_app_manifest();
     }
-    #[cfg(not(windows))]
-    tauri_build::build()
+    // `new_without_app_manifest()` 对所有平台都给：它关掉的是 `tauri-build` 自己那份
+    // `RT_MANIFEST`。本 crate 的 Windows 资源由上面的 `embed_app_manifest()` 独占提供，
+    // 所以这条不会造成重复；而在移动端它同时避免 tauri-build 往链接参数里塞资源。
+    use tauri_build::{Attributes, WindowsAttributes};
+    let attributes =
+        Attributes::new().windows_attributes(WindowsAttributes::new_without_app_manifest());
+    if let Err(error) = tauri_build::try_build(attributes) {
+        panic!("tauri-build 失败: {error:#}");
+    }
 }

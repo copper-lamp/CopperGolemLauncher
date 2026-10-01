@@ -16,6 +16,19 @@ REM                                   : MUST use forward slashes. msys2's shell
 REM                                     eats backslashes, so the previous
 REM                                     revision produced
 REM                                     "D:androidndk...clang.exe: No such file".
+REM   CARGO_HOME                      : kept inside the repository on purpose.
+REM                                     `tauri-plugin`'s build script runs
+REM                                     create_dir_all(<registry crate>/android/.tauri),
+REM                                     i.e. it writes into the unpacked cargo
+REM                                     registry under %USERPROFILE%\.cargo. When
+REM                                     that tree is not writable (locked-down or
+REM                                     sandboxed machine) every tauri plugin
+REM                                     fails with "failed to create .tauri
+REM                                     directory: os error 5". Pointing CARGO_HOME
+REM                                     at .cargohome next to this repo keeps all
+REM                                     writes inside the working tree.
+REM                                     Seed it once with:
+REM                                       robocopy %USERPROFILE%\.cargo .cargohome /E
 setlocal
 
 set "ANDROID_HOME=D:/android"
@@ -35,11 +48,19 @@ set "TEMP=D:\CopperGolem\CopperCore\target\tmp"
 set "TMP=%TEMP%"
 if not exist "%TEMP%" mkdir "%TEMP%"
 
+set "CARGO_HOME=D:\CopperGolem\CopperCore\.cargohome"
+if not exist "%CARGO_HOME%\registry" (
+    echo [apk] CARGO_HOME is not seeded: %CARGO_HOME%
+    echo [apk] run: robocopy "%USERPROFILE%\.cargo" "%CARGO_HOME%" /E
+    exit /b 2
+)
+
 cd /d D:\CopperGolem\CopperCore
 echo [apk] SDK        = %ANDROID_HOME%
 echo [apk] NDK        = %NDK_HOME%
 echo [apk] JDK        = %JAVA_HOME%
 echo [apk] toolchain  = %TC%
+echo [apk] CARGO_HOME = %CARGO_HOME%
 echo [apk] building debug APK for aarch64 ...
 
 call node "node_modules\@tauri-apps\cli\tauri.js" android build --apk --debug --target aarch64 --features vendored-openssl

@@ -1,0 +1,25 @@
+# 行尾规则（避免跨平台 checkout 把脚本改坏）
+#
+# 背景：cmd.exe 对 LF 行尾的批处理支持不完整——`goto`/标签/多行 `if` 会出怪问题，
+# 而且 `scripts\build-android-apk.cmd` 这种出包入口一旦被改坏，表现是「命令莫名其妙
+# 没执行」，极难定位。所以 .cmd/.bat 一律 CRLF。
+#
+# .ps1 用 LF 即可（PowerShell 两种都能读）；源码统一 LF。
+
+* text=auto eol=lf
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=lf
+
+# 二进制/生成物不参与行尾转换
+*.png binary
+*.ico binary
+*.icns binary
+*.jar binary
+*.keystore binary
+*.lib binary
+*.so binary
+*.apk binary
+*.exe binary
+*.zip binary

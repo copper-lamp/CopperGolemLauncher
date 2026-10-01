@@ -199,9 +199,11 @@ jobs:
         # Android 无系统 OpenSSL，openssl 需从源码交叉编译（openssl-src 支持 NDK）。
         run: npx tauri android build --apk --debug --target aarch64 --features vendored-openssl
 
-      - name: 上传 Android 安装包
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-          if-no-files-found: error
+      - name: 检查 Android 打包产物
+        if: always()
+        run: find src-tauri/gen/android/app/build/outputs -type f -name '*.apk' -print 2>/dev/null || true
+
+      # 这里**故意不产出 artifact**：artifact 一律会被 GitHub 打包成 zip，拿到的是
+      # 「一个 zip 里套着 apk」。需要能直接下载的 APK 时走 release 工作流的
+      # `android` job —— 它把 apk 挂成 Release 资产，下载下来就是 apk 本身。
+      # 本 job 只负责「push/PR 阶段确认安卓能编过」。

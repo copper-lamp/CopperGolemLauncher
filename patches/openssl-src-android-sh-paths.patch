@@ -1,0 +1,40 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 2721b30..4820bfb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -444,7 +444,16 @@ impl Build {
+             if cc_env.is_empty() {
+                 cc_env = compiler.path().to_path_buf().into_os_string();
+             }
+-            configure.env("CC", cc_env);
++            // cc-rs reports the compiler path with Windows separators on a
++            // Windows host, e.g. `D:/android/.../windows-x86_64/bin\clang.exe`.
++            // OpenSSL's build runs the generated Makefile through a POSIX
++            // shell (`sh` from Git for Windows / msys), which eats that `\`,
++            // so the compiler ends up invoked as
++            // `.../windows-x86_64/binclang.exe` and the build dies with
++            // `No such file or directory` (make error 127). Hand the toolchain
++            // only forward slashes, the same way `--prefix` is already handled.
++            let sh_path = |p: &OsStr| OsString::from(p.to_string_lossy().replace('\\', "/"));
++            configure.env("CC", sh_path(&cc_env));
+             let path = compiler.path().to_str().ok_or("compiler path")?;
+ 
+             // Both `cc::Build` and `./Configure` take into account
+@@ -453,7 +462,7 @@ impl Build {
+             configure.env_remove("CROSS_COMPILE");
+ 
+             let ar = cc.get_archiver();
+-            configure.env("AR", ar.get_program());
++            configure.env("AR", sh_path(&ar.get_program()));
+             if ar.get_args().count() != 0 {
+                 // On some platforms (like emscripten on windows), the ar to use may not be a
+                 // single binary, but instead a multi-argument command like `cmd /c emar.bar`.
+@@ -467,7 +476,7 @@ impl Build {
+             // OpenSSL does not support RANLIBFLAGS. Jam the flags in RANLIB.
+             let mut args = vec![ranlib.get_program()];
+             args.extend(ranlib.get_args());
+-            configure.env("RANLIB", args.join(OsStr::new(" ")));
++            configure.env("RANLIB", sh_path(&args.join(OsStr::new(" "))));
+ 
+             // Make sure we pass extra flags like `-ffunction-sections` and
+             // other things like ARM codegen flags.
