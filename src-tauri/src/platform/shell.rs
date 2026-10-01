@@ -12,7 +12,7 @@
 //! 路径不存在时明确报错：静默打开一个空目录或替用户猜一个父目录，都会让用户
 //! 以为「点了没反应」或者「文件不见了」。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 在系统文件管理器中定位 `path`。
 ///
@@ -58,12 +58,12 @@ fn reveal_existing(_path: &Path) -> Result<(), String> {
 
 /// 文件取其父目录；目录取其自身。
 #[cfg(all(not(windows), not(any(target_os = "android", target_os = "ios"))))]
-fn parent_or_self(path: &Path) -> PathBuf {
+fn parent_or_self(path: &Path) -> std::path::PathBuf {
     if path.is_dir() {
         path.to_path_buf()
     } else {
         path.parent().map(Path::to_path_buf).unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         })
     }
 }

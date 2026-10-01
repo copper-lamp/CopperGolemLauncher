@@ -187,14 +187,6 @@ jobs:
             echo "generated=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: 上传新生成的 Android 工程
-        # 工程尚未入库时把它作为 artifact 产出，便于提交进仓库后免去每次 init。
-        if: steps.android_init.outputs.generated == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-gen-project
-          path: src-tauri/gen/android
-
       - name: 打包 Android 安装包
         # Android 无系统 OpenSSL，openssl 需从源码交叉编译（openssl-src 支持 NDK）。
         run: npx tauri android build --apk --debug --target aarch64 --features vendored-openssl
@@ -203,7 +195,41 @@ jobs:
         if: always()
         run: find src-tauri/gen/android/app/build/outputs -type f -name '*.apk' -print 2>/dev/null || true
 
-      # 这里**故意不产出 artifact**：artifact 一律会被 GitHub 打包成 zip，拿到的是
-      # 「一个 zip 里套着 apk」。需要能直接下载的 APK 时走 release 工作流的
-      # `android` job —— 它把 apk 挂成 Release 资产，下载下来就是 apk 本身。
-      # 本 job 只负责「push/PR 阶段确认安卓能编过」。
+      - name: 收集 APK
+        id: apk
+        run: |
+          set -e
+          shopt -s nullglob
+          # AGP 5.x 会按 ABI 分目录（apk/<abi>/debug），单 ABI 构建时也可能直接落在
+          # apk/debug，因此两条路径都收，最终仍以「有没有 *.apk」作为唯一判据。
+          files=(
+            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/debug/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/*/debug/*.apk
+          )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "未找到 APK，列出产物目录以便排查："
+            find src-tauri/gen/android/app/build/outputs -type f 2>/dev/null || true
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${files[0]}" "dist/CopperGolem-android-arm64-debug.apk"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          ls -l dist
+
+      - name: 上传 Android 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/
+          if-no-files-found: error
+
+      - name: 上传 Android 工程（仓库中尚无时）
+        # init 出来的工程只作为本次产物留存，便于人工下载后提交进仓库；
+        # 已在仓库中的工程不上传，避免每次跑都刷版本。
+        if: steps.android_init.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-gen-project
+          path: src-tauri/gen/android

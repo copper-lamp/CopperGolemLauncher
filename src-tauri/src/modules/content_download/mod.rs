@@ -887,7 +887,7 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
         let (target, stage, detail) = match callback {
             lipd::DaemonCallback::Progress { item, percent } => (
                 percent.map(lip_install_progress).unwrap_or(LIP_PREPARE_END),
-                STAGE_LIP_INSTALLING,
+                STAGE_LIP_INSTALLING.to_string(),
                 (!item.trim().is_empty()).then_some(item),
             ),
             lipd::DaemonCallback::Log(text) => {
