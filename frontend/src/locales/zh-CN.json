@@ -283,9 +283,26 @@
     "active_section": "正在下载",
     "history_section": "历史下载",
     "history_empty": "暂无历史下载记录",
+    "history_clear": "清除记录",
+    "history_clear_hint": "删除全部已结束的下载记录（不删除已下载的文件）",
+    "history_clear_title": "清除下载记录？",
+    "history_clear_body": "将删除全部已完成、失败与已取消的记录，正在下载与正在安装的任务不受影响。已下载的文件会保留在磁盘上，可用条目的快捷方式按钮打开所在文件夹。",
+    "history_clear_confirm": "清除记录",
+    "history_cleared": "下载记录已清除",
     "actions_view": "查看详情",
     "actions_install": "安装此版本",
     "actions_install_hint": "整包已在本地，直接重跑安装（不重新下载）",
+    "reveal_missing": "该条目没有可打开的文件路径",
+    "stage": {
+      "install_authorizing": "正在获取商店授权",
+      "install_preparing": "正在准备安装目录",
+      "install_verifying": "正在校验安装包完整性",
+      "install_extracting": "正在解包安装包",
+      "install_finalizing": "正在写入版本信息",
+      "lip_preparing": "正在准备 lip 运行环境",
+      "lip_installing": "正在安装 LL 模组",
+      "lip_finalizing": "正在收尾"
+    },
     "detail_title": "下载详情",
     "detail_name": "文件名",
     "detail_url": "下载地址",
@@ -308,7 +325,8 @@
       "resume": "继续",
       "cancel": "取消",
       "retry": "重试",
-      "remove": "移除"
+      "remove": "移除",
+      "reveal": "打开所在文件夹"
     },
     "speed": "{speed}/s",
     "unknown_size": "未知大小"

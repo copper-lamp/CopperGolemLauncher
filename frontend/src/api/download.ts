@@ -26,6 +26,12 @@ export interface DownloadTask {
   status: DownloadStatus;
   error: string | null;
   retry_count: number;
+  /** 阶段化进度（0~1）。非空时进度条忽略字节进度（安装 / 解包等）。 */
+  phase_progress: number | null;
+  /** 当前阶段文案的 i18n 键（`download.stage.*`）。 */
+  stage: string | null;
+  /** 当前阶段的动态细节（文件名 / 计数），与 `stage` 的译文拼接展示。 */
+  stage_detail: string | null;
 }
 
 /** 投递参数（camelCase，全可选）。 */
@@ -76,6 +82,21 @@ export function downloadRetry(id: number): Promise<void> {
 
 export function downloadRemove(id: number): Promise<void> {
   return call<void>("download_remove", { id });
+}
+
+/** 清空下载记录（只清终态条目），返回删除的记录数。 */
+export function downloadClearHistory(): Promise<number> {
+  return call<number>("download_clear_history");
+}
+
+/**
+ * 在系统文件管理器中定位下载产物。
+ *
+ * 传路径而不是任务 id：下载中心同时列出内核任务与各模块自己的记录
+ * （内容下载、游戏安装），各来源的落点只有它自己最清楚。
+ */
+export function downloadReveal(path: string): Promise<void> {
+  return call<void>("download_reveal", { path });
 }
 
 export function downloadPauseAll(): Promise<void> {

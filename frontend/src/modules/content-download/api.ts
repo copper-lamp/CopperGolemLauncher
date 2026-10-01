@@ -16,6 +16,18 @@ export interface ContentDownloadRecord {
   taskId: number | null;
   error: string | null;
   updatedAt: number;
+  /** 阶段化进度（0~1）。仅安装类条目（lip）存在。 */
+  progress?: number | null;
+  /** 阶段文案的 i18n 键（`download.stage.*`）。 */
+  stage?: string | null;
+}
+
+/** lip 安装进度事件负载（后端 `content-download.install-progress`）。 */
+export interface ContentInstallProgress {
+  id: string;
+  progress: number;
+  stage: string;
+  stageDetail: string | null;
 }
 
 /** 来源（与后端 `SOURCE_*` 对应）。
@@ -161,6 +173,11 @@ export function contentDownloadRecords(): Promise<ContentDownloadRecord[]> {
 
 export function contentDownloadRecordRemove(id: string): Promise<void> {
   return call<void>("content_download_record_remove", { id });
+}
+
+/** 清空内容下载记录（只清终态条目），返回删除的记录数。 */
+export function contentDownloadRecordsClear(): Promise<number> {
+  return call<number>("content_download_records_clear");
 }
 
 export function contentDownloadDownload(

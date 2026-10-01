@@ -283,9 +283,26 @@
     "active_section": "Active",
     "history_section": "History",
     "history_empty": "No download history yet",
+    "history_clear": "Clear records",
+    "history_clear_hint": "Delete every finished download record (downloaded files are kept)",
+    "history_clear_title": "Clear download records?",
+    "history_clear_body": "Completed, failed and cancelled records will be deleted. Downloads in progress and installs are not affected. Files already downloaded stay on disk; use an entry's shortcut button to open its folder.",
+    "history_clear_confirm": "Clear records",
+    "history_cleared": "Download records cleared",
     "actions_view": "View details",
     "actions_install": "Install this version",
     "actions_install_hint": "The full package is already local; re-run the install without downloading again",
+    "reveal_missing": "This entry has no file path to open",
+    "stage": {
+      "install_authorizing": "Requesting Store authorization",
+      "install_preparing": "Preparing the install directory",
+      "install_verifying": "Verifying package integrity",
+      "install_extracting": "Extracting the package",
+      "install_finalizing": "Writing version metadata",
+      "lip_preparing": "Preparing the lip runtime",
+      "lip_installing": "Installing the LL mod",
+      "lip_finalizing": "Finishing up"
+    },
     "detail_title": "Download details",
     "detail_name": "File name",
     "detail_url": "URL",
@@ -308,7 +325,8 @@
       "resume": "Resume",
       "cancel": "Cancel",
       "retry": "Retry",
-      "remove": "Remove"
+      "remove": "Remove",
+      "reveal": "Open containing folder"
     },
     "speed": "{speed}/s",
     "unknown_size": "Unknown size"

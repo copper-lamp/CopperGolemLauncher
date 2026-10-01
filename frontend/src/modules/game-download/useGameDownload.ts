@@ -198,11 +198,19 @@ export function useGameDownload() {
     },
     speedOf: (id: string): string => {
       const live = liveTasks.value[id];
-      return live ? fmtBytes(live.speed_bytes_per_sec) + "/s" : "";
+      // 安装阶段没有字节速率可言：报「0 B/s」比留空更像故障。
+      if (!live || live.stage) return "";
+      return fmtBytes(live.speed_bytes_per_sec) + "/s";
     },
     rawOf: (id: string): string => {
       const live = liveTasks.value[id];
-      if (live) return `${fmtBytes(live.downloaded_bytes)} / ${fmtBytes(live.total_bytes)}`;
+      if (live) {
+        // 安装阶段：把「已下 / 总量」换成阶段文案，否则界面会在下载到 100%
+        // 之后长时间停在「3.2 GB / 3.2 GB」上，看起来像卡死了。
+        const stage = stageTextOf(live);
+        if (stage) return stage;
+        return `${fmtBytes(live.downloaded_bytes)} / ${fmtBytes(live.total_bytes)}`;
+      }
       const state = taskStates.value[id];
       if (state?.download) {
         return `${fmtBytes(state.download.downloaded_bytes)} / ${fmtBytes(state.download.total_bytes)}`;
@@ -212,8 +220,18 @@ export function useGameDownload() {
   };
 }
 
-/** 从全局任务快照计算进度（0~1）。 */
+/** 阶段文案（i18n 键 + 动态细节）；无阶段信息时为空串。 */
+export function stageTextOf(task: DownloadTask): string {
+  if (!task.stage) return "";
+  const label = t(task.stage);
+  return task.stage_detail ? `${label} · ${task.stage_detail}` : label;
+}
+
+/** 从全局任务快照计算进度（0~1）：阶段进度优先于字节进度。 */
 function progressRatioFromSnapshot(task: DownloadTask): number {
+  if (task.phase_progress != null) {
+    return Math.min(Math.max(task.phase_progress, 0), 1);
+  }
   if (task.total_bytes <= 0) return 0;
   return Math.min(task.downloaded_bytes / task.total_bytes, 1);
 }

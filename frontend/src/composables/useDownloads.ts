@@ -75,6 +75,8 @@ export function useDownloads() {
     tasks: readonly(tasks),
     concurrency: readonly(concurrency),
     activeCount,
+    /** 重拉全量快照（批量操作后由调用方决定何时刷新）。 */
+    refresh,
     async setConcurrency(value: number) {
       try {
         concurrency.value = await downloadSetConcurrency(value);
