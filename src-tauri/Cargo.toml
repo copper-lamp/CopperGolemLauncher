@@ -47,6 +47,8 @@ async-trait = "0.1"
 md-5 = "0.10"
 libloading = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# 设备注册凭据随机源：参考实现用 32 字节缓冲，与 uuid 的 16 字节不通用。
+getrandom = "0.2"
 copper-downloader = { path = "../copper-downloader" }
 # 附加模块稳定契约层（模块 id 规则 / 宿主 IPC 协议 / 插件 ABI）。
 # 独立成 crate 以便 helper 进程与附加模块模板复用同一份定义，而不链接 Tauri。
