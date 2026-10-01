@@ -90,7 +90,9 @@ object CopperGameRuntimePreparer {
             )
         }
         launchIntent.putExtra(CopperGameInstance.EXTRA_INSTANCE, game.name)
-        launchIntent.putExtra(CopperGameInstance.EXTRA_VERSION_CODE, game.versionCode)
+        // 只带提示值：权威版本号由宿主从实例目录的 version.json 读取，
+        // Intent 里的版本号来自深链，不可信（见 CopperGameInstance.fromIntent）。
+        launchIntent.putExtra(CopperGameInstance.EXTRA_VERSION_HINT, game.versionCode)
         launchIntent.putExtra(CopperGameInstance.EXTRA_PACKAGE, game.packageName)
         launchIntent.putExtra("IS_INSTALLED", false)
         launchIntent.putExtra("VERSION_ISOLATION", true)

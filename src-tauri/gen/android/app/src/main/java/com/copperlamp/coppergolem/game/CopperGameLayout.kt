@@ -15,6 +15,27 @@ object CopperGameLayout {
     const val MC_PACKAGE = "com.mojang.minecraftpe"
 
     /**
+     * AGDK 宿主契约声明的原生库名。
+     *
+     * `androidx.games.GameActivity` 在 `onCreate` 里按 Manifest 的
+     * `android.app.lib_name` 反推 `lib<值>.so` 并 `System.loadLibrary`；
+     * 不声明时按 applicationId 反推 `libcopperlamp_coppergolem.so`——
+     * 这个文件不存在，结果是 `UnsatisfiedLinkError` 秒退。
+     *
+     * 取值必须是**启动器自己 jniLibs 里真实存在**的库：`gxcore` 随启动器
+     * 打包（`app/src/main/jniLibs/<abi>/libgxcore.so`），准备阶段也已经通过
+     * [CopperNativeBridge.ensureGxCoreLoaded] 加载过，宿主再加载一次只是命中
+     * 已加载缓存。这里只做**自检**，不负责加载。
+     *
+     * 与 `app/src/main/AndroidManifest.xml` 里的 meta-data 是同一份契约，
+     * 两处必须同时改。
+     */
+    const val DECLARED_NATIVE_LIBRARY = "gxcore"
+
+    /** Manifest 中 AGDK 读取原生库名的 meta-data key。 */
+    const val LIB_NAME_META_DATA = "android.app.lib_name"
+
+    /**
      * 导入的 base APK 文件名。
      *
      * 刻意不用 `base.apk`：应用私有目录里若存在可安装的 `.apk`，系统安装器、
@@ -33,24 +54,92 @@ object CopperGameLayout {
     /** 导入时由 Rust 写入的实例元数据。 */
     const val PACKAGE_JSON = "package.json"
 
+    /** 版本元数据文件名（Rust 侧 `home::meta::META_FILE`）；安卓侧版本号的唯一权威。 */
+    const val VERSION_JSON = "version.json"
+
     /** 退出记录文件名，供 Rust 侧读取（`<filesDir>/data/game_exit.json`）。 */
     const val EXIT_RECORD = "game_exit.json"
 
     /** 实例内游戏数据根目录名。 */
     const val GAME_DATA_DIR = "game"
 
-    /** 把任意实例名规整为安全目录名，禁止路径分隔符与上跳。 */
+    /** 实例名字符集以外的字符统一替换为该字符。 */
+    private const val INSTANCE_NAME_FILLER = '_'
+
+    /** 实例名长度上限（按字符计，与 Rust 侧一致）。 */
+    const val INSTANCE_NAME_MAX_CHARS = 96
+
+    /**
+     * 把任意字符串规整为安全目录名。
+     *
+     * 与 Rust 侧 `meta::sanitize_instance_name` **逐条对应**（见
+     * `docs/安卓端能力差距与优先级.md` P0-2）：去掉首尾空白 → 字符集外替换为
+     * `_` → 连续 `_` 折叠 → 去掉首尾 `.` `_` `-` → 按字符截断 → 空则回落
+     * `instance`。
+     *
+     * 关键点：这个名字既是 Rust 写下的目录名，也是这里定位实例的键。两侧规则
+     * 只要有一处不同（此前 Kotlin 把空格换成 `_`、Rust 原样保留），就会变成
+     * 「列表里看得到、点启动却说实例不存在」。
+     */
     fun sanitizeInstance(name: String): String {
-        val cleaned = name.trim().map { ch ->
-            if (ch.isLetterOrDigit() || ch == '.' || ch == '_' || ch == '-') ch else '_'
-        }.joinToString("")
-        val trimmed = cleaned.trim('.', '_', '-')
-        return if (trimmed.isEmpty()) "instance" else trimmed.take(96)
+        val builder = StringBuilder(name.length)
+        var lastWasFiller = false
+        for (ch in name.trim()) {
+            val allowed = (ch.isLetterOrDigit() && ch.code < 128) ||
+                ch == '.' || ch == '_' || ch == '-'
+            val mapped = if (allowed) ch else INSTANCE_NAME_FILLER
+            if (mapped == INSTANCE_NAME_FILLER) {
+                if (lastWasFiller) continue
+                lastWasFiller = true
+            } else {
+                lastWasFiller = false
+            }
+            builder.append(mapped)
+        }
+        val trimmed = builder.toString().trim('.', '_', '-')
+        if (trimmed.isEmpty()) return "instance"
+        return trimmed.take(INSTANCE_NAME_MAX_CHARS)
     }
 
-    /** `<filesDir>/data/versions/<instance>`。 */
+    /** 名字是否已是规整形态（规整后与自身一致）。 */
+    fun isCanonicalInstanceName(name: String): Boolean =
+        name.isNotBlank() && sanitizeInstance(name) == name
+
+    /** `<filesDir>/data/versions`。 */
+    fun versionsRoot(context: Context): File = File(File(context.filesDir, "data"), "versions")
+
+    /**
+     * 把请求里的实例名解析为磁盘上的实例目录。
+     *
+     * 优先**精确匹配同名目录**：实例目录名由 Rust 在导入 / 安装时确定，是唯一
+     * 权威；即使历史遗留的名字带空格或非 ASCII，只要目录真的在那儿就按原名
+     * 使用，绝不改名后再去找（改名即找不到）。
+     *
+     * 精确匹配失败时再尝试规整名，兼容两侧规则统一之前落下的目录。两次都不中
+     * 直接抛错，让准备界面显示「实例目录不存在」，而不是让 native 层在半成品
+     * 目录上崩。
+     */
+    fun resolveInstanceDir(context: Context, rawName: String): File {
+        val requested = rawName.trim()
+        require(requested.isNotEmpty()) { "实例名为空" }
+        require(!requested.contains('/') && !requested.contains('\\')) { "实例名含路径分隔符" }
+        require(requested != "." && requested != "..") { "实例名非法" }
+
+        val root = versionsRoot(context)
+        val exact = File(root, requested)
+        if (exact.isDirectory) return exact
+
+        val canonical = sanitizeInstance(requested)
+        if (canonical != requested) {
+            val fallback = File(root, canonical)
+            if (fallback.isDirectory) return fallback
+        }
+        throw IllegalStateException("实例目录不存在: $requested")
+    }
+
+    /** `<filesDir>/data/versions/<instance>`（规整后拼接，写入路径用）。 */
     fun instanceDir(context: Context, instance: String): File =
-        File(File(context.filesDir, "data/versions"), sanitizeInstance(instance))
+        File(versionsRoot(context), sanitizeInstance(instance))
 
     fun baseApk(root: File): File = File(root, BASE_APK)
 
@@ -63,9 +152,15 @@ object CopperGameLayout {
         return files.filter { it.isFile && it.name.endsWith(SPLIT_SUFFIX) }.sortedBy { it.name }
     }
 
-    /** 原生库解压缓存：`<filesDir>/cache/runtime_libs/<instance>/<abiDir>`。 */
+    /**
+     * 原生库解压缓存：`<filesDir>/cache/runtime_libs/<instance>/<abiDir>`。
+     *
+     * 目录名直接用**实例目录名**（[CopperGameInstance.name] 已由
+     * [resolveInstanceDir] 定死），与 Rust 写入 `version.json` 的 `libCacheDir`
+     * （`runtime_libs/<实例名>`）对齐。
+     */
     fun runtimeLibDir(context: Context, instance: String, abi: String): File =
-        File(File(File(context.filesDir, "cache/runtime_libs"), sanitizeInstance(instance)), abiToLibDir(abi))
+        File(File(File(context.filesDir, "cache/runtime_libs"), instance), abiToLibDir(abi))
 
     /** Minecraft 自己的 files 目录（存档、配置、resource_packs 等）。 */
     fun gameFilesDir(root: File): File = File(File(root, GAME_DATA_DIR), "files")

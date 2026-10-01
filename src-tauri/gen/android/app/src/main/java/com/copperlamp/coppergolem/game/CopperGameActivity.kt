@@ -24,6 +24,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 其余生命周期行为（`super.onCreate` 触发 native `MainActivity_create`、
  * `onPause` 的 `nativeSuspend`、`onDestroy` 的 `nativeShutdown`）全部交给父类。
  *
+ * 父类的 native 桥接库由 Manifest 的 `android.app.lib_name` 声明（见
+ * `AndroidManifest.xml` 与 [CopperGameLayout.DECLARED_NATIVE_LIBRARY]）：
+ * AGDK 在 `onCreate` 里按它加载 `libgxcore.so`，而真正的游戏原生库
+ * （`libminecraftpe.so` 等）已由准备阶段按版本顺序 `System.load` 完毕。
+ *
  * 注意：`libminecraftpe.so` 一旦 `System.load` 就无法卸载，因此同一进程内
  * **不允许**先后启动两个不同实例。第二次启动必须先结束当前游戏 Activity，
  * 由 [reportExit] 清空会话；Rust 侧串行化启动请求来保证这一点。

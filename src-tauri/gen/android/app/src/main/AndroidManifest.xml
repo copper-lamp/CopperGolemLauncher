@@ -21,6 +21,25 @@
         android:theme="@style/Theme.copper_core"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
 
+        <!--
+            AGDK 宿主契约（P0-1）。
+
+            `androidx.games.GameActivity`（`.game.CopperGameActivity` 的父类）
+            在 onCreate 里读取这个 meta-data，按 `lib<值>.so` 反推库名并加载。
+            不声明时它按 applicationId 反推 `libcopperlamp_coppergolem.so`——
+            这个文件不存在，结果就是进入游戏那一刻 UnsatisfiedLinkError 秒退。
+
+            取值 `gxcore` 对应随启动器打包的 libgxcore.so
+            （app/src/main/jniLibs/<abi>/libgxcore.so），准备阶段已由
+            CopperNativeBridge 加载过，AGDK 再加载一次只是命中缓存。
+
+            与 CopperGameLayout.DECLARED_NATIVE_LIBRARY 是同一份契约，两处必须
+            同时改；准备界面会在启动前自检两者一致（CopperGamePrepareActivity.verifyHostContract）。
+        -->
+        <meta-data
+            android:name="android.app.lib_name"
+            android:value="gxcore" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"

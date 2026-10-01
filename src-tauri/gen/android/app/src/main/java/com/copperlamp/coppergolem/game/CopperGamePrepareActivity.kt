@@ -3,6 +3,8 @@ package com.copperlamp.coppergolem.game
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import java.io.File
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -224,6 +226,9 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
         if (!preparingStarted.compareAndSet(false, true)) return
         executor.execute {
             try {
+                // 先把 AGDK 宿主契约验掉：声明缺失或不存在的库会让游戏在
+                // onCreate 里 UnsatisfiedLinkError 秒退，事后无从定位。
+                verifyHostContract()
                 val game = CopperGameInstance.fromIntent(applicationContext, intent)
                 trace?.milestone("实例已解析: ${game.name}")
                 CopperGameInstance.verifyPackage(applicationContext, game)
@@ -250,6 +255,46 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
                 mainHandler.post { showFailure(error) }
             }
         }
+    }
+
+    /**
+     * AGDK 宿主契约自检（P0-1）。
+     *
+     * `androidx.games.GameActivity` 在 `onCreate` 里按 Manifest 的
+     * `android.app.lib_name` 反推 `lib<值>.so` 并加载；声明缺失、或指向一个
+     * 不存在的库，结果就是进入游戏那一刻 `UnsatisfiedLinkError` 秒退——现场
+     * 只剩一帧黑屏，用户与开发者都拿不到线索。
+     *
+     * 因此这里在准备阶段先把契约验掉，失败时走既有的失败界面显示原因。
+     * 校验两件事：
+     * 1. Manifest 里的 meta-data 与 [CopperGameLayout.DECLARED_NATIVE_LIBRARY] 一致；
+     * 2. 该库确实随启动器打包在 `applicationInfo.nativeLibraryDir` 里。
+     *
+     * 真正的加载由 [CopperGameRuntimePreparer] 负责：`gxcore` 在准备阶段已经
+     * `System.loadLibrary` 过，AGDK 再加载一次只是命中已加载缓存。
+     */
+    private fun verifyHostContract() {
+        val declared = readLibNameMetaData()
+        check(declared == CopperGameLayout.DECLARED_NATIVE_LIBRARY) {
+            "宿主契约不一致：Manifest 声明 android.app.lib_name=" +
+                "${declared ?: "（缺失）"}，期望 ${CopperGameLayout.DECLARED_NATIVE_LIBRARY}"
+        }
+        val libFile = File(
+            applicationInfo.nativeLibraryDir,
+            "lib${CopperGameLayout.DECLARED_NATIVE_LIBRARY}.so"
+        )
+        check(libFile.isFile) { "启动器缺少 ${libFile.name}（AGDK 宿主契约要求）" }
+        trace?.mark("宿主契约自检通过: ${libFile.name}")
+    }
+
+    /** 读取 Manifest 中 `<application>` 上的 `android.app.lib_name`。 */
+    private fun readLibNameMetaData(): String? = try {
+        packageManager
+            .getApplicationInfo(packageName, PackageManager.GET_META_DATA)
+            ?.metaData
+            ?.getString(CopperGameLayout.LIB_NAME_META_DATA)
+    } catch (_: PackageManager.NameNotFoundException) {
+        null
     }
 
     private fun enterGame(gameIntent: Intent) {

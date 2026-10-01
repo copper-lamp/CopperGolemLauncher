@@ -44,8 +44,14 @@ class MainActivity : TauriActivity() {
     /**
      * 解析启动请求。
      *
-     * 两条入口都只携带**实例名**，实际路径由 [CopperGameLayout] 在应用私有
+     * 三条入口都只携带**实例名**，实际路径由 [CopperGameLayout] 在应用私有
      * 目录内推导，从根本上杜绝外部传入任意路径。
+     *
+     * 版本号（深链 query 的 `version_name` / Intent extra）只作为**诊断提示**
+     * 透传：深链是 `exported="true"` 的，任何应用都能构造请求，版本号必须由
+     * 宿主从实例目录的 `version.json` 重新读取（见
+     * [CopperGameInstance.fromIntent]）。此前这里是「Intent extra 优先、深链
+     * 兜底」，等于让外部应用决定原生库加载顺序。
      */
     private fun handleGameIntent(intent: Intent?) {
         if (intent == null) return
@@ -72,12 +78,12 @@ class MainActivity : TauriActivity() {
             Log.w(TAG, "启动请求缺少实例名，已忽略")
             return
         }
-        val versionCode = intent.getStringExtra(CopperGameInstance.EXTRA_VERSION_CODE)
+        val versionHint = intent.getStringExtra(CopperGameInstance.EXTRA_VERSION_HINT)
             ?: data?.getQueryParameter("version_name")
         startActivity(
             Intent(this, CopperGamePrepareActivity::class.java)
                 .putExtra(CopperGameInstance.EXTRA_INSTANCE, instance)
-                .putExtra(CopperGameInstance.EXTRA_VERSION_CODE, versionCode.orEmpty())
+                .putExtra(CopperGameInstance.EXTRA_VERSION_HINT, versionHint.orEmpty())
         )
     }
 
