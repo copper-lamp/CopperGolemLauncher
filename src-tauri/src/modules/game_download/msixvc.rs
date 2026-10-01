@@ -610,6 +610,23 @@ pub fn decrypt_page(page: &mut [u8], key: &[u8], tweak: &[u8; 16]) -> Result<(),
 /// `content_key` is the already-authorized 32-byte AES-XTS key; encrypted regions
 /// are rejected when it is absent. The input is never modified.
 pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> Result<(), ParseError> {
+    extract_xvc_with_progress(input, output, content_key, &mut |_, _, _| {})
+}
+
+/// 与 [`extract_xvc`] 相同，但每开始解包一个段落时回调 `on_segment(index, total, 相对路径)`。
+///
+/// 回调刻意放在**段落粒度**上：一次 GB 级解包只报一次「正在解包」等于没有进度，
+/// 而逐页回调又会在 200ms 的广播节流里被大量丢弃、还平白多出几十万次加锁。
+/// 段落数通常在数百到数千之间，正好落在「看得见推进」的尺度上。
+pub fn extract_xvc_with_progress<F>(
+    input: &Path,
+    output: &Path,
+    content_key: Option<&[u8]>,
+    on_segment: &mut F,
+) -> Result<(), ParseError>
+where
+    F: FnMut(usize, usize, &str),
+{
     if output.exists() {
         return Err(ParseError::OutputAlreadyExists(output.display().to_string()));
     }
@@ -812,7 +829,9 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir(&staging).map_err(|e| ParseError::Io(e.to_string()))?;
     let result = (|| {
+        let segment_total = metadata.segments.len();
         for (index, segment) in metadata.segments.iter().enumerate() {
+            on_segment(index, segment_total, &paths[index]);
             let destination = staging.join(PathBuf::from(&paths[index]));
             if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|e| ParseError::Io(e.to_string()))?; }
             let mut out = OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|e| ParseError::Io(e.to_string()))?;

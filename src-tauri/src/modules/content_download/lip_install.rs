@@ -224,6 +224,7 @@ fn resolve_target_dir(kernel: &KernelContext, dir: Option<&str>) -> Result<PathB
 /// 经 lipd 安装 / 更新 LL 模组到目标版本目录。
 ///
 /// `variant` 缺省时按 lip 约定回退到 `client`；`id` 需带 `lip:` 来源前缀或为裸标识。
+/// `sink` 用于把 lipd 的步骤与进度回传（下载中心据此画模拟进度条）。
 /// 永不返回内核错误：域内失败以 `success=false` + `errorCode` 表达，便于前端按码提示。
 pub async fn install(
     kernel: &KernelContext,
@@ -231,6 +232,7 @@ pub async fn install(
     version: &str,
     variant: Option<&str>,
     dir: Option<&str>,
+    sink: Option<&lipd::CallbackSink>,
 ) -> LipInstallOutcome {
     let identifier = id.strip_prefix("lip:").unwrap_or(id).trim().to_string();
     // 前端把 variant 独立传参；若标识内已含 `#variant` 则不重复拼接。
@@ -299,7 +301,7 @@ pub async fn install(
 
     if target_explicit {
         log::info!("[content-download] lip 更新 {package} → {}", target_dir.display());
-        return match lipd::update_packages(&exe, &target_dir, &install_packages).await {
+        return match lipd::update_packages(&exe, &target_dir, &install_packages, sink).await {
             Ok(logs) => LipInstallOutcome::done(&package, logs),
             Err(failure) => {
                 LipInstallOutcome::daemon_failure(&package, ERR_LIP_PACKAGE_INSTALL_FAILED, failure)
@@ -308,7 +310,7 @@ pub async fn install(
     }
 
     log::info!("[content-download] lip 安装 {package} → {}", target_dir.display());
-    match lipd::install_packages(&exe, &target_dir, &install_packages).await {
+    match lipd::install_packages(&exe, &target_dir, &install_packages, sink).await {
         Ok(logs) => LipInstallOutcome::done(&package, logs),
         Err(mut failure) => {
             // 锁定的 LeviLamina 已装导致冲突 → 仅用目标包重试一次 Install。
@@ -318,7 +320,7 @@ pub async fn install(
                     LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE,
                 )
             {
-                match lipd::install_packages(&exe, &target_dir, &target_only).await {
+                match lipd::install_packages(&exe, &target_dir, &target_only, sink).await {
                     Ok(logs) => return LipInstallOutcome::done(&package, logs),
                     Err(retry) => failure = retry,
                 }
@@ -326,7 +328,7 @@ pub async fn install(
             // 任意「已显式安装」冲突 → 回退为仅更新目标包。
             if is_already_installed_error(&failure.message) {
                 log::warn!("[content-download] lip 安装冲突，回退更新：{}", failure.message);
-                return match lipd::update_packages(&exe, &target_dir, &target_only).await {
+                return match lipd::update_packages(&exe, &target_dir, &target_only, sink).await {
                     Ok(logs) => LipInstallOutcome::done(&package, logs),
                     Err(update) => LipInstallOutcome::daemon_failure(
                         &package,

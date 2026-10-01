@@ -108,6 +108,37 @@ pub fn download_remove(kernel: State<'_, KernelContext>, id: u64) -> CommandResu
     kernel.download().remove(id).map_err(into_command_error)
 }
 
+/// 清空下载记录（终态条目），返回删除的持久化行数。
+///
+/// 只删记录不删文件，也不碰在跑 / 排队 / 安装中的任务：见
+/// [`crate::services::download::DownloadService::clear_history`]。
+#[tauri::command]
+pub fn download_clear_history(kernel: State<'_, KernelContext>) -> CommandResult<u64> {
+    kernel
+        .download()
+        .clear_history()
+        .map(|n| n as u64)
+        .map_err(into_command_error)
+}
+
+/// 在系统文件管理器中定位下载产物。
+///
+/// 不接收任务 id 而接收路径：下载中心同时展示内核任务与各模块自己的记录
+/// （内容下载的落点是模组目录、游戏安装的落点是版本目录），让每个来源各自
+/// 解析落点比在这里塞一张「id → 路径」的映射表更稳，也不会因为某条记录被
+/// 清掉而打不开文件夹。
+#[tauri::command]
+pub fn download_reveal(path: String) -> CommandResult<()> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(into_command_error(crate::error::KernelError::InvalidArgument(
+            "该条目没有可打开的文件路径".into(),
+        )));
+    }
+    crate::platform::shell::reveal(std::path::Path::new(path))
+        .map_err(|message| into_command_error(crate::error::KernelError::InvalidArgument(message)))
+}
+
 #[tauri::command]
 pub fn download_pause_all(kernel: State<'_, KernelContext>) -> CommandResult<()> {
     kernel.download().pause_all();

@@ -371,9 +371,12 @@ pub async fn install_packages(
     exe: &Path,
     work_dir: &Path,
     packages: &[String],
+    sink: Option<&CallbackSink>,
 ) -> Result<Vec<String>, DaemonFailure> {
     let params = serde_json::json!([packages, false, false, false]);
-    call(exe, work_dir, "Install", params).await.map(|o| o.logs)
+    call_with_sink(exe, work_dir, "Install", params, sink)
+        .await
+        .map(|o| o.logs)
 }
 
 /// 经 daemon 更新包（`Update [packages, false, false]`）。
@@ -381,10 +384,36 @@ pub async fn update_packages(
     exe: &Path,
     work_dir: &Path,
     packages: &[String],
+    sink: Option<&CallbackSink>,
 ) -> Result<Vec<String>, DaemonFailure> {
     let params = serde_json::json!([packages, false, false]);
-    call(exe, work_dir, "Update", params).await.map(|o| o.logs)
+    call_with_sink(exe, work_dir, "Update", params, sink)
+        .await
+        .map(|o| o.logs)
 }
+
+/// daemon 主动回调的归一化结果。
+///
+/// 只有两类对上层有意义：**步骤文本**（给人看的）与**进度**（给进度条看的）。
+/// 其余形态在 [`decode_callback`] 里已经退化成日志文本。
+#[derive(Debug, Clone)]
+pub enum DaemonCallback {
+    /// 步骤级文本（`PrintInfo` / `PrintSuccess` / `PrintWarning` / `PrintError`）。
+    Log(String),
+    /// 进度回调（`ReportProgress`）：步骤名 + 百分比（0~100，缺省表示该步不可量化）。
+    Progress {
+        /// 当前子步骤名（多为包标识或阶段名）。
+        item: String,
+        /// 百分比（0~100）。协议里该字段缺失时不可臆造，用 `None`。
+        percent: Option<f64>,
+    },
+}
+
+/// daemon 回调接收器。
+///
+/// 安装编排方用它把 lipd 的步骤与进度变成 UI 可见的反馈。回调在 RPC 读取循环
+/// 里**同步**执行，因此实现必须轻量（写库前先节流），否则会拖慢帧读取。
+pub type CallbackSink = Arc<dyn Fn(DaemonCallback) + Send + Sync>;
 
 /// daemon 调用成功结果。
 #[derive(Debug, Clone)]
@@ -420,6 +449,19 @@ pub async fn call(
     work_dir: &Path,
     method: &str,
     params: Value,
+) -> Result<DaemonOutput, DaemonFailure> {
+    call_with_sink(exe, work_dir, method, params, None).await
+}
+
+/// 同 [`call`]，但把 daemon 的步骤 / 进度回调实时投递给 `sink`。
+///
+/// `sink` 为 `None` 时行为与 [`call`] 完全一致：回调只进 `logs`，不额外分发。
+pub async fn call_with_sink(
+    exe: &Path,
+    work_dir: &Path,
+    method: &str,
+    params: Value,
+    sink: Option<&CallbackSink>,
 ) -> Result<DaemonOutput, DaemonFailure> {
     if let Err(message) = ensure_runtime_config() {
         return Err(DaemonFailure {
@@ -464,7 +506,7 @@ pub async fn call(
 
     let exchange = match tokio::time::timeout(
         DAEMON_TIMEOUT,
-        rpc_exchange(&mut stdin, stdout, method, &params),
+        rpc_exchange(&mut stdin, stdout, method, &params, sink),
     )
     .await
     {
@@ -518,6 +560,7 @@ async fn rpc_exchange(
     stdout: ChildStdout,
     method: &str,
     params: &Value,
+    sink: Option<&CallbackSink>,
 ) -> Exchange {
     let mut exchange = Exchange::default();
     let request_id: i64 = 1;
@@ -565,8 +608,15 @@ async fn rpc_exchange(
             .trim()
             .to_string();
         if !callback_method.is_empty() {
+            // 日志始终收集（`stdout` 是安装失败后唯一的排查线索），
+            // sink 只是在同一份信息上再多一条实时通路。
             if let Some(text) = describe_callback(&callback_method, message.get("params")) {
                 exchange.logs.push(text);
+            }
+            if let Some(sink) = sink {
+                if let Some(callback) = decode_callback(&callback_method, message.get("params")) {
+                    sink(callback);
+                }
             }
             if let Some(id) = message.get("id").filter(|v| !v.is_null()) {
                 let response = serde_json::json!({
@@ -662,23 +712,14 @@ fn id_matches(id: Option<&Value>, want: i64) -> bool {
 
 /// 把 daemon 回调转成一行可读日志；无可读信息返回 `None`。
 fn describe_callback(method: &str, params: Option<&Value>) -> Option<String> {
-    if let Some(list) = params.and_then(Value::as_array) {
-        match method {
-            "PrintInfo" | "PrintSuccess" | "PrintWarning" | "PrintError" => {
-                if let Some(first) = list.first() {
-                    // PrintSuccess 在 lipd 中多为步骤级状态而非最终完成，统一按信息展示。
-                    return Some(value_text(first));
-                }
-            }
-            "ReportProgress" if list.len() >= 3 => {
-                let percentage = list[2]
-                    .as_f64()
-                    .or_else(|| list[2].as_str().and_then(|s| s.trim().parse().ok()))
-                    .unwrap_or(0.0);
-                return Some(format!("{}（{percentage}%）", value_text(&list[1])));
-            }
-            _ => {}
-        }
+    if let Some(callback) = decode_callback(method, params) {
+        return Some(match callback {
+            DaemonCallback::Log(text) => text,
+            DaemonCallback::Progress { item, percent } => match percent {
+                Some(percentage) => format!("{item}（{percentage}%）"),
+                None => item,
+            },
+        });
     }
     let raw = params.map(Value::to_string).unwrap_or_default();
     let raw = raw.trim();
@@ -686,6 +727,30 @@ fn describe_callback(method: &str, params: Option<&Value>) -> Option<String> {
         None
     } else {
         Some(format!("{method} {raw}"))
+    }
+}
+
+/// 把 daemon 回调解析成结构化结果；未知形态返回 `None`（交给 [`describe_callback`]
+/// 退化为原始 JSON 文本，保证「协议变了也不会瞎报进度」）。
+fn decode_callback(method: &str, params: Option<&Value>) -> Option<DaemonCallback> {
+    let list = params.and_then(Value::as_array)?;
+    match method {
+        // PrintSuccess 在 lipd 中多为步骤级状态而非最终完成，统一按信息展示。
+        "PrintInfo" | "PrintSuccess" | "PrintWarning" | "PrintError" => list
+            .first()
+            .map(|first| DaemonCallback::Log(value_text(first))),
+        // `ReportProgress(名称, 步骤, 百分比)`：百分比缺失时按「不可量化」上报，
+        // 不臆造 0——臆造出来的 0 会让进度条在真正开始前先倒退一次。
+        "ReportProgress" if list.len() >= 3 => {
+            let percent = list[2]
+                .as_f64()
+                .or_else(|| list[2].as_str().and_then(|s| s.trim().parse().ok()));
+            Some(DaemonCallback::Progress {
+                item: value_text(&list[1]),
+                percent: percent.filter(|p| p.is_finite()),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -957,6 +1022,48 @@ mod tests {
     fn decode_unsupported_shape_returns_none() {
         assert!(decode_spec_groups(&serde_json::json!("nope")).is_none());
         assert!(decode_spec_groups(&serde_json::json!({ "unknown": 1 })).is_none());
+    }
+
+    /// 回调解码必须把「步骤文本」与「百分比」分开：前者给日志与详情，后者给进度条。
+    #[test]
+    fn decode_callback_splits_log_and_progress() {
+        let log = decode_callback("PrintInfo", Some(&serde_json::json!(["正在下载"]))).unwrap();
+        assert!(matches!(log, DaemonCallback::Log(ref t) if t == "正在下载"));
+
+        let progress = decode_callback(
+            "ReportProgress",
+            Some(&serde_json::json!(["pkg", "解压依赖", 42.5])),
+        )
+        .unwrap();
+        match progress {
+            DaemonCallback::Progress { item, percent } => {
+                assert_eq!(item, "解压依赖");
+                assert_eq!(percent, Some(42.5));
+            }
+            other => panic!("预期进度回调，实际 {other:?}"),
+        }
+
+        // 百分比缺失 → 不可量化（`None`），绝不臆造 0：臆造的 0 会让进度条倒退。
+        match decode_callback(
+            "ReportProgress",
+            Some(&serde_json::json!(["pkg", "步骤", null])),
+        )
+        .unwrap()
+        {
+            DaemonCallback::Progress { percent, .. } => assert!(percent.is_none()),
+            other => panic!("预期进度回调，实际 {other:?}"),
+        }
+
+        // 未知 method 不是进度来源。
+        assert!(decode_callback("Whatever", Some(&serde_json::json!([1, 2, 3]))).is_none());
+    }
+
+    /// 协议变化时日志必须退化成原始报文，而不是丢信息。
+    #[test]
+    fn describe_callback_falls_back_to_raw_json() {
+        let text = describe_callback("Mystery", Some(&serde_json::json!({ "a": 1 }))).unwrap();
+        assert!(text.starts_with("Mystery"), "意外文案: {text}");
+        assert!(text.contains("\"a\""), "原始报文丢失: {text}");
     }
 
     #[test]

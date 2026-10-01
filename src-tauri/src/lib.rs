@@ -399,6 +399,8 @@ pub fn run() {
             commands::download::download_cancel,
             commands::download::download_retry,
             commands::download::download_remove,
+            commands::download::download_clear_history,
+            commands::download::download_reveal,
             commands::download::download_pause_all,
             commands::download::download_resume_all,
             commands::download::download_concurrency,
@@ -443,6 +445,7 @@ pub fn run() {
             commands::content_download::content_download_download,
             commands::content_download::content_download_records,
             commands::content_download::content_download_record_remove,
+            commands::content_download::content_download_records_clear,
             commands::content_download::content_download_lip_env,
             commands::content_download::content_download_lip_install,
             // 开始页模块（home）

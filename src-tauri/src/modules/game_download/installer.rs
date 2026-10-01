@@ -131,6 +131,120 @@ impl Ctx {
     }
 }
 
+// ---------------------------------------------------------------- 安装进度上报
+
+/// 安装阶段表：`(i18n 键, 阶段权重)`，数组顺序即执行顺序。
+///
+/// 权重按实测耗时给：解包是绝对大头（GB 级顺序读写 + AES-XTS 逐页解密），
+/// 授权与收尾各占几个百分点。权重写死而不是按字节动态算，是因为授权阶段
+/// 根本没有字节可算，而只有一套固定权重才能保证进度条**单调递增**——
+/// 动态权重会在阶段切换时把进度条拽回去，看起来像倒退了。
+const INSTALL_PHASES: &[(&str, f64)] = &[
+    ("download.stage.install_authorizing", 0.02),
+    ("download.stage.install_preparing", 0.01),
+    ("download.stage.install_verifying", 0.10),
+    ("download.stage.install_extracting", 0.85),
+    ("download.stage.install_finalizing", 0.02),
+];
+
+/// 阶段下标常量（与 [`INSTALL_PHASES`] 一一对应，避免到处写魔数）。
+const PHASE_AUTHORIZING: usize = 0;
+const PHASE_PREPARING: usize = 1;
+const PHASE_VERIFYING: usize = 2;
+const PHASE_EXTRACTING: usize = 3;
+const PHASE_FINALIZING: usize = 4;
+
+/// 某阶段起点 = 前面所有阶段权重之和。
+fn phase_base(index: usize) -> f64 {
+    INSTALL_PHASES.iter().take(index).map(|(_, w)| *w).sum()
+}
+
+/// 安装阶段进度上报器。
+///
+/// 只在任务仍存在于下载引擎内存时生效：`task_id` 为 `None`（孤儿包续装、
+/// 历史记录手动重装）或任务已被移除时全部静默。上报失败绝不影响安装本身，
+/// 这是刻意的——进度条是观测手段，不能成为安装的失败点。
+struct InstallProgress {
+    download: Arc<DownloadService>,
+    task_id: Option<u64>,
+    /// 当前阶段下标。
+    index: usize,
+}
+
+impl InstallProgress {
+    fn new(ctx: &Ctx, task_id: Option<u64>) -> Self {
+        Self {
+            download: ctx.download.clone(),
+            task_id,
+            index: PHASE_AUTHORIZING,
+        }
+    }
+
+    /// 把下载任务切到「安装中」并落到首个阶段。
+    ///
+    /// 这是唯一一次状态切换：此后只有进度与文案在变，直到 [`Self::finish`]。
+    fn begin(&mut self) {
+        let Some(id) = self.task_id else { return };
+        self.index = PHASE_AUTHORIZING;
+        self.download
+            .begin_phase(id, INSTALL_PHASES[PHASE_AUTHORIZING].0, None);
+    }
+
+    /// 进入指定阶段（阶段内部进度归零）。
+    fn enter(&mut self, index: usize, detail: Option<String>) {
+        let Some(id) = self.task_id else { return };
+        if index >= INSTALL_PHASES.len() {
+            return;
+        }
+        self.index = index;
+        let (key, _) = INSTALL_PHASES[index];
+        let value = phase_base(index);
+        self.download.report_phase(id, value, key, detail);
+    }
+
+    /// 上报当前阶段的内部进度（0.0~1.0）。
+    fn inner(&self, fraction: f64, detail: Option<String>) {
+        let Some(id) = self.task_id else { return };
+        let (key, weight) = INSTALL_PHASES[self.index];
+        let value = phase_base(self.index) + weight * fraction.clamp(0.0, 1.0);
+        self.download.report_phase(id, value, key, detail);
+    }
+
+    /// 收尾：`error` 为空落已完成，否则落失败。
+    fn finish(&self, error: Option<String>) {
+        let Some(id) = self.task_id else { return };
+        self.download.finish_phase(id, error);
+    }
+}
+
+/// 人类可读字节数（进度文案用）。
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else if value >= 100.0 {
+        format!("{:.0} {}", value, UNITS[unit])
+    } else {
+        format!("{:.1} {}", value, UNITS[unit])
+    }
+}
+
+/// 只保留段落路径的尾部若干层：整条路径动辄上百字符，塞进一行的进度提示里
+/// 会把真正重要的「第几 / 共几」挤没。
+fn shorten_entry(path: &str) -> String {
+    let parts: Vec<&str> = path.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
+    if parts.len() <= 2 {
+        return parts.join("/");
+    }
+    format!("…/{}", parts[parts.len() - 2..].join("/"))
+}
+
 // ---------------------------------------------------------------- DB
 
 pub const MIGRATION: crate::services::database::Migration = crate::services::database::Migration {
@@ -690,26 +804,46 @@ fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) -> Result<(), KernelErr
 /// md5 自验。分块流式读取，**绝不在内存中一次性载入整包**（GDK 整包可达数 GB，
 /// `fs::read` 会在设置 `extracting` 后因连续大分配失败而 panic，导致安装静默中断）。
 fn md5_matches(path: &Path, expected: &str) -> Result<bool, KernelError> {
+    md5_matches_with_progress(path, expected, &mut |_, _| {})
+}
+
+/// 同上，并按已读字节上报 `(已完成, 总字节)`。
+///
+/// 总字节取文件元数据；拿不到时为 0，调用方应据此跳过进度换算（而不是当成 0%）。
+fn md5_matches_with_progress(
+    path: &Path,
+    expected: &str,
+    on_progress: &mut dyn FnMut(u64, u64),
+) -> Result<bool, KernelError> {
     // 清单条目缺 md5 → 恒校验失败会进入无限重试循环，这里显式区分“未提供”。
     if expected.trim().is_empty() {
         return Err(KernelError::Config("清单缺少 MD5 校验值，拒绝安装".into()));
     }
     let mut file = std::fs::File::open(path).map_err(KernelError::Io)?;
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut digest = Md5::new();
     // 堆上缓冲（1 MiB）。不可用栈上大数组：启动时 `resume_pending` 会在主线程
     // 同步调用本函数，主线程默认栈仅 1MB，栈上数组会直接爆栈。
     let mut buf = vec![0u8; 1024 * 1024];
+    let mut done: u64 = 0;
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
             break;
         }
         digest.update(&buf[..n]);
+        done += n as u64;
+        on_progress(done, total);
     }
     Ok(format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected.trim()))
 }
 
 /// 异步安装：单飞锁串行解包（避免并发 GB 级解压）；幂等重入安全。
+///
+/// 全程把阶段进度写回下载引擎的任务：下载条目因此能从「下载完成」无缝切成
+/// 「正在安装」的进度条，而不是在下载到 100% 之后凭空消失、过几分钟又冒出来。
+/// 阶段收尾（成功 / 失败）由本函数统一负责，**任何**中途返回的错误都会先
+/// 落下终态再向上抛，避免任务永远卡在 `Installing`。
 pub async fn finish_install(
     ctx: &Ctx,
     lock: &Arc<tokio::sync::Mutex<()>>,
@@ -722,15 +856,29 @@ pub async fn finish_install(
     // cache" failure. It also meant several concurrent account prompts.
     let _guard = lock.lock().await;
 
+    let mut progress = InstallProgress::new(ctx, rec.task_id);
+    progress.begin();
+    let result = finish_install_authorized(ctx, rec, &mut progress).await;
+    progress.finish(result.as_ref().err().map(|e| e.to_string()));
+    result
+}
+
+/// 授权 + 安装的主体（单飞锁已持有、阶段上报器已就位）。
+async fn finish_install_authorized(
+    ctx: &Ctx,
+    rec: TaskRecord,
+    progress: &mut InstallProgress,
+) -> Result<(), KernelError> {
     // Mark the authorizing phase so a second manual trigger is rejected with a
     // reason instead of queueing another full authorization chain.
     set_state(ctx, &rec.version_id, "authorizing", None)?;
 
     // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不再静默回退：
     // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
+    progress.enter(PHASE_AUTHORIZING, None);
     let lease = store_content_key(ctx, &rec.dest).await?;
     let content_key = lease.as_ref().map(|lease| lease.key());
-    install_locked(ctx, rec, content_key).await
+    install_locked(ctx, rec, content_key, progress).await
 }
 
 /// 商店授权可复用的缓存 key 文件路径（`store-key/<key_id>.dpapi`）。
@@ -845,7 +993,11 @@ pub async fn finish_install_with_key(
         }
     }
     let _guard = lock.lock().await;
-    install_locked(ctx, rec, content_key).await
+    let mut progress = InstallProgress::new(ctx, rec.task_id);
+    progress.begin();
+    let result = install_locked(ctx, rec, content_key, &mut progress).await;
+    progress.finish(result.as_ref().err().map(|e| e.to_string()));
+    result
 }
 
 /// The install body, with the single-flight lock already held.
@@ -857,6 +1009,7 @@ async fn install_locked(
     ctx: &Ctx,
     rec: TaskRecord,
     content_key: Option<&[u8]>,
+    progress: &mut InstallProgress,
 ) -> Result<(), KernelError> {
     // 取消竞态：若记录已被取消删除，放弃本次安装（取消已完成清理）。
     if get_record(ctx, &rec.version_id)?.is_none() {
@@ -872,6 +1025,7 @@ async fn install_locked(
         return Ok(());
     }
 
+    progress.enter(PHASE_PREPARING, None);
     // 半成品输出目录自愈：上次失败可能留下空目录（remove_dir_all 自身失败 / 用户手建），
     // `extract_xvc` 遇到已存在输出必失败。这里对“未完成安装的残留目录”先清理。
     // 真冲突（已有 version.json 的完整安装）由上面的幂等分支拦住，走不到这里。
@@ -880,6 +1034,7 @@ async fn install_locked(
             "[game-download] 清理上次失败残留的半成品目录 {}",
             install_dir.display()
         );
+        progress.inner(0.0, Some(install_dir.to_string_lossy().into_owned()));
         std::fs::remove_dir_all(&install_dir).map_err(|e| {
             KernelError::Io(std::io::Error::new(
                 e.kind(),
@@ -895,8 +1050,21 @@ async fn install_locked(
         rec.dest.to_string_lossy()
     );
 
-    // md5 自验（引擎只保留 sha256，清单提供的是 md5）。
-    if !md5_matches(&rec.dest, &rec.md5)? {
+    // md5 自验（引擎只保留 sha256，清单提供的是 md5）。GB 级包要读完全文件，
+    // 因此这里按已读字节上报——否则「校验中」这一步会面无表情地卡上好几分钟。
+    progress.enter(PHASE_VERIFYING, None);
+    let verified = md5_matches_with_progress(&rec.dest, &rec.md5, &mut |done, total| {
+        let fraction = if total > 0 {
+            done as f64 / total as f64
+        } else {
+            0.0
+        };
+        progress.inner(
+            fraction,
+            Some(format!("{} / {}", human_bytes(done), human_bytes(total))),
+        );
+    })?;
+    if !verified {
         return Err(KernelError::Config(format!(
             "MD5 校验失败：{} 与清单不符",
             rec.dest.to_string_lossy()
@@ -905,13 +1073,29 @@ async fn install_locked(
 
     // 解包（MSIXVC → 纯 Rust 提取；历史 .appx → zip）→ 校验主程序（exe + config + PE x64）→ 写元数据。
     // 失败时清理输出目录，去掉残留的“半安装”目录，避免前端看到名为已装、实则空目录的假成功。
-    let extract_result =
-        extractor::extract_package_with_key(&rec.dest, &install_dir, content_key);
+    progress.enter(PHASE_EXTRACTING, None);
+    let extract_result = extractor::extract_package_with_progress(
+        &rec.dest,
+        &install_dir,
+        content_key,
+        &mut |done, total, entry| {
+            let fraction = if total > 0 {
+                done as f64 / total as f64
+            } else {
+                0.0
+            };
+            progress.inner(
+                fraction,
+                Some(format!("{} ({}/{})", shorten_entry(entry), done + 1, total)),
+            );
+        },
+    );
     if let Err(e) = extract_result {
         let _ = std::fs::remove_dir_all(&install_dir);
         return Err(KernelError::from(e));
     }
 
+    progress.enter(PHASE_FINALIZING, None);
     let kind = rec.kind.clone();
     if let Err(error) = meta_bridge::write_meta(&install_dir, &rec.folder, &rec.version_id, &kind) {
         let _ = std::fs::remove_dir_all(&install_dir);
@@ -1223,6 +1407,70 @@ mod tests {
         assert!(md5_matches(&p, "900150983CD24FB0D6963F7D28E17F72").unwrap());
         assert!(!md5_matches(&p, "00000000000000000000000000000000").unwrap());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 校验进度必须真的往上走，且终点等于总字节数——否则进度条会停在半路。
+    #[test]
+    fn md5_progress_reaches_total() {
+        let dir = std::env::temp_dir().join(format!("copper_gd_md5p_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("big.bin");
+        // 2.5 MiB：跨过 1 MiB 的读缓冲边界，验证多次回调。
+        let payload = vec![7u8; 2 * 1024 * 1024 + 512 * 1024];
+        std::fs::write(&p, &payload).unwrap();
+
+        let mut samples: Vec<(u64, u64)> = Vec::new();
+        let ok = md5_matches_with_progress(&p, "00000000000000000000000000000000", &mut |done, total| {
+            samples.push((done, total));
+        })
+        .unwrap();
+        assert!(!ok, "故意给错的期望值不应通过");
+        assert!(!samples.is_empty(), "GB 级包必须上报中间进度");
+        for (_, total) in &samples {
+            assert_eq!(*total, payload.len() as u64);
+        }
+        let last = samples.last().copied().unwrap();
+        assert_eq!(last.0, payload.len() as u64, "最后一次回调必须读到文件尾");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 阶段权重必须完整覆盖 0~1 且单调——否则进度条会跳变或倒退。
+    #[test]
+    fn install_phase_weights_are_monotonic_and_complete() {
+        let total: f64 = INSTALL_PHASES.iter().map(|(_, w)| *w).sum();
+        assert!((total - 1.0).abs() < 1e-9, "阶段权重之和应为 1，实际 {total}");
+        for index in 1..=INSTALL_PHASES.len() {
+            assert!(
+                phase_base(index) >= phase_base(index - 1),
+                "阶段起点必须单调不减（{index}）"
+            );
+        }
+        assert!((phase_base(INSTALL_PHASES.len()) - 1.0).abs() < 1e-9);
+        // 阶段键必须落在 download.stage.* 命名空间：前端对未知键会退化成键名本身，
+        // 写错命名空间时界面上会直接显示一串英文点分路径。
+        for (key, _) in INSTALL_PHASES {
+            assert!(key.starts_with("download.stage."), "阶段键命名空间不对: {key}");
+        }
+    }
+
+    /// 进度文案的字节格式化不能出现 `1024.0 KB` 这种越界写法。
+    #[test]
+    fn human_bytes_switches_units() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(1024 * 1024 * 3 / 2), "1.5 MB");
+        assert_eq!(human_bytes(1024 * 1024 * 1024 * 2), "2.0 GB");
+    }
+
+    /// 长路径只保留尾部两层，避免把「第几 / 共几」挤出可视区。
+    #[test]
+    fn shorten_entry_keeps_tail() {
+        assert_eq!(shorten_entry("a.dll"), "a.dll");
+        assert_eq!(shorten_entry("Windows/a.dll"), "Windows/a.dll");
+        assert_eq!(shorten_entry("A/B/C/d.dll"), "…/C/d.dll");
+        assert_eq!(shorten_entry("A\\B\\C\\d.dll"), "…/C/d.dll");
     }
 
     #[test]

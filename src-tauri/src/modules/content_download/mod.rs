@@ -52,6 +52,12 @@ pub struct ContentDownloadRecord {
     pub task_id: Option<u64>,
     pub error: Option<String>,
     pub updated_at: i64,
+    /// 阶段化进度（0~1）。`Some` 时前端进度条忽略字节进度（lip 安装等）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
+    /// 阶段文案的 i18n 键（`download.stage.*`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 pub mod curseforge;
@@ -291,10 +297,25 @@ impl ContentDownloadModule {
         if let Some(detail) = detail.as_ref() {
             let _ = record_lip_install(kernel, &detail.item, version, dir);
         }
-        let outcome = lip_install::install(kernel, id, version, variant, dir).await;
+        // lipd 的步骤 / 进度实时写回记录并广播，下载中心据此画模拟进度条。
+        // 记录拿不到（详情拉取失败）时不挂 sink：没有可更新的行，上报只会白跑。
+        let sink = detail.as_ref().map(|detail| {
+            lip_progress_sink(
+                kernel.db().clone(),
+                kernel.events().clone(),
+                detail.item.id.clone(),
+            )
+        });
+        let outcome = lip_install::install(kernel, id, version, variant, dir, sink.as_ref()).await;
         if let Some(detail) = detail.as_ref() {
             let state = if outcome.success { "installed" } else { "failed" };
-            let _ = update_lip_record(kernel, &detail.item.id, version, state, (!outcome.success).then_some(outcome.stderr.as_str()));
+            let _ = update_lip_record(
+                kernel,
+                &detail.item.id,
+                version,
+                state,
+                (!outcome.success).then_some(outcome.stderr.as_str()),
+            );
         }
         outcome
     }
@@ -594,6 +615,15 @@ crate::services::database::Migration {
     name: "content_download_record_android_mod",
     sql: "ALTER TABLE module_content_download_record ADD COLUMN target TEXT;",
 },
+crate::services::database::Migration {
+    version: 4,
+    name: "content_download_record_progress",
+    // `progress` 为 0~1 的阶段进度；`stage` 为 i18n 键（`download.stage.*`）。
+    // 只对「没有字节可算」的安装类条目有意义（lip 安装），普通下载的进度由
+    // 内核下载引擎的内存任务提供，不落这张表。
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN progress REAL;
+          ALTER TABLE module_content_download_record ADD COLUMN stage TEXT;",
+},
 ];
 
 /// 安卓模组记录的附加信息（`target` 列内容；下载完成钩子据此解包落位）。
@@ -623,7 +653,8 @@ struct AndroidModPending {
 pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, KernelError> {
     kernel.db().with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, source, content_type, name, version, state, dest, task_id, error, updated_at
+            "SELECT id, source, content_type, name, version, state, dest, task_id, error, updated_at,
+                    progress, stage
              FROM module_content_download_record ORDER BY updated_at DESC",
             // `target` 是内部列（安卓模组待落位信息），不对外暴露。
         )?;
@@ -639,6 +670,8 @@ pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, Ker
                 task_id: row.get(7)?,
                 error: row.get(8)?,
                 updated_at: row.get(9)?,
+                progress: row.get(10)?,
+                stage: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -650,6 +683,45 @@ pub fn remove_record(kernel: &KernelContext, id: &str) -> Result<(), KernelError
         conn.execute("DELETE FROM module_content_download_record WHERE id = ?1", [id])?;
         Ok(())
     })
+}
+
+/// 清空内容下载记录（只清终态），返回删除行数。
+///
+/// 与内核下载引擎的「清空下载记录」同一条产品语义：擦掉历史，但绝不碰正在
+/// 下载（`downloading`）或正在安装（`installing`）的条目——把正在跑的活儿从
+/// 列表里抹掉，只会让用户以为任务被取消了，而磁盘上其实还在写。
+pub fn clear_records(kernel: &KernelContext) -> Result<u64, KernelError> {
+    kernel.db().with_conn(|conn| {
+        let n = conn.execute(
+            "DELETE FROM module_content_download_record
+              WHERE state NOT IN ('downloading', 'installing')",
+            [],
+        )?;
+        Ok(n as u64)
+    })
+}
+
+/// 启动归一：把上次运行遗留的 `installing` 记录落为失败。
+///
+/// lip 安装是**同步**命令，进程被杀时 lipd 一并退出，磁盘上不存在还在跑的安装；
+/// 不归一的话这条记录会永远显示「安装中」，既不会结束也无法重试。
+pub fn normalize_interrupted_records(kernel: &KernelContext) {
+    let result = kernel.db().with_conn(|conn| {
+        let n = conn.execute(
+            "UPDATE module_content_download_record
+                SET state = 'failed', error = '上次运行时中断，可重新安装', updated_at = ?1
+              WHERE state = 'installing'",
+            rusqlite::params![chrono_now()],
+        )?;
+        Ok(n)
+    });
+    match result {
+        Ok(n) if n > 0 => {
+            log::info!("[content-download] 归一 {n} 条被中断的安装记录为失败");
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("[content-download] 归一中断安装记录失败: {e}"),
+    }
 }
 
 /// 记录一次安卓模组投递（`target` 列存 JSON 化的 [`AndroidModPending`]）。
@@ -723,6 +795,22 @@ fn take_android_mod_pending(db: &DatabaseService, task_id: u64) -> Option<Androi
     .flatten()
 }
 
+/// lip 安装阶段（i18n 键，与核心下载页的 `download.stage.*` 同命名空间）。
+pub const STAGE_LIP_PREPARING: &str = "download.stage.lip_preparing";
+pub const STAGE_LIP_INSTALLING: &str = "download.stage.lip_installing";
+pub const STAGE_LIP_FINALIZING: &str = "download.stage.lip_finalizing";
+
+/// lip 阶段的整体权重切分：准备（环境探测 / 查安装状态）5%，
+/// lipd 安装 93%，收尾（回写记录 / 广播）2%。三段相加为 1。
+const LIP_PREPARE_END: f64 = 0.05;
+const LIP_INSTALL_END: f64 = 0.98;
+
+/// 把 lipd 的安装百分比映射到整体进度（安装段的内部进度）。
+fn lip_install_progress(percent: f64) -> f64 {
+    let ratio = (percent / 100.0).clamp(0.0, 1.0);
+    LIP_PREPARE_END + (LIP_INSTALL_END - LIP_PREPARE_END) * ratio
+}
+
 fn record_lip_install(
     kernel: &KernelContext,
     item: &ContentItem,
@@ -733,11 +821,121 @@ fn record_lip_install(
     kernel.db().with_conn(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO module_content_download_record
-             (id, source, content_type, name, version, state, dest, task_id, error, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, ?7)",
-            rusqlite::params![item.id, item.source, item.content_type, item.name, version, dest, now],
+             (id, source, content_type, name, version, state, dest, task_id, error, updated_at,
+              progress, stage)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, ?7, 0.0, ?8)",
+            rusqlite::params![
+                item.id,
+                item.source,
+                item.content_type,
+                item.name,
+                version,
+                dest,
+                now,
+                STAGE_LIP_PREPARING
+            ],
         )?;
         Ok(())
+    })
+}
+
+/// 更新 lip 安装的阶段与进度（`progress` 为 0~1 的整体进度）。
+fn update_lip_progress(
+    db: &DatabaseService,
+    id: &str,
+    progress: f64,
+    stage: &str,
+) -> Result<(), KernelError> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE module_content_download_record
+                SET progress = ?1, stage = ?2
+              WHERE id = ?3",
+            rusqlite::params![progress.clamp(0.0, 1.0), stage, id],
+        )?;
+        Ok(())
+    })
+}
+
+/// lip 安装的进度上报器：把 lipd 回调变成「写记录 + 广播事件」。
+///
+/// 两处节流是必需的：lipd 的 `ReportProgress` 频率不可控，直接落库会在安装期间
+/// 刷出成千上万条 UPDATE（每一条都是一次 fsync 级别的写）。事件则按 120ms
+/// 一帧推送——比内核下载引擎的 200ms 更密，因为这里的一帧只改一个 DOM 宽度。
+fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: String) -> lipd::CallbackSink {
+    const EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(120);
+    /// 进度至少动了 1% 才值得写库。
+    const PERSIST_DELTA: f64 = 0.01;
+
+    struct Tracker {
+        progress: f64,
+        stage: String,
+        detail: Option<String>,
+        last_emit: Option<std::time::Instant>,
+        persisted_progress: f64,
+    }
+
+    let tracker = Arc::new(parking_lot::Mutex::new(Tracker {
+        progress: 0.0,
+        stage: STAGE_LIP_PREPARING.to_string(),
+        detail: None,
+        last_emit: None,
+        persisted_progress: 0.0,
+    }));
+
+    Arc::new(move |callback: lipd::DaemonCallback| {
+        let (target, stage, detail) = match callback {
+            lipd::DaemonCallback::Progress { item, percent } => (
+                percent.map(lip_install_progress).unwrap_or(LIP_PREPARE_END),
+                STAGE_LIP_INSTALLING,
+                (!item.trim().is_empty()).then_some(item),
+            ),
+            lipd::DaemonCallback::Log(text) => {
+                let current = tracker.lock();
+                (current.progress, current.stage.clone(), Some(text))
+            }
+        };
+
+        let now = std::time::Instant::now();
+        let (snapshot_progress, snapshot_stage, snapshot_detail, persist) = {
+            let mut t = tracker.lock();
+            // 进度只增不减：lipd 在依赖求解阶段会回退百分比，倒退的进度条
+            // 比停滞更让人怀疑「是不是坏了」。
+            t.progress = target.clamp(0.0, 1.0).max(t.progress);
+            let stage_changed = t.stage != stage;
+            t.stage = stage.to_string();
+            t.detail = detail;
+            let due = stage_changed
+                || t.last_emit
+                    .map(|prev| now.duration_since(prev) >= EMIT_INTERVAL)
+                    .unwrap_or(true);
+            if !due {
+                return;
+            }
+            t.last_emit = Some(now);
+            let persist = stage_changed
+                || (t.progress - t.persisted_progress).abs() >= PERSIST_DELTA
+                || t.progress >= 1.0;
+            if persist {
+                t.persisted_progress = t.progress;
+            }
+            (t.progress, t.stage.clone(), t.detail.clone(), persist)
+        };
+
+        if persist {
+            if let Err(e) = update_lip_progress(&db, &item_id, snapshot_progress, &snapshot_stage) {
+                log::warn!("[content-download] lip 进度写库失败（不影响安装）：{e}");
+            }
+        }
+        events.publish(
+            "content-download.install-progress",
+            serde_json::json!({
+                "id": item_id,
+                "progress": snapshot_progress,
+                "stage": snapshot_stage,
+                "stageDetail": snapshot_detail,
+            }),
+        );
     })
 }
 
@@ -1122,6 +1320,9 @@ impl Module for ContentDownloadModule {
     }
 
     fn start(&self, kernel: &KernelContext) -> Result<(), KernelError> {
+        // 上次运行遗留的 `installing` 记录落为失败：lip 安装是同步命令，进程
+        // 被杀时 lipd 一并退出，不存在还在跑的安装，不归一就会永远显示「安装中」。
+        normalize_interrupted_records(kernel);
         // 订阅下载状态事件：完成后把本地记录状态同步为 installed / failed，并广播落点。
         let db = kernel.db().clone();
         let events = kernel.events().clone();
@@ -1151,5 +1352,29 @@ mod tests {
         assert_eq!(sanitize_filename("..\\..\\evil.mcpack"), ".._.._evil.mcpack");
         assert_eq!(sanitize_filename(""), "download.bin");
         assert_eq!(sanitize_filename("   "), "download.bin");
+    }
+
+    /// lipd 的百分比必须落在「安装」段内，且首尾与阶段边界对齐。
+    #[test]
+    fn lip_progress_maps_into_install_segment() {
+        assert_eq!(lip_install_progress(0.0), LIP_PREPARE_END);
+        assert_eq!(lip_install_progress(100.0), LIP_INSTALL_END);
+        let middle = lip_install_progress(50.0);
+        assert!(middle > LIP_PREPARE_END && middle < LIP_INSTALL_END);
+        // 越界百分比夹紧：进度条永远不越出 0~1。
+        assert_eq!(lip_install_progress(9999.0), LIP_INSTALL_END);
+        assert_eq!(lip_install_progress(-1.0), LIP_PREPARE_END);
+    }
+
+    /// 三段权重必须完整覆盖 0~1（准备 → lipd 安装 → 收尾）。
+    #[test]
+    fn lip_phase_weights_are_complete() {
+        let covered =
+            LIP_PREPARE_END + (LIP_INSTALL_END - LIP_PREPARE_END) + (1.0 - LIP_INSTALL_END);
+        assert!((covered - 1.0).abs() < 1e-9, "阶段权重未覆盖满 0~1：{covered}");
+        // 阶段键必须在核心下载页的命名空间内（前端对未知键退化为键名本身）。
+        for key in [STAGE_LIP_PREPARING, STAGE_LIP_INSTALLING, STAGE_LIP_FINALIZING] {
+            assert!(key.starts_with("download.stage."), "阶段键命名空间不对: {key}");
+        }
     }
 }

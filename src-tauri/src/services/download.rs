@@ -147,6 +147,12 @@ impl DownloadService {
                     speed_bytes_per_sec: 0,
                     error: row.get(7)?,
                     retry_count: row.get::<_, i64>(8)?.max(0) as u32,
+                    // 阶段化进度只存在于运行中的内存任务：它描述的是「此刻正在
+                    // 解包到第几个文件」，重启后没有任何在跑的阶段，写死的数字
+                    // 只会变成一条假的进度条。
+                    phase_progress: None,
+                    stage: None,
+                    stage_detail: None,
                 })
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -278,6 +284,75 @@ impl DownloadService {
         Ok(())
     }
 
+    /// 清空下载记录（内存 + 持久化），返回删除的持久化行数。
+    ///
+    /// 只清**终态**记录，不碰任何在跑 / 待跑 / 安装中的任务：
+    /// 「清除记录」在用户心里是「把这份历史列表擦干净」，绝不是「把我正在下的
+    /// 东西一起取消掉」。`Installing` 单独排除——它后面还要转成终态，
+    /// 清掉会让正在安装的条目从列表里凭空消失。
+    ///
+    /// 只删记录，不删文件：已下载的产物是用户资产，磁盘上的东西由用户在
+    /// 「打开所在文件夹」里自行处置。
+    pub fn clear_history(&self) -> Result<usize, KernelError> {
+        self.manager.clear_finished();
+        // 仍在内存里的任务（含安装中）绝不能删行：删了会在下一次快照时
+        // 以「内存任务」的身份重新出现，表现为「清空后有一行删不掉」。
+        let live_ids: Vec<u64> = self.manager.snapshots().iter().map(|s| s.id).collect();
+        self.db.with_conn(|conn| {
+            // 参数化 IN 列表：长度可变，逐个拼占位符。
+            let placeholders = if live_ids.is_empty() {
+                String::new()
+            } else {
+                let list = live_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(" AND id NOT IN ({list})")
+            };
+            let sql = format!(
+                "DELETE FROM core_download_task
+                  WHERE status IN ('done', 'failed', 'cancelled', 'paused'){placeholders}"
+            );
+            let n = conn.execute(&sql, [])?;
+            Ok(n)
+        })
+    }
+
+    // ------------------------------------------------------------ 阶段化进度
+    //
+    // 下载完成之后还有一段与字节无关的工作（安装 / 解包 / 依赖解析）。
+    // 引擎负责展示，模块负责推进。三个方法都是**尽力而为**：任务不在内存
+    // （重启后的历史行没有可报的进度）时返回 `false`，由调用方忽略，
+    // 绝不允许进度上报失败把安装本身带崩。
+
+    /// 进入后处理阶段（下载已完成 → 安装中）。
+    pub fn begin_phase(&self, id: u64, stage: &str, detail: Option<String>) -> bool {
+        match self.manager.begin_phase(id, stage, detail) {
+            Ok(()) => true,
+            Err(DownloadError::TaskNotFound(_)) => false,
+            Err(e) => {
+                log::warn!("[download] 任务 {id} 进入阶段 `{stage}` 失败: {e}");
+                false
+            }
+        }
+    }
+
+    /// 上报后处理阶段进度（0.0~1.0）与阶段文案。
+    pub fn report_phase(&self, id: u64, progress: f64, stage: &str, detail: Option<String>) {
+        if let Err(e) = self.manager.report_phase(id, progress, stage, detail) {
+            // 任务消失（被移除 / 重启）时的上报是常态，不当故障刷屏。
+            log::debug!("[download] 任务 {id} 阶段进度上报被忽略: {e}");
+        }
+    }
+
+    /// 结束后处理阶段：`error` 为空落 `done`，否则落 `failed`。
+    pub fn finish_phase(&self, id: u64, error: Option<String>) {
+        if let Err(e) = self.manager.finish_phase(id, error) {
+            log::debug!("[download] 任务 {id} 阶段收尾被忽略: {e}");
+        }
+    }
+
     pub fn pause_all(&self) {
         self.manager.pause_all();
     }
@@ -363,6 +438,12 @@ pub struct DownloadTaskView {
     pub status: DownloadStatus,
     pub error: Option<String>,
     pub retry_count: u32,
+    /// 阶段化进度（0.0~1.0）。`Some` 时前端进度条忽略字节进度。
+    pub phase_progress: Option<f64>,
+    /// 当前阶段文案的 i18n 键（`download.stage.*`）。
+    pub stage: Option<String>,
+    /// 当前阶段的动态细节（文件名 / 计数），与 `stage` 拼接展示。
+    pub stage_detail: Option<String>,
 }
 
 /// 统一的任务缺失错误（与引擎 `TaskNotFound` 文案一致）。
@@ -386,6 +467,7 @@ fn parse_status(raw: &str) -> DownloadStatus {
         "paused" => DownloadStatus::Paused,
         "cancelled" => DownloadStatus::Cancelled,
         "done" => DownloadStatus::Done,
+        "installing" => DownloadStatus::Installing,
         _ => DownloadStatus::Failed,
     }
 }
@@ -399,29 +481,46 @@ fn status_str(status: DownloadStatus) -> &'static str {
         DownloadStatus::Cancelled => "cancelled",
         DownloadStatus::Done => "done",
         DownloadStatus::Failed => "failed",
+        DownloadStatus::Installing => "installing",
     }
 }
 
-/// 启动归一：把上次运行遗留的「在途」状态改为 `paused`。
+/// 启动归一：把上次运行遗留的「在途」状态改写为可恢复 / 已完成的终态。
 ///
-/// 重启后引擎内存为空，那些仍写着 `queued` / `downloading` 的行并不代表有任务
-/// 在跑，只是最后一次退出时的快照。若不归一，界面会展示一条永远停在某个
-/// 百分比、既不能取消也不能继续的僵尸进度条——比直接显示「已暂停」更糟。
+/// 重启后引擎内存为空，那些仍写着 `queued` / `downloading` / `installing` 的行
+/// 并不代表有任务在跑，只是最后一次退出时的快照。若不归一，界面会展示一条永远
+/// 停在某个百分比、既不能取消也不能继续的僵尸进度条。
 ///
-/// 归一为 `paused` 而非 `failed`：断点字节还在，「继续」能接着下。
+/// 两类状态的归一目标不同：
+/// - `queued` / `downloading` → `paused`：断点字节还在，「继续」能接着下；
+/// - `installing` → `done`：**下载本身确实已经完成**，被打断的只是下载之后的
+///   安装阶段，而安装有它自己的续跑机制（游戏安装流水线的 `resume_pending`）。
+///   归一成 `paused` 会误导用户去点「继续下载」，那可是几百 MB 到几 GB 的流量。
 fn normalize_interrupted(db: &DatabaseService) {
     let result = db.with_conn(|conn| {
-        let n = conn.execute(
+        let installing = conn.execute(
+            "UPDATE core_download_task
+                SET status = 'done'
+              WHERE status = 'installing'",
+            [],
+        )?;
+        let inflight = conn.execute(
             "UPDATE core_download_task
                 SET status = 'paused', error = '上次运行时中断，可继续下载'
               WHERE status IN ('queued', 'downloading')",
             [],
         )?;
-        Ok(n)
+        Ok((installing, inflight))
     });
     match result {
-        Ok(n) if n > 0 => log::info!("[download] 归一 {n} 条上次运行中断的任务为已暂停"),
-        Ok(_) => {}
+        Ok((installing, inflight)) => {
+            if inflight > 0 {
+                log::info!("[download] 归一 {inflight} 条上次运行中断的任务为已暂停");
+            }
+            if installing > 0 {
+                log::info!("[download] 归一 {installing} 条被中断的安装阶段为已完成下载（安装由模块续跑）");
+            }
+        }
         Err(e) => log::warn!("[download] 归一中断任务失败（历史行状态可能不准）: {e}"),
     }
 }
@@ -509,6 +608,9 @@ impl From<TaskSnapshot> for DownloadTaskView {
             status: s.status,
             error: s.error,
             retry_count: s.retry_count,
+            phase_progress: s.phase_progress,
+            stage: s.stage,
+            stage_detail: s.stage_detail,
         }
     }
 }
@@ -605,6 +707,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 回归：被中断的 `installing` 行必须归一为 `done`，而不是 `paused`。
+    ///
+    /// 归一成 paused 会让用户以为「下载还没完」，点一下「继续」就是几百 MB
+    /// 到几 GB 的重复流量；而下载本身其实早已完成，只有安装阶段被打断。
+    #[test]
+    fn normalize_interrupted_marks_installing_as_done() {
+        let (db, dir) = temp_db("norm3");
+        insert_row(&db, 1, "installing", None, 10);
+
+        normalize_interrupted(&db);
+
+        assert_eq!(read_row(&db, 1).unwrap().0, "done");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 回归：状态字符串与枚举双向映射自洽（持久化层唯一的翻译点）。
     #[test]
     fn status_str_roundtrips_all_variants() {
@@ -615,6 +732,7 @@ mod tests {
             DownloadStatus::Cancelled,
             DownloadStatus::Failed,
             DownloadStatus::Done,
+            DownloadStatus::Installing,
         ] {
             assert_eq!(parse_status(status_str(s)), s, "往返不一致: {s:?}");
         }

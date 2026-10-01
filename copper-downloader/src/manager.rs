@@ -91,6 +91,12 @@ struct TaskState {
     pause_requested: AtomicBool,
     cancel_token: Mutex<CancellationToken>,
     last_progress_emit: Mutex<Option<Instant>>,
+    /// 阶段化进度（见 [`TaskSnapshot::phase_progress`]）。
+    phase_progress: Mutex<Option<f64>>,
+    /// 当前阶段 i18n 键。
+    stage: Mutex<Option<String>>,
+    /// 当前阶段动态细节。
+    stage_detail: Mutex<Option<String>>,
 }
 
 impl TaskState {
@@ -123,6 +129,9 @@ impl TaskState {
             pause_requested: AtomicBool::new(false),
             cancel_token: Mutex::new(CancellationToken::new()),
             last_progress_emit: Mutex::new(None),
+            phase_progress: Mutex::new(None),
+            stage: Mutex::new(None),
+            stage_detail: Mutex::new(None),
         }
     }
 
@@ -140,6 +149,9 @@ impl TaskState {
             error: self.error.lock().clone(),
             retry_count: self.retry_count.load(Ordering::Relaxed),
             created_at_ms: self.created_at_ms,
+            phase_progress: *self.phase_progress.lock(),
+            stage: self.stage.lock().clone(),
+            stage_detail: self.stage_detail.lock().clone(),
         }
     }
 
@@ -487,6 +499,7 @@ impl DownloadManager {
         state.cancel_token.lock().cancel();
         state.pause_requested.store(false, Ordering::SeqCst);
         state.set_status(DownloadStatus::Cancelled);
+        self.clear_phase(&state);
         if state.options.remove_on_cancel {
             let _ = std::fs::remove_file(&state.part_path);
             state.downloaded_bytes.store(0, Ordering::Relaxed);
@@ -509,6 +522,7 @@ impl DownloadManager {
         state.downloaded_bytes.store(0, Ordering::Relaxed);
         state.speed_bytes_per_sec.store(0, Ordering::Relaxed);
         state.pause_requested.store(false, Ordering::SeqCst);
+        self.clear_phase(&state);
         state.set_status(DownloadStatus::Queued);
         self.spawn_run(state);
         Ok(())
@@ -522,6 +536,135 @@ impl DownloadManager {
         }
         self.inner.tasks.lock().remove(&id);
         Ok(())
+    }
+
+    /// 移除全部**终态**任务，返回被移除的条数。
+    ///
+    /// 「清空下载记录」用：只清终态（完成 / 失败 / 取消 / 暂停）。
+    /// `Installing` 刻意不在其中——它后面还会转成终态，此时把它从内存里抹掉
+    /// 会让正在安装的条目在界面上凭空消失（进度条消失、随后 Done 事件也找不到行）。
+    pub fn clear_finished(&self) -> usize {
+        let mut tasks = self.inner.tasks.lock();
+        let before = tasks.len();
+        tasks.retain(|_, state| !state.status.lock().is_terminal());
+        before - tasks.len()
+    }
+
+    // ------------------------------------------------------------ 阶段化进度
+    //
+    // 下载完成之后还有一段与字节无关的工作（安装 / 解包 / 依赖解析）。这类工作
+    // 的调用方是模块，不是引擎，因此引擎只提供**进度上报口**：模块按阶段推进，
+    // 引擎负责把状态、进度与文案广播出去。全部接口在任务不存在时返回
+    // `TaskNotFound`——调用方应当忽略它（重启后引擎内存为空，历史任务没有进度
+    // 可报），绝不能因为上报失败而让安装本身失败。
+
+    /// 进入后处理阶段：把任务从 `Done` 切到 `Installing` 并广播。
+    ///
+    /// 状态不符（不在内存 / 仍在下载 / 已取消）时返回 `InvalidArgument`，
+    /// 由调用方忽略。
+    pub fn begin_phase(
+        &self,
+        id: u64,
+        stage: &str,
+        detail: Option<String>,
+    ) -> Result<(), DownloadError> {
+        let state = self.require_task(id)?;
+        let current = *state.status.lock();
+        if !matches!(current, DownloadStatus::Done | DownloadStatus::Installing) {
+            return Err(DownloadError::InvalidArgument(format!(
+                "任务 {id} 不处于可进入安装阶段的状态（当前 {current:?}）"
+            )));
+        }
+        state.error.lock().take();
+        *state.phase_progress.lock() = Some(0.0);
+        *state.stage.lock() = Some(stage.to_string());
+        *state.stage_detail.lock() = detail;
+        // 阶段切换必须立刻可见：清掉进度节流窗口。
+        *state.last_progress_emit.lock() = None;
+        state.set_status(DownloadStatus::Installing);
+        self.inner.emit_status(&state);
+        Ok(())
+    }
+
+    /// 上报后处理阶段进度（0.0~1.0）与当前阶段文案。
+    ///
+    /// 阶段键变化时立刻广播（不受 200ms 节流限制），同一阶段内按节流广播。
+    /// 任务已不在 `Installing`（被取消 / 已结束）时静默忽略。
+    pub fn report_phase(
+        &self,
+        id: u64,
+        progress: f64,
+        stage: &str,
+        detail: Option<String>,
+    ) -> Result<(), DownloadError> {
+        let state = self.require_task(id)?;
+        if *state.status.lock() != DownloadStatus::Installing {
+            return Ok(());
+        }
+        let clamped = if progress.is_finite() {
+            progress.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        *state.phase_progress.lock() = Some(clamped);
+        let stage_changed = {
+            let mut current = state.stage.lock();
+            let changed = current.as_deref() != Some(stage);
+            if changed {
+                *current = Some(stage.to_string());
+            }
+            changed
+        };
+        let detail_changed = {
+            let mut current = state.stage_detail.lock();
+            let changed = current.as_deref() != detail.as_deref();
+            if changed {
+                *current = detail;
+            }
+            changed
+        };
+        if stage_changed {
+            *state.last_progress_emit.lock() = None;
+        }
+        // 细节变化（如「正在解包 a.exe → b.exe」）同样值得立刻可见，
+        // 否则细粒度文案会被节流吞掉，界面看起来像卡住了。
+        if detail_changed {
+            self.inner.emit(DownloadEvent::Progress(state.snapshot()));
+            *state.last_progress_emit.lock() = Some(Instant::now());
+        } else {
+            self.inner.emit_progress(&state);
+        }
+        Ok(())
+    }
+
+    /// 结束后处理阶段：`error` 为空落 `Done`，否则落 `Failed`。
+    ///
+    /// 幂等：任务已不在 `Installing` 时直接返回（取消后安装仍会跑完，
+    /// 此时不应把用户取消掉的任务再改成完成）。
+    pub fn finish_phase(&self, id: u64, error: Option<String>) -> Result<(), DownloadError> {
+        let state = self.require_task(id)?;
+        if *state.status.lock() != DownloadStatus::Installing {
+            return Ok(());
+        }
+        match error {
+            Some(message) => {
+                state.set_error(message);
+                state.set_status(DownloadStatus::Failed);
+            }
+            None => state.set_status(DownloadStatus::Done),
+        }
+        *state.phase_progress.lock() = None;
+        *state.stage.lock() = None;
+        *state.stage_detail.lock() = None;
+        self.inner.emit_status(&state);
+        Ok(())
+    }
+
+    /// 清掉阶段化进度字段（重新下载 / 取消 / 重试时必须调用）。
+    fn clear_phase(&self, state: &TaskState) {
+        *state.phase_progress.lock() = None;
+        *state.stage.lock() = None;
+        *state.stage_detail.lock() = None;
     }
 
     /// 查询单个任务快照。
@@ -617,6 +760,11 @@ async fn run_task(inner: Arc<ManagerInner>, state: Arc<TaskState>) -> Result<(),
     };
 
     state.set_status(DownloadStatus::Downloading);
+    // 真正开始传输 = 上一轮的后处理阶段作废（重试 / 续传都会走到这里）。
+    *state.phase_progress.lock() = None;
+    *state.stage.lock() = None;
+    *state.stage_detail.lock() = None;
+    *state.last_progress_emit.lock() = None;
     inner.emit_status(&state);
 
     let attempts = state.options.max_retries;

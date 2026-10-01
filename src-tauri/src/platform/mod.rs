@@ -16,6 +16,8 @@
 //! 详见 docs/平台适配.md 3.3 TODO。
 
 pub mod secret;
+/// 系统文件管理器定位（下载条目的「打开所在文件夹」）。
+pub mod shell;
 /// Android Keystore 凭证存储：经 JNI 调用 Kotlin 桥（见 `keystore.rs` 顶部说明）。
 #[cfg(target_os = "android")]
 pub mod keystore;

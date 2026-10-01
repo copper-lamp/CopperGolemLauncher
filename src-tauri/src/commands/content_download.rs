@@ -91,6 +91,12 @@ pub fn content_download_record_remove(
         .map_err(into_command_error)
 }
 
+/// 清空内容下载记录（只清终态），返回删除行数。
+#[tauri::command]
+pub fn content_download_records_clear(kernel: State<'_, KernelContext>) -> CommandResult<u64> {
+    crate::modules::content_download::clear_records(kernel.inner()).map_err(into_command_error)
+}
+
 /// 探测 lip 环境（是否安装 lipd 可执行文件）。
 #[tauri::command]
 pub async fn content_download_lip_env() -> CommandResult<LipEnv> {

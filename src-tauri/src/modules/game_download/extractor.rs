@@ -60,15 +60,34 @@ pub fn extract_package_with_key(
     out_dir: &Path,
     content_key: Option<&[u8]>,
 ) -> Result<(), ExtractError> {
+    extract_package_with_progress(src, out_dir, content_key, &mut |_, _, _| {})
+}
+
+/// 与 [`extract_package_with_key`] 相同，但向调用方上报解包进度。
+///
+/// `on_progress(已完成单元, 总单元, 当前条目)`：ZIP 的单元是条目数，MSIXVC 的
+/// 单元是段落数。调用方据此换算成阶段内部进度（见 `installer` 的阶段权重表），
+/// 因此这里只报原始计数，不替调用方决定权重。
+pub fn extract_package_with_progress<F>(
+    src: &Path,
+    out_dir: &Path,
+    content_key: Option<&[u8]>,
+    on_progress: &mut F,
+) -> Result<(), ExtractError>
+where
+    F: FnMut(u64, u64, &str),
+{
     if let Some(key) = content_key {
         if key.len() != 32 {
             return Err(ExtractError::Msixvc("content key 长度必须为 32 字节".into()));
         }
     }
     if is_appx_zip(src) {
-        return extract_appx_zip(src, out_dir);
+        return extract_appx_zip_with_progress(src, out_dir, on_progress);
     }
-    match msixvc::extract_xvc(src, out_dir, content_key) {
+    match msixvc::extract_xvc_with_progress(src, out_dir, content_key, &mut |index, total, path| {
+        on_progress(index as u64, total as u64, path);
+    }) {
         Ok(()) => verify_package(out_dir),
         Err(msixvc::ParseError::MissingContentKey) => Err(ExtractError::MissingStoreKey),
         Err(error) => Err(ExtractError::Msixvc(error.to_string())),
@@ -90,10 +109,23 @@ fn is_appx_zip(path: &Path) -> bool {
 
 /// 历史 `.appx`（真 ZIP）解包：遍历条目，跳过 `AppxMetadata/`，防路径穿越，成功需含主程序。
 fn extract_appx_zip(src: &Path, out_dir: &Path) -> Result<(), ExtractError> {
+    extract_appx_zip_with_progress(src, out_dir, &mut |_, _, _| {})
+}
+
+/// 同上，并在每个条目写入前上报 `(已完成序号, 总数, 条目名)`。
+fn extract_appx_zip_with_progress<F>(
+    src: &Path,
+    out_dir: &Path,
+    on_progress: &mut F,
+) -> Result<(), ExtractError>
+where
+    F: FnMut(u64, u64, &str),
+{
     std::fs::create_dir_all(out_dir)?;
     let file = std::fs::File::open(src)?;
     let mut zip = zip::ZipArchive::new(file)?;
     let mut found_exe = false;
+    let total = zip.len() as u64;
 
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
@@ -104,6 +136,7 @@ fn extract_appx_zip(src: &Path, out_dir: &Path) -> Result<(), ExtractError> {
         }
         // 防路径穿越：拒绝绝对路径与 `..`。
         let rel = sanitize_rel(&raw_name)?;
+        on_progress(i as u64, total, &rel);
         let target = out_dir.join(&rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
