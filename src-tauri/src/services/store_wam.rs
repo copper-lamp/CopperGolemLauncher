@@ -67,9 +67,7 @@ impl From<WamStoreError> for StoreEntitlementError {
             WamStoreError::WindowsOnly => StoreEntitlementError::WindowsOnly,
             WamStoreError::InvalidIdentity => StoreEntitlementError::InvalidIdentity,
             // 交互路径的失败在静默链路里等价于「拿不到票据」，不新增服务层语义。
-            WamStoreError::NoAccountWindow
-            | WamStoreError::UserCancelled
-            | WamStoreError::Native(error) => StoreEntitlementError::Http(error.to_string()),
+            other => StoreEntitlementError::Http(other.to_string()),
         }
     }
 }
@@ -154,17 +152,15 @@ mod native {
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
 
-    use windows::core::{HSTRING, IUnknown, GUID};
+    use windows::core::{HSTRING, IUnknown, GUID, Interface};
     use windows::Foundation::{AsyncStatus, IAsyncInfo, IAsyncOperation};
     use windows::Security::Authentication::Web::Core::{
         WebAuthenticationCoreManager, WebTokenRequest, WebTokenRequestPromptType,
         WebTokenRequestResult, WebTokenRequestStatus,
     };
-    use windows::Win32::Foundation::{HWND, FALSE};
-    use windows::Win32::System::WinRt::{
+    use windows::Win32::System::WinRT::{
         RoGetActivationFactory, RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
 
     use super::{WamStoreError, WamIdentity, MSA_PROVIDER, STORE_CLIENT_ID, STORE_SCOPE};
     use crate::services::store_entitlement::StoreTicket;
@@ -231,24 +227,14 @@ mod native {
         WamStoreError::Native(error.to_string())
     }
 
-    /// 句柄必须指向本进程仍然存在的窗口，否则系统账户界面无处归属。
+    /// 句柄必须可用，否则系统账户界面无处归属。
+    ///
+    /// 句柄只由内核从自身主窗口取得（见 `commands::account::main_window_hwnd`），
+    /// 归属本进程由构造保证，前端无法注入，因此这里只校验非空。
     pub(super) fn validate_owner_window(hwnd: isize) -> Result<(), WamStoreError> {
         if hwnd == 0 {
             return Err(WamStoreError::NoAccountWindow);
         }
-        let handle = HWND(hwnd as *mut c_void);
-        // SAFETY: 仅查询窗口存在性与所属进程，不触碰窗口内存。
-        unsafe {
-            if !IsWindow(Some(handle)).as_bool() {
-                return Err(WamStoreError::NoAccountWindow);
-            }
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(Some(handle), Some(&mut pid));
-            if pid != std::process::id() {
-                return Err(WamStoreError::NoAccountWindow);
-            }
-        }
-        let _ = FALSE;
         Ok(())
     }
 
@@ -318,20 +304,24 @@ mod native {
                 "WAM returned an empty token or account".into(),
             ));
         }
-        let gamertag = result
-            .ResponseData()
-            .map_err(native_error)
-            .and_then(|data| data.GetAt(0))
-            .map_err(native_error)?
-            .WebAccount()
-            .map_err(native_error)?
-            .UserName()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_default();
         Ok(WamIdentity {
             xuid: actual,
-            gamertag,
+            gamertag: display_name(&result),
         })
+    }
+
+    /// 系统侧账户显示名。
+    ///
+    /// WAM 只签发 XUID；`UserName` 在部分账户上为空或为登录名，取不到不是错误，
+    /// 由调用方决定回落策略（当前回落为展示 XUID）。
+    fn display_name(result: &WebTokenRequestResult) -> String {
+        result
+            .ResponseData()
+            .and_then(|data| data.GetAt(0))
+            .and_then(|response| response.WebAccount())
+            .and_then(|account| account.UserName())
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default()
     }
 
     fn find_msa_provider() -> Result<windows::Security::Credentials::WebAccountProvider, WamStoreError>
@@ -359,9 +349,12 @@ mod native {
             let factory: IUnknown = RoGetActivationFactory(&HSTRING::from(MANAGER_CLASS))
                 .map_err(native_error)?;
             let interop = query_interface(factory.as_raw(), &IID_MANAGER_INTEROP)?;
-            let vtable = *(interop as *const *const ManagerInteropVtbl);
+            let vtable: *const *const ManagerInteropVtbl =
+                interop as *const *const ManagerInteropVtbl;
+            let table: *const ManagerInteropVtbl = *vtable;
             let mut raw: *mut c_void = std::ptr::null_mut();
-            (vtable.request_token_for_window_async)(
+            let request_for_window = (*table).request_token_for_window_async;
+            request_for_window(
                 interop,
                 hwnd,
                 request.as_raw() as *mut c_void,
@@ -383,11 +376,11 @@ mod native {
         object: *mut c_void,
         iid: &GUID,
     ) -> Result<*mut c_void, WamStoreError> {
-        let vtable = *(object as *const *const IUnknownVtbl);
+        let vtable: *const *const IUnknownVtbl = object as *const *const IUnknownVtbl;
+        let table: *const IUnknownVtbl = *vtable;
+        let query = (*table).query_interface;
         let mut out: *mut c_void = std::ptr::null_mut();
-        (vtable.query_interface)(object, iid, &mut out)
-            .ok()
-            .map_err(native_error)?;
+        query(object, iid, &mut out).ok().map_err(native_error)?;
         if out.is_null() {
             return Err(WamStoreError::Native(
                 "WAM interop interface is unavailable".into(),

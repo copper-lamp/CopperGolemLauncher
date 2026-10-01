@@ -34,7 +34,7 @@ pub async fn account_wam_sign_in(
     app: AppHandle,
     kernel: State<'_, KernelContext>,
 ) -> CommandResult<AccountInfo> {
-    let hwnd = main_window_hwnd(&app)?;
+    let hwnd = main_window_hwnd(&app).map_err(into_command_error)?;
     kernel
         .account()
         .begin_wam_sign_in(hwnd)
@@ -44,13 +44,13 @@ pub async fn account_wam_sign_in(
 
 /// 取主窗口句柄；窗口尚未就绪时给出可操作的原因，而不是把 0 交给 WAM。
 fn main_window_hwnd(app: &AppHandle) -> Result<isize, crate::error::KernelError> {
-    let window = app
-        .get_webview_window(MAIN_WINDOW)
-        .ok_or_else(|| crate::error::KernelError::Account("主窗口尚未就绪，无法呈现账户授权界面".into()))?;
+    let window = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| {
+        crate::error::KernelError::Account("主窗口尚未就绪，无法呈现账户授权界面".into())
+    })?;
     let hwnd = window.hwnd().map_err(|e| {
         crate::error::KernelError::Account(format!("无法获取主窗口句柄: {e}"))
     })?;
-    Ok(hwnd as isize)
+    Ok(hwnd.0 as isize)
 }
 
 /// 退出登录（清除密钥环与数据库记录）。

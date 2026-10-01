@@ -202,6 +202,7 @@ fn verify_pe_x64(path: &Path) -> Result<(), ExtractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::path::PathBuf;
     use zip::write::SimpleFileOptions;
 
