@@ -73,6 +73,48 @@ pub fn cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, StoreR
     Ok(output)
 }
 
+/// `ClepSignState` / `EncryptedDeviceKey` 共用的 4096 字节容器：取出 `key_data` 的明文。
+///
+/// 布局（Xodus `crates/xodus/src/licensing/splicense.rs` 的 `ClepSignState`）：
+///
+/// ```text
+/// version: u32        // 目前恒为 4
+/// key_data: [u8; N]   // AES-128-CBC / 零 IV 的密文，N 由调用方给出
+/// key_schedule: [u32; 58]
+/// ...保留区
+/// ```
+///
+/// 与 `device_wrapping_key` 的区别：那个是**另一个** 4096 字节结构
+/// （`size:u16 + version:u32` 前缀 + 自带校验块），两者都叫「CLEP」但布局不同，
+/// 不能互相套用——这一点在 Xodus 的 `clep.md` 里有明确区分。
+pub fn encrypted_state_secret(blob: &[u8], key_data_len: usize) -> Result<Vec<u8>, StoreRstError> {
+    const STATE_SIZE: usize = 4096;
+    const KEY_DATA_OFFSET: usize = 4;
+    const SCHEDULE_OFFSET: usize = KEY_DATA_OFFSET + 544;
+
+    if blob.len() != STATE_SIZE {
+        return Err(StoreRstError::UnsupportedClep);
+    }
+    if key_data_len == 0 || key_data_len > 544 || !key_data_len.is_multiple_of(16) {
+        return Err(StoreRstError::UnsupportedClep);
+    }
+    let version = blob
+        .get(0..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or(StoreRstError::UnsupportedClep)?;
+    if version != 4 {
+        return Err(StoreRstError::UnsupportedClep);
+    }
+    let key = schedule_key(blob.get(SCHEDULE_OFFSET..).ok_or(StoreRstError::UnsupportedClep)?)?;
+    let end = KEY_DATA_OFFSET.checked_add(key_data_len).ok_or(StoreRstError::UnsupportedClep)?;
+    cbc_decrypt(
+        &key,
+        &[0u8; 16],
+        blob.get(KEY_DATA_OFFSET..end).ok_or(StoreRstError::UnsupportedClep)?,
+    )
+}
+
 /// Decrypt the encrypted payload of a 4096-byte CLEP record.
 pub fn decrypt_clep(blob: &[u8], encrypted_len: usize) -> Result<Vec<u8>, StoreRstError> {
     if blob.len() != MAX_CLEP_SIZE || blob.get(0..4).and_then(|bytes| bytes.try_into().ok()).map(u32::from_le_bytes) != Some(4) || encrypted_len == 0 || !encrypted_len.is_multiple_of(16) || encrypted_len > 4092 { return Err(StoreRstError::UnsupportedClep); }
@@ -83,8 +125,7 @@ pub fn decrypt_clep(blob: &[u8], encrypted_len: usize) -> Result<Vec<u8>, StoreR
 }
 
 /// Validate and extract the device wrapping key from a 4096-byte record.
-pub fn device_wrapping_key(blob: &[u8]) -> Result<[u8; 16], StoreRstError> {
-    if blob.len() != MAX_CLEP_SIZE || blob.get(0..2).and_then(|bytes| bytes.try_into().ok()).map(u16::from_le_bytes) != Some(4096) || blob.get(2..6).and_then(|bytes| bytes.try_into().ok()).map(u32::from_le_bytes) != Some(4) { return Err(StoreRstError::InvalidDeviceKey); }
+pub fn device_wrapping_key(blob: &[u8]) -> Result<[u8; 16], StoreRstError> {    if blob.len() != MAX_CLEP_SIZE || blob.get(0..2).and_then(|bytes| bytes.try_into().ok()).map(u16::from_le_bytes) != Some(4096) || blob.get(2..6).and_then(|bytes| bytes.try_into().ok()).map(u32::from_le_bytes) != Some(4) { return Err(StoreRstError::InvalidDeviceKey); }
     let key = schedule_key(blob.get(6..).ok_or(StoreRstError::InvalidDeviceKey)?)?;
     let check = cbc_decrypt(&key, &[0u8; 16], blob.get(518..534).ok_or(StoreRstError::InvalidDeviceKey)?)?;
     if check.as_slice() != key { return Err(StoreRstError::DeviceKeyCheckFailed); }

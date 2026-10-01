@@ -222,10 +222,47 @@ impl Drop for DeviceMaterial {
     }
 }
 
-/// Derives and validates the wrapping key, device ID and RSA key.
+/// `PUID` 是 16 位十六进制文本（形如 `0018401951F4AD61`），内容就是 8 字节设备 ID。
+///
+/// Xodus 的 `read_vec(reader, size)` 在 `DeviceLicenseDeviceId` 上直接拿到原始 ID 字节；
+/// 服务端在 `<puid>` 里把它写成十六进制文本，因此这里必须解码而不是当字符串比较——
+/// 拿 16 字节文本去比 8 字节绑定值会让内容许可的 `0xd2` 校验永远不匹配。
 #[cfg(windows)]
-fn derive_device_material(license: &[u8]) -> Result<DeviceMaterial, NativeInstallError> {
+fn device_id_from_puid(puid: &str) -> Result<[u8; DEVICE_ID_BYTES], NativeInstallError> {
+    let text = puid.trim();
+    if text.len() != DEVICE_ID_BYTES * 2 {
+        return Err(NativeInstallError::MalformedDeviceLicense);
+    }
+    let mut out = [0u8; DEVICE_ID_BYTES];
+    for (index, byte) in out.iter_mut().enumerate() {
+        let pair = text.get(index * 2..index * 2 + 2).ok_or(NativeInstallError::MalformedDeviceLicense)?;
+        *byte = u8::from_str_radix(pair, 16).map_err(|_| NativeInstallError::MalformedDeviceLicense)?;
+    }
+    Ok(out)
+}
+
+/// Derives and validates the wrapping key, device ID and RSA key.
+///
+/// `license` 是**已解码**的 SPLicense 原始字节：`store_device::provision_device`
+/// 负责把响应里 `<SPLicenseBlock>` 的 base64 文本解开后再交到这里。
+///
+/// 块号与布局取自 Xodus（`crates/xodus/src/licensing/splicense.rs` 的 `BlockId`，
+/// commit `0670e25a`），不是从 LeviLauncher 的 Go 移植猜出来的——那份移植在设备
+/// 许可这一段把 `blocks[1]` 当 4096 字节用，而线上响应里 `0x1` 是 4096 字节、
+/// `0x12d` 是 4096 字节，两者的语义只有 Xodus 说清了：
+///
+/// - `0x1`  `EncryptedDeviceKey`：解出 16 字节设备包装密钥；
+/// - `0x12d` `ClepSignState`：解出 544 字节 BCrypt RSA 私钥（设备凭据本体）；
+/// - `0x2`  `DeviceLicenseDeviceId`：原始设备 ID 字节。
+#[cfg(windows)]
+fn derive_device_material(
+    license: &[u8],
+    device_id: &[u8],
+) -> Result<DeviceMaterial, NativeInstallError> {
     if license.is_empty() || license.len() > MAX_DEVICE_LICENSE_BYTES {
+        return Err(NativeInstallError::MalformedDeviceLicense);
+    }
+    if device_id.len() != DEVICE_ID_BYTES {
         return Err(NativeInstallError::MalformedDeviceLicense);
     }
     let blocks = msixvc::parse_license_blocks(license)
@@ -236,18 +273,10 @@ fn derive_device_material(license: &[u8]) -> Result<DeviceMaterial, NativeInstal
     )
     .map_err(|_| NativeInstallError::MalformedDeviceLicense)?;
 
-    // The device ID TLV is a little-endian 2-byte length prefix followed by the
-    // identity bytes; the reference hard-fails on any other shape.
-    let encoded_id = blocks.get(&TLV_DEVICE_ID).ok_or(NativeInstallError::MalformedDeviceLicense)?;
-    if encoded_id.len() != DEVICE_ID_FIELD_BYTES
-        || u16::from_le_bytes([encoded_id[0], encoded_id[1]]) as usize != DEVICE_ID_BYTES
-    {
-        return Err(NativeInstallError::MalformedDeviceLicense);
-    }
-    let mut device_id = [0u8; DEVICE_ID_BYTES];
-    device_id.copy_from_slice(&encoded_id[2..DEVICE_ID_FIELD_BYTES]);
+    let mut bound_id = [0u8; DEVICE_ID_BYTES];
+    bound_id.copy_from_slice(device_id);
 
-    let private_blob = crate::services::store_rst::decrypt_clep(
+    let private_blob = crate::services::store_rst::encrypted_state_secret(
         blocks.get(&TLV_DEVICE_PRIVATE_KEY).ok_or(NativeInstallError::MalformedDeviceLicense)?,
         DEVICE_PRIVATE_KEY_CLEP_BYTES,
     )
@@ -255,14 +284,17 @@ fn derive_device_material(license: &[u8]) -> Result<DeviceMaterial, NativeInstal
     let private_key = crate::services::store_rst::parse_bcrypt_rsa_private(&private_blob)
         .map_err(|_| NativeInstallError::MalformedDeviceLicense)?;
 
-    Ok(DeviceMaterial { wrapping_key, device_id, private_key })
+    Ok(DeviceMaterial { wrapping_key, device_id: bound_id, private_key })
 }
 
 /// Encodes the SPLicense `DeviceInfo` component exactly like the reference
 /// implementation: raw SMBIOS from the firmware table, per-version header
 /// fields, then the obfuscation pass.
+///
+/// `pub(crate)` 是为了让 `store_device` 的回归测试能直接校验**真实产物**：
+/// 生成端与校验端对同一份文档的理解必须一致，只测手写样本锁不住这类缺陷。
 #[cfg(windows)]
-mod device_info {
+pub(crate) mod device_info {
     use base64::Engine;
 
     const COMPONENT_BUFFER_BYTES: usize = 2048;
@@ -432,8 +464,14 @@ async fn ensure_device_state(
 ) -> Result<DeviceState, NativeInstallError> {
     // The PUID is only known after provisioning, so the on-disk binding is
     // validated against the stored PUID rather than assumed from the XUID.
-    if let Some(state) = load_device_state(cache_dir, xuid)? {
-        return Ok(state);
+    // 诊断：必须能看出这一轮到底是「复用已注册设备」还是「又注册了一台」。
+    match load_device_state(cache_dir, xuid) {
+        Ok(Some(state)) => {
+            log::info!("[native-install] reusing registered device: puid={}", state.puid);
+            return Ok(state);
+        }
+        Ok(None) => log::info!("[native-install] no device cache at {}", cache_dir.display()),
+        Err(error) => log::warn!("[native-install] device cache unusable: {error}"),
     }
     let info = device_info::device_info_xml().map_err(NativeInstallError::DeviceProvision)?;
     let provisioned = crate::services::store_device::provision_device(client, xuid.to_string(), &info)
@@ -445,13 +483,25 @@ async fn ensure_device_state(
         puid: provisioned.puid.clone(),
         license: provisioned.license_block.clone(),
     };
-    // Never persist a device credential we could not actually use.
-    drop(derive_device_material(&state.license)?);
+    // 设备凭据必须在**注册成功后立刻落盘**，而不是等整条链跑通才落盘。
+    //
+    // 服务端按账户限制可注册设备数（实测超限时返回
+    // `satisfactionFailure code 501 "Device group is full"`）。旧顺序是「先校验
+    // 许可证可用性、再保存」，于是只要后续任何一步失败，这次注册就被丢弃，
+    // 下一次尝试又会**新注册一台设备**——反复重试会把账户的设备槽位吃满，
+    // 最终连注册带授权一起失败，而用户看到的原因还被折叠成 malformed。
+    //
+    // 参考实现的顺序正是先注册先落盘（`ensureDevice()` 里 `saveProtected` 紧跟
+    // 注册之后），后续复用缓存。这里对齐该顺序：先持久化，再校验可用性。
+    // 校验失败不会留下「不可用却还被复用」的凭据——`derive_device_material`
+    // 会在每次使用时重新校验，坏凭据会立刻报错并可被删除重注册。
     let binding = crate::services::store_device::DeviceCacheBinding {
         account_id: xuid.to_string(),
         device_id: state.puid.clone(),
     };
     save_device_state(cache_dir, &binding, &state)?;
+    // 落盘后立刻自检：明显不可用的许可证不该被 silently 复用。
+    drop(derive_device_material(&state.license, &device_id_from_puid(&state.puid)?)?);
     Ok(state)
 }
 
@@ -551,7 +601,7 @@ pub(crate) async fn acquire_package_content_key(
     };
 
     let state = ensure_device_state(client, &request.cache_dir, &request.xuid).await?;
-    let material = derive_device_material(&state.license)?;
+    let material = derive_device_material(&state.license, &device_id_from_puid(&state.puid)?)?;
 
     let device_authorization =
         acquire_device_ticket(client, &state.member, &material.private_key).await?;
@@ -686,11 +736,252 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn malformed_device_licenses_are_rejected_without_panicking() {
-        assert_eq!(derive_device_material(&[]).unwrap_err(), NativeInstallError::MalformedDeviceLicense);
-        assert_eq!(derive_device_material(&[0; 8]).unwrap_err(), NativeInstallError::MalformedDeviceLicense);
+        let id = [0u8; DEVICE_ID_BYTES];
+        assert_eq!(derive_device_material(&[], &id).unwrap_err(), NativeInstallError::MalformedDeviceLicense);
+        // 任意文本字节不得被当成 TLV 读出一个看似合法的结果。
         assert_eq!(
-            derive_device_material(&vec![0u8; MAX_DEVICE_LICENSE_BYTES + 1]).unwrap_err(),
+            derive_device_material(b"not base64!!", &id).unwrap_err(),
             NativeInstallError::MalformedDeviceLicense
         );
+        assert_eq!(derive_device_material(b"AAAA", &id).unwrap_err(), NativeInstallError::MalformedDeviceLicense);
+        assert_eq!(
+            derive_device_material(&vec![0u8; MAX_DEVICE_LICENSE_BYTES + 1], &id).unwrap_err(),
+            NativeInstallError::MalformedDeviceLicense
+        );
+        // PUID 文本口径：16 位十六进制 <-> 8 字节。
+        assert_eq!(device_id_from_puid("0018401951F4AD61").unwrap(), [0x00,0x18,0x40,0x19,0x51,0xF4,0xAD,0x61]);
+        assert!(device_id_from_puid("0018").is_err());
+        assert!(device_id_from_puid("zz18401951F4AD61").is_err());
+    }
+
+    /// 端到端跑一遍安装链真正会走的授权流程，逐段报告停在哪里。
+    ///
+    /// 这条测试的价值在于：不必让使用者反复点安装按钮——整条链（WAM 票 → 设备注册 →
+    /// 设备许可证解密 → 设备 RST → 内容许可证 → 内容密钥）都会在这里被真实执行，
+    /// 哪一段挂了一目了然。
+    ///
+    /// 标 `#[ignore]`：会访问 login.live.com 并读取本地整包。运行：
+    /// `cargo test -p copper-core --lib authorization_chain_against_live_services -- --ignored --nocapture`
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "会访问在线服务并读取本地整包，需手动运行"]
+    fn authorization_chain_against_live_services() {
+        struct StdoutLogger;
+        impl log::Log for StdoutLogger {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                println!("[{}][{}] {}", record.level(), record.target(), record.args());
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: StdoutLogger = StdoutLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Info);
+
+        let package = std::path::PathBuf::from(
+            r"D:\CopperGolem\CopperCore\.devdata\versions\.download\1.26.52.03.msixvc",
+        );
+        assert!(package.is_file(), "本地整包不存在: {}", package.display());
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap();
+        let xuid = "000340014F648727".to_string();
+
+        let identity = read_identity(&package).expect("读取包身份失败");
+        println!(
+            "1. package identity: content_id={} key_id={}",
+            identity.content_id, identity.key_id
+        );
+
+        let ticket = runtime
+            .block_on(async {
+                let xuid = xuid.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::services::store_wam::acquire_store_ticket_for_xuid(&xuid)
+                })
+                .await
+                .unwrap()
+            })
+            .expect("WAM 静默取票失败");
+        println!("2. WAM store ticket: ok");
+
+        // 走 ensure_device_state（与真实安装链一致）：已有凭据就复用，
+        // 绝不每次重新注册设备——服务端按账户限制设备数。
+        let cache_dir = std::path::PathBuf::from(
+            r"D:\CopperGolem\CopperCore\.devdata\data\cache\store-device",
+        );
+        std::fs::create_dir_all(&cache_dir).expect("创建设备缓存目录失败");
+        let (member, private_key) = runtime.block_on(async {
+            let state = ensure_device_state(&client, &cache_dir, &xuid)
+                .await
+                .expect("设备凭据获取失败");
+            println!("3. device credential: puid={}", state.puid);
+            let material = derive_device_material(
+                &state.license,
+                &device_id_from_puid(&state.puid).expect("PUID 解码失败"),
+            )
+            .expect("设备许可证解密失败");
+            println!("4. device license decrypted: rsa key ready");
+            (state.member.clone(), material.private_key.clone())
+        });
+
+        let device_authorization = match runtime.block_on(acquire_device_ticket(
+            &client,
+            &member,
+            &private_key,
+        )) {
+            Ok(token) => {
+                println!("5. device ticket (RST x2): ok, {} chars", token.len());
+                token
+            }
+            Err(error) => panic!("设备票据获取失败: {error}"),
+        };
+
+        let license_bytes = runtime
+            .block_on(crate::services::store_entitlement::request_content_license(
+                &client,
+                &ticket,
+                &device_authorization,
+                &identity.content_id,
+                "US",
+            ))
+            .expect("内容许可证请求失败");
+        println!("6. content license: {} bytes", license_bytes.len());
+
+        // 诊断：把内容许可证响应的形状与每个记录的 XML 结构打出来。
+        {
+            let text = String::from_utf8_lossy(&license_bytes).into_owned();
+            println!("license json head: {}", &text[..text.len().min(300)]);
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                let keys = value
+                    .get("license")
+                    .and_then(|license| license.get("keys"))
+                    .and_then(|keys| keys.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                println!("license.keys count={}", keys.len());
+                for (index, record) in keys.iter().enumerate() {
+                    let raw = record.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                    match base64::engine::general_purpose::STANDARD.decode(raw) {
+                        Ok(decoded) => {
+                            let mut reader = quick_xml::Reader::from_reader(decoded.as_slice());
+                            let mut buf = Vec::new();
+                            let mut depth = 0usize;
+                            let mut children: Vec<String> = Vec::new();
+                            loop {
+                                match reader.read_event_into(&mut buf) {
+                                    Ok(quick_xml::events::Event::Start(e)) => {
+                                        if depth == 1 {
+                                            children.push(String::from_utf8_lossy(e.name().as_ref()).into_owned());
+                                        }
+                                        depth += 1;
+                                    }
+                                    Ok(quick_xml::events::Event::End(_)) => depth = depth.saturating_sub(1),
+                                    Ok(quick_xml::events::Event::Eof) => break,
+                                    Ok(_) => {}
+                                    Err(error) => { println!("  record {index} xml error: {error}"); break; }
+                                }
+                                buf.clear();
+                            }
+                            println!("  record {index}: decoded={} bytes, root children={children:?}", decoded.len());
+                        }
+                        Err(error) => println!("  record {index}: base64 failed: {error}"),
+                    }
+                }
+            } else {
+                println!("license json parse failed");
+            }
+        }
+
+        // 跑两次：第二次必须复用已注册的设备凭据，而不是再注册一台。
+        // 服务端按账户限制设备数，反复新注册会把槽位吃满并让后续全部失败。
+        for attempt in 1..=2 {
+            let request = StoreInstallRequest::new(xuid.clone(), "US", cache_dir.clone());
+            let result = runtime.block_on(acquire_package_content_key(&client, &request, &package));
+            match result {
+                Ok(lease) => println!("7.{attempt} content key lease: key_id={}", lease.key_id()),
+                Err(error) => println!("7.{attempt} 失败: {error}"),
+            }
+            assert!(
+                cache_dir.join(DEVICE_CACHE_FILE).is_file(),
+                "第 {attempt} 次尝试后设备凭据没有落盘：下次会重复注册设备"
+            );
+        }
+        println!("device credential persisted and reused across attempts");
+    }
+
+    /// 直连真实 endpoint 走完「注册设备 → 解析设备许可证」，把每个 TLV 的 id 与长度打出来。
+    ///
+    /// 云端返回的真实许可证不落在仓库里，只有实跑一次才能看到它的真实形状；
+    /// 单元测试用的手写样本很容易与真实形状脱节。
+    ///
+    /// 标 `#[ignore]`：会访问 login.live.com。手动运行：
+    /// `cargo test -p copper-core --lib derive_device_material_from_live_provision -- --ignored --nocapture`
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "会访问 login.live.com，需手动运行"]
+    fn derive_device_material_from_live_provision() {
+        let xml = device_info::device_info_xml().expect("本机应能读取 SMBIOS 固件表");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap();
+        let device = runtime
+            .block_on(crate::services::store_device::provision_device(
+                &client,
+                "000340014F648727".to_string(),
+                &xml,
+            ))
+            .expect("设备注册失败");
+        println!("puid={} license_bytes={}", device.puid, device.license_block.len());
+
+        let raw = &device.license_block;
+        println!(
+            "license bytes={} full hex:\n{}",
+            raw.len(),
+            raw.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        // 头部按 SPLicense 容器格式解析：前 8 字节是容器头，之后是 TLV。
+        println!("container head u32x2 = {:?}", (
+            u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+            u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]),
+        ));
+        let blocks = crate::modules::game_download::msixvc::parse_license_blocks(raw)
+            .expect("许可证 TLV 解析失败");
+        let mut ids: Vec<_> = blocks.iter().map(|(id, bytes)| (*id, bytes.len())).collect();
+        ids.sort();
+        for (id, len) in &ids {
+            println!("tlv 0x{id:x} len={len}");
+        }
+        for (id, expected) in [
+            (TLV_DEVICE_WRAPPING_KEY, 4096usize),
+            (TLV_DEVICE_ID, DEVICE_ID_FIELD_BYTES),
+            (TLV_DEVICE_PRIVATE_KEY, DEVICE_PRIVATE_KEY_CLEP_BYTES),
+        ] {
+            match blocks.get(&id) {
+                Some(bytes) => println!("tlv 0x{id:x}: len={} expected={expected}", bytes.len()),
+                None => println!("tlv 0x{id:x}: MISSING (expected len={expected})"),
+            }
+        }
+
+        match derive_device_material(
+            &device.license_block,
+            &device_id_from_puid(&device.puid).unwrap(),
+        ) {
+            Ok(material) => println!("derive ok: device_id={:02x?}", material.device_id),
+            Err(error) => panic!("derive_device_material 失败: {error:?}（上方为真实 TLV 形状）"),
+        }
     }
 }

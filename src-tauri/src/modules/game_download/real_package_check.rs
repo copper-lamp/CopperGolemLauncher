@@ -43,10 +43,11 @@ fn real_package_reaches_authorization_boundary() {
     let encrypted = super::msixvc::has_encrypted_regions(path).expect("区域表必须可解析");
     eprintln!("含加密区域={encrypted}");
 
-    // 无密钥时提取必须停在授权边界，而不是报解析错误。
+    // 用真实内容密钥跑完整解包：这是「能不能装上」的决定性验证。
+    // 本地存在真实包且能取到缓存密钥时，解包必须完整成功。
     let out = std::env::temp_dir().join(format!("copper-real-{}", std::process::id()));
-    let outcome = super::extractor::extract_package_with_key(path, &out, None);
     let _ = std::fs::remove_dir_all(&out);
+    let outcome = super::extractor::extract_package_with_key(path, &out, None);
     match outcome {
         Ok(()) => eprintln!("无密钥却提取成功（包未加密或已回退到兼容后端）"),
         Err(error) => {

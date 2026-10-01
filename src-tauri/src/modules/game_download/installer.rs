@@ -477,16 +477,28 @@ pub fn cancel(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
 ///
 /// 状态流转与自动安装共用 `finish_install`（含单飞锁与 md5 自验），
 /// 因此重复点击是幂等安全的：正在解包时直接返回，不排队。
-pub fn install(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
+pub fn install(ctx: &Ctx, id: &str, lock: &Arc<tokio::sync::Mutex<()>>) -> Result<(), KernelError> {
     let rec = get_record(ctx, id)?
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{id}` 没有下载记录，无法安装")))?;
 
-    // 正在授权 / 解包：重复点击直接返回，不排队、不打断。
+    // 并发门禁由**单飞锁**决定，而不是由数据库状态决定。
     //
-    // `authorizing` 必须一并拦住：授权阶段同样独占设备凭据并驱动系统账户界面，
-    // 放行会让连点变成多条并发授权链，最终以「设备缓存被占用」这种与用户操作
-    // 无关的失败收场。
-    if rec.state == "extracting" || rec.state == "authorizing" {
+    // 旧写法见到 `authorizing` 就直接返回 `Ok(())`，本意是「正在授权就别重复点」。
+    // 但它把「真的在跑」和「上次跑崩了、状态没回写」混为一谈：一旦进程在授权阶段
+    // 被杀（或状态回写失败），记录会永远停在 `authorizing`，此后每次点安装都返回
+    // 成功却什么都不做——用户侧就是「点安装没反应」，而且没有任何错误提示。
+    //
+    // 现在改为问锁：锁被持有 = 真有一条安装流水线在跑 → 幂等拒绝；锁空闲 = 没有任何
+    // 在跑的工作 → 即使状态写着 `authorizing` 也只是残留，放行走完整流水线（`finish_install`
+    // 会重新置位并推进状态）。
+    if lock.try_lock().is_err() {
+        return Err(KernelError::Conflict(format!(
+            "版本 `{id}` 的安装/授权正在进行中，请等待当前任务结束"
+        )));
+    }
+
+    // 正在解包：重复点击直接返回，不排队、不打断（解包不可中断，重跑代价过高）。
+    if rec.state == "extracting" {
         return Ok(());
     }
     // 已安装即无需动作。
@@ -522,12 +534,18 @@ pub fn install(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
         )));
     }
 
-    let lock = install_lock();
+    let lock = lock.clone();
     let next_ctx = ctx.clone();
     let vid = rec.version_id.clone();
     ctx.runtime.spawn(async move {
         if let Err(e) = finish_install(&next_ctx, &lock, rec).await {
-            mark_failed(&next_ctx, &vid, &e.to_string());
+            // `mark_failed` 必须落库成功：失败后记录若仍停在 `authorizing`，
+            // 状态机就再也回不到可重试的状态。回写失败时明确留痕，而不是静默吞掉。
+            if let Err(write_error) = mark_failed(&next_ctx, &vid, &e.to_string()) {
+                log::error!(
+                    "[game-download] 手动重装 {vid} 失败后回写失败状态也失败: {write_error}（记录可能停在非终态）"
+                );
+            }
             log::error!("[game-download] 手动重装 {vid} 失败: {e}");
         }
     });
@@ -560,7 +578,11 @@ pub fn handle_status(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>, payload: &Va
             let task_lock = next_lock.clone();
             next_ctx.runtime.clone().spawn(async move {
                 if let Err(e) = finish_install(&task_ctx, &task_lock, rec).await {
-                    mark_failed(&task_ctx, &vid, &e.to_string());
+                    if let Err(write_error) = mark_failed(&task_ctx, &vid, &e.to_string()) {
+                        log::error!(
+                            "[game-download] 安装 {vid} 失败后回写失败状态也失败: {write_error}（记录可能停在非终态）"
+                        );
+                    }
                     log::error!("[game-download] 安装 {vid} 失败: {e}");
                 }
             });
@@ -571,7 +593,15 @@ pub fn handle_status(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>, payload: &Va
                 .and_then(Value::as_str)
                 .unwrap_or("下载失败")
                 .to_string();
-            mark_failed(ctx, &rec.version_id, &msg);
+            if let Err(write_error) = mark_failed(ctx, &rec.version_id, &msg) {
+
+                log::error!(
+
+                    "[game-download] 下载失败状态回写失败: {write_error}（记录可能停在非终态）"
+
+                );
+
+            }
         }
         DownloadStatus::Cancelled => {
             // “cancelling”为版本页主动取消的中间态，清理由 cancel() 完成后继续，此处不重复。
@@ -633,8 +663,17 @@ fn find_by_task_id(ctx: &Ctx, task_id: u64) -> Option<TaskRecord> {
 }
 
 /// 落失败 + 广播 `version.download_failed`。
-fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) {
-    let _ = set_state(ctx, version_id, "failed", Some(error));
+///
+/// 返回回写结果：调用方必须能知道「失败状态有没有真的落库」。此前这里吞掉错误，
+/// 于是回写失败时记录会永久停在 `authorizing`，而状态机把该状态当成「正在跑」，
+/// 用户点安装就永远没反应。
+fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) -> Result<(), KernelError> {
+    let written = set_state(ctx, version_id, "failed", Some(error));
+    if let Err(write_error) = &written {
+        log::error!(
+            "[game-download] {version_id} 的失败状态回写失败: {write_error}（记录可能停在非终态）"
+        );
+    }
     ctx.events.publish(
         "version.download_failed",
         serde_json::json!({ "id": version_id, "error": error }),
@@ -643,6 +682,7 @@ fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) {
         "game-download.failed",
         serde_json::json!({ "id": version_id, "error": error }),
     );
+    written
 }
 
 // ---------------------------------------------------------------- 安装
@@ -1114,7 +1154,11 @@ fn recover_orphan_packages(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
         ctx.runtime.spawn(async move {
             if let Err(e) = finish_install(&next_ctx, &next_lock, rec).await {
                 log::error!("[game-download] 孤儿包 {vid} 续装失败: {e}");
-                mark_failed(&next_ctx, &vid, &e.to_string());
+                if let Err(write_error) = mark_failed(&next_ctx, &vid, &e.to_string()) {
+                    log::error!(
+                        "[game-download] 孤儿包 {vid} 失败状态回写失败: {write_error}（记录可能停在非终态）"
+                    );
+                }
             }
         });
     }

@@ -32,7 +32,10 @@ pub async fn game_download_status(kernel: State<'_, KernelContext>, id: String) 
 /// 本地整包缺失或校验不符时**明确报错**而不是悄悄改走下载。
 #[tauri::command]
 pub async fn game_download_install(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
-    installer::install(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error)
+    // 传入进程级单飞锁：它同时是「有没有工作在跑」的唯一判据。命令层只持有
+    // `KernelContext`，拿不到模块实例，所以锁必须是进程级单例（见 `installer::install_lock`）。
+    installer::install(&Ctx::from_kernel(&kernel), &id, &installer::install_lock())
+        .map_err(into_command_error)
 }
 
 /// 下载任务 → 游戏版本的绑定关系。

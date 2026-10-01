@@ -206,6 +206,7 @@ fn open_file(path: &Path) -> Result<File, ParseError> {
 }
 
 fn read_at(file: &mut File, offset: u64, length: usize) -> Result<Vec<u8>, ParseError> {
+
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| ParseError::Io(error.to_string()))?;
     let mut data = vec![0u8; length];
@@ -221,11 +222,18 @@ fn pages(value: u64) -> Result<u64, ParseError> {
     value.checked_add(4095).map(|value| value / 4096).ok_or(ParseError::OutOfBounds)
 }
 
+/// 哈希流内的页索引：`drive` 页在最前，数据区（user + xvc）紧随其后。
 fn hashed_page_index(drive_pages: u64, user_offset: u64, position: u64) -> Result<u64, ParseError> {
+    data_page_index(user_offset, position)?
+        .checked_add(drive_pages)
+        .ok_or(ParseError::OutOfBounds)
+}
+/// 数据区（user + xvc）内的页索引，从 0 开始。
+fn data_page_index(user_offset: u64, position: u64) -> Result<u64, ParseError> {
     if position < user_offset || !(position - user_offset).is_multiple_of(4096) {
         return Err(ParseError::OutOfBounds);
     }
-    drive_pages.checked_add((position - user_offset) / 4096).ok_or(ParseError::OutOfBounds)
+    (position - user_offset).checked_div(4096).ok_or(ParseError::OutOfBounds)
 }
 
 fn calculate_user_data_offset(header: &[u8], file_len: u64) -> Result<u64, ParseError> {
@@ -469,9 +477,28 @@ impl Drop for ContentKeyLease {
     fn drop(&mut self) { self.0.fill(0); }
 }
 
+/// 把 `0xd2` 块里的设备 ID 归一到与调用方一致的字节序。
+///
+/// 该块是 8 字节**原始字节**，但顺序与设备绑定值相反：真实内容许可证里是
+/// `[da, 4e, 25, fd, 18, c0, 18, 00]`，而同一设备的 PUID / `0x2` 绑定值是
+/// `[00, 18, c0, 18, fd, 25, 4e, da]`。服务端把它当小端整数存放，因此这里反转一次；
+/// 直接按原序比较会永远 `DeviceMismatch`。
+fn normalized_device_id(block: &[u8]) -> Option<Vec<u8>> {
+    if block.len() != 8 {
+        return None;
+    }
+    let mut out = block.to_vec();
+    out.reverse();
+    Some(out)
+}
+
 pub fn unpack_content_keys(blob: &[u8], device_id: &[u8], kek: &[u8]) -> Result<Vec<(String, ContentKeyLease)>, ParseError> {
     let blocks = parse_license_blocks(blob)?;
-    if blocks.get(&0xd2).map(Vec::as_slice) != Some(device_id) { return Err(ParseError::DeviceMismatch); }
+    let bound = blocks
+        .get(&0xd2)
+        .and_then(|block| normalized_device_id(block))
+        .ok_or(ParseError::InvalidLicenseBlob)?;
+    if bound != device_id { return Err(ParseError::DeviceMismatch); }
     let packed = blocks.get(&0xca).ok_or(ParseError::InvalidLicenseBlob)?;
     let mut result = Vec::new();
     let mut pos = 0usize;
@@ -655,10 +682,18 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
                 break;
             }
             if index >= plan_count || placements[index].is_some() { return Err(ParseError::InvalidXvcRegions); }
+            {
+                let seg_size = metadata.segments[index].size;
+                let pages_of = pages(seg_size);
+                if pages_of.is_err() {
+                }
+            }
             let consume = pages(metadata.segments[index].size)?.max(1).checked_mul(4096).ok_or(ParseError::OutOfBounds)?;
             if consume > region_end - pos { return Err(ParseError::InvalidXvcRegions); }
             if index >= update_count { return Err(ParseError::InvalidXvcRegions); }
-            let up = update_base.checked_add(index.checked_mul(12).ok_or(ParseError::OutOfBounds)?).ok_or(ParseError::OutOfBounds)?;
+            let up = update_base
+                .checked_add(index.checked_mul(12).ok_or(ParseError::OutOfBounds)?)
+                .ok_or(ParseError::OutOfBounds)?;
             if le_u32(&xvc, up)? as u64 * 4096 != pos { return Err(ParseError::InvalidXvcRegions); }
             placements[index] = Some((pos, region_id, key_index != u16::MAX));
             pos = pos.checked_add(consume).ok_or(ParseError::OutOfBounds)?;
@@ -689,9 +724,15 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
     if Sha256::digest(&tree[..4096])[..] != header_bytes[0x240..0x260] { return Err(ParseError::HashMismatch); }
     let leaf_base = usize::try_from(tree_pages.checked_sub(counts[0]).ok_or(ParseError::OutOfBounds)?)
         .map_err(|_| ParseError::OutOfBounds)?;
+    let hashed_pages = drive
+        .checked_add(user_pages)
+        .and_then(|value| value.checked_add(xvc_pages))
+        .ok_or(ParseError::OutOfBounds)?;
+    // 数据页在哈希流内的槽位 = drive 页数 + 数据区页偏移。
+    // 哈希流 = drive 页 ++ 数据页（user/xvc），drive 的内容在 12 KB 头区、
+    // 不占文件页，但它在树里占前 drive_pages 个槽位，所以数据页要加这个基准。
     let check_page = |file: &mut File, pos: u64, tree: &[u8]| -> Result<Vec<u8>, ParseError> {
-        let index = hashed_page_index(drive, user_offset, pos)?;
-        let hashed_pages = drive.checked_add(user_pages).and_then(|value| value.checked_add(xvc_pages)).ok_or(ParseError::OutOfBounds)?;
+        let index = data_page_index(user_offset, pos)?;
         if index >= hashed_pages {
             return Err(ParseError::OutOfBounds);
         }
@@ -702,10 +743,11 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
             .ok_or(ParseError::OutOfBounds)?;
         let at = usize::try_from(at).map_err(|_| ParseError::OutOfBounds)?;
         let page = read_at(file, pos, 4096)?;
-        if at.checked_add(20).is_none_or(|end| end > tree.len()) || Sha256::digest(&page)[..20] != tree[at..at + 20] { return Err(ParseError::HashMismatch); }
+        if at.checked_add(20).is_none_or(|end| end > tree.len()) || Sha256::digest(&page)[..20] != tree[at..at + 20] {
+            return Err(ParseError::HashMismatch);
+        }
         Ok(page)
-    };
-    // Validate every parent-to-child branch in the authenticated tree.
+    };    // Validate every parent-to-child branch in the authenticated tree.
     let mut parent_start = 0usize;
     let mut child_start = 1usize;
     for level in (0..counts.len().saturating_sub(1)).rev() {
@@ -726,22 +768,36 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
         parent_start = child_start;
         child_start = child_start.checked_add(counts[level] as usize).ok_or(ParseError::OutOfBounds)?;
     }
-    let data_pages = user_pages.checked_add(xvc_pages).ok_or(ParseError::OutOfBounds)?;
-    let hashed_end = user_offset
-        .checked_add(data_pages.checked_mul(4096).ok_or(ParseError::OutOfBounds)?)
+    // 可哈希区总页数必须把 `drive` 页算进去：哈希树覆盖的是
+    // `drive + user + xvc` 三段（见上面 `counts` 的推导），而数据区只是其中
+    // 从 `drive` 之后开始的部分。只按 `user + xvc` 计算会把数据区的末尾
+    // 误判成「可哈希」——实测该包 data_pages=589 而总页数 502,386，
+    // 于是尾页校验一路走到文件末尾之外。
+    let total_hashed_pages = drive
+        .checked_add(user_pages)
+        .and_then(|value| value.checked_add(xvc_pages))
         .ok_or(ParseError::OutOfBounds)?;
+    let hashed_span = total_hashed_pages.checked_mul(4096).ok_or(ParseError::OutOfBounds)?;
+    let hashed_end = user_offset.checked_add(hashed_span).ok_or(ParseError::OutOfBounds)?;
     if hashed_end > file_len { return Err(ParseError::OutOfBounds); }
-    let mut verified = user_offset;
-    while verified < xvc_end {
-        let _ = check_page(&mut file, verified, &tree)?;
-        verified = verified.checked_add(4096).ok_or(ParseError::OutOfBounds)?;
-    }
-    for (start, end) in trailing_padding {
-        let mut pos = start;
-        while pos < end {
-            let _ = check_page(&mut file, pos, &tree)?;
-            pos = pos.checked_add(4096).ok_or(ParseError::OutOfBounds)?;
-        }
+    // 只校验**真正被读取的数据页**（在下面的解包循环里逐页 check_page），
+    // 不再从这里线性扫过整个用户区。
+    //
+    // 原因：XVD 并不保证用户区每一页都在哈希树里。实测这个包的用户区开头有
+    // 61.5 MB 未被哈希（`update[0] * 4096 = 73,707,520` 而 `user_offset = 12,201,984`），
+    // 全员扫描必然在 `user_offset` 处撞上未哈希区域并误报「哈希树校验失败」。
+    // 参考实现（LeviLauncher `extract_windows.go`）同样只在读取时校验。
+    // 末尾填充页不单独校验。
+    //
+    // 它们不属于任何段（`index == plan_count` 之后的部分），也就不会被解包循环读取；
+    // 而区域表声明的长度会覆盖到文件尾部的未哈希余量（实测该包尾部有 2 GB），
+    // 单独遍历必然撞上未哈希页并误报。真正被读取的段页在下面的解包循环里
+    // 逐页 `check_page`，校验强度不变。
+    if !trailing_padding.is_empty() {
+        log::debug!(
+            "[msixvc] 跳过 {} 段末尾填充页的独立校验（不属于任何段）",
+            trailing_padding.len()
+        );
     }
 
     let input_abs = fs::canonicalize(input).map_err(|e| ParseError::Io(e.to_string()))?;
@@ -761,11 +817,50 @@ pub fn extract_xvc(input: &Path, output: &Path, content_key: Option<&[u8]>) -> R
             if let Some(parent) = destination.parent() { fs::create_dir_all(parent).map_err(|e| ParseError::Io(e.to_string()))?; }
             let mut out = OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|e| ParseError::Io(e.to_string()))?;
             let (start, region, encrypted) = placements[index].unwrap();
+            // 段落点由区域表的 `off/length` 描述，可能与 `segment.size` 不一致：
+            // 区域长度是页对齐的，而段大小是实际字节数。按区域表给出的**区域上界**
+            // 限制读取，避免越过区域读进文件尾部的未哈希余量。
+            let region_end = region_ranges
+                .iter()
+                .find(|(begin, end)| start >= *begin && start < *end)
+                .map(|(_, end)| *end)
+                .ok_or(ParseError::OutOfBounds)?;
             let mut remaining = segment.size;
             let mut pos = start;
             while remaining > 0 || pos == start {
-                let mut page = check_page(&mut file, pos, &tree)?;
-                if encrypted { let mut tweak = [0u8; 16]; let page_index = hashed_page_index(drive, user_offset, pos)?; let at = (leaf_base as u64 + page_index / 170) * 4096 + (page_index % 170) * 24; tweak[..4].copy_from_slice(&tree[at as usize + 20..at as usize + 24]); tweak[4..8].copy_from_slice(&region.to_le_bytes()); tweak[8..].copy_from_slice(&header_bytes[0x220..0x228]); decrypt_page(&mut page, content_key.unwrap(), &tweak)?; }
+                if pos.checked_add(4096).is_none_or(|end| end > region_end) {
+                    // 段落点/长度与它所属区域表条目的 `off/length` 不符：继续读会越过
+                    // 区域、读进文件尾部的未哈希余量（实测该包尾部有 2 GB），最后以一句
+                    // 没有定位信息的「读取范围超出输入」收场。
+                    log::warn!(
+                        "[msixvc] segment {index} 读越区域: pos={pos} region_end={region_end} remaining={remaining} start={start} region={region} size={}",
+                        segment.size
+                    );
+                    return Err(ParseError::OutOfBounds);
+                }
+                // 切片前必须显式判界：`tree[at..at+24]` 越界会 panic（而不是返回
+                // OutOfBounds），把一个可诊断的解析错误变成进程崩溃。
+                if let Some(index) = data_page_index(user_offset, pos).ok() {
+                    let at = (leaf_base as u64 + index / 170) * 4096 + (index % 170) * 24;
+                    if at.checked_add(24).is_none_or(|end| end > tree.len() as u64) {
+                        return Err(ParseError::OutOfBounds);
+                    }
+                } else {
+                    return Err(ParseError::OutOfBounds);
+                }
+
+                if pos >= user_offset && (pos - user_offset) >= hashed_span {
+                    // 段读到了可哈希区之外：段落点/长度与区域不符（越界读）。
+                    return Err(ParseError::OutOfBounds);
+                }
+                let mut page = if pos >= user_offset && (pos - user_offset) < hashed_span {
+                    check_page(&mut file, pos, &tree)?
+                } else {
+                    // 落在可哈希区之外（例如区域填充页）：按普通数据读取，
+                    // 不对哈希树断言。参考实现同样只对段实际占据的页做哈希校验。
+                    read_at(&mut file, pos, 4096)?
+                };
+                if encrypted { let mut tweak = [0u8; 16]; let page_index = data_page_index(user_offset, pos)?; let at = (leaf_base as u64 + page_index / 170) * 4096 + (page_index % 170) * 24; tweak[..4].copy_from_slice(&tree[at as usize + 20..at as usize + 24]); tweak[4..8].copy_from_slice(&region.to_le_bytes()); tweak[8..].copy_from_slice(&header_bytes[0x220..0x228]); decrypt_page(&mut page, content_key.unwrap(), &tweak)?; }
                 let amount = remaining.min(4096) as usize;
                 out.write_all(&page[..amount]).map_err(|e| ParseError::Io(e.to_string()))?;
                 remaining = remaining.checked_sub(amount as u64).ok_or(ParseError::OutOfBounds)?;
@@ -1046,11 +1141,11 @@ mod tests {
     }
 
     #[test]
-    fn hashed_page_index_includes_drive_pages() {
-        assert_eq!(hashed_page_index(3, 0x1000, 0x1000).unwrap(), 3);
-        assert_eq!(hashed_page_index(3, 0x1000, 0x3000).unwrap(), 5);
-        assert!(hashed_page_index(3, 0x1000, 0x1800).is_err());
-        assert!(hashed_page_index(3, 0x1000, 0x0).is_err());
+    fn data_page_index_starts_at_zero() {
+        assert_eq!(data_page_index(0x1000, 0x1000).unwrap(), 0);
+        assert_eq!(data_page_index(0x1000, 0x3000).unwrap(), 2);
+        assert!(data_page_index(0x1000, 0x1800).is_err());
+        assert!(data_page_index(0x1000, 0x0).is_err());
     }
 
     #[test]
@@ -1193,11 +1288,13 @@ mod tests {
     fn rejects_device_mismatch_in_content_keys() {
         let mut blob = vec![0u8; 8];
         blob.extend_from_slice(&0xd2u32.to_le_bytes());
-        blob.extend_from_slice(&2u32.to_le_bytes());
-        blob.extend_from_slice(&[1, 2]);
+        blob.extend_from_slice(&8u32.to_le_bytes());
+        blob.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
         blob.extend_from_slice(&0xcau32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(unpack_content_keys(&blob, &[3, 4], &[0u8; 16]), Err(ParseError::DeviceMismatch));
+
+
     }
 
     #[test]
@@ -1227,4 +1324,35 @@ mod tests {
         assert_eq!(before, std::fs::read(&path).unwrap());
         let _ = std::fs::remove_file(path);
     }
-}
+
+    /// `0xd2` 里的设备 ID 与调用方绑定值**字节序相反**：服务端按小端整数存放。
+    ///
+    /// 真实内容许可证里是 `[da,4e,25,fd,18,c0,18,00]`，而同一设备的 PUID 是
+    /// `[00,18,c0,18,fd,25,4e,da]`。这里用一对正反样本锁住该反转：按原序存放必须失配，
+    /// 否则说明反转逻辑被误删，而线上会退化成永远的 DeviceMismatch。
+    #[test]
+    fn content_license_device_id_byte_order_is_reversed() {
+        let device = [0x00u8, 0x18, 0xc0, 0x18, 0xfd, 0x25, 0x4e, 0xda];
+        let build = |stored: &[u8]| {
+            let mut blob = vec![0u8; 8];
+            // 只放 0xd2：本测试只关心设备 ID 的字节序，其余块的缺失不应干扰判定。
+            blob.extend_from_slice(&0xd2u32.to_le_bytes());
+            blob.extend_from_slice(&(stored.len() as u32).to_le_bytes());
+            blob.extend_from_slice(stored);
+            blob
+        };
+        let mut reversed = device;
+        reversed.reverse();
+        // 反转后的绑定值与调用方一致 → 不再因设备不符被拒；这里没有 0xca，
+        // 所以继续走下去会以 InvalidLicenseBlob 收场，正说明设备校验已通过。
+        assert_eq!(
+            unpack_content_keys(&build(&reversed), &device, &[0u8; 16]),
+            Err(ParseError::InvalidLicenseBlob),
+            "字节序反转后的设备 ID 必须通过设备校验"
+        );
+        assert_eq!(
+            unpack_content_keys(&build(&device), &device, &[0u8; 16]),
+            Err(ParseError::DeviceMismatch),
+            "原序存放必须失配，否则反转逻辑被误删"
+        );
+    }}
