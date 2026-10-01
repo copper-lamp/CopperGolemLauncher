@@ -40,6 +40,14 @@ use crate::services::paths::Paths;
 /// 「最近下载」展示需求，也把表规模钉在常数级。
 const HISTORY_KEEP: i64 = 200;
 
+/// 「清除下载记录」在 SQL 侧的状态白名单。
+///
+/// 必须与 [`DownloadStatus::is_finished`] 逐字对齐（`is_finished` 管内存侧、
+/// 本常量管持久化侧）：两侧一旦不一致，就会出现「内存里清了、库里没清」
+/// 或反过来的错位，表现为「清空后条目又冒出来」或「点继续提示任务不存在」。
+/// `paused` **不在**名单内——它是可继续的未完成任务。
+const HISTORY_RESET_STATUSES: &str = "'done', 'failed', 'cancelled'";
+
 /// 下载队列服务。
 pub struct DownloadService {
     manager: DownloadManager,
@@ -286,16 +294,18 @@ impl DownloadService {
 
     /// 清空下载记录（内存 + 持久化），返回删除的持久化行数。
     ///
-    /// 只清**终态**记录，不碰任何在跑 / 待跑 / 安装中的任务：
-    /// 「清除记录」在用户心里是「把这份历史列表擦干净」，绝不是「把我正在下的
-    /// 东西一起取消掉」。`Installing` 单独排除——它后面还要转成终态，
-    /// 清掉会让正在安装的条目从列表里凭空消失。
+    /// 只清**已收工**的记录（完成 / 失败 / 取消），三类任务刻意不动：
+    /// - 在跑 / 待跑的任务：「清除记录」在用户心里是「把这份历史列表擦干净」，
+    ///   绝不是「把我正在下的东西一起取消掉」；
+    /// - `Installing`：它后面还要转成终态，清掉会让正在安装的条目从列表里凭空消失；
+    /// - `Paused`：暂停态是**可继续**的未完成任务（见 `DownloadStatus::is_finished`），
+    ///   删掉它的记录等于让用户再也点不到「继续」。
     ///
     /// 只删记录，不删文件：已下载的产物是用户资产，磁盘上的东西由用户在
     /// 「打开所在文件夹」里自行处置。
     pub fn clear_history(&self) -> Result<usize, KernelError> {
         self.manager.clear_finished();
-        // 仍在内存里的任务（含安装中）绝不能删行：删了会在下一次快照时
+        // 仍在内存里的任务（含安装中 / 已暂停）绝不能删行：删了会在下一次快照时
         // 以「内存任务」的身份重新出现，表现为「清空后有一行删不掉」。
         let live_ids: Vec<u64> = self.manager.snapshots().iter().map(|s| s.id).collect();
         self.db.with_conn(|conn| {
@@ -312,7 +322,7 @@ impl DownloadService {
             };
             let sql = format!(
                 "DELETE FROM core_download_task
-                  WHERE status IN ('done', 'failed', 'cancelled', 'paused'){placeholders}"
+                  WHERE status IN ({HISTORY_RESET_STATUSES}){placeholders}"
             );
             let n = conn.execute(&sql, [])?;
             Ok(n)
@@ -720,6 +730,42 @@ mod tests {
 
         assert_eq!(read_row(&db, 1).unwrap().0, "done");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归：「清除记录」的两侧白名单必须一致，且都不得带走暂停态。
+    ///
+    /// 内存侧由 `DownloadStatus::is_finished` 决定，持久化侧由 SQL 白名单决定；
+    /// 两侧错位会出现「清空后条目又冒出来」或「点继续提示任务不存在」。
+    #[test]
+    fn history_reset_statuses_match_is_finished_and_keep_paused() {
+        // 暂停态绝不能进白名单：删掉它的记录等于让用户再也点不到「继续」。
+        assert!(
+            !HISTORY_RESET_STATUSES.contains("paused"),
+            "暂停态被误纳入清除范围"
+        );
+        for status in [
+            DownloadStatus::Done,
+            DownloadStatus::Failed,
+            DownloadStatus::Cancelled,
+        ] {
+            assert!(status.is_finished(), "{status:?} 应属已收工");
+            assert!(
+                HISTORY_RESET_STATUSES.contains(status_str(status)),
+                "SQL 白名单缺少 {status:?}，两侧不一致"
+            );
+        }
+        for status in [
+            DownloadStatus::Paused,
+            DownloadStatus::Installing,
+            DownloadStatus::Queued,
+            DownloadStatus::Downloading,
+        ] {
+            assert!(!status.is_finished(), "{status:?} 不应属已收工");
+            assert!(
+                !HISTORY_RESET_STATUSES.contains(status_str(status)),
+                "SQL 白名单不得包含 {status:?}"
+            );
+        }
     }
 
     /// 回归：状态字符串与枚举双向映射自洽（持久化层唯一的翻译点）。

@@ -286,7 +286,7 @@
     "history_clear": "清除记录",
     "history_clear_hint": "删除全部已结束的下载记录（不删除已下载的文件）",
     "history_clear_title": "清除下载记录？",
-    "history_clear_body": "将删除全部已完成、失败与已取消的记录，正在下载与正在安装的任务不受影响。已下载的文件会保留在磁盘上，可用条目的快捷方式按钮打开所在文件夹。",
+    "history_clear_body": "将删除全部已完成、失败与已取消的记录。正在下载、正在安装与已暂停（可继续）的任务不受影响；已下载的文件会保留在磁盘上，可用条目的快捷方式按钮打开所在文件夹。",
     "history_clear_confirm": "清除记录",
     "history_cleared": "下载记录已清除",
     "actions_view": "查看详情",

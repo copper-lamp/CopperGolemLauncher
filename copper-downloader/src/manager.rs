@@ -17,6 +17,9 @@ use crate::error::{DownloadError, ExistingFilePolicy};
 use crate::task::{DownloadStatus, TaskSnapshot};
 
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(200);
+/// 阶段细节文案的最短广播间隔（见 `report_phase`：细节比百分比走更快的车道，
+/// 但同样必须有上限，否则逐段落上报会把 IPC 打满）。
+const PHASE_DETAIL_EMIT_INTERVAL: Duration = Duration::from_millis(80);
 const BACKOFF_BASE_MS: u64 = 500;
 const BACKOFF_CAP_MS: u64 = 8_000;
 /// 单次读超时（两次收到数据之间的最长等待），防止连接半开时任务永久卡在下载中。
@@ -538,15 +541,16 @@ impl DownloadManager {
         Ok(())
     }
 
-    /// 移除全部**终态**任务，返回被移除的条数。
+    /// 移除全部**已收工**的任务（完成 / 失败 / 取消），返回被移除的条数。
     ///
-    /// 「清空下载记录」用：只清终态（完成 / 失败 / 取消 / 暂停）。
-    /// `Installing` 刻意不在其中——它后面还会转成终态，此时把它从内存里抹掉
-    /// 会让正在安装的条目在界面上凭空消失（进度条消失、随后 Done 事件也找不到行）。
+    /// 「清空下载记录」用。两类任务刻意不动：
+    /// - `Installing` 后面还会转成终态，此时把它从内存里抹掉会让正在安装的条目
+    ///   在界面上凭空消失（进度条消失、随后 Done 事件也找不到行）；
+    /// - `Paused` 是**可继续**的未完成任务，见 [`DownloadStatus::is_finished`]。
     pub fn clear_finished(&self) -> usize {
         let mut tasks = self.inner.tasks.lock();
         let before = tasks.len();
-        tasks.retain(|_, state| !state.status.lock().is_terminal());
+        tasks.retain(|_, state| !state.status.lock().is_finished());
         before - tasks.len()
     }
 
@@ -606,6 +610,7 @@ impl DownloadManager {
         } else {
             0.0
         };
+        let now = Instant::now();
         *state.phase_progress.lock() = Some(clamped);
         let stage_changed = {
             let mut current = state.stage.lock();
@@ -626,11 +631,19 @@ impl DownloadManager {
         if stage_changed {
             *state.last_progress_emit.lock() = None;
         }
-        // 细节变化（如「正在解包 a.exe → b.exe」）同样值得立刻可见，
-        // 否则细粒度文案会被节流吞掉，界面看起来像卡住了。
-        if detail_changed {
+        // 细节变化（如「正在解包 a.exe → b.exe」）值得比百分比更快地可见，
+        // 否则细粒度文案会被 200ms 节流吞掉，界面看起来像卡住了。
+        // 但**不能完全绕过节流**：解包回调按段落触发，一个 GB 级包有上千到上万个
+        // 段落，每个段落的文件名都不同，逐条广播等于把 IPC 打满。
+        // 折中是给细节变化一条更短（80ms ≈ 12 次/秒）的快车道。
+        let fast_due = {
+            let last = *state.last_progress_emit.lock();
+            last.map(|t| now.duration_since(t) >= PHASE_DETAIL_EMIT_INTERVAL)
+                .unwrap_or(true)
+        };
+        if stage_changed || (detail_changed && fast_due) {
             self.inner.emit(DownloadEvent::Progress(state.snapshot()));
-            *state.last_progress_emit.lock() = Some(Instant::now());
+            *state.last_progress_emit.lock() = Some(now);
         } else {
             self.inner.emit_progress(&state);
         }

@@ -46,6 +46,19 @@ impl DownloadStatus {
                 | DownloadStatus::Paused
         )
     }
+
+    /// 是否为「已收工」的任务（完成 / 失败 / 取消），**不含** `Paused`。
+    ///
+    /// 「清除下载记录」用它而不是 [`Self::is_terminal`]：暂停态是**可继续**的
+    /// 未完成任务，清掉它的记录等于让用户再也点不到「继续」——断点字节虽然还
+    /// 在磁盘上，但那条任务身份没了，用户只能重投一次。这是不可逆的损失，
+    /// 不该被一个「清理历史」的按钮顺手带走。
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self,
+            DownloadStatus::Done | DownloadStatus::Failed | DownloadStatus::Cancelled
+        )
+    }
 }
 
 /// 任务的只读快照，用于状态同步与 UI 渲染。
@@ -85,4 +98,31 @@ pub struct TaskSnapshot {
     /// 这类内容无法预先本地化（来自被解包的文件名、上游守护进程的原始步骤名），
     /// 因此原样透传；为空时前端只显示 `stage` 的译文。
     pub stage_detail: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：「清除记录」的判定必须把暂停态与安装态排除在外。
+    ///
+    /// 暂停是可继续的未完成任务，删掉它的记录等于让用户再也点不到「继续」；
+    /// 安装中则后面还会转成终态，清掉会让条目在界面上凭空消失。
+    #[test]
+    fn finished_excludes_paused_and_installing() {
+        assert!(DownloadStatus::Done.is_finished());
+        assert!(DownloadStatus::Failed.is_finished());
+        assert!(DownloadStatus::Cancelled.is_finished());
+        assert!(
+            !DownloadStatus::Paused.is_finished(),
+            "暂停态不得被「清除记录」带走"
+        );
+        assert!(!DownloadStatus::Installing.is_finished());
+        assert!(!DownloadStatus::Queued.is_finished());
+        assert!(!DownloadStatus::Downloading.is_finished());
+        // 「终态」与「已收工」刻意不同：暂停确实不会自行变化（是终态），
+        // 但它有「继续」这条路可走（不是已收工）。
+        assert!(DownloadStatus::Paused.is_terminal());
+        assert!(!DownloadStatus::Installing.is_terminal());
+    }
 }

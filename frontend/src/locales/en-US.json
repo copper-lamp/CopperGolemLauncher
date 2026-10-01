@@ -286,7 +286,7 @@
     "history_clear": "Clear records",
     "history_clear_hint": "Delete every finished download record (downloaded files are kept)",
     "history_clear_title": "Clear download records?",
-    "history_clear_body": "Completed, failed and cancelled records will be deleted. Downloads in progress and installs are not affected. Files already downloaded stay on disk; use an entry's shortcut button to open its folder.",
+    "history_clear_body": "Completed, failed and cancelled records will be deleted. Downloads in progress, installs and paused (resumable) tasks are not affected. Files already downloaded stay on disk; use an entry's shortcut button to open its folder.",
     "history_clear_confirm": "Clear records",
     "history_cleared": "Download records cleared",
     "actions_view": "View details",
