@@ -347,7 +347,6 @@ pub fn run() {
             commands::download::download_set_concurrency,
             commands::account::account_current,
             commands::account::account_begin_login,
-            commands::account::account_begin_xal_login,
             commands::account::account_logout,
             commands::account::account_refresh,
             commands::account::account_credentials,
