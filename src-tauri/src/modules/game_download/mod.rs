@@ -35,7 +35,13 @@ pub const MODULE_ID: &str = "game-download";
 pub struct GameDownloadModule {
     /// 事件订阅句柄（stop 时退订）。
     subs: Mutex<Vec<Subscription>>,
-    /// 安装单飞锁（一次只解一个包，避免并发 GB 级解压）。
+/// 安装单飞锁（一次只解一个包，避免并发 GB 级解压）。
+    ///
+    /// 取自 [`installer::install_lock`] 的进程级单例而非模块实例字段：
+    /// 命令层（`game_download_install`）也要进入同一条安装流水线，但它只
+    /// 持有 `KernelContext`，拿不到模块实例。锁若挂在实例上，命令侧只能新
+    /// 建一把，于是「手动重装」与「下载完成自动安装」会并发解包——正是这把
+    /// 锁要防的场景。
     install_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -49,7 +55,7 @@ impl GameDownloadModule {
     pub fn new() -> Self {
         Self {
             subs: Mutex::new(Vec::new()),
-            install_lock: Arc::new(tokio::sync::Mutex::new(())),
+            install_lock: installer::install_lock(),
         }
     }
 }

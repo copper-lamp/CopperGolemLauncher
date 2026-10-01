@@ -9,6 +9,15 @@ pub enum DownloadError {
     #[error("任务不存在: {0}")]
     TaskNotFound(u64),
 
+    /// 活跃任务（排队中 / 下载中）不可移除。
+    ///
+    /// 此前这里返回 `Io(InvalidInput)`——一个刻意不精确的通用变体。调用方
+    /// （内核下载服务）需要区分「任务不存在，可安全降级为删历史记录」与
+    /// 「任务在跑，必须原样上报」，靠匹配错误消息既脆弱又易漂移，
+    /// 故单列为具名变体。
+    #[error("下载中的任务不能移除: {0}")]
+    ActiveTaskNotRemovable(u64),
+
     #[error("HTTP 请求失败: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -93,7 +102,11 @@ fn is_fatal_io_kind(kind: io::ErrorKind) -> bool {
 }
 
 /// 目标文件已存在时的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 序列化用 snake_case 字符串（`skip_if_valid` / `overwrite`），与内核命令层
+/// `EnqueueOptions::existing_policy` 的取值一致，便于落库后原样回读。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExistingFilePolicy {
     /// 目标已存在且校验通过则直接视为完成（幂等重试）。
     SkipIfValid,

@@ -4,7 +4,7 @@
 
 import { computed } from "vue";
 import { useRouter } from "vue-router";
-import { CheckCircle2, Download, LoaderCircle, RefreshCw, X } from "@lucide/vue";
+import { CheckCircle2, Download, LoaderCircle, PackageCheck, RefreshCw, X } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import {
@@ -30,6 +30,20 @@ const failed = computed(() => {
   const state = gd.taskStates.value[props.version.id];
   return state?.state === "failed" ? (state.error ?? "") : null;
 });
+/**
+ * 能否「仅重装」：本地已有完整整包但尚未安装成功。
+ *
+ * `is_downloaded` 来自清单视图（探测整包文件是否存在），因此下载完成、
+ * 安装失败时会转为可安装——这正是需要「重试安装」而非「重新下载」的场合。
+ * 下载在途 / 正在解包 / 已安装时一律不可点。
+ */
+const canInstall = computed(
+  () =>
+    props.version.is_downloaded &&
+    !props.version.is_installed &&
+    !isDownloading.value &&
+    !isExtracting.value,
+);
 const percent = computed(() => gd.percentOf(props.version.id));
 const raw = computed(() => gd.rawOf(props.version.id));
 const speed = computed(() => gd.speedOf(props.version.id));
@@ -44,6 +58,10 @@ async function onDownload() {
 
 async function onCancel() {
   await gd.cancel(props.version.id);
+}
+
+async function onInstall() {
+  await gd.install(props.version.id);
 }
 </script>
 
@@ -105,6 +123,16 @@ async function onCancel() {
           <X :size="15" />
         </button>
       </div>
+      <!-- 下载完成但未安装：提供「安装」按钮（只重装，不重下） -->
+      <button
+        v-else-if="canInstall"
+        class="version-row__btn version-row__btn--accent"
+        :title="t(`${MB_KEY}.actions.install`)"
+        @click="onInstall"
+      >
+        <PackageCheck :size="14" />
+        {{ t(`${MB_KEY}.actions.install`) }}
+      </button>
       <!-- 失败：可重试 -->
       <div v-else-if="failed !== null" class="version-row__state version-row__state--failed">
         <button

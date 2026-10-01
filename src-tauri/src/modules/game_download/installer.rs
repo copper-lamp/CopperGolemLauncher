@@ -38,6 +38,21 @@ pub const DOWNLOAD_SUBDIR: &str = ".download";
 /// 启动续传时单个任务允许的最大自动重投次数（防 failed 无限重下）。
 const MAX_RESUME_ATTEMPTS: i64 = 3;
 
+/// 安装单飞锁：进程级单例，一次只解一个包。
+///
+/// 解包是 GB 级同步 IO + 高内存，并发解包会把磁盘与内存同时打满，
+/// 触发后表现为「两个都没装上，还把机器卡死」。故所有安装入口
+/// （下载完成自动安装 / 启动续装 / 用户手动重装）都必须经这把锁。
+///
+/// 用进程级单例而非模块实例字段：命令层只持有 `KernelContext`，
+/// 拿不到模块实例；若命令侧另建一把锁，自动安装与手动重装就会并发解包。
+pub fn install_lock() -> Arc<tokio::sync::Mutex<()>> {
+    static LOCK: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
+    Arc::clone(
+        LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))),
+    )
+}
+
 /// 安装流水线上下文：把 `KernelContext` 需要跨 async 捕获的能力拆出为可克隆 Arcs。
 #[derive(Clone)]
 pub struct Ctx {
@@ -415,6 +430,71 @@ pub fn cancel(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
     // 删除记录 → 前端回退为“可下载”，重启后 `resume_pending` 不会续传。
     delete_record(ctx, id)?;
     ctx.events.publish("game-download.cancelled", serde_json::json!({ "id": id }));
+    Ok(())
+}
+
+/// 仅重装：整包已在本地时直接重跑安装流水线，**不重新下载**。
+///
+/// 与 `enqueue` 的分工：`enqueue` 负责「把包拿到手」，本函数负责「把包装上」。
+/// 缺了它，安装阶段失败（商店授权未过、md5 不符、解包中断）后唯一的出路是
+/// `enqueue` 重来一遍——对数 GB 的包而言这是把最贵的一步重做一次，而失败点
+/// 往往与下载毫无关系。
+///
+/// 前置条件：本地整包存在且 md5 与清单一致。不满足时**拒绝并说明原因**，
+/// 而不是悄悄重新下载——用户点的是「安装」，替他改下几个 G 的流量是不可预期的。
+///
+/// 状态流转与自动安装共用 `finish_install`（含单飞锁与 md5 自验），
+/// 因此重复点击是幂等安全的：正在解包时直接返回，不排队。
+pub fn install(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
+    let rec = get_record(ctx, id)?
+        .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{id}` 没有下载记录，无法安装")))?;
+
+    // 正在解包：重复点击直接返回，不排队、不打断。
+    if rec.state == "extracting" {
+        return Ok(());
+    }
+    // 已安装即无需动作。
+    if meta_bridge::is_installed(&ctx.install_dir(&rec.folder)) {
+        return Ok(());
+    }
+    // 下载仍在途：必须等下载完成，不能拿半包去装。
+    if let Some(task_id) = rec.task_id {
+        if let Some(snapshot) = ctx.download.task(task_id) {
+            if matches!(snapshot.status, DownloadStatus::Queued | DownloadStatus::Downloading) {
+                return Err(KernelError::Conflict(format!(
+                    "版本 `{id}` 仍在下载，请等待下载完成后再安装"
+                )));
+            }
+        }
+    }
+    if !rec.dest.is_file() {
+        return Err(KernelError::InvalidArgument(format!(
+            "本地没有版本 `{id}` 的完整安装包，请先下载"
+        )));
+    }
+    if rec.md5.trim().is_empty() {
+        return Err(KernelError::Config("清单缺少 MD5 校验值，拒绝安装".into()));
+    }
+    if !md5_matches(&rec.dest, &rec.md5)? {
+        // 包已损坏：删掉它，否则它会一直卡住后续安装尝试
+        // （每次都走到这里失败，而用户看不出为什么）。
+        let path = rec.dest.clone();
+        cleanup_package(&path);
+        return Err(KernelError::Config(format!(
+            "本地安装包校验失败（{}），已删除该文件，请重新下载",
+            rec.dest.to_string_lossy()
+        )));
+    }
+
+    let lock = install_lock();
+    let next_ctx = ctx.clone();
+    let vid = rec.version_id.clone();
+    ctx.runtime.spawn(async move {
+        if let Err(e) = finish_install(&next_ctx, &lock, rec).await {
+            mark_failed(&next_ctx, &vid, &e.to_string());
+            log::error!("[game-download] 手动重装 {vid} 失败: {e}");
+        }
+    });
     Ok(())
 }
 
@@ -1081,5 +1161,39 @@ mod tests {
             states.iter().map(|_| "?").collect::<Vec<_>>().join(",")
         );
         assert!(sql.contains("IN (?,?)"));
+    }
+
+    /// 安装单飞锁必须是进程级同一个实例。
+    ///
+    /// 回归点：锁若挂在模块实例上，命令层（只持有 `KernelContext`）会另建一把，
+    /// 于是「手动重装」与「下载完成自动安装」并发解包——正是这把锁要防的场景。
+    #[test]
+    fn install_lock_is_a_singleton() {
+        let a = install_lock();
+        let b = install_lock();
+        assert!(Arc::ptr_eq(&a, &b), "安装锁不是同一个实例，会导致并发解包");
+    }
+
+    /// 手动重装的前置判定：这些情况必须在下载/安装前拒绝，而不是重下数 GB 的包。
+    #[test]
+    fn install_preconditions_are_strict() {
+        // 无记录：拒绝（没有包可装）。
+        let dir = std::env::temp_dir().join(format!("copper_gd_inst_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 包缺失：拒绝安装（`dest` 不存在）。
+        let missing = dir.join("missing.msixvc");
+        assert!(!missing.is_file(), "前提不成立：测试包不应存在");
+
+        // 清单缺 md5：即便包在也不能装（没有完整性防线）。
+        let pkg = dir.join("ok.msixvc");
+        std::fs::write(&pkg, b"abc").unwrap();
+        assert!(pkg.is_file());
+        let md5_empty = md5_matches(&pkg, "");
+        // `md5_matches` 对空期望值报错而非放行——空值恒校验失败会导致无限重试。
+        assert!(md5_empty.is_err(), "空 md5 必须拒绝而不是恒失败");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

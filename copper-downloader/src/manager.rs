@@ -27,7 +27,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SPEED_EMA_ALPHA: f64 = 0.3;
 
 /// 下载任务的可配置选项。
-#[derive(Debug, Clone)]
+///
+/// 全字段可序列化：内核会把投递参数落库，使**历史任务在重启后仍可原样重投**
+/// （见 `services::download::DownloadService::retry`）。因此新增字段必须给出
+/// 合理默认值，`#[serde(default)]` 与 `Default` 实现需保持一致。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct DownloadOptions {
     /// 是否断点续传（保留 `.part` 临时文件，恢复时以 Range 续传）。
     pub resume: bool,
@@ -89,12 +94,18 @@ struct TaskState {
 }
 
 impl TaskState {
-    fn new(id: u64, url: String, dest: PathBuf, options: DownloadOptions) -> Self {
+    /// 构造任务状态。
+    ///
+    /// `created_at_ms` 由调用方给定而非内部取当前时间：复活持久化任务时需要
+    /// 沿用原始创建时间，否则历史条目在列表里会跳到「刚刚下载」的位置。
+    fn new(
+        id: u64,
+        url: String,
+        dest: PathBuf,
+        options: DownloadOptions,
+        created_at_ms: u64,
+    ) -> Self {
         let part_path = part_path_for(&dest);
-        let created_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
         Self {
             id,
             url,
@@ -145,6 +156,14 @@ fn part_path_for(dest: &Path) -> PathBuf {
     let mut os = dest.as_os_str().to_owned();
     os.push(".part");
     PathBuf::from(os)
+}
+
+/// 当前 Unix 毫秒（系统时钟早于纪元时按 0 处理，不 panic）。
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 下载事件监听器。
@@ -319,6 +338,34 @@ impl DownloadManager {
         dest: impl Into<PathBuf>,
         options: DownloadOptions,
     ) -> Result<u64, DownloadError> {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        self.enqueue_with_id(id, url, dest, options)?;
+        Ok(id)
+    }
+
+    /// 以**指定 id** 投递任务。
+    ///
+    /// 供「复活持久化任务」使用：内核的下载历史落库后，重启即从内存消失；
+    /// 用户对历史记录点重试/继续时，需要把这条任务放回队列而**不改变它的
+    /// 身份**。id 是持久化表主键，也是前端列表的键——换新 id 会让界面出现
+    /// 「新增一行 + 旧行原地不动」的错位。
+    ///
+    /// 调用方须保证 `id` 大于已分配过的所有 id（内核用 `ensure_next_id` 在启动
+    /// 时把 `next_id` 顶到持久化最大 id 之后，故 `enqueue` 不会撞上被复用的 id）。
+    /// 复用同一 id 时若已有活跃任务在跑，返回 `InvalidArgument` 而不覆盖——
+    /// 覆盖会让在途任务的 `Arc` 被静默踢出表，表现为进度条凭空停止。
+    ///
+    /// `created_at_ms` 传 `None` 表示「当作新建」（用当前时间）；复活历史任务时
+    /// 应传原始创建时间，否则条目会在列表里跳到最新位置。
+    #[allow(clippy::too_many_arguments)]
+    pub fn enqueue_with_created_at(
+        &self,
+        id: u64,
+        url: impl Into<String>,
+        dest: impl Into<PathBuf>,
+        options: DownloadOptions,
+        created_at_ms: Option<u64>,
+    ) -> Result<(), DownloadError> {
         let url = url.into();
         let dest = dest.into();
         if url.trim().is_empty() || reqwest::Url::parse(&url).is_err() {
@@ -329,13 +376,36 @@ impl DownloadManager {
                 "empty destination path".into(),
             ));
         }
+        if let Some(existing) = self.inner.tasks.lock().get(&id) {
+            if existing.status.lock().is_active() {
+                return Err(DownloadError::InvalidArgument(format!(
+                    "任务 {id} 正在下载，无法以同一 id 重新投递"
+                )));
+            }
+        }
 
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        let state = Arc::new(TaskState::new(id, url, dest, options));
+        let state = Arc::new(TaskState::new(
+            id,
+            url,
+            dest,
+            options,
+            created_at_ms.unwrap_or_else(now_millis),
+        ));
         self.inner.tasks.lock().insert(id, state.clone());
         self.inner.emit(DownloadEvent::Created(state.snapshot()));
         self.spawn_run(state);
-        Ok(id)
+        Ok(())
+    }
+
+    /// 以指定 id 投递（创建时间取当前，等价于「当作新建」）。
+    pub fn enqueue_with_id(
+        &self,
+        id: u64,
+        url: impl Into<String>,
+        dest: impl Into<PathBuf>,
+        options: DownloadOptions,
+    ) -> Result<(), DownloadError> {
+        self.enqueue_with_created_at(id, url, dest, options, None)
     }
 
     /// 暂停单个任务（保留临时文件）。等待中的任务立即进入暂停态。
@@ -448,10 +518,7 @@ impl DownloadManager {
     pub fn remove(&self, id: u64) -> Result<(), DownloadError> {
         let state = self.require_task(id)?;
         if state.status.lock().is_active() {
-            return Err(DownloadError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "active task cannot be removed",
-            )));
+            return Err(DownloadError::ActiveTaskNotRemovable(id));
         }
         self.inner.tasks.lock().remove(&id);
         Ok(())

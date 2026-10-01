@@ -145,4 +145,21 @@ pub const CORE_MIGRATIONS: &[Migration] = &[
               );
               CREATE INDEX IF NOT EXISTS idx_download_task_created ON core_download_task(created_at);",
     },
+    // v2：历史任务可操作性。
+    //
+    // 此前 `core_download_task` 只存 url/dest/filename/status/total_bytes/error，
+    // 缺三样让「重试 / 删除」在重启后彻底不可用的东西：
+    // - `downloaded_bytes`：历史行进度恒显示 0（前端进度条永远空的）。
+    // - `retry_count`：详情弹窗的重试次数恒为 0。
+    // - `options`：投递参数（断点续传、期望校验和、请求头…）。没有它，重启后
+    //   重投只能退化成「用默认值重新下一个全新文件」——既丢掉断点，也丢掉完整性
+    //   校验那样的安全约束，等于把一个可控失败变成静默的坏包。
+    // 这三列都允许为空（历史库迁移后为 NULL），读取侧按默认值兜底。
+    Migration {
+        version: 2,
+        name: "core_download_task_restore",
+        sql: "ALTER TABLE core_download_task ADD COLUMN downloaded_bytes INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE core_download_task ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE core_download_task ADD COLUMN options TEXT;",
+    },
 ];

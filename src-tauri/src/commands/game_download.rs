@@ -25,6 +25,16 @@ pub async fn game_download_cancel(kernel: State<'_, KernelContext>, id: String) 
 #[tauri::command]
 pub async fn game_download_status(kernel: State<'_, KernelContext>, id: String) -> CommandResult<Option<installer::TaskView>> { installer::status(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
 
+/// 仅重装：整包已在本地时重跑安装流水线，不重新下载。
+///
+/// 安装阶段失败（商店授权、md5、解包中断）后的补救路径——此前只能
+/// `game_download_enqueue` 重来，等于把数 GB 的下载重做一遍。
+/// 本地整包缺失或校验不符时**明确报错**而不是悄悄改走下载。
+#[tauri::command]
+pub async fn game_download_install(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    installer::install(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error)
+}
+
 /// 导入一个 APK / APKS。
 ///
 /// `source_path` 必须是**应用私有目录内**的路径：安卓端由系统文件选择器

@@ -484,8 +484,15 @@ pub(crate) async fn acquire_package_content_key(
     // Serialize device-credential access for the whole operation.
     let _lock = DeviceLock::acquire(&request.cache_dir)?;
 
-    let ticket = crate::services::store_wam::acquire_store_ticket_for_xuid(&request.xuid)
-        .map_err(|error| NativeInstallError::Auth(error.to_string()))?;
+    // WAM 是阻塞式 WinRT 调用：内部轮询异步操作直到完成，直接在异步任务里调用会
+    // 占住 tokio 工作线程。放到阻塞线程池，与交互授权路径保持同一执行模型。
+    let xuid = request.xuid.clone();
+    let ticket = tokio::task::spawn_blocking(move || {
+        crate::services::store_wam::acquire_store_ticket_for_xuid(&xuid)
+    })
+    .await
+    .map_err(|error| NativeInstallError::Auth(format!("WAM ticket task failed: {error}")))?
+    .map_err(|error| NativeInstallError::Auth(error.to_string()))?;
 
     let state = ensure_device_state(client, &request.cache_dir, &request.xuid).await?;
     let material = derive_device_material(&state.license)?;

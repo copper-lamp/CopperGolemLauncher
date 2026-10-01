@@ -10,6 +10,7 @@ import {
   FileKey,
   Gamepad2,
   LoaderCircle,
+  PackageCheck,
   RefreshCw,
   ShieldAlert,
   X,
@@ -50,6 +51,20 @@ const failed = computed(() =>
   state.value?.state === "failed" ? (state.value.error ?? "") : null,
 );
 
+/**
+ * 能否「仅重装」：本地已有完整整包但尚未安装成功。
+ *
+ * 下载完成、安装失败时这是正确的补救动作——重装只跑安装流水线，
+ * 不重下数 GB 的包。为真时它优先于「重试」（后者会重新下载）。
+ */
+const canInstall = computed(
+  () =>
+    !!version.value?.is_downloaded &&
+    !version.value?.is_installed &&
+    !isDownloading.value &&
+    !isExtracting.value,
+);
+
 const percent = computed(() => gd.percentOf(id.value));
 const raw = computed(() => gd.rawOf(id.value));
 const speed = computed(() => gd.speedOf(id.value));
@@ -60,6 +75,10 @@ async function onDownload() {
 
 async function onCancel() {
   await gd.cancel(id.value);
+}
+
+async function onInstall() {
+  await gd.install(id.value);
 }
 
 /** 返回列表（未找到版本等兜底引导）。 */
@@ -135,8 +154,18 @@ watch(id, () => {
 
       <!-- 状态与操作 -->
       <div class="gd-detail__status">
+        <!-- 下载完成未安装：只重装，不重下 -->
+        <div v-if="canInstall" class="gd-detail__state-block">
+          <PackageCheck :size="20" class="accent" />
+          <span>{{ t(`${MB_KEY}.state.downloaded`) }}</span>
+          <button class="gd-detail__primary" @click="onInstall">
+            <PackageCheck :size="14" />
+            {{ t(`${MB_KEY}.actions.install`) }}
+          </button>
+        </div>
+
         <!-- 解包中 -->
-        <div v-if="isExtracting" class="gd-detail__state-block">
+        <div v-else-if="isExtracting" class="gd-detail__state-block">
           <LoaderCircle :size="20" class="spin" />
           <span>{{ t(`${MB_KEY}.state.extracting`) }}</span>
         </div>
@@ -416,6 +445,10 @@ watch(id, () => {
 
 .ok {
   color: var(--copper-success);
+}
+
+.accent {
+  color: var(--copper-accent);
 }
 
 .spin {

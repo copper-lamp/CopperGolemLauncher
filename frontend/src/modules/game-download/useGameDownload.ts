@@ -21,6 +21,7 @@ import {
   gameCancel,
   gameDetail,
   gameEnqueue,
+  gameInstall,
   gameManifest,
   progressRatio,
   type GameManifestView,
@@ -155,6 +156,22 @@ export async function cancel(id: string): Promise<void> {
   }
 }
 
+/**
+ * 仅重装：本地已有完整整包时重跑安装流水线，不重新下载。
+ *
+ * 供「下载条码」上的安装按钮调用。安装阶段失败后，用户不该被迫把数 GB
+ * 的包重下一遍——后端会校验整包存在且 md5 相符，不满足时明确报错。
+ */
+export async function install(id: string): Promise<void> {
+  try {
+    await gameInstall(id);
+    await refreshState(id);
+    showToast(t("module.game-download.toast.installing"), "info");
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
 /** 强制刷新清单源。 */
 export async function refreshSource(): Promise<void> {
   await loadManifest(true);
@@ -171,6 +188,7 @@ export function useGameDownload() {
     refreshState,
     enqueue,
     cancel,
+    install,
     refreshSource,
     percentOf: (id: string): number => {
       const live = liveTasks.value[id];

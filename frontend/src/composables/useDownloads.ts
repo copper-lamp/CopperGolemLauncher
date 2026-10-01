@@ -33,6 +33,15 @@ function upsert(task: DownloadTask) {
   }
 }
 
+/** 拉取全量快照（控制类操作后调用）。 */
+async function refresh(): Promise<void> {
+  try {
+    tasks.value = await downloadTasks();
+  } catch {
+    // 内核未就绪时保留现有列表。
+  }
+}
+
 /** 初始化：拉取一次全量快照与并发数，并订阅增量事件。 */
 export async function initDownloads(): Promise<void> {
   if (initialized.value) return;
@@ -83,6 +92,7 @@ export function useDownloads() {
     async resume(id: number) {
       try {
         await downloadResume(id);
+        await refresh();
       } catch (e) {
         showToast(String(e), "error");
       }
@@ -97,6 +107,7 @@ export function useDownloads() {
     async retry(id: number) {
       try {
         await downloadRetry(id);
+        await refresh();
       } catch (e) {
         showToast(String(e), "error");
       }
@@ -104,6 +115,10 @@ export function useDownloads() {
     async remove(id: number) {
       try {
         await downloadRemove(id);
+        // 移除会同时删掉内存任务与持久化记录，而这两者都不发事件
+        // （引擎的 remove 是静默的）。不重拉的话这一行会一直留在界面上，
+        // 表现为「点删除没反应」。
+        await refresh();
       } catch (e) {
         showToast(String(e), "error");
       }

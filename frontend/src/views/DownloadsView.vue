@@ -5,7 +5,10 @@
 //   此前按钮经 Teleport 注入全局标题栏，现按要求回落为面板内控件，
 //   与并发数一并构成下载页的操作区。
 // - 历史区展示上限取设置 `download.history_limit`（0 = 不显示），
-//   只影响展示窗口，不删除任何记录（历史记录本身仅存在于内核内存）。
+//   只影响展示窗口，不删除任何记录（历史行落库于 `core_download_task`，
+//   超出上限由内核按 `HISTORY_KEEP` 淘汰最旧的终态记录）。
+// - 历史行在重启后依然可操作：重试 / 继续会把该行就地转回活跃态
+//   （内核沿用原 id 复活任务），删除则同时清掉内存任务与持久化记录。
 
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
@@ -306,7 +309,7 @@ onBeforeUnmount(() => {
               <Play :size="15" />
             </button>
             <button
-              v-else-if="task.status === 'failed'"
+              v-else-if="task.status === 'failed' || task.status === 'cancelled'"
               class="downloads__action"
               :title="t('download.actions.retry')"
               @click="retry(task.id)"

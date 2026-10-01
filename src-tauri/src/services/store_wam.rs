@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+﻿// SPDX-License-Identifier: GPL-3.0-only
 //
 // WAM Store-ticket boundary adapted from LeviLauncher
 // (internal/xbox/wam_windows.go, wam_provider_windows.go and
@@ -158,6 +158,11 @@ mod native {
         WebAuthenticationCoreManager, WebTokenRequest, WebTokenRequestPromptType,
         WebTokenRequestResult, WebTokenRequestStatus,
     };
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::Win32::System::WinRT::{
         RoGetActivationFactory, RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED,
     };
@@ -214,7 +219,7 @@ mod native {
 
     pub(super) fn initialize() -> Result<(), WamStoreError> {
         // SAFETY: 必须在同一线程上配对 uninitialize，由调用方保证。
-        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(native_error)?;
+        step("RoInitialize", unsafe { RoInitialize(RO_INIT_MULTITHREADED) })?;
         Ok(())
     }
 
@@ -223,8 +228,46 @@ mod native {
         unsafe { RoUninitialize() };
     }
 
-    fn native_error(error: windows::core::Error) -> WamStoreError {
-        WamStoreError::Native(error.to_string())
+    /// 给原生失败打上步骤名。
+    ///
+    /// WAM 边界上的每个 WinRT 调用都可能以同一个 HRESULT 失败；不带步骤名时
+    /// 上层日志无法区分是「找 provider」「找账户」「建请求」还是「静默取票」。
+    fn step<T>(name: &str, result: windows::core::Result<T>) -> Result<T, WamStoreError> {
+        result.map_err(|error| WamStoreError::Native(format!("{name}: {error}")))
+    }
+
+    /// 当前进程是否处于提权状态（高完整性级别）。
+    ///
+    /// WAM 的静默取票在提权进程上会被系统拒绝，交互路径则不会。这个差异是
+    /// 「同进程内交互授权成功、静默取票失败」这类现象的关键判据，因此失败时
+    /// 必须带上，否则日志无法区分权限问题与票据问题。
+    ///
+    /// 取不到令牌时返回 `false`：这是诊断信息而非授权判据，宁可缺失也不能
+    /// 因此让正常的取票路径失败。
+    pub(super) fn is_elevated() -> bool {
+        let mut token = HANDLE::default();
+        // SAFETY: 传入当前进程伪句柄与 TOKEN_QUERY 访问权，输出令牌句柄由本函数负责关闭。
+        let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+        if opened.is_err() {
+            return false;
+        }
+
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut returned = 0u32;
+        // SAFETY: 令牌句柄有效，缓冲区大小与类型匹配，实际写入量由 returned 回报。
+        let queried = unsafe {
+            GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elevation as *mut _ as *mut c_void),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut returned,
+            )
+        };
+        // SAFETY: token 由本函数打开，成功打开一次后必须成对关闭；关闭失败不改变
+        // 已取得的提权判据。
+        let _ = unsafe { CloseHandle(token) };
+        queried.is_ok() && elevation.TokenIsElevated != 0
     }
 
     /// 句柄必须可用，否则系统账户界面无处归属。
@@ -241,32 +284,55 @@ mod native {
     /// 静默取票：已缓存票据直接复用，缺账户即失败，绝不弹窗。
     pub(super) fn silent_ticket(expected_xuid: &str) -> Result<StoreTicket, WamStoreError> {
         let provider = find_msa_provider()?;
-        let account = WebAuthenticationCoreManager::FindAccountAsync(
-            &provider,
-            &HSTRING::from(expected_xuid),
-        )
-        .map_err(native_error)?
-        .get()
-        .map_err(map_wait_error)?;
+        let find = step(
+            "FindAccountAsync",
+            WebAuthenticationCoreManager::FindAccountAsync(
+                &provider,
+                &HSTRING::from(expected_xuid),
+            ),
+        )?;
+        let account = step("FindAccountAsync.get", find.get())?;
 
-        let request = WebTokenRequest::Create(
-            &provider,
-            &HSTRING::from(STORE_SCOPE),
-            &HSTRING::from(STORE_CLIENT_ID),
-        )
-        .map_err(native_error)?;
+        let request = step(
+            "WebTokenRequest::Create",
+            WebTokenRequest::Create(
+                &provider,
+                &HSTRING::from(STORE_SCOPE),
+                &HSTRING::from(STORE_CLIENT_ID),
+            ),
+        )?;
 
-        let operation = WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(
-            &request,
-            &account,
-        )
-        .map_err(native_error)?;
-        let result = wait_operation(&operation, SILENT_TIMEOUT)?;
+        let operation = silent_token_request(&request, &account)?;
+        let result = wait_operation(&operation, SILENT_TIMEOUT, "GetTokenSilently")?;
         let (token, actual) = read_success(&result, false)?;
         if actual != expected_xuid {
             return Err(WamStoreError::AccountChanged);
         }
         Ok(StoreTicket::from_wam(token, actual))
+    }
+
+    /// 静默取票请求：系统在此处可能因为进程被提权而直接拒绝。
+    ///
+    /// 这是静默路径独有的失败点——同进程的交互路径能拿到票据，静默路径却返回
+    /// `E_ACCESSDENIED`。因此这里把提权状态一并写进错误，让日志能自证原因，
+    /// 而不是让上层去猜「拒绝访问」到底来自权限还是票据。
+    fn silent_token_request(
+        request: &WebTokenRequest,
+        account: &windows::Security::Credentials::WebAccount,
+    ) -> Result<IAsyncOperation<WebTokenRequestResult>, WamStoreError> {
+        WebAuthenticationCoreManager::GetTokenSilentlyWithWebAccountAsync(request, account).map_err(
+            |error| {
+                let hint = if is_elevated() {
+                    "（当前进程处于提权状态，高完整性进程不被允许静默取 Store 票据；\
+                     请以普通用户身份运行）"
+                } else {
+                    ""
+                };
+                WamStoreError::Native(format!(
+                    "GetTokenSilentlyWithWebAccountAsync: {error}{hint}"
+                ))
+            },
+        )
     }
 
     /// 交互取身份：先以默认提示请求，若 WAM 未呈现界面则强制提示重试一次。
@@ -288,16 +354,18 @@ mod native {
         hwnd: isize,
         prompt: WebTokenRequestPromptType,
     ) -> Result<WamIdentity, WamStoreError> {
-        let request = WebTokenRequest::CreateWithPromptType(
-            provider,
-            &HSTRING::from(STORE_SCOPE),
-            &HSTRING::from(STORE_CLIENT_ID),
-            prompt,
-        )
-        .map_err(native_error)?;
+        let request = step(
+            "WebTokenRequest::CreateWithPromptType",
+            WebTokenRequest::CreateWithPromptType(
+                provider,
+                &HSTRING::from(STORE_SCOPE),
+                &HSTRING::from(STORE_CLIENT_ID),
+                prompt,
+            ),
+        )?;
 
         let operation = request_token_for_window(hwnd, &request)?;
-        let result = wait_operation(&operation, INTERACTIVE_TIMEOUT)?;
+        let result = wait_operation(&operation, INTERACTIVE_TIMEOUT, "RequestTokenForWindow")?;
         let (token, actual) = read_success(&result, true)?;
         if token.is_empty() || actual.is_empty() {
             return Err(WamStoreError::Native(
@@ -326,13 +394,14 @@ mod native {
 
     fn find_msa_provider() -> Result<windows::Security::Credentials::WebAccountProvider, WamStoreError>
     {
-        WebAuthenticationCoreManager::FindAccountProviderWithAuthorityAsync(
-            &HSTRING::from(MSA_PROVIDER),
-            &HSTRING::from("consumers"),
-        )
-        .map_err(native_error)?
-        .get()
-        .map_err(map_wait_error)
+        let found = step(
+            "FindAccountProviderWithAuthorityAsync",
+            WebAuthenticationCoreManager::FindAccountProviderWithAuthorityAsync(
+                &HSTRING::from(MSA_PROVIDER),
+                &HSTRING::from("consumers"),
+            ),
+        )?;
+        step("FindAccountProviderWithAuthorityAsync.get", found.get())
     }
 
     /// 窗口作用域的取票请求：`RequestTokenForWindowAsync`。
@@ -346,23 +415,25 @@ mod native {
         // SAFETY: 全部指针来自下方激活的工厂与 QI 结果，且在本函数返回前由
         // `IAsyncOperation` 持有引用计数；虚表布局见 `ManagerInteropVtbl`。
         unsafe {
-            let factory: IUnknown = RoGetActivationFactory(&HSTRING::from(MANAGER_CLASS))
-                .map_err(native_error)?;
+            let factory: IUnknown =
+                step("RoGetActivationFactory", RoGetActivationFactory(&HSTRING::from(MANAGER_CLASS)))?;
             let interop = query_interface(factory.as_raw(), &IID_MANAGER_INTEROP)?;
             let vtable: *const *const ManagerInteropVtbl =
                 interop as *const *const ManagerInteropVtbl;
             let table: *const ManagerInteropVtbl = *vtable;
             let mut raw: *mut c_void = std::ptr::null_mut();
             let request_for_window = (*table).request_token_for_window_async;
-            request_for_window(
-                interop,
-                hwnd,
-                request.as_raw() as *mut c_void,
-                &IID_TOKEN_RESULT_OPERATION,
-                &mut raw,
-            )
-            .ok()
-            .map_err(native_error)?;
+            step(
+                "RequestTokenForWindowAsync",
+                request_for_window(
+                    interop,
+                    hwnd,
+                    request.as_raw() as *mut c_void,
+                    &IID_TOKEN_RESULT_OPERATION,
+                    &mut raw,
+                )
+                .ok(),
+            )?;
             if raw.is_null() {
                 return Err(WamStoreError::Native(
                     "WAM window token request returned no operation".into(),
@@ -380,7 +451,10 @@ mod native {
         let table: *const IUnknownVtbl = *vtable;
         let query = (*table).query_interface;
         let mut out: *mut c_void = std::ptr::null_mut();
-        query(object, iid, &mut out).ok().map_err(native_error)?;
+        step(
+            "QueryInterface(IWebAuthenticationCoreManagerInterop)",
+            query(object, iid, &mut out).ok(),
+        )?;
         if out.is_null() {
             return Err(WamStoreError::Native(
                 "WAM interop interface is unavailable".into(),
@@ -393,17 +467,18 @@ mod native {
     fn wait_operation(
         operation: &IAsyncOperation<WebTokenRequestResult>,
         timeout: Duration,
+        label: &str,
     ) -> Result<WebTokenRequestResult, WamStoreError> {
         let deadline = Instant::now() + timeout;
         loop {
-            let status = operation.Status().map_err(native_error)?;
+            let status = step("AsyncOperation.Status", operation.Status())?;
             match status {
                 AsyncStatus::Completed => {
-                    return operation.GetResults().map_err(map_wait_error)
+                    return step(&format!("{label}.GetResults"), operation.GetResults());
                 }
                 AsyncStatus::Canceled => return Err(WamStoreError::UserCancelled),
                 AsyncStatus::Error => {
-                    return operation.GetResults().map_err(map_wait_error);
+                    return step(&format!("{label}.GetResults"), operation.GetResults());
                 }
                 _ => {}
             }
@@ -420,10 +495,6 @@ mod native {
         }
     }
 
-    fn map_wait_error(error: windows::core::Error) -> WamStoreError {
-        WamStoreError::Native(error.to_string())
-    }
-
     /// 校验响应状态并取出票据与账户标识。
     ///
     /// `interactive` 为真时，用户主动关闭界面判为取消而非「需要交互」，
@@ -432,7 +503,7 @@ mod native {
         result: &WebTokenRequestResult,
         interactive: bool,
     ) -> Result<(String, String), WamStoreError> {
-        let status = result.ResponseStatus().map_err(native_error)?;
+        let status = step("ResponseStatus", result.ResponseStatus())?;
         match status {
             WebTokenRequestStatus::Success => {}
             WebTokenRequestStatus::UserCancel if interactive => {
@@ -447,16 +518,16 @@ mod native {
             _ => return Err(WamStoreError::Native("WAM token request failed".into())),
         }
 
-        let responses = result.ResponseData().map_err(native_error)?;
-        if responses.Size().map_err(native_error)? != 1 {
+        let responses = step("ResponseData", result.ResponseData())?;
+        if step("ResponseData.Size", responses.Size())? != 1 {
             return Err(WamStoreError::Native(
                 "WAM returned an unexpected response count".into(),
             ));
         }
-        let response = responses.GetAt(0).map_err(native_error)?;
-        let token = response.Token().map_err(native_error)?.to_string_lossy().to_string();
-        let account = response.WebAccount().map_err(native_error)?;
-        let account_id = account.Id().map_err(native_error)?.to_string_lossy().to_string();
+        let response = step("ResponseData.GetAt", responses.GetAt(0))?;
+        let token = step("WebTokenResponse.Token", response.Token())?.to_string_lossy().to_string();
+        let account = step("WebTokenResponse.WebAccount", response.WebAccount())?;
+        let account_id = step("WebAccount.Id", account.Id())?.to_string_lossy().to_string();
         Ok((token, account_id))
     }
 }

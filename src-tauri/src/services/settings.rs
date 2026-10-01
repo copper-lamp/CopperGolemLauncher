@@ -159,7 +159,8 @@ pub fn defaults() -> HashMap<String, Value> {
     // 下载：同时下载数（1~5）。运行期可即时调整，见 `commands::download`。
     m.insert("download.concurrency".into(), Value::Number(3.into()));
     // 下载：下载页「最近下载」展示条目上限（0 = 不显示）。
-    // 历史记录仅存在于内存，故这里限制的是**展示窗口**而非持久化策略。
+    // 仅约束**展示窗口**：历史行落库于 `core_download_task`，真实的表规模
+    // 由内核侧 `services::download::HISTORY_KEEP` 兜底淘汰，两者不是一回事。
     m.insert("download.history_limit".into(), Value::Number(50.into()));
     // 模块：元数据发布通道过滤（stable / beta / dev，可用 `+` 组合，如 `stable+beta`）。
     m.insert("registry.channel".into(), Value::String("stable".into()));

@@ -90,6 +90,18 @@ export function gameStatus(id: string): Promise<GameTaskView | null> {
   return call<GameTaskView | null>("game_download_status", { id });
 }
 
+/**
+ * 仅重装：整包已在本地时重跑安装流水线，**不重新下载**。
+ *
+ * 安装阶段失败（商店授权、md5、解包中断）后的补救路径。此前只能
+ * `gameEnqueue` 重来，等于把数 GB 的下载重做一遍。
+ *
+ * 本地整包缺失或校验不符时后端明确报错，不会悄悄改走下载。
+ */
+export function gameInstall(id: string): Promise<void> {
+  return call<void>("game_download_install", { id });
+}
+
 /** APK 导入记录（与后端 `apk::ApkPackageInfo` 同构，camelCase→原样）。 */
 export interface ApkPackageInfo {
   package_name: string;
