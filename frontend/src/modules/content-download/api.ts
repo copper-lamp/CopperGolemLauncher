@@ -18,8 +18,12 @@ export interface ContentDownloadRecord {
   updatedAt: number;
 }
 
-/** 来源（与后端 `SOURCE_*` 对应）。 */
-export type ContentSource = "curseforge" | "lip";
+/** 来源（与后端 `SOURCE_*` 对应）。
+ *
+ * `lla` 是安卓专属的 LL 模组源（LeviModHub 目录，`.so` / `.levipack` 直装）：
+ * lip 依赖 lipd + BDS 且资产全为 `win-x64`，安卓两者皆不可用。
+ */
+export type ContentSource = "curseforge" | "lip" | "lla";
 
 /** 内容类型（与后端 `TYPE_*` 对应）。 */
 export type ContentType =
@@ -49,6 +53,8 @@ export interface ContentItem {
   maxGameVersion: string | null;
   latestVersion: string;
   downloadCount: number;
+  /** 最近发布时间（ISO8601）。仅 `lla` 来源有，用于「最近更新」排序。 */
+  latestPublishedAt?: string;
 }
 
 /** 列表返回（与后端 `ContentListPage` 同构）。 */
@@ -83,6 +89,8 @@ export interface ContentFile {
   releaseType: string;
   /** LIP 包的 variant（如 `client` / `server`）。仅 LIP 来源存在。 */
   variant?: string | null;
+  /** 该版本发布时间（ISO8601）。仅 `lla` 来源有，供详情按时间排序。 */
+  publishedAtHint?: string;
 }
 
 /** 依赖（与后端 `ContentDependency` 同构）。 */

@@ -103,6 +103,11 @@
   --copper-badge-source-lip-bg: #2b1d10;
   --copper-badge-source-lip-border: #5e4125;
 
+  /* 安卓 LL 模组来源（LeviModHub 目录 / .so）：青蓝，与桌面 LIP 的橙区分。 */
+  --copper-badge-source-lla: #7fd6e0;
+  --copper-badge-source-lla-bg: #0c2429;
+  --copper-badge-source-lla-border: #1f4c55;
+
   /* 发布类型徽标：正式版绿、测试版黄、预览版红。 */
   --copper-badge-release: #7ee787;
   --copper-badge-release-bg: #102a18;
@@ -161,6 +166,11 @@ html[data-theme="light"] {
   --copper-badge-source-lip: #a4551a;
   --copper-badge-source-lip-bg: rgba(164, 85, 26, 0.1);
   --copper-badge-source-lip-border: rgba(164, 85, 26, 0.24);
+
+  /* 安卓 LL 模组来源：与深色模式同色相的浅色版。 */
+  --copper-badge-source-lla: #0b6a76;
+  --copper-badge-source-lla-bg: rgba(11, 106, 118, 0.1);
+  --copper-badge-source-lla-border: rgba(11, 106, 118, 0.24);
 
   --copper-badge-release: #1a7f37;
   --copper-badge-release-bg: rgba(26, 127, 55, 0.09);

@@ -64,6 +64,12 @@ export function usePlatform() {
     platform: computed(() => platform.value),
     formFactor: computed(() => formFactor.value),
     isMobile: computed(() => formFactor.value === "mobile"),
+    /**
+     * 是否 Android。与 `isMobile` 分开：移动形态还包含将来的 iOS，
+     * 而「LL 模组走 `.so` 直装」是 Android 专属能力（见
+     * docs/模块/内容下载/设计.md 安卓章节）。
+     */
+    isAndroid: computed(() => platform.value === "android-arm64"),
   };
 }
 

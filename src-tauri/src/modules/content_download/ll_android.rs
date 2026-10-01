@@ -413,21 +413,21 @@ fn match_from(pattern: &[char], pi: usize, version: &[char], vi: usize) -> bool 
     match pattern[pi] {
         '*' => (vi..=version.len()).any(|cut| match_from(pattern, pi + 1, version, cut)),
         'X' | 'x' => {
-            let whole_component =
-                (pi == 0 || pattern[pi - 1] == '.') && (pi + 1 == pattern.len() || pattern[pi + 1] == '.');
-            let min = if whole_component { 1 } else { 1 };
+            // 与参考实现 `ModNativeLoader.matchesMinecraftVersionPattern` 的
+            // 正则语义一致：完整段位（前后为 `.` 或边界）→ `\d+`（一位或多位）；
+            // 段内 → `\d`（恰好一位）。
+            let whole_component = (pi == 0 || pattern[pi - 1] == '.')
+                && (pi + 1 == pattern.len() || pattern[pi + 1] == '.');
             let mut end = vi;
             while end < version.len() && version[end].is_ascii_digit() {
                 end += 1;
             }
-            // 完整段位要求至少两位（`X` 语义是多位数段）；单数字段要求恰好一位。
-            if whole_component {
-                (vi + min..=end).rev().any(|cut| match_from(pattern, pi + 1, version, cut))
+            let range = if whole_component {
+                vi..=end
             } else {
-                (vi..=end.min(vi + 1))
-                    .rev()
-                    .any(|cut| match_from(pattern, pi + 1, version, cut))
-            }
+                vi..=end.min(vi + 1)
+            };
+            range.rev().any(|cut| match_from(pattern, pi + 1, version, cut))
         }
         expected => {
             vi < version.len()
@@ -438,7 +438,7 @@ fn match_from(pattern: &[char], pi: usize, version: &[char], vi: usize) -> bool 
 }
 
 /// 发布是否兼容给定 MC 版本（`minecraft_versions` 为空视为全兼容）。
-pub fn release_supports(release: &CatalogRelease, minecraft_version: &str) -> bool {
+fn release_supports(release: &CatalogRelease, minecraft_version: &str) -> bool {
     if release.minecraft_versions.is_empty() {
         return true;
     }
@@ -453,7 +453,7 @@ pub fn release_supports(release: &CatalogRelease, minecraft_version: &str) -> bo
 /// 选出可直连下载的资产。
 ///
 /// 裸 `.so` 优先（体积最小、无需解包）；否则取第一个 `.levipack` / `.zip`。
-pub fn pick_asset(release: &CatalogRelease) -> Option<&CatalogAsset> {
+fn pick_asset(release: &CatalogRelease) -> Option<&CatalogAsset> {
     if release.download_type != "direct" {
         return None;
     }
@@ -950,38 +950,7 @@ pub fn parse_mod_id(content_id: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// 目录条目的展示信息（供 `install_archive` 规范化 manifest）。
-pub fn display_of(
-    detail: &ContentDetail,
-    version: &str,
-    minecraft_versions: &[String],
-) -> ModDisplay {
-    ModDisplay {
-        name: detail.item.name.clone(),
-        author: detail.item.author.clone().unwrap_or_default(),
-        version: version.to_string(),
-        minecraft_versions: minecraft_versions.to_vec(),
-    }
-}
 
-/// 查找发布（按 `lla-f:<modId>:<version>` 形式的 file id 末段匹配版本号）。
-pub fn find_release<'a>(
-    detail: &'a ContentDetail,
-    file_id: &str,
-) -> Option<(&'a ContentFile, &'a str)> {
-    let file = detail.files.iter().find(|f| f.id == file_id)?;
-    Some((file, file.version.as_str()))
-}
-
-/// 版本声明去重（供安装前兼容性判定复用）。
-pub fn supported_versions(detail: &ContentDetail, version: &str) -> Vec<String> {
-    detail
-        .files
-        .iter()
-        .find(|f| f.version == version)
-        .map(|f| f.game_versions.clone())
-        .unwrap_or_default()
-}
 
 // ---------------------------------------------------------------- 单测
 
@@ -1058,6 +1027,166 @@ mod tests {
         assert!(parse_catalog(&json).mods.is_empty());
     }
 
+    /// 构造一个最小可安装的 `.levipack`（zip）：`manifest.json` + 唯一 `.so`。
+    fn write_levipack(root: &Path, manifest: &str, entries: &[(&str, &[u8])]) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        let path = root.join("mod.levipack");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file(MANIFEST_FILE, options).unwrap();
+        std::io::Write::write_all(&mut zip, manifest.as_bytes()).unwrap();
+        for (name, bytes) in entries {
+            zip.start_file(*name, options).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "copper_lla_{tag}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn display() -> ModDisplay {
+        ModDisplay {
+            name: "ChickPet".into(),
+            author: "someone".into(),
+            version: "1.0.0".into(),
+            minecraft_versions: vec!["1.21.*".into()],
+        }
+    }
+
+    #[test]
+    fn install_unpacks_levipack_into_mod_dir() {
+        let base = temp_dir("install_ok");
+        let archive = write_levipack(
+            &base,
+            r#"{"type":"preload-native","name":"old","entry":"libchick.so"}"#,
+            &[("libchick.so", b"\x7fELF"), ("config/config.json", b"{}")],
+        );
+        let target = base.join("mods").join("chickpet");
+
+        install_archive(&archive, &target, &display()).expect("应安装成功");
+
+        assert!(target.join("manifest.json").is_file());
+        assert!(target.join("libchick.so").is_file());
+        assert!(target.join("config").join("config.json").is_file());
+
+        // manifest 被规范化：名称 / 作者 / 版本 / MC 版本来自目录条目。
+        let raw = std::fs::read(target.join("manifest.json")).unwrap();
+        let manifest: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(manifest["type"], MOD_TYPE);
+        assert_eq!(manifest["name"], "ChickPet");
+        assert_eq!(manifest["author"], "someone");
+        assert_eq!(manifest["version"], "1.0.0");
+        assert_eq!(manifest["entry"], "libchick.so");
+        assert_eq!(manifest["minecraft_versions"][0], "1.21.*");
+
+        // 暂存目录不得残留。
+        assert!(!target.parent().unwrap().join(".chickpet.new").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_overwrites_existing_mod() {
+        let base = temp_dir("install_overwrite");
+        let target = base.join("mods").join("chickpet");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("manifest.json"), "{}").unwrap();
+        std::fs::write(target.join("stale.txt"), "old").unwrap();
+
+        let archive = write_levipack(
+            &base,
+            r#"{"entry":"libchick.so"}"#,
+            &[("libchick.so", b"\x7fELF")],
+        );
+        install_archive(&archive, &target, &display()).expect("更新应成功");
+
+        assert!(target.join("libchick.so").is_file());
+        // 更新语义是整体替换，不是合并。
+        assert!(!target.join("stale.txt").exists());
+        assert!(!target.parent().unwrap().join(".chickpet.bak").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_rejects_archive_without_so() {
+        let base = temp_dir("install_noso");
+        let archive = write_levipack(&base, r#"{"entry":"libx.so"}"#, &[]);
+        let target = base.join("mods").join("chickpet");
+
+        let error = install_archive(&archive, &target, &display()).unwrap_err();
+        assert_eq!(error.0, ERR_LLA_BAD_ARCHIVE);
+        // 失败不得留下半成品目录或暂存目录。
+        assert!(!target.exists());
+        assert!(!target.parent().unwrap().join(".chickpet.new").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_rejects_archive_without_manifest() {
+        let base = temp_dir("install_nomanifest");
+        let archive = write_levipack(&base, "{}", &[("libx.so", b"\x7fELF")]);
+        // 把 manifest 换成一个非manifest 的文件，模拟结构不合法的包。
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<'_, ()> =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("readme.txt", options).unwrap();
+        std::io::Write::write_all(&mut zip, b"hi").unwrap();
+        zip.start_file("libx.so", options).unwrap();
+        std::io::Write::write_all(&mut zip, b"\x7fELF").unwrap();
+        zip.finish().unwrap();
+
+        let target = base.join("mods").join("chickpet");
+        let error = install_archive(&archive, &target, &display()).unwrap_err();
+        assert_eq!(error.0, ERR_LLA_BAD_ARCHIVE);
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_rejects_ambiguous_entry() {
+        let base = temp_dir("install_ambig");
+        // 两个 `.so` 且 manifest.entry 指向不存在的文件 → 无法确定入口。
+        let archive = write_levipack(
+            &base,
+            r#"{"entry":"missing.so"}"#,
+            &[("liba.so", b"\x7fELF"), ("libb.so", b"\x7fELF")],
+        );
+        let target = base.join("mods").join("chickpet");
+        let error = install_archive(&archive, &target, &display()).unwrap_err();
+        assert_eq!(error.0, ERR_LLA_BAD_ARCHIVE);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_keeps_original_on_failure() {
+        let base = temp_dir("install_rollback");
+        let target = base.join("mods").join("chickpet");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("manifest.json"), r#"{"name":"keep"}"#).unwrap();
+
+        // 非 zip 内容：解包阶段即判定为坏归档。
+        let archive = write_levipack(&base, "{}", &[]);
+        std::fs::write(&archive, b"not a zip at all").unwrap();
+
+        let error = install_archive(&archive, &target, &display()).unwrap_err();
+        assert_eq!(error.0, ERR_LLA_BAD_ARCHIVE);
+        // 原目录必须完好无损。
+        assert!(target.join("manifest.json").is_file());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn pick_asset_prefers_bare_so() {
         let release = CatalogRelease {
@@ -1114,10 +1243,14 @@ mod tests {
         assert!(matches_minecraft_version("1.21.*", "1.21.130.20"));
         assert!(!matches_minecraft_version("1.21.*", "1.22.0.1"));
 
-        // `X` 处于完整段位时匹配多位数。
+        // 完整段位的 `X` 语义等同 `\d+`（一位或多位），与参考实现一致。
         assert!(matches_minecraft_version("1.21.X", "1.21.130"));
-        assert!(!matches_minecraft_version("1.21.X", "1.21.5"));
+        assert!(matches_minecraft_version("1.21.X", "1.21.5"));
         assert!(matches_minecraft_version("1.21.x.0", "1.21.5.0"));
+
+        // 段内（非完整段位）的 `X` 语义等同 `\d`，只吃一位。
+        assert!(matches_minecraft_version("1.2X.0", "1.21.0"));
+        assert!(!matches_minecraft_version("1.2X.0", "1.211.0"));
 
         assert!(matches_minecraft_version(">=1.20.0", "1.21.130.20"));
         assert!(!matches_minecraft_version(">=1.22.0", "1.21.130.20"));

@@ -377,25 +377,22 @@ async fn enqueue_ll_android(
         kernel,
         &detail.item,
         &file.version,
+        &target,
         staging.to_string_lossy().as_ref(),
-        target.mod_dir.to_string_lossy().as_ref(),
-        &target.version,
         file.game_versions.clone(),
         task_id,
     )?;
     Ok(task_id)
 }
 
-/// 安卓模组暂存路径：`cache/content/lla/<modId>-<version><ext>`。
+/// 安卓模组暂存路径：`cache/content/lla/<modId>-<version>.levipack`。
 fn staging_path(kernel: &KernelContext, mod_id: &str, version: &str) -> PathBuf {
     let dir = kernel.paths().cache_dir().join("content").join("lla");
     let _ = std::fs::create_dir_all(&dir);
-    let ext = if version.is_empty() { "" } else { ".levipack" };
     dir.join(format!(
-        "{}-{}{}",
+        "{}-{}.levipack",
         sanitize_filename(mod_id),
-        sanitize_filename(version),
-        ext
+        sanitize_filename(version)
     ))
 }
 
@@ -656,24 +653,26 @@ pub fn remove_record(kernel: &KernelContext, id: &str) -> Result<(), KernelError
 }
 
 /// 记录一次安卓模组投递（`target` 列存 JSON 化的 [`AndroidModPending`]）。
+///
+/// 入参刻意收成「条目 + 落点 + 任务」三段，避免 8 个平铺参数里
+/// 混淆同名的 `version`（发布版本号）与 `target.version`（实例名）。
 fn record_ll_android_download(
     kernel: &KernelContext,
     item: &ContentItem,
-    version: &str,
+    release_version: &str,
+    target: &ll_android::InstallTarget,
     archive: &str,
-    mod_dir: &str,
-    target_version: &str,
     game_versions: Vec<String>,
     task_id: u64,
 ) -> Result<(), KernelError> {
     let pending = AndroidModPending {
         item_id: item.id.clone(),
         archive: archive.to_string(),
-        mod_dir: mod_dir.to_string(),
-        version: target_version.to_string(),
+        mod_dir: target.mod_dir.to_string_lossy().into_owned(),
+        version: target.version.clone(),
         name: item.name.clone(),
         author: item.author.clone().unwrap_or_default(),
-        release_version: version.to_string(),
+        release_version: release_version.to_string(),
         game_versions,
     };
     let target = serde_json::to_string(&pending)?;
@@ -688,7 +687,7 @@ fn record_ll_android_download(
                 item.source,
                 item.content_type,
                 item.name,
-                version,
+                release_version,
                 archive,
                 task_id,
                 target,

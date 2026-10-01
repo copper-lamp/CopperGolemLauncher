@@ -24,6 +24,7 @@ import {
 import { useI18n } from "../../i18n";
 import CoSelect from "../../components/ui/CoSelect.vue";
 import TipsRotator from "../../components/TipsRotator.vue";
+import { usePlatform } from "../../composables/usePlatform";
 import { useSettings } from "../../composables/useSettings";
 import ContentBadge from "./ContentBadge.vue";
 import {
@@ -64,6 +65,7 @@ import {
 const { t } = useI18n();
 const router = useRouter();
 const settings = useSettings();
+const { isAndroid } = usePlatform();
 
 const MB_KEY = "module.content-download";
 
@@ -75,10 +77,19 @@ const SETTING_KEYS = {
   sort: "content.filter.sort",
 } as const;
 
+/**
+ * 来源选项。
+ *
+ * `lla`（安卓 LL 模组 / LeviModHub 目录）仅在 Android 出现：桌面端 lip
+ * 装不了它，安卓端 lipd 又不可用，两个来源在各自平台互斥（见
+ * docs/模块/内容下载/设计.md 安卓章节）。
+ */
 const SOURCES: Array<{ value: ContentSource | ""; label: string }> = [
   { value: "", label: `${MB_KEY}.sourceAll` },
   { value: "curseforge", label: `${MB_KEY}.sourceCurseforge` },
-  { value: "lip", label: `${MB_KEY}.sourceLip` },
+  isAndroid.value
+    ? { value: "lla", label: `${MB_KEY}.sourceLla` }
+    : { value: "lip", label: `${MB_KEY}.sourceLip` },
 ];
 
 const TYPES: Array<{ value: ContentType | ""; label: string }> = [
@@ -265,7 +276,11 @@ onMounted(() => {
         contentType.value !== savedType ||
         gameVersion.value !== savedVersion ||
         sort.value !== savedSort;
-      source.value = savedSource;
+      // 恢复的来源必须在本平台可选：设置是全局持久化的，同一份数据可能
+      // 来自另一平台（安卓存的 `lla` 在桌面上没有 lipd 可用，反之亦然）。
+      source.value = SOURCES.some((option) => option.value === savedSource)
+        ? savedSource
+        : "";
       contentType.value = savedType;
       gameVersion.value = savedVersion;
       sort.value = savedSort;
@@ -426,7 +441,7 @@ onBeforeUnmount(() => {
             <span class="content-card__name" :title="item.name">{{ item.name }}</span>
             <ContentBadge
               :tone="typeBadgeTone(item.contentType)"
-              :label="typeBadgeLabel(item.contentType)"
+              :label="typeBadgeLabel(item.contentType, item.source)"
             />
             <ContentBadge
               :tone="sourceBadgeTone(item.source)"

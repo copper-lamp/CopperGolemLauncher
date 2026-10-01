@@ -79,7 +79,17 @@ const installing = ref(false);
 const installFile = ref<ContentFile | null>(null);
 const installRunning = ref(false);
 
+/**
+ * 桌面 LL 模组（lip）：走 lipd 安装确认弹窗。
+ *
+ * 安卓 LL 模组（`lla`）**不是** lip：lipd 在安卓不可用，它走目录直链下载
+ * + 后端解包落位，因此不进 lip 环境探测分支（见 docs/模块/内容下载/设计.md
+ * 安卓章节）。两者都要确认目标版本，所以共用同一个弹窗。
+ */
 const isLip = computed(() => detail.value?.item.source === "lip");
+const isLla = computed(() => detail.value?.item.source === "lla");
+/** 需要确认目标版本的来源（lip 安装 / 安卓模组安装）。 */
+const needsTargetConfirm = computed(() => isLip.value || isLla.value);
 
 /** lip 安装目标版本（`launch.default_version`，与后端解析口径一致）。 */
 const targetVersion = ref("");
@@ -129,6 +139,11 @@ function typeIcon(ct: string) {
   }
 }
 
+/** 文件行尾提示与title：lip / 安卓模组为「安装」，其余为「下载」。 */
+const pickHint = computed(() =>
+  needsTargetConfirm.value ? t(`${KB}.install`) : t(`${KB}.download`),
+);
+
 /** 按游戏版本归类文件；无版本（lip）归入「全部版本」。 */
 function groups(): { category: string; files: ContentFile[] }[] {
   const d = detail.value;
@@ -156,9 +171,9 @@ function toggleGroup(key: string) {
   expanded.value = next;
 }
 
-/** readme 原文格式：CF 为 HTML 片段，lip 为 GitHub Markdown。 */
+/** readme 原文格式：CF 为 HTML 片段，lip / 安卓目录（`lla`）为 GitHub Markdown。 */
 function readmeFormat(src: string): ReadmeFormat {
-  return src === "lip" ? "markdown" : "html";
+  return src === "lip" || src === "lla" ? "markdown" : "html";
 }
 
 /** readme 相对资源基准地址（GitHub 仓库优先）。 */
@@ -262,9 +277,9 @@ function rectCenter(el: Element): { x: number; y: number } {
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
-/** 点击文件卡片：CF 直接下载；lip 走安装确认。 */
+/** 点击文件卡片：CF 直链直接下载；lip / 安卓模组走目标版本确认。 */
 async function onPickFile(file: ContentFile, event: MouseEvent) {
-  if (isLip.value) {
+  if (needsTargetConfirm.value) {
     openInstall(file);
     return;
   }
@@ -285,9 +300,10 @@ async function downloadFile(file: ContentFile, origin?: { x: number; y: number }
   }
 }
 
-/** 打开 lip 安装确认弹窗。 */
+/** 打开安装确认弹窗（lip 装 BDS 包 / 安卓装 .so 包）。 */
 async function openInstall(file: ContentFile) {
-  if (!lipEnv.value?.lipAvailable) {
+  // lip 环境探测只对 lip 生效：安卓模组不经 lipd，无需 lipd 可用。
+  if (isLip.value && !lipEnv.value?.lipAvailable) {
     showToast(t(`${KB}.lipNotFound`), "error");
     return;
   }
@@ -327,14 +343,26 @@ function publishInstallingRecord() {
 
 async function confirmInstall() {
   if (!detail.value || !installFile.value) return;
+  const file = installFile.value;
+  installing.value = false;
+  installRunning.value = false;
+
+  if (isLla.value) {
+    // 安卓模组：与 CF 同一条投递路径（后端按 `lla:` 路由到解包落位），
+    // 只是多了目标版本确认，因此不发布 installing 记录——下载队列事件
+    // 会自行写入 downloading → installed / failed。
+    await downloadFile(file);
+    return;
+  }
+
   publishInstallingRecord();
   installRunning.value = true;
   try {
     // variant 必须独立下发：后端据此拼 `github.com/owner/repo#<variant>@<version>`。
     const outcome = await contentDownloadLipInstall(
       detail.value.item.id,
-      installFile.value.version,
-      installFile.value.variant ?? undefined,
+      file.version,
+      file.variant ?? undefined,
       targetFolder.value,
     );
     window.dispatchEvent(new Event("content-download-records-updated"));
@@ -344,7 +372,6 @@ async function confirmInstall() {
       showToast(t(`${KB}.installStarted`), "success");
       flyToDownloads();
     }
-    installing.value = false;
   } catch (e) {
     showToast(String(e).replace(/^Error:\s*/, ""), "error");
   } finally {
@@ -406,7 +433,7 @@ onUnmounted(resetCrumbTitle);
             <div class="cd-info__badges">
               <ContentBadge
                 :tone="typeBadgeTone(detail.item.contentType)"
-                :label="typeBadgeLabel(detail.item.contentType)"
+                :label="typeBadgeLabel(detail.item.contentType, detail.item.source)"
               />
               <ContentBadge
                 :tone="sourceBadgeTone(detail.item.source)"
@@ -500,7 +527,7 @@ onUnmounted(resetCrumbTitle);
               class="cd-file"
               role="button"
               tabindex="0"
-              :title="isLip ? t(`${KB}.lipInstall`) : t(`${KB}.download`)"
+              :title="pickHint"
               @click="onPickFile(file, $event)"
               @keydown.enter="onPickFile(file, $event as unknown as MouseEvent)"
             >
@@ -529,8 +556,8 @@ onUnmounted(resetCrumbTitle);
                 </div>
               </div>
               <span class="cd-file__hint">
-                <PackageCheck v-if="isLip" :size="15" />
-                {{ isLip ? t(`${KB}.lipInstall`) : t(`${KB}.download`) }}
+                <PackageCheck v-if="needsTargetConfirm" :size="15" />
+                {{ pickHint }}
               </span>
             </div>
           </div>
@@ -538,7 +565,7 @@ onUnmounted(resetCrumbTitle);
       </section>
     </template>
 
-    <!-- lip 安装确认弹窗 -->
+    <!-- 安装目标版本确认弹窗（lip 安装 / 安卓模组安装共用） -->
     <div v-if="installing && installFile" class="cd-modal">
       <div class="cd-modal__mask" @click="installing = false" />
       <div class="cd-modal__card" role="dialog" aria-modal="true">
@@ -553,7 +580,7 @@ onUnmounted(resetCrumbTitle);
         </p>
         <p class="cd-modal__hint">
           <AlertTriangle :size="13" />
-          {{ t(`${KB}.lipInstallHint`) }}
+          {{ isLla ? t(`${KB}.llaInstallHint`) : t(`${KB}.lipInstallHint`) }}
         </p>
         <div class="cd-modal__actions">
           <button class="cd-modal__btn" :disabled="installRunning" @click="installing = false">
