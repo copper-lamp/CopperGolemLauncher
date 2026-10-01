@@ -7,11 +7,13 @@
 // 末段为当前页（不可点击）、其余段点击跳转，且不再显示返回箭头与独立标题。
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft, ChevronRight } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ChevronRight, Stethoscope } from "@lucide/vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRoute, useRouter } from "vue-router";
 
 import AccountMenu from "./AccountMenu.vue";
+import { setDiagnosticOpen } from "../diag";
+import { useBootDiagnostics } from "../boot";
 import { useI18n } from "../i18n";
 import { usePlatform } from "../composables/usePlatform";
 
@@ -21,6 +23,17 @@ const router = useRouter();
 
 // 移动端没有窗口装饰，最小化 / 最大化 / 关闭按钮无意义，需隐藏（见 docs/平台适配.md 2.5）。
 const { isMobile } = usePlatform();
+
+/**
+ * 启动异常入口。
+ *
+ * 只在引导确实出过问题时出现：它是给用户的**唯一**在手机上打开诊断面板的途径——
+ * 移动端没有地址栏，`?diag=1` 这条路对真实用户等于不存在。
+ */
+const { steps: bootSteps } = useBootDiagnostics();
+const hasBootTrouble = computed(() =>
+  bootSteps.value.some((step) => step.state === "failed" || step.state === "timeout"),
+);
 
 /** 当前路由标题（i18n）与返回目标路径。 */
 const title = computed(() => {
@@ -148,6 +161,16 @@ function close() {
     <!-- 页面注入操作区：各模块经 <Teleport to="#copper-titlebar-actions"> 放置按钮/切换。 -->
     <div class="titlebar__actions" id="copper-titlebar-actions" />
     <div class="titlebar__right">
+      <button
+        v-if="hasBootTrouble"
+        class="titlebar__trouble"
+        type="button"
+        :title="t('boot.diag.title')"
+        :aria-label="t('boot.diag.title')"
+        @click="setDiagnosticOpen(true)"
+      >
+        <Stethoscope :size="15" />
+      </button>
       <AccountMenu />
       <template v-if="!isMobile">
         <div class="titlebar__sep" />
@@ -331,6 +354,26 @@ button.titlebar__crumb:hover {
   align-items: center;
   gap: var(--copper-space-2);
   height: 100%;
+}
+
+/* 启动异常入口：与标题栏其它控件同一触控尺寸，配色沿用语义色而非硬编码。 */
+.titlebar__trouble {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-right: var(--copper-space-1);
+  border: none;
+  border-radius: var(--copper-radius-sm);
+  background: transparent;
+  color: var(--copper-warning);
+  cursor: pointer;
+  transition: background-color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.titlebar__trouble:active {
+  background: var(--copper-active);
 }
 
 .titlebar__sep {
