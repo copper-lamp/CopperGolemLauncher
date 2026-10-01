@@ -3,8 +3,8 @@
 // - 游戏目录：`game.directory`（空 = 默认 %APPDATA%/.../versions），可选择文件夹 / 恢复默认；
 // - 下载目标版本：`launch.default_version`，内容下载落盘到该版本（空 = 仅下载不安装）。
 
-import { computed, onMounted, ref } from "vue";
-import { FolderOpen, RotateCcw } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { AlertTriangle, FolderOpen, RotateCcw } from "@lucide/vue";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import SettingSection from "./SettingSection.vue";
@@ -38,6 +38,12 @@ const versionOptions = computed(() => [
   ...versions.value.map((v) => ({ value: v.name, label: v.name })),
 ]);
 
+// 设置项与实际生效路径不一致 = 有更高优先级的来源（进程级环境变量覆盖）在起作用。
+// 此时必须说破，否则用户会反复改一个根本不起作用的设置。
+const overridden = computed(
+  () => gameDir.value.trim() !== "" && resolvedRoot.value !== gameDir.value.trim(),
+);
+
 async function refreshVersions() {
   try {
     versions.value = await homeVersionsList();
@@ -58,6 +64,17 @@ function resetDir() {
   gameDir.value = "";
   void refreshVersions();
 }
+
+// 生效路径由设置项与环境变量共同决定，改完必须重问内核，否则「当前解析为」停在旧值，
+// 覆盖提示也会跟着误判。去抖避免逐字符输入时反复扫盘。
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+watch(gameDir, () => {
+  if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => void refreshVersions(), 300);
+});
+onBeforeUnmount(() => {
+  if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+});
 
 onMounted(refreshVersions);
 </script>
@@ -88,6 +105,10 @@ onMounted(refreshVersions);
       <div class="version-tab__resolved">
         {{ t("settings.version.resolved", { path: resolvedRoot }) }}
       </div>
+      <p v-if="overridden" class="version-tab__warn">
+        <AlertTriangle :size="14" />
+        <span>{{ t("settings.version.overridden") }}</span>
+      </p>
     </SettingSection>
 
     <SettingSection :title-key="'settings.version.content_target'">
@@ -126,5 +147,14 @@ onMounted(refreshVersions);
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
   overflow-wrap: anywhere;
+}
+
+.version-tab__warn {
+  display: flex;
+  gap: var(--copper-space-2);
+  align-items: flex-start;
+  margin: 0;
+  color: var(--copper-warning);
+  font-size: var(--copper-font-size-xs);
 }
 </style>

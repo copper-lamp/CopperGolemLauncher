@@ -257,18 +257,9 @@ fn delete_record(ctx: &Ctx, version_id: &str) -> Result<(), KernelError> {
 /// 给落盘失败补上「版本根来自哪个设置项」这层定位信息。
 ///
 /// 裸 `os error 5` 只有一个错误码，用户既不知道是哪个目录，也不知道该去哪里改。
-/// 这里把生效中的版本根一并写进消息，并指向控制它的设置项，让失败可自助修复。
+/// 拼接规则与内核侧共用 `paths::annotate_versions_root_error`，避免两处包装漂移。
 fn annotate_versions_root(ctx: &Ctx, error: KernelError) -> KernelError {
-    KernelError::Io(std::io::Error::new(
-        match &error {
-            KernelError::Io(e) => e.kind(),
-            _ => std::io::ErrorKind::Other,
-        },
-        format!(
-            "{error}（版本根目录 {}，由设置项 `game.directory` 控制）",
-            ctx.versions_root().display()
-        ),
-    ))
+    crate::services::paths::annotate_versions_root_error(&ctx.versions_root(), error)
 }
 
 /// 投递下载：查已安装幂等拒绝 → 定目录 → upsert 记录 → 投递全局下载队列 → 回填 task_id → 广播。

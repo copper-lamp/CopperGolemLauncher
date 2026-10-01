@@ -110,6 +110,7 @@
       "browse": "Browse",
       "reset": "Reset",
       "resolved": "Resolved to: {path}",
+      "overridden": "This process overrides the directory via the COPPER_VERSIONS_DIR environment variable; the setting above has no effect.",
       "content_target": "Content install target",
       "target_label": "Install to version",
       "target_hint": "Downloads are installed to this version. When a single version is set, resources are auto-placed into the correct folders.",

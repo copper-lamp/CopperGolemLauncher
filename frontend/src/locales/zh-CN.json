@@ -110,6 +110,7 @@
       "browse": "选择文件夹",
       "reset": "恢复默认",
       "resolved": "当前解析为：{path}",
+      "overridden": "当前进程由环境变量 COPPER_VERSIONS_DIR 覆盖，上面的设置不会生效。",
       "content_target": "内容下载目标",
       "target_label": "下载到版本",
       "target_hint": "内容下载将安装到该版本。选择单个版本时资源自动放置到正确位置。",

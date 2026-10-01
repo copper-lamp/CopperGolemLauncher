@@ -8,6 +8,16 @@ use tauri::{AppHandle, Manager};
 use super::settings::SettingsService;
 use crate::error::KernelError;
 
+/// 版本根目录的进程级覆盖环境变量（优先于设置项 `game.directory`）。
+///
+/// 与 `COPPER_DATA_DIR` 同一套约定：空串按「未设置」处理，**只影响本进程**，
+/// 不会写回设置，因此可以安全地按单次运行/单台机器生效。
+///
+/// 存在的理由：受管环境（如开发期跑在仓库里的未签名构建）会拒绝进程写入用户选择的
+/// 目录，此时既改不动设置（那是用户对正式版的正确配置），也无法下载。与其让整条下载
+/// 链路反复以 `os error 5` 失败，不如给一个只在当前进程生效的逃生口。
+pub const VERSIONS_DIR_ENV: &str = "COPPER_VERSIONS_DIR";
+
 /// 路径体系。
 ///
 /// 布局（以 Windows 为例，`<AppData>` 为 `%APPDATA%`）：
@@ -140,7 +150,10 @@ impl Paths {
         &self.versions_dir
     }
 
-    /// 解析当前游戏（版本）根目录：优先 `settings.game.directory`（非空），否则默认版本目录。
+    /// 解析当前游戏（版本）根目录。三级优先，取第一个非空：
+    /// 1. `COPPER_VERSIONS_DIR`：进程级覆盖（调试 / 受限环境隔离用），空串按未设置处理；
+    /// 2. `settings.game.directory`：用户在「设置 → 版本目录」选的路径；
+    /// 3. 默认 `versions_dir`（`<data>/versions`）。
     ///
     /// 是版本根目录的**唯一**解析入口。
     ///
@@ -148,6 +161,9 @@ impl Paths {
     /// 会把启动和用户意图绑死。调用方真正要落盘时必须走 [`Paths::ensure_versions_root`]，
     /// 否则目录不可写时会以裸 `os error 5` 冒泡（不带路径，等于没给任何线索）。
     pub fn versions_root(&self, settings: &SettingsService) -> PathBuf {
+        if let Some(dir) = non_empty_env(VERSIONS_DIR_ENV) {
+            return dir;
+        }
         settings
             .get::<String>("game.directory")
             .filter(|s| !s.trim().is_empty())
@@ -158,9 +174,9 @@ impl Paths {
     /// 确保**生效中的**版本根目录存在且真的可写。
     ///
     /// [`Paths::prepare`] 的写探针只覆盖默认 `versions_dir`，但下载与安装真正写入的是
-    /// [`Paths::versions_root`]（`game.directory` 自定义根）。用户改过设置后，那条路径
-    /// 在启动期从未被创建、也从未被探测，于是首个触碰它的落盘动作才失败，且失败
-    /// 表现为不带任何路径的 `os error 5`。
+    /// [`Paths::versions_root`]（`COPPER_VERSIONS_DIR` 覆盖或 `game.directory` 自定义根）。
+    /// 用户改过设置后，那条路径在启动期从未被创建、也从未被探测，于是首个触碰它的落盘
+    /// 动作才失败，且失败表现为不带任何路径的 `os error 5`。
     ///
     /// 这里把该目录提前建好并探测，让不可用的自定义目录在触碰前就带着路径与
     /// 修复指引报错。
@@ -170,20 +186,15 @@ impl Paths {
             // 默认根已在 `prepare()` 里探测过，不重复写探针。
             return Ok(root);
         }
-        ensure_writable(&root, "版本根").map_err(|e| self.annotate_versions_root(e))?;
+        ensure_writable(&root, "版本根").map_err(|e| self.annotate_versions_root(&root, e))?;
         Ok(root)
     }
 
     /// 给版本根相关的失败补上「这个路径是被什么控制的」这层定位信息。
     ///
     /// 裸 `os error 5` 只有一个错误码，用户既不知道是哪个目录，也不知道该去哪里改。
-    fn annotate_versions_root(&self, error: KernelError) -> KernelError {
-        KernelError::Io(std::io::Error::new(
-            error_io_kind(&error),
-            format!(
-                "{error}（该路径由设置项 `game.directory` 控制，可在「设置 → 版本目录」改为可写路径）"
-            ),
-        ))
+    fn annotate_versions_root(&self, root: &Path, error: KernelError) -> KernelError {
+        annotate_versions_root_error(root, error)
     }
 
     /// 附加模块目录。
@@ -263,6 +274,33 @@ fn dir_failure(label: &str, dir: &Path, e: &std::io::Error) -> KernelError {
 /// 在**触碰该目录的那个功能**里就暴露，而不是退化成裸 `os error 5`。
 pub fn ensure_writable_dir(dir: &Path, label: &str) -> Result<(), KernelError> {
     ensure_writable(dir, label)
+}
+
+/// 给「版本根」相关的 IO 失败补上路径与控制来源，供内核与游戏下载模块共用。
+///
+/// 载荷用 [`KernelError::payload`]（已剥变体前缀）拼接，再统一套一层 `KernelError::Io`，
+/// 保证 `IO 错误:` 前缀只出现一次——此前两处包装各写一份，直接 `format!("{error}")`
+/// 导致日志里出现 `IO 错误: IO 错误: 版本根目录 … 不可用`。
+///
+/// 提示语按**实际生效的控制来源**给出：环境变量覆盖生效时不提设置项，反之亦然，
+/// 否则用户会去改一个根本不起作用的设置。
+pub fn annotate_versions_root_error(root: &Path, error: KernelError) -> KernelError {
+    let hint = if non_empty_env(VERSIONS_DIR_ENV).is_some() {
+        format!(
+            "版本根目录 {dir} 由环境变量 `{VERSIONS_DIR_ENV}` 覆盖控制（优先于设置项），\
+             请修正该环境变量或将其清空以回到设置项",
+            dir = root.display()
+        )
+    } else {
+        format!(
+            "版本根目录 {dir}，由设置项 `game.directory` 控制，可在「设置 → 版本目录」改为可写路径",
+            dir = root.display()
+        )
+    };
+    KernelError::Io(std::io::Error::new(
+        error_io_kind(&error),
+        format!("{}（{hint}）", error.payload()),
+    ))
 }
 
 /// 取出 `KernelError` 里携带的 `io::ErrorKind`，非 IO 错误回退为 `Other`。
@@ -421,6 +459,101 @@ mod tests {
             paths.ensure_versions_root(&settings).expect("默认根"),
             paths.versions_dir().clone()
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 环境变量是**进程级**状态，并行测试会互相踩。用同一把锁把改环境变量的用例串起来，
+    /// 并在锁内保存 / 恢复原值，避免污染同进程内其它用例。
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 回归：受管环境（如仓库内 dev 构建）无法写入用户选择的版本根。进程级覆盖必须
+    /// 压过设置项，且**不写回设置**——用户对正式版的配置要保持原样。
+    #[test]
+    fn versions_root_env_overrides_setting_without_touching_it() {
+        let _guard = env_lock();
+        let root = temp_root("versions-env");
+        std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
+        let paths = Paths::with_root(root.clone());
+        let settings = settings_with_dir(&root);
+        let from_setting = root.join("from-setting");
+        settings
+            .set("game.directory", &from_setting.to_string_lossy().to_string())
+            .expect("写入设置");
+        let from_env = root.join("from-env");
+
+        unsafe { std::env::set_var(VERSIONS_DIR_ENV, &from_env) };
+        let resolved = paths.versions_root(&settings);
+        assert_eq!(resolved, from_env, "环境变量应压过设置项");
+        assert_eq!(
+            settings.get::<String>("game.directory").as_deref(),
+            Some(from_setting.to_string_lossy().as_ref()),
+            "覆盖不得写回设置项"
+        );
+
+        // 空串按未设置处理，否则会被解析成当前工作目录。
+        unsafe { std::env::set_var(VERSIONS_DIR_ENV, "") };
+        assert_eq!(paths.versions_root(&settings), from_setting);
+
+        unsafe { std::env::remove_var(VERSIONS_DIR_ENV) };
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 覆盖生效时，失败提示必须指向环境变量。指向设置项会让用户去改一个被绕过、
+    /// 完全不起作用的配置。
+    #[test]
+    fn versions_root_error_points_at_env_when_overridden() {
+        let _guard = env_lock();
+        let root = temp_root("versions-env-err");
+        std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, b"").expect("创建占位文件");
+        let blocked = blocker.join("versions");
+
+        let paths = Paths::with_root(root.clone());
+        let settings = settings_with_dir(&root);
+        settings
+            .set("game.directory", &root.join("unused").to_string_lossy().to_string())
+            .expect("写入设置");
+        unsafe { std::env::set_var(VERSIONS_DIR_ENV, &blocked) };
+
+        let error = paths
+            .ensure_versions_root(&settings)
+            .expect_err("占位文件挡住了覆盖根，应当失败");
+        let text = error.to_string();
+        assert!(text.contains(VERSIONS_DIR_ENV), "错误应指向环境变量: {text}");
+        assert!(
+            !text.contains("设置 → 版本目录"),
+            "覆盖生效时不应让用户去改设置项: {text}"
+        );
+        assert!(text.contains(&blocked.display().to_string()), "错误应包含路径: {text}");
+
+        unsafe { std::env::remove_var(VERSIONS_DIR_ENV) };
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回归：二次包装曾把 `IO 错误:` 套两遍，日志里出现
+    /// `IO 错误: IO 错误: 版本根目录 … 不可用`。前缀必须只出现一次。
+    #[test]
+    fn versions_root_error_has_single_io_prefix() {
+        let _guard = env_lock();
+        let root = temp_root("versions-prefix");
+        let blocked = root.join("blocker").join("versions");
+        let inner = KernelError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("版本根目录 {} 不可用: 拒绝访问。 (os error 5)", blocked.display()),
+        ));
+
+        let text = annotate_versions_root_error(&blocked, inner).to_string();
+        assert_eq!(
+            text.matches("IO 错误:").count(),
+            1,
+            "IO 前缀只应出现一次: {text}"
+        );
+        assert!(text.contains("拒绝访问"), "应保留底层原因: {text}");
 
         let _ = std::fs::remove_dir_all(&root);
     }
