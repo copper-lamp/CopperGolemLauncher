@@ -23,6 +23,11 @@ pub enum ContentKind {
     Resources,
     Behavior,
     Worlds,
+    /// 模板（`development_behavior_packs`）。
+    ///
+    /// MCBE 不自动加载该目录（模板只在开启开发者模式时生效），但它仍是用户
+    /// 通过内容下载装进来的东西，不列出来等于「装完就消失」。
+    Templates,
 }
 
 impl ContentKind {
@@ -31,7 +36,19 @@ impl ContentKind {
             ContentKind::Resources => "resources",
             ContentKind::Behavior => "behavior",
             ContentKind::Worlds => "worlds",
+            ContentKind::Templates => "templates",
         }
+    }
+}
+
+/// 各内容类型对应的加载目录名。
+fn load_dir_name(kind: ContentKind) -> Option<&'static str> {
+    match kind {
+        ContentKind::Resources => Some("resource_packs"),
+        ContentKind::Behavior => Some("behavior_packs"),
+        ContentKind::Templates => Some("development_behavior_packs"),
+        // 世界目录在玩家目录下，位置随实例变，不走固定名。
+        ContentKind::Worlds => None,
     }
 }
 
@@ -173,6 +190,12 @@ pub fn list_content(kernel: &KernelContext, name: &str) -> Result<Vec<ContentIte
         &roots.com_mojang,
         &mut items,
     );
+    collect_dir_items(
+        &roots.com_mojang.join("development_behavior_packs"),
+        ContentKind::Templates,
+        &roots.com_mojang,
+        &mut items,
+    );
     if let Some(worlds) = first_player_worlds_dir(&roots) {
         collect_dir_items(&worlds, ContentKind::Worlds, &roots.com_mojang, &mut items);
     }
@@ -240,10 +263,9 @@ fn is_archive(name: &str) -> bool {
 
 /// 备份目录：`<com_mojang>/<加载目录名>_backup`。
 fn backup_dir_for(kind: ContentKind, com_mojang: &Path) -> PathBuf {
-    match kind {
-        ContentKind::Resources => com_mojang.join("resource_packs_backup"),
-        ContentKind::Behavior => com_mojang.join("behavior_packs_backup"),
-        ContentKind::Worlds => com_mojang.join(format!("{WORLDS_DIR}_backup")),
+    match load_dir_name(kind) {
+        Some(name) => com_mojang.join(format!("{name}_backup")),
+        None => com_mojang.join(format!("{WORLDS_DIR}_backup")),
     }
 }
 
@@ -324,6 +346,7 @@ fn find_item(roots: &ContentRoots, item_id: &str) -> Result<(ContentItem, bool),
         "resources" => ContentKind::Resources,
         "behavior" => ContentKind::Behavior,
         "worlds" => ContentKind::Worlds,
+        "templates" => ContentKind::Templates,
         _ => return Err(KernelError::InvalidArgument("非法的内容类型".into())),
     };
     let load_dir = load_dir_for(kind, roots);
@@ -359,10 +382,9 @@ fn find_item(roots: &ContentRoots, item_id: &str) -> Result<(ContentItem, bool),
 }
 
 fn load_dir_for(kind: ContentKind, roots: &ContentRoots) -> PathBuf {
-    match kind {
-        ContentKind::Resources => roots.com_mojang.join("resource_packs"),
-        ContentKind::Behavior => roots.com_mojang.join("behavior_packs"),
-        ContentKind::Worlds => {
+    match load_dir_name(kind) {
+        Some(name) => roots.com_mojang.join(name),
+        None => {
             first_player_worlds_dir(roots).unwrap_or_else(|| roots.com_mojang.join(WORLDS_DIR))
         }
     }

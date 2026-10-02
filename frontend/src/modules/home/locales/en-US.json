@@ -122,7 +122,8 @@
     "types": {
       "resources": "Resource Packs",
       "behavior": "Behavior Packs",
-      "worlds": "Worlds"
+      "worlds": "Worlds",
+      "templates": "Templates"
     },
     "enabled": "Enabled",
     "disabled": "Disabled",

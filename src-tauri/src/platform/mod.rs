@@ -16,6 +16,8 @@
 //! 详见 docs/平台适配.md 3.3 TODO。
 
 pub mod secret;
+/// 系统用户目录（内容下载的兜底落点，见 `known_dirs.rs` 顶部说明）。
+pub mod known_dirs;
 /// 系统文件管理器定位（下载条目的「打开所在文件夹」）。
 pub mod shell;
 /// Android Keystore 凭证存储：经 JNI 调用 Kotlin 桥（见 `keystore.rs` 顶部说明）。
@@ -33,6 +35,7 @@ pub mod android;
 
 use std::sync::Arc;
 
+use known_dirs::UserDirs;
 use secret::{SecretStore, SharedSecretStore};
 #[cfg(not(target_os = "android"))]
 use secret::KeyringStore;
@@ -87,6 +90,7 @@ impl FormFactor {
 /// 与其它内核服务一致，经 `Arc` 共享、内部状态自持（后端实现需 `Send + Sync`）。
 pub struct Backends {
     secret: SharedSecretStore,
+    user_dirs: Arc<dyn UserDirs>,
 }
 
 impl Backends {
@@ -94,6 +98,7 @@ impl Backends {
     pub fn assemble() -> Self {
         Self {
             secret: Self::assemble_secret_store(),
+            user_dirs: known_dirs::assemble(),
         }
     }
 
@@ -122,6 +127,11 @@ impl Backends {
     /// 凭证安全存储。
     pub fn secret(&self) -> &SharedSecretStore {
         &self.secret
+    }
+
+    /// 系统用户目录（下载目录等）。
+    pub fn user_dirs(&self) -> &Arc<dyn UserDirs> {
+        &self.user_dirs
     }
 
     /// 平台标识（`kernel_info` 下发前端）。

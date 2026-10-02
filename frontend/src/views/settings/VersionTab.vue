@@ -1,7 +1,9 @@
 <script setup lang="ts">
-// 版本设置 Tab：游戏目录（版本根）+ 下载目标版本。
-// - 游戏目录：`game.directory`（空 = 默认 %APPDATA%/.../versions），可选择文件夹 / 恢复默认；
-// - 下载目标版本：`launch.default_version`，内容下载落盘到该版本（空 = 仅下载不安装）。
+// 版本设置 Tab：游戏目录（版本根）。
+//
+// 这里**不再**提供「内容下载目标」：内容落点已改为由「开始页选择的版本」
+// （`launch.default_version`）+ 文件后缀名自动解析，用户不需要（也无法）手工指定。
+// 目标版本的下拉入口在「设置 → 启动」与开始页版本选择器。
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { AlertTriangle, FolderOpen, RotateCcw } from "@lucide/vue";
@@ -10,33 +12,21 @@ import { open } from "@tauri-apps/plugin-dialog";
 import SettingSection from "./SettingSection.vue";
 import SettingRow from "./SettingRow.vue";
 import CoButton from "../../components/ui/CoButton.vue";
-import CoSelect from "../../components/ui/CoSelect.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import { useSettings } from "../../composables/useSettings";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
-import { homeVersionsList, homeVersionsRoot, type VersionView } from "../../api/home";
+import { homeVersionsRoot } from "../../api/home";
 
 const { t } = useI18n();
 const { get, set } = useSettings();
 
-const versions = ref<VersionView[]>([]);
 const resolvedRoot = ref("");
 
 const gameDir = computed({
   get: () => get<string>("game.directory", ""),
   set: (value: string) => void set("game.directory", value),
 });
-
-const targetVersion = computed({
-  get: () => get<string>("launch.default_version", ""),
-  set: (value: string) => void set("launch.default_version", value),
-});
-
-const versionOptions = computed(() => [
-  { value: "", label: t("settings.version.target_none") },
-  ...versions.value.map((v) => ({ value: v.name, label: v.name })),
-]);
 
 // 设置项与实际生效路径不一致 = 有更高优先级的来源（进程级环境变量覆盖）在起作用。
 // 此时必须说破，否则用户会反复改一个根本不起作用的设置。
@@ -46,7 +36,6 @@ const overridden = computed(
 
 async function refreshVersions() {
   try {
-    versions.value = await homeVersionsList();
     resolvedRoot.value = await homeVersionsRoot();
   } catch (e) {
     showToast(String(e), "error");
@@ -109,19 +98,6 @@ onMounted(refreshVersions);
         <AlertTriangle :size="14" />
         <span>{{ t("settings.version.overridden") }}</span>
       </p>
-    </SettingSection>
-
-    <SettingSection :title-key="'settings.version.content_target'">
-      <SettingRow
-        :label-key="'settings.version.target_label'"
-        :hint-key="'settings.version.target_hint'"
-      >
-        <CoSelect
-          :model-value="targetVersion"
-          :options="versionOptions"
-          @update:model-value="targetVersion = $event"
-        />
-      </SettingRow>
     </SettingSection>
   </div>
 </template>

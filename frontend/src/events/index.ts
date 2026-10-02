@@ -127,6 +127,38 @@ export function onGameDownloadCancelled(
   );
 }
 
+/** 内容下载落点事件负载。
+ *
+ * 三个时点共用一个事件（后端 `content_download::announce_placement` 与安装钩子）：
+ * - `kind: "download_only"` —— 投递即发。内容没装进游戏，落到了系统下载目录；
+ * - `kind: "install"` —— 投递即发，附内容根不可用等原因（`notice`）；
+ * - `kind: "installed"` —— 落位成功后发，附目标版本与真实落点。
+ */
+export interface ContentDownloadLocation {
+  /** 内容 id（`install` 阶段的纯提示不带）。 */
+  id?: string;
+  kind?: "download_only" | "install" | "installed";
+  /** 目标实例名。 */
+  version?: string | null;
+  /** 落点目录：`download_only` 时是下载目录，`installed` 时是真实落点。 */
+  dir?: string;
+  /** 下载完成的文件路径（`download_only`）。 */
+  dest?: string;
+  /** 投递时即知的提示。 */
+  notice?: string | null;
+  /** 失败原因。 */
+  error?: string;
+}
+
+/** 订阅内容下载落点（前端据此弹吐司）。 */
+export function onContentDownloadLocation(
+  handler: (payload: ContentDownloadLocation) => void,
+): Promise<Unlisten> {
+  return listen<ContentDownloadLocation>("content-download.location", (e) =>
+    handler(e.payload),
+  );
+}
+
 /** 订阅更新状态。 */
 export function onUpdateStatus(handler: (status: UpdateStatus) => void): Promise<Unlisten> {
   return listen<UpdateStatus>("update-status", (e) => handler(e.payload));

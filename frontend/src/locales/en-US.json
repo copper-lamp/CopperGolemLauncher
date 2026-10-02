@@ -145,15 +145,12 @@
       "browse": "Browse",
       "reset": "Reset",
       "resolved": "Resolved to: {path}",
-      "overridden": "This process overrides the directory via the COPPER_VERSIONS_DIR environment variable; the setting above has no effect.",
-      "content_target": "Content install target",
-      "target_label": "Install to version",
-      "target_hint": "Downloads are installed to this version. When a single version is set, resources are auto-placed into the correct folders.",
-      "target_none": "Download only"
+      "overridden": "This process overrides the directory via the COPPER_VERSIONS_DIR environment variable; the setting above has no effect."
     },
     "launch": {
       "default_version": "Default version",
-      "default_version_hint": "When unset, the home page will ask you to pick a version",
+      "default_version_hint": "The version picked on the home page is synced here. It also decides which instance content downloads are installed into.",
+      "default_version_none": "Not selected",
       "memory": "Memory allocation",
       "memory_hint": "Memory available for the game",
       "args": "Launch arguments",

@@ -180,11 +180,52 @@ export function contentDownloadRecordsClear(): Promise<number> {
   return call<number>("content_download_records_clear");
 }
 
+/** 落点预演结果（与后端 `install_target::Placement` 同构）。
+ *
+ * `kind` 用字面量联合而非展开成多个字段，是为了让「三选一」在类型层就是
+ * 闭合的：新增一种落点时 TS 会在这里报错，而不是悄悄落到 `undefined` 分支。
+ */
+export type ContentPlacement = ContentPlacementBase &
+  (
+    | { kind: "install"; version: string; roots: ContentRootsView; notice?: string | null }
+    | { kind: "downloadOnly"; dir: string }
+    | { kind: "llpMod"; version: string }
+  );
+
+/** 所有落点共有的字段（后端 `Placement` 上与 `kind` 平级下发）。 */
+export interface ContentPlacementBase {
+  /** 落点路径：`install` 时为暂存路径，`downloadOnly` 时为下载目录。 */
+  dir: string;
+  /** 落点类别（`install` / `download_only`），供下载中心区分「已装进游戏」。 */
+  installKind: string;
+}
+
+/** 落点里冻结的内容根（下载完成钩子据此落位）。 */
+export interface ContentRootsView {
+  comMojang: string;
+  usersRoot: string;
+}
+
+/** 落点预演：解析这个文件下载后会落到哪，不投递。 */
+export function contentDownloadPlan(
+  id: string,
+  fileId: string,
+  version?: string,
+): Promise<ContentPlacement> {
+  return call<ContentPlacement>("content_download_plan", { id, fileId, version });
+}
+
+/** 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。
+ *
+ * `version` 为 `contentDownloadPlan` 解析出的目标版本，钉住下发以免两次调用
+ * 之间用户改了开始页选择、导致前后端算到不同落点。
+ */
 export function contentDownloadDownload(
   id: string,
   fileId: string,
+  version?: string,
 ): Promise<number> {
-  return call<number>("content_download_download", { id, fileId });
+  return call<number>("content_download_download", { id, fileId, version });
 }
 
 /** 探测 lip 环境。 */

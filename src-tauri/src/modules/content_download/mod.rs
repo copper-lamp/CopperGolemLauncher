@@ -1,4 +1,4 @@
-//! 内容下载模块（`content-download`）：拉取网络内容、浏览并下载。
+﻿//! 内容下载模块（`content-download`）：拉取网络内容、浏览并下载。
 //!
 //! 两类数据源：
 //! - **CurseForge**（行为包 / 材质包 / 光影包）：列表 / 详情 / 文件直链齐备，
@@ -16,17 +16,19 @@ use copper_downloader::DownloadOptions;
 use serde_json::Value;
 
 use crate::error::KernelError;
-use crate::modules::home::content;
 use crate::registry::events::{EventBus, Subscription};
 use crate::registry::modules::Module;
 use crate::services::database::DatabaseService;
 use crate::state::KernelContext;
 
+use self::install_target::{Placement, PlacementKind};
 use self::model::{
-    ContentDetail, ContentItem, ContentListPage, ContentListQuery, PAGE_SIZE, SOURCE_LIP,
-    SOURCE_LL_ANDROID, TYPE_BEHAVIOR_PACK, TYPE_LL_MOD, TYPE_SHADER, TYPE_TEXTURE_PACK,
+    ContentDetail, ContentFile, ContentItem, ContentListPage, ContentListQuery, PAGE_SIZE,
+    SOURCE_LIP, SOURCE_LL_ANDROID, TYPE_BEHAVIOR_PACK, TYPE_LL_MOD, TYPE_SHADER,
+    TYPE_TEXTURE_PACK,
 };
 
+pub use self::install_target::Placement as ContentPlacement;
 pub use self::lip_install::LipInstallOutcome;
 
 /// 安卓平台的 LL 模组来源（LeviModHub 目录 `.so` 直装）。
@@ -62,6 +64,7 @@ pub struct ContentDownloadRecord {
 
 pub mod curseforge;
 pub mod http;
+pub mod install_target;
 pub mod lip;
 pub mod ll_android;
 pub mod lip_install;
@@ -205,51 +208,56 @@ impl ContentDownloadModule {
         curseforge::game_versions(kernel).await
     }
 
+    /// 落点预演：不投递任何东西，只解析这个文件下载后会落到哪。
+    ///
+    /// 前端据此决定要不要弹「当前无 MC 实例，内容将下载到 X」的确认框。
+    /// 与 [`download`] 共用同一个 `resolve`，两者对同一 `(文件名, 类别, 版本)`
+    /// 必然得出同一结果。
+    pub async fn plan(
+        kernel: &KernelContext,
+        id: &str,
+        file_id: &str,
+        version: Option<&str>,
+    ) -> Result<Placement, KernelError> {
+        let (_item, file) = resolve_source_file(kernel, id, file_id).await?;
+        resolve_placement(kernel, id, &file, version)
+    }
+
     /// 下载投递：文件直链 → 内核下载队列，并落库一条下载记录。
     ///
     /// 按来源分三条链路：
-    /// - `cf:` → CurseForge 直链，投递到版本内容根（行为包 / 材质包 / 光影）；
+    /// - `cf:` → CurseForge 直链，投递到暂存，由下载完成钩子解包落位
+    ///   （见 [`install_staged_content`]）；
     /// - `lip:` → lip 无直链，提示改用「lip 安装」；
     /// - `lla:` → 安卓目录直链，投递到 `cache` 暂存，由下载完成钩子解包到
     ///   `<versions>/<name>/mods/<modId>`（见 [`install_ll_android_mod`]）。
+    ///
+    /// `version` 由 [`plan`] 解析后钉住下发，避免用户在两次调用之间改了
+    /// 开始页选择，导致前后端算到不同落点。
     pub async fn download(
         kernel: &KernelContext,
         id: &str,
         file_id: &str,
+        version: Option<&str>,
     ) -> Result<u64, KernelError> {
         if ll_android::parse_mod_id(id).is_some() {
-            return enqueue_ll_android(kernel, id, file_id).await;
+            return enqueue_ll_android(kernel, id, file_id, version).await;
         }
-        let cf_id = id
-            .strip_prefix("cf:")
-            .ok_or_else(|| {
-                KernelError::InvalidArgument("LL 模组无直接下载链接，请使用「lip 安装」功能".into())
-            })?;
-        let mod_id: i64 = cf_id
-            .parse()
-            .map_err(|_| KernelError::InvalidArgument(format!("无效内容 id `{id}`")))?;
+        if id.strip_prefix("cf:").is_none() {
+            return Err(KernelError::InvalidArgument(
+                "LL 模组无直接下载链接，请使用「lip 安装」功能".into(),
+            ));
+        }
 
-        let detail = curseforge::detail(kernel, mod_id).await?;
-        let file = detail
-            .files
-            .iter()
-            .find(|f| f.id == file_id)
-            .ok_or_else(|| KernelError::InvalidArgument(format!("找不到文件 `{file_id}`")))?;
+        let (item, file) = resolve_source_file(kernel, id, file_id).await?;
         if file.download_url.trim().is_empty() {
             return Err(KernelError::InvalidArgument("该文件没有可用的下载链接".into()));
         }
 
-        // 按资源类型解析落点：行为包→behavior_packs；材质包/光影→resource_packs；
-        // 目标为「当前选中版本」（launch.default_version）。无选中版本 → 回退 cache/content。
-        let cfg = resolve_install_target(kernel, &detail.item, &file.filename);
-        let dest = cfg.dest.clone();
-        // 落点提示（如内容根不可用回退缓存）：广播给前端。
-        if let Some(notice) = &cfg.notice {
-            kernel.events().publish(
-                "content-download.location",
-                serde_json::json!({ "notice": notice }),
-            );
-        }
+        // 落点按文件后缀名解析；`content_type` 仅在后缀名无法判定时兜底。
+        let placement = resolve_placement(kernel, id, &file, version)?;
+        let dest = PathBuf::from(&placement.dir);
+        announce_placement(kernel, &placement);
 
         let opts = DownloadOptions {
             filename: file.filename.clone().into(),
@@ -259,13 +267,7 @@ impl ContentDownloadModule {
         };
 
         let task_id = kernel.download().enqueue(&file.download_url, &dest, opts)?;
-        record_download(
-            kernel,
-            &detail.item,
-            file.version.as_str(),
-            dest.to_string_lossy().as_ref(),
-            task_id,
-        )?;
+        record_download(kernel, &item, &file, &dest.to_string_lossy(), &placement, task_id)?;
         Ok(task_id)
     }
 
@@ -308,6 +310,20 @@ impl ContentDownloadModule {
         });
         let outcome = lip_install::install(kernel, id, version, variant, dir, sink.as_ref()).await;
         if let Some(detail) = detail.as_ref() {
+            if outcome.success {
+                // 收尾阶段：把进度补到 100% 再落「已安装」，否则进度条会停在
+                // lipd 报的最后一个百分比上，紧接着整条从列表里跳到历史区。
+                let _ = update_lip_progress(kernel.db(), &detail.item.id, 1.0, STAGE_LIP_FINALIZING);
+                kernel.events().publish(
+                    "content-download.install-progress",
+                    serde_json::json!({
+                        "id": detail.item.id,
+                        "progress": 1.0,
+                        "stage": STAGE_LIP_FINALIZING,
+                        "stageDetail": null,
+                    }),
+                );
+            }
             let state = if outcome.success { "installed" } else { "failed" };
             let _ = update_lip_record(
                 kernel,
@@ -321,6 +337,85 @@ impl ContentDownloadModule {
     }
 }
 
+// ---------------------------------------------------------------- 落点解析
+
+/// 取出条目与指定文件（`plan` 与 `download` 共用，避免两处各写一遍查找逻辑）。
+///
+/// 顺带在这里拦掉「无直链」：LL 模组没有直链，落到后面才报错会让错误信息
+/// 指向一个跟用户操作无关的环节。
+async fn resolve_source_file(
+    kernel: &KernelContext,
+    id: &str,
+    file_id: &str,
+) -> Result<(ContentItem, ContentFile), KernelError> {
+    let detail = ContentDownloadModule::detail(kernel, id).await?;
+    let file = detail
+        .files
+        .iter()
+        .find(|f| f.id == file_id)
+        .cloned()
+        .ok_or_else(|| KernelError::InvalidArgument(format!("找不到文件 `{file_id}`")))?;
+    Ok((detail.item, file))
+}
+
+/// 目标版本：调用方钉住的值优先，缺省回退开始页的选择（`launch.default_version`）。
+fn target_version(kernel: &KernelContext, version: Option<&str>) -> Option<String> {
+    version
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            kernel
+                .settings()
+                .get::<String>("launch.default_version")
+                .filter(|s| !s.trim().is_empty())
+        })
+}
+
+/// 解析落点：`version` 缺省回退设置 `launch.default_version`。
+fn resolve_placement(
+    kernel: &KernelContext,
+    id: &str,
+    file: &ContentFile,
+    version: Option<&str>,
+) -> Result<Placement, KernelError> {
+    if ll_android::parse_mod_id(id).is_some() {
+        // 安卓模组有独立落点规则（`mods/<modId>`，且要求必须是安卓实例），
+        // 交给既有链路，不走通用后缀分类。
+        let version = target_version(kernel, version).ok_or_else(|| {
+            KernelError::InvalidArgument("请先在开始页选择要安装的版本".into())
+        })?;
+        return Ok(Placement {
+            kind: PlacementKind::LlpMod { version },
+            dir: String::new(),
+            install_kind: "install",
+        });
+    }
+    let version = target_version(kernel, version);
+    install_target::resolve(kernel, &file.filename, version.as_deref())
+}
+
+/// 广播落点信息，供前端吐司提示。
+///
+/// 「落系统下载目录」这一支必须**每次**都提示：它意味着内容没装进游戏，
+/// 用户如果不知道，下次还会去找游戏里为什么没有。
+fn announce_placement(kernel: &KernelContext, placement: &Placement) {
+    let payload = match &placement.kind {
+        PlacementKind::DownloadOnly { dir } => serde_json::json!({
+            "kind": "download_only",
+            "dir": dir,
+            "dest": placement.dir,
+        }),
+        PlacementKind::Install { version, notice, .. } => serde_json::json!({
+            "kind": "install",
+            "version": version,
+            "notice": notice,
+        }),
+        PlacementKind::LlpMod { .. } => return,
+    };
+    kernel.events().publish("content-download.location", payload);
+}
+
 // ---------------------------------------------------------------- 安卓 LL 模组安装
 
 /// 安卓 LL 模组投递：解析直链 → 落`cache` 暂存 → 投递下载队列。
@@ -332,13 +427,14 @@ async fn enqueue_ll_android(
     kernel: &KernelContext,
     id: &str,
     file_id: &str,
+    version: Option<&str>,
 ) -> Result<u64, KernelError> {
     let detail = ContentDownloadModule::detail(kernel, id).await?;
     let mod_id = ll_android::parse_mod_id(id)
         .ok_or_else(|| KernelError::InvalidArgument(format!("无效内容 id `{id}`")))?
         .to_string();
 
-    let Some(file) = detail.files.iter().find(|f| f.id == file_id) else {
+    let Some(file) = detail.files.iter().find(|f| f.id == file_id).cloned() else {
         return Err(KernelError::InvalidArgument(format!("找不到文件 `{file_id}`")));
     };
     if file.download_url.trim().is_empty() {
@@ -350,12 +446,18 @@ async fn enqueue_ll_android(
     }
 
     // 落点先校验：mods 目录与游戏目录平行，下错位置 mod 不会生效且用户无感。
-    let version = kernel
-        .settings()
-        .get::<String>("launch.default_version")
-        .filter(|s| !s.trim().is_empty())
+    let version = version
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            kernel
+                .settings()
+                .get::<String>("launch.default_version")
+                .filter(|s| !s.trim().is_empty())
+        })
         .ok_or_else(|| {
-            KernelError::InvalidArgument("请先在设置中指定默认版本，再安装安卓模组".into())
+            KernelError::InvalidArgument("请先在开始页选择要安装的版本，再安装安卓模组".into())
         })?;
     let target = ll_android::resolve_install_target(kernel, &version, &mod_id)
         .map_err(|(code, message)| {
@@ -624,6 +726,14 @@ crate::services::database::Migration {
     sql: "ALTER TABLE module_content_download_record ADD COLUMN progress REAL;
           ALTER TABLE module_content_download_record ADD COLUMN stage TEXT;",
 },
+crate::services::database::Migration {
+    version: 5,
+    name: "content_download_record_placement",
+    // 落点类别（`install` / `download_only`）。「下载到了下载目录」是用户必须
+    // 知道的事实，下载中心要能把它和「已装进游戏」区分开显示，而不是混成
+    // 一句「已完成」。
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN placement TEXT;",
+},
 ];
 
 /// 安卓模组记录的附加信息（`target` 列内容；下载完成钩子据此解包落位）。
@@ -724,7 +834,7 @@ pub fn normalize_interrupted_records(kernel: &KernelContext) {
     }
 }
 
-/// 记录一次安卓模组投递（`target` 列存 JSON 化的 [`AndroidModPending`]）。
+/// 记录一次安卓模组投递（`target` 列存 JSON 化的 `PendingInstall::Llp`）。
 ///
 /// 入参刻意收成「条目 + 落点 + 任务」三段，避免 8 个平铺参数里
 /// 混淆同名的 `version`（发布版本号）与 `target.version`（实例名）。
@@ -747,13 +857,14 @@ fn record_ll_android_download(
         release_version: release_version.to_string(),
         game_versions,
     };
-    let target = serde_json::to_string(&pending)?;
+    let target = serde_json::to_string(&PendingInstall::Llp(pending))?;
     let now = chrono_now();
     kernel.db().with_conn(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO module_content_download_record
-              (id, source, content_type, name, version, state, dest, task_id, target, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9)",
+              (id, source, content_type, name, version, state, dest, task_id, target, placement,
+               updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, 'install', ?9)",
             rusqlite::params![
                 item.id,
                 item.source,
@@ -768,31 +879,6 @@ fn record_ll_android_download(
         )?;
         Ok(())
     })
-}
-
-/// 读取并清空某个任务的安卓模组待落位信息。
-///
-/// take 语义：返回后即从库里移除，避免下载完成事件重放导致重复解包。
-fn take_android_mod_pending(db: &DatabaseService, task_id: u64) -> Option<AndroidModPending> {
-    db.with_conn(|conn| -> Result<Option<AndroidModPending>, KernelError> {
-        let raw: Option<String> = conn
-            .query_row(
-                "SELECT target FROM module_content_download_record WHERE task_id = ?1",
-                [task_id],
-                |row| row.get(0),
-            )
-            .ok();
-        let Some(raw) = raw else {
-            return Ok(None);
-        };
-        conn.execute(
-            "UPDATE module_content_download_record SET target = NULL WHERE task_id = ?1",
-            [task_id],
-        )?;
-        Ok(serde_json::from_str::<AndroidModPending>(&raw).ok())
-    })
-    .ok()
-    .flatten()
 }
 
 /// lip 安装阶段（i18n 键，与核心下载页的 `download.stage.*` 同命名空间）。
@@ -955,19 +1041,53 @@ fn update_lip_record(
     })
 }
 
+/// 记录一次 CF 下载投递。
+///
+/// `install` 落点还要把「投递时冻结的内容根」写进 `target` 列，供下载完成
+/// 钩子落位——不存就得在钩子里重新解析，而钩子拿不到 `KernelContext`，
+/// 重新解析又会踩中「用户中途改了版本」这个坑。
 fn record_download(
+    kernel: &KernelContext,
+    item: &ContentItem,
+    file: &ContentFile,
+    dest: &str,
+    placement: &Placement,
+    task_id: u64,
+) -> Result<(), KernelError> {
+    let pending = match &placement.kind {
+        PlacementKind::Install { version, roots, .. } => {
+            let info = ContentPending {
+                item_id: item.id.clone(),
+                archive: dest.to_string(),
+                version: version.clone(),
+                filename: file.filename.clone(),
+                content_type: item.content_type.clone(),
+                roots: roots.clone(),
+            };
+            Some(serde_json::to_string(&PendingInstall::Content(info))?)
+        }
+        // 纯下载无落位动作；LL 模组由 `enqueue_ll_android` 自行记录。
+        PlacementKind::DownloadOnly { .. } | PlacementKind::LlpMod { .. } => None,
+    };
+    record_download_inner(kernel, item, &file.version, dest, placement, pending, task_id)
+}
+
+fn record_download_inner(
     kernel: &KernelContext,
     item: &ContentItem,
     version: &str,
     dest: &str,
+    placement: &Placement,
+    pending: Option<String>,
     task_id: u64,
 ) -> Result<(), KernelError> {
     let now = chrono_now();
     kernel.db().with_conn(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO module_content_download_record
-              (id, source, content_type, name, version, state, dest, task_id, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8)",
+              (id, source, content_type, name, version, state, dest, task_id, target, placement,
+               updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 item.id,
                 item.source,
@@ -976,6 +1096,8 @@ fn record_download(
                 version,
                 dest,
                 task_id,
+                pending,
+                placement.install_kind,
                 now
             ],
         )?;
@@ -999,74 +1121,6 @@ fn mark_record_state(
     });
 }
 
-/// 内容落点解析结果。
-struct InstallTarget {
-    /// 最终下载目标文件路径。
-    dest: PathBuf,
-    /// 目标版本名（版本内安装时 Some，否则为缓存落点）。
-    version: Option<String>,
-    /// 是否需要向前端提示落点说明。
-    notice: Option<String>,
-}
-
-/// 解析 CurseForge 资源的最终落点：
-/// - 有选中版本（`launch.default_version`）且类型可放置 → 版本 `com.mojang/<子目录>`；
-/// - 无选中版本 → 回退 `cache/content`；
-/// - 选中版本存在但内容根不可用（如非隔离无 AppX）→ 回退 cache 并发布落点提示事件。
-fn resolve_install_target(
-    kernel: &KernelContext,
-    item: &model::ContentItem,
-    filename: &str,
-) -> InstallTarget {
-    let subdir = match item.content_type.as_str() {
-        TYPE_BEHAVIOR_PACK => Some("behavior_packs"),
-        TYPE_TEXTURE_PACK | TYPE_SHADER => Some("resource_packs"),
-        _ => None, // ll_mod 经 lip 安装，不走本路径
-    };
-    let target = kernel
-        .settings()
-        .get::<String>("launch.default_version")
-        .filter(|s| !s.trim().is_empty());
-    let Some(target) = target else {
-        return cache_target(kernel, filename);
-    };
-    let Some(subdir) = subdir else {
-        return cache_target(kernel, filename);
-    };
-
-    match content::content_roots(kernel, &target) {
-        Ok(roots) => {
-            let dir = roots.com_mojang.join(subdir);
-            let _ = std::fs::create_dir_all(&dir);
-            let name = sanitize_filename(filename);
-            InstallTarget {
-                dest: dir.join(name),
-                version: Some(target),
-                notice: None,
-            }
-        }
-        Err(e) => {
-            // 内容根不可用：回退缓存但不静默，发布落点提示。
-            log::warn!("[content-download] 版本 `{target}` 内容根不可用，回退缓存: {e}");
-            let mut t = cache_target(kernel, filename);
-            t.notice = Some(format!(
-                "选中版本 `{target}` 内容根不可用（{e}），已下载到缓存目录"
-            ));
-            t
-        }
-    }
-}
-
-fn cache_target(kernel: &KernelContext, filename: &str) -> InstallTarget {
-    let dir = kernel.paths().cache_dir().join("content");
-    let _ = std::fs::create_dir_all(&dir);
-    InstallTarget {
-        dest: dir.join(sanitize_filename(filename)),
-        version: None,
-        notice: None,
-    }
-}
-
 /// 处理 `download.status` 事件负载，更新本地记录状态。
 fn apply_download_status(
     db: &Arc<DatabaseService>,
@@ -1078,19 +1132,19 @@ fn apply_download_status(
     };
     match payload.get("status").and_then(Value::as_str) {
         Some("done") => {
-            // 安卓 LL 模组：下载完成 ≠ 安装完成，需先解包落位再置 installed。
-            if let Some(pending) = take_android_mod_pending(db, task_id) {
-                install_ll_android_mod(db, events, pending);
-                return;
+            // 下载完成 ≠ 安装完成：需要解包落位的内容都要在落位后才置 installed。
+            match take_pending_install(db, task_id) {
+                Some(PendingInstall::Llp(pending)) => {
+                    install_ll_android_mod(db, events, pending);
+                    return;
+                }
+                Some(PendingInstall::Content(pending)) => {
+                    install_staged_content(db, events, pending);
+                    return;
+                }
+                None => {}
             }
             mark_record_state(db, task_id, "installed", None);
-            // 安装入版本的资源 → 通知版本页重扫内容。
-            if let Some((item_id, target)) = find_record_target(db, task_id) {
-                events.publish(
-                    "content-download.location",
-                    serde_json::json!({ "id": item_id, "version": target }),
-                );
-            }
         }
         Some("failed" | "cancelled") => {
             let msg = payload
@@ -1099,10 +1153,143 @@ fn apply_download_status(
                 .unwrap_or("下载失败")
                 .to_string();
             // 失败也要清掉待落位信息，否则残留会在下次同id 事件里被误当作待装。
-            let _ = take_android_mod_pending(db, task_id);
+            let _ = take_pending_install(db, task_id);
             mark_record_state(db, task_id, "failed", Some(&msg));
         }
         _ => {}
+    }
+}
+
+/// 待落位信息（`target` 列内容；下载完成钩子据此解包落位）。
+///
+/// 落位所需的全部信息都在**投递时**冻结在此：不在钩子里重读设置、不重新
+/// 拉目录、不重算落点，避免用户中途改版本选择、或目录条目已更新，导致
+/// 装到别处 / 归档与预期不符。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PendingInstall {
+    /// 安卓 LL 模组：解包到 `<versions>/<name>/mods/<modId>`。
+    Llp(AndroidModPending),
+    /// CF 内容：解包后按后缀名 / manifest 落位到版本内容根。
+    Content(ContentPending),
+}
+
+/// CF 内容的待落位信息。
+///
+/// 内容根路径**在投递时就冻结**：钩子里不再重新解析版本根 / 读设置。这既是
+/// 「用户中途改版本不该让下载好的内容装到别处」的保证，也免掉了钩子对
+/// `KernelContext` 的依赖（事件回调拿不到它）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ContentPending {
+    /// 记录 id。
+    item_id: String,
+    /// 暂存归档绝对路径。
+    archive: String,
+    /// 目标实例名（开始页选择的版本），仅用于提示文案。
+    version: String,
+    /// 归档文件名（决定后缀名分类与目录名兜底）。
+    filename: String,
+    /// CF 类别，仅在后缀名无法判定行为/材质时兜底。
+    content_type: String,
+    /// 投递时冻结的内容根，安装钩子直接用它落位。
+    roots: install_target::ContentRootsView,
+}
+
+/// 读取并清空某个任务的待落位信息。
+///
+/// take 语义：返回后即从库里移除，避免下载完成事件重放导致重复解包。
+/// 无法反序列化的残留也一并清掉（返回 `None`），否则那行脏数据会永久
+/// 留在库里，且每次同 id 事件都要重新解析一次。
+fn take_pending_install(db: &DatabaseService, task_id: u64) -> Option<PendingInstall> {
+    db.with_conn(|conn| -> Result<Option<PendingInstall>, KernelError> {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT target FROM module_content_download_record WHERE task_id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        conn.execute(
+            "UPDATE module_content_download_record SET target = NULL WHERE task_id = ?1",
+            [task_id],
+        )?;
+        if raw.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(serde_json::from_str::<PendingInstall>(&raw).ok())
+    })
+    .ok()
+    .flatten()
+}
+
+/// 下载完成后把 CF 归档解包并原子落位到目标版本的内容根。
+///
+/// 落位成功才置 `installed` 并广播「已装到版本 X」；失败置 `failed`、保留
+/// 暂存归档便于重试，绝不出现「记录说成功、磁盘上没有」的假状态。
+fn install_staged_content(
+    db: &Arc<DatabaseService>,
+    events: &Arc<EventBus>,
+    pending: ContentPending,
+) {
+    let archive = PathBuf::from(&pending.archive);
+    // 冻结的内容根此刻可能已被用户删掉：明确失败，不把内容塞进一个谁也不会
+    // 再去看的目录（那等于让用户以为装好了，实际文件躺在一个失效路径上）。
+    let roots = pending.roots.to_roots();
+    if !roots.com_mojang.is_dir() {
+        let message = format!(
+            "版本 `{}` 的内容目录已不存在：{}",
+            pending.version,
+            roots.com_mojang.display()
+        );
+        log::error!("[content-download] {message}");
+        mark_record_state_by_id(db, &pending.item_id, "failed", Some(&message));
+        events.publish(
+            "content-download.location",
+            serde_json::json!({ "id": pending.item_id, "error": message }),
+        );
+        return;
+    }
+    let outcome = match install_target::classify(&pending.filename) {
+        Some(ext) => install_target::install_staged(
+            &archive,
+            ext,
+            &pending.content_type,
+            &roots,
+            &install_target::dir_name_hint(&pending.filename),
+        ),
+        // 后缀名在投递时已分类过；到这里变成「不认识」说明文件名被改过，
+        // 属异常，直接失败而不是猜一个目录硬塞。
+        None => Err(KernelError::InvalidArgument(format!(
+            "无法识别的内容文件类型：{}",
+            pending.filename
+        ))),
+    };
+    match outcome {
+        Ok(landed) => {
+            mark_record_state_by_id(db, &pending.item_id, "installed", None);
+            let _ = set_record_dest(db, &pending.item_id, &landed.to_string_lossy());
+            events.publish(
+                "content-download.location",
+                serde_json::json!({
+                    "id": pending.item_id,
+                    "kind": "installed",
+                    "version": pending.version,
+                    "dir": landed.to_string_lossy(),
+                }),
+            );
+        }
+        Err(e) => {
+            let message = e.payload().to_string();
+            log::error!("[content-download] 内容安装失败（{}）：{message}", pending.item_id);
+            mark_record_state_by_id(db, &pending.item_id, "failed", Some(&message));
+            events.publish(
+                "content-download.location",
+                serde_json::json!({ "id": pending.item_id, "error": message }),
+            );
+        }
     }
 }
 
@@ -1198,35 +1385,6 @@ fn set_record_dest(db: &Arc<DatabaseService>, id: &str, dest: &str) -> Result<()
     })
 }
 
-
-
-/// 查询记录里是否存在目标版本，用于下载完成后提示落点。
-fn find_record_target(db: &Arc<DatabaseService>, task_id: u64) -> Option<(String, String)> {
-    db.with_conn(
-            |conn| -> Result<Option<(String, String)>, KernelError> {
-                let mut stmt = conn.prepare(
-                    "SELECT id, version FROM module_content_download_record WHERE task_id = ?1",
-                )?;
-                let mut rows = stmt.query_map([task_id], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?;
-                match rows.next() {
-                    Some(r) => {
-                        let (id, version) = r?;
-                        if version.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some((id, version)))
-                        }
-                    }
-                    None => Ok(None),
-                }
-            },
-        )
-        .ok()
-        .flatten()
-}
-
 fn chrono_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1235,24 +1393,11 @@ fn chrono_now() -> i64 {
 }
 
 /// 清理写入磁盘的文件名（防路径穿越）。
+///
+/// 与 `install_target::sanitize_filename` 同源同实现：暂存路径与落点目录名
+/// 走的是同一套净化规则，两处各写一份必然漂移。
 fn sanitize_filename(name: &str) -> String {
-    let base = name.trim();
-    if base.is_empty() {
-        return "download.bin".to_string();
-    }
-    let cleaned: String = base
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c => c,
-        })
-        .collect();
-    let cleaned = cleaned.trim().to_string();
-    if cleaned.is_empty() {
-        "download.bin".to_string()
-    } else {
-        cleaned
-    }
+    install_target::sanitize_filename(name)
 }
 
 /// 在 PATH 中查找可执行文件（Windows 自动补 `.exe`）。

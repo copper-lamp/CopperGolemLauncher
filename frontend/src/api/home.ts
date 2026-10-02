@@ -37,7 +37,12 @@ export interface VersionMetaUpdate {
 export type LaunchOutcome = "spawned" | "protocol";
 
 /** 内容类型。 */
-export type ContentKind = "resources" | "behavior" | "worlds";
+/** 内容类别（与后端 `home::content::ContentKind` 同构）。
+ *
+ * `templates` 对应 `development_behavior_packs`：MCBE 不自动加载它，
+ * 但内容下载装进去的模板必须看得见，否则用户会以为「装完就消失」。
+ */
+export type ContentKind = "resources" | "behavior" | "worlds" | "templates";
 
 /** 内容条目（与后端 `ContentItem` 同构，snake_case）。 */
 export interface ContentItem {

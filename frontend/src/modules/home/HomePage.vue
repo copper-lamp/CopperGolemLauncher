@@ -4,12 +4,13 @@
 //
 // 多个版本时版本名以选择器呈现（核心功能「选择版本」），否则仅显示版本名。
 
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Play, Gamepad2, Download } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
+import { useSettings } from "../../composables/useSettings";
 import TipsRotator from "../../components/TipsRotator.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
@@ -29,6 +30,7 @@ const router = useRouter();
 const mode = ref<HomeMode>("simple");
 const versions = ref<VersionView[]>([]);
 const selectedName = ref("");
+const settings = useSettings();
 const launching = ref(false);
 const loading = ref(true);
 
@@ -70,7 +72,12 @@ async function refresh() {
   try {
     versions.value = await homeVersionsList();
     if (!versions.value.some((v) => v.name === selectedName.value)) {
-      selectedName.value = versions.value[0]?.name ?? "";
+      // 首选开始页上次的选择（`launch.default_version`）；设置被清空时退回首个版本。
+      const stored = settings.get<string>("launch.default_version", "").trim();
+      selectedName.value =
+        versions.value.find((v) => v.name === stored)?.name ??
+        versions.value[0]?.name ??
+        "";
     }
   } catch (e) {
     showToast(String(e), "error");
@@ -78,6 +85,15 @@ async function refresh() {
     loading.value = false;
   }
 }
+
+// 开始页的版本选择即「当前实例」，必须落盘：
+// 内容下载的落点取的就是这个值（后端 `launch.default_version`）。不落盘的话
+// 详情页会解析不到目标版本，把内容丢进系统下载目录，而用户明明在开始页选好了。
+watch(selectedName, (name) => {
+  if (!name) return;
+  if (settings.get<string>("launch.default_version", "") === name) return;
+  void settings.set("launch.default_version", name);
+});
 
 async function launch() {
   if (!current.value || launching.value) return;

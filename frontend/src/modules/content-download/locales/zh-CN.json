@@ -98,7 +98,14 @@
     "lipErrTargetNotFound": "未找到目标版本目录，请先在设置中指定「默认版本」",
     "confirmInstall": "将安装「{name}」到「{dir}」，继续吗？",
     "confirmInstallTitle": "确认安装",
-    "noVersionTarget": "未设置默认版本",
+    "noVersionTarget": "未在开始页选择版本",
+    "noInstanceTitle": "当前没有可用的 MC 实例",
+    "noInstanceText": "内容将下载到「{dir}」，不会安装进游戏。",
+    "noInstanceHint": "安装实例后重新下载，才能把它装进游戏。",
+    "continueDownload": "继续下载",
+    "downloadedTo": "已下载到「{dir}」",
+    "installedToVersion": "内容已安装到版本「{version}」",
+    "installFailed": "安装失败：{message}",
     "docLoading": "文档加载中",
     "docRenderFailed": "文档格式不受支持，已按纯文本显示"
   }

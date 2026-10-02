@@ -145,15 +145,12 @@
       "browse": "选择文件夹",
       "reset": "恢复默认",
       "resolved": "当前解析为：{path}",
-      "overridden": "当前进程由环境变量 COPPER_VERSIONS_DIR 覆盖，上面的设置不会生效。",
-      "content_target": "内容下载目标",
-      "target_label": "下载到版本",
-      "target_hint": "内容下载将安装到该版本。选择单个版本时资源自动放置到正确位置。",
-      "target_none": "仅下载不安装"
+      "overridden": "当前进程由环境变量 COPPER_VERSIONS_DIR 覆盖，上面的设置不会生效。"
     },
     "launch": {
       "default_version": "默认启动版本",
-      "default_version_hint": "未选择时启动页将要求选择版本",
+      "default_version_hint": "开始页选择的版本会同步到这里。它同时决定内容下载安装到哪个实例。",
+      "default_version_none": "未选择",
       "memory": "内存分配",
       "memory_hint": "为游戏分配的可用内存",
       "args": "启动参数",

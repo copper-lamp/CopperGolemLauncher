@@ -32,6 +32,7 @@ const kindOptions = computed(() => [
   { value: "resources", label: t("module.home.content.types.resources") },
   { value: "behavior", label: t("module.home.content.types.behavior") },
   { value: "worlds", label: t("module.home.content.types.worlds") },
+  { value: "templates", label: t("module.home.content.types.templates") },
 ]);
 
 const filtered = computed(() => {

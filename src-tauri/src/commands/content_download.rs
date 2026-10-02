@@ -7,7 +7,9 @@ use tauri::State;
 use crate::commands::into_command_error;
 use crate::error::CommandResult;
 use crate::modules::content_download::model::{ContentDetail, ContentListPage, ContentListQuery};
-use crate::modules::content_download::{ContentDownloadModule, ContentDownloadRecord, LipEnv, LipInstallOutcome};
+use crate::modules::content_download::{
+    ContentDownloadModule, ContentDownloadRecord, ContentPlacement, LipEnv, LipInstallOutcome,
+};
 use crate::state::KernelContext;
 
 /// 列表：按来源 / 类型过滤 + 关键字搜索 + 分页。
@@ -63,14 +65,33 @@ pub async fn content_download_game_versions(
         .map_err(into_command_error)
 }
 
+/// 落点预演：不投递，只解析这个文件下载后会落到哪。
+///
+/// 前端据此决定是否弹「当前无 MC 实例，内容将下载到 X」的确认框。
+#[tauri::command]
+pub async fn content_download_plan(
+    kernel: State<'_, KernelContext>,
+    id: String,
+    file_id: String,
+    version: Option<String>,
+) -> CommandResult<ContentPlacement> {
+    ContentDownloadModule::plan(kernel.inner(), &id, &file_id, version.as_deref())
+        .await
+        .map_err(into_command_error)
+}
+
 /// 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。
+///
+/// `version` 为 [`content_download_plan`] 解析出的目标版本，钉住下发以免
+/// 两次调用之间用户改了开始页选择、导致前后端算到不同落点。
 #[tauri::command]
 pub async fn content_download_download(
     kernel: State<'_, KernelContext>,
     id: String,
     file_id: String,
+    version: Option<String>,
 ) -> CommandResult<u64> {
-    ContentDownloadModule::download(kernel.inner(), &id, &file_id)
+    ContentDownloadModule::download(kernel.inner(), &id, &file_id, version.as_deref())
         .await
         .map_err(into_command_error)
 }

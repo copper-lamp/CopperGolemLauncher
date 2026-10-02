@@ -98,7 +98,14 @@
     "lipErrTargetNotFound": "Target version directory not found. Please set a default version in Settings first",
     "confirmInstall": "Install \"{name}\" to \"{dir}\"? Continue?",
     "confirmInstallTitle": "Confirm install",
-    "noVersionTarget": "No default version set",
+    "noVersionTarget": "No version selected on the home page",
+    "noInstanceTitle": "No usable Minecraft instance",
+    "noInstanceText": "The content will be downloaded to \"{dir}\" and will NOT be installed into the game.",
+    "noInstanceHint": "Install an instance first, then download again to place it into the game.",
+    "continueDownload": "Download anyway",
+    "downloadedTo": "Downloaded to \"{dir}\"",
+    "installedToVersion": "Content installed to version \"{version}\"",
+    "installFailed": "Install failed: {message}",
     "docLoading": "Loading documentation",
     "docRenderFailed": "Unsupported document format, shown as plain text"
   }

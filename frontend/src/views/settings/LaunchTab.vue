@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 启动 Tab：默认版本、内存分配、启动参数、显示日志、启动后行为。
 
-import { computed } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import SettingSection from "./SettingSection.vue";
 import SettingRow from "./SettingRow.vue";
@@ -11,13 +11,32 @@ import CoTextField from "../../components/ui/CoTextField.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
 import { useSettings } from "../../composables/useSettings";
 import { useI18n } from "../../i18n";
+import { showToast } from "../../composables/useToast";
+import { homeVersionsList, type VersionView } from "../../api/home";
 
 const { t } = useI18n();
 const { get, set } = useSettings();
 
+const versions = ref<VersionView[]>([]);
+
 const defaultVersion = computed({
   get: () => get<string>("launch.default_version", ""),
   set: (value: string) => void set("launch.default_version", value),
+});
+
+// 下拉而非文本框：这个值同时是内容下载的落点目标，手打错一个字符不会报错，
+// 只会让内容静默落到系统下载目录。枚举已装版本从根上消除这种输入。
+const versionOptions = computed(() => [
+  { value: "", label: t("settings.launch.default_version_none") },
+  ...versions.value.map((v) => ({ value: v.name, label: v.name })),
+]);
+
+onMounted(async () => {
+  try {
+    versions.value = await homeVersionsList();
+  } catch (e) {
+    showToast(String(e), "error");
+  }
 });
 
 const memoryMb = computed({
@@ -60,9 +79,9 @@ function updateMemory(value: string) {
   <div class="launch-tab">
     <SettingSection title-key="settings.tabs.launch">
       <SettingRow label-key="settings.launch.default_version" hint-key="settings.launch.default_version_hint">
-        <CoTextField
+        <CoSelect
           :model-value="defaultVersion"
-          :placeholder="t('settings.launch.default_version')"
+          :options="versionOptions"
           @update:model-value="defaultVersion = $event"
         />
       </SettingRow>

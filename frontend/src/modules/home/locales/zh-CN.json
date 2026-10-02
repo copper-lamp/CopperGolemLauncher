@@ -122,7 +122,8 @@
     "types": {
       "resources": "资源包",
       "behavior": "行为包",
-      "worlds": "世界"
+      "worlds": "世界",
+      "templates": "模板"
     },
     "enabled": "已启用",
     "disabled": "已停用",

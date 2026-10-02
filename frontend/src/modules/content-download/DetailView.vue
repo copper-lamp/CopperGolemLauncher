@@ -27,6 +27,7 @@ import {
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
+import { onContentDownloadLocation, type ContentDownloadLocation } from "../../events";
 import { homeVersionsList, type VersionView } from "../../api/home";
 import TipsRotator from "../../components/TipsRotator.vue";
 import ContentBadge from "./ContentBadge.vue";
@@ -43,6 +44,7 @@ import {
   contentDownloadDetail,
   contentDownloadReadme,
   contentDownloadDownload,
+  contentDownloadPlan,
   contentDownloadLipEnv,
   contentDownloadLipInstall,
   formatBytes,
@@ -287,16 +289,78 @@ async function onPickFile(file: ContentFile, event: MouseEvent) {
   await downloadFile(file, origin);
 }
 
-/** CurseForge 文件直链下载。 */
+/** 无 MC 实例时的下载确认弹窗状态。 */
+const downloadOnlyConfirm = ref<ContentFile | null>(null);
+/** 落点预演结果（确认框要显示落点目录）。 */
+const downloadOnlyDir = ref("");
+
+/** CurseForge 文件直链下载。
+ *
+ * 先调 `plan` 预演落点：无 MC 实例时后端会把落点改到系统下载目录，这种情况下
+ * **必须每次都问一次**——内容没进游戏，用户不知道就会一直以为装好了。
+ * 确认后把 `plan` 解析出的版本钉住下发，避免两次调用之间用户改了开始页选择。
+ */
 async function downloadFile(file: ContentFile, origin?: { x: number; y: number }) {
   if (!detail.value) return;
+  const itemId = detail.value.item.id;
   try {
-    await contentDownloadDownload(detail.value.item.id, file.id);
+    const plan = await contentDownloadPlan(itemId, file.id);
+    if (plan.kind === "downloadOnly") {
+      downloadOnlyDir.value = plan.dir;
+      downloadOnlyConfirm.value = file;
+      pendingOrigin.value = origin;
+      return;
+    }
+    // `llpMod` 的目标版本已在弹窗里确认过，钉住它。
+    await contentDownloadDownload(itemId, file.id, plan.version);
     flyToDownloads(origin);
     showToast(t(`${KB}.downloadStarted`), "success");
   } catch (e) {
-    const msg = String(e).includes("lip 安装") ? t(`${KB}.lipNotFound`) : String(e);
-    showToast(msg.replace(/^Error:\s*/, ""), "error");
+    showToast(String(e).replace(/^Error:\s*/, ""), "error");
+  }
+}
+
+/** 确认框发起时的点击坐标，供确认后播放抛物线动画。 */
+const pendingOrigin = ref<{ x: number; y: number } | undefined>();
+
+/** 用户确认「只下载，不安装」。 */
+async function confirmDownloadOnly() {
+  const file = downloadOnlyConfirm.value;
+  const origin = pendingOrigin.value;
+  if (!file || !detail.value) return;
+  downloadOnlyConfirm.value = null;
+  pendingOrigin.value = undefined;
+  try {
+    await contentDownloadDownload(detail.value.item.id, file.id);
+    flyToDownloads(origin);
+    showToast(t(`${KB}.downloadedTo`, { dir: downloadOnlyDir.value }), "info");
+  } catch (e) {
+    showToast(String(e).replace(/^Error:\s*/, ""), "error");
+  }
+}
+
+function cancelDownloadOnly() {
+  downloadOnlyConfirm.value = null;
+  pendingOrigin.value = undefined;
+}
+
+/** 落点事件 → 吐司。
+ *
+ * 订阅放在页面级而非全局：无 MC 实例的提示由确认框承担，这里只负责
+ * 「落位成功 / 失败」两类结果提示——那些在用户已经离开详情页时也要看到，
+ * 故由下载中心那条链路的调用方订阅更合适；本页订阅则覆盖「装完立刻看到」。
+ */
+function reportLocation(payload: ContentDownloadLocation) {
+  if (payload.error) {
+    showToast(t(`${KB}.installFailed`, { message: payload.error }), "error");
+    return;
+  }
+  if (payload.kind === "download_only") {
+    showToast(t(`${KB}.downloadedTo`, { dir: payload.dir ?? "" }), "info");
+    return;
+  }
+  if (payload.kind === "installed" && payload.version) {
+    showToast(t(`${KB}.installedToVersion`, { version: payload.version }), "success");
   }
 }
 
@@ -391,8 +455,16 @@ function goList() {
   void router.push("/content");
 }
 
-onMounted(load);
-onUnmounted(resetCrumbTitle);
+onMounted(async () => {
+  await load();
+  unlistenLocation = await onContentDownloadLocation(reportLocation);
+});
+onUnmounted(() => {
+  unlistenLocation();
+  resetCrumbTitle();
+});
+
+let unlistenLocation: () => void = () => {};
 </script>
 
 <template>
@@ -564,6 +636,29 @@ onUnmounted(resetCrumbTitle);
         </div>
       </section>
     </template>
+
+    <!-- 无 MC 实例确认弹窗：内容只会落系统下载目录，不会装进游戏 -->
+    <div v-if="downloadOnlyConfirm" class="cd-modal">
+      <div class="cd-modal__mask" @click="cancelDownloadOnly" />
+      <div class="cd-modal__card" role="dialog" aria-modal="true">
+        <h3 class="cd-modal__title">{{ t(`${KB}.noInstanceTitle`) }}</h3>
+        <p class="cd-modal__text">
+          {{ t(`${KB}.noInstanceText`, { dir: downloadOnlyDir }) }}
+        </p>
+        <p class="cd-modal__hint">
+          <AlertTriangle :size="13" />
+          {{ t(`${KB}.noInstanceHint`) }}
+        </p>
+        <div class="cd-modal__actions">
+          <button class="cd-modal__btn" @click="cancelDownloadOnly">
+            {{ t("common.cancel") }}
+          </button>
+          <button class="cd-modal__btn cd-modal__btn--primary" @click="confirmDownloadOnly">
+            {{ t(`${KB}.continueDownload`) }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- 安装目标版本确认弹窗（lip 安装 / 安卓模组安装共用） -->
     <div v-if="installing && installFile" class="cd-modal">
