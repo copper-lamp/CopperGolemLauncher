@@ -45,6 +45,7 @@
         "platform": "Platform form factor",
         "settings": "Settings",
         "downloads": "Downloads",
+        "update": "Update status",
         "account": "Account"
       }
     },

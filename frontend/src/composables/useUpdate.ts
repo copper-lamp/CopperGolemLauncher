@@ -21,7 +21,7 @@ import {
 } from "../api/updater";
 import type { DownloadTask } from "../api/download";
 import { onDownload, onUpdateReady, onUpdateStatus } from "../events";
-import { showActionToast } from "./useToast";
+import { showActionToast, showToast } from "./useToast";
 import { useI18n } from "../i18n";
 
 /** 更新包下载进度（由下载引擎事件推导）。 */
@@ -157,7 +157,8 @@ async function install(): Promise<void> {
   try {
     await updaterInstall();
   } catch (e) {
-    showActionToast(describeError(e), { kind: "error" });
+    // 安装失败是唯一会让应用停在旧版本却看不出原因的路径，必须弹出来。
+    showToast(describeError(e), "error", 6000);
   } finally {
     busy.value = false;
   }

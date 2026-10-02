@@ -167,7 +167,10 @@ function failureHint(): string {
           @update:model-value="autoCheck = $event"
         />
       </SettingRow>
-      <SettingRow label-key="settings.about.update_channel" :hint-key="settings.about.update_channel_hint">
+      <SettingRow
+        label-key="settings.about.update_channel"
+        hint-key="settings.about.update_channel_hint"
+      >
         <span class="about-tab__version">{{ get<string>("update.channel", "stable") }}</span>
       </SettingRow>
     </SettingSection>

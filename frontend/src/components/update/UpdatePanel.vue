@@ -66,13 +66,6 @@ const downloading = computed(() => phase.value === "downloading");
 const downloaded = computed(() => phase.value === "downloaded");
 const available = computed(() => phase.value === "available");
 
-/** 进度区呈现的百分比（0~1）；无进度数据时给不确定态。 */
-const progressTone = computed<"accent" | "success" | "danger">(() => {
-  if (downloaded.value) return "success";
-  if (phase.value === "failed") return "danger";
-  return "accent";
-});
-
 /** 发行说明是否为空。 */
 const hasNotes = computed(() => (latest.value?.notes ?? "").trim().length > 0);
 
@@ -224,6 +217,13 @@ async function openReleasePage() {
             <template v-else-if="errorKind === 'download'">{{ t("update.failed_download_hint") }}</template>
             <template v-else>{{ t("update.failed_network_hint") }}</template>
           </p>
+          <!-- 下载失败时把已下字节摆出来：用户能据此判断是从头再来还是几乎完成。 -->
+          <div v-if="errorKind === 'download' && progress" class="update-panel__stats">
+            <span class="update-panel__progress-text">
+              {{ formatBytes(progress.downloaded) }}
+              <template v-if="progress.total">/ {{ formatBytes(progress.total) }}</template>
+            </span>
+          </div>
         </div>
 
         <!-- 已是最新 -->
