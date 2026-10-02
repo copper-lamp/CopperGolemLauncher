@@ -27,6 +27,7 @@ import { initTheme } from "./theme";
 import { initPlatform } from "./composables/usePlatform";
 import { initSettings } from "./composables/useSettings";
 import { initDownloads } from "./composables/useDownloads";
+import { initUpdate } from "./composables/useUpdate";
 import { initAccount } from "./composables/useAccount";
 import { markKernelReady } from "./composables/useKernelReady";
 import { observeAndroidGameExit } from "./composables/useAndroidGameExit";
@@ -198,6 +199,9 @@ void Promise.all([
   withTimeout("platform", "boot.error.step.platform", initPlatform),
   withTimeout("settings", "boot.error.step.settings", initSettings),
   withTimeout("downloads", "boot.error.step.downloads", initDownloads),
+  // 更新：只接状态与进度，不在此发起检查 —— 启动期的静默检查由内核在后台跑，
+  // 失败也不打扰用户（见 services::updater::spawn_background_check）。
+  withTimeout("update", "boot.error.step.update", initUpdate),
   withTimeout("account", "boot.error.step.account", initAccount),
 ]).then(() => logBoot("info", "内核能力装配流程结束"));
 

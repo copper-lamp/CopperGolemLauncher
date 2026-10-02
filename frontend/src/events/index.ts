@@ -163,3 +163,16 @@ export function onContentDownloadLocation(
 export function onUpdateStatus(handler: (status: UpdateStatus) => void): Promise<Unlisten> {
   return listen<UpdateStatus>("update-status", (e) => handler(e.payload));
 }
+
+/** 订阅「更新包已就绪」事件（后端在下载完成的瞬间额外发一次）。
+ *
+ * 单独一条通道的意义：全局提示层据此弹「立即重启」，
+ * 不必去轮询下载任务，也不用在 `update-status` 里做相位推断。
+ */
+export function onUpdateReady(
+  handler: (payload: { version: string; download_task_id: number }) => void,
+): Promise<Unlisten> {
+  return listen<{ version: string; download_task_id: number }>("update-ready", (e) =>
+    handler(e.payload),
+  );
+}

@@ -12,6 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRoute, useRouter } from "vue-router";
 
 import AccountMenu from "./AccountMenu.vue";
+import UpdateBadge from "./update/UpdateBadge.vue";
 import { setDiagnosticOpen } from "../diag";
 import { useBootDiagnostics } from "../boot";
 import { useI18n } from "../i18n";
@@ -161,6 +162,8 @@ function close() {
     <!-- 页面注入操作区：各模块经 <Teleport to="#copper-titlebar-actions"> 放置按钮/切换。 -->
     <div class="titlebar__actions" id="copper-titlebar-actions" />
     <div class="titlebar__right">
+      <!-- 更新入口：常驻右侧，仅在有更新 / 下载中 / 已就绪 / 失败时自身可见。 -->
+      <UpdateBadge />
       <button
         v-if="hasBootTrouble"
         class="titlebar__trouble"

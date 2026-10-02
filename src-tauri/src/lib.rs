@@ -365,7 +365,13 @@ pub fn run() {
 
             kernel.modules().boot(&kernel);
 
+            // 启动期更新检查：延迟发起、全程后台、失败静默（不阻塞启动）。
+            // 先克隆一份 `Arc`：`manage` 会取走 `kernel` 本体，而这一步要在
+            // `manage` 之后发起，确保此时状态已注册、事件总线已绑定前端。
+            let updater_for_boot = Arc::clone(kernel.updater());
             app.manage(kernel);
+            updater_for_boot.spawn_background_check();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -412,7 +418,8 @@ pub fn run() {
             commands::account::account_refresh,
             commands::account::account_credentials,
             commands::updater::updater_check,
-            commands::updater::updater_apply,
+            commands::updater::updater_download,
+            commands::updater::updater_cancel,
             commands::updater::updater_install,
             commands::updater::updater_status,
             commands::modules::modules_list,

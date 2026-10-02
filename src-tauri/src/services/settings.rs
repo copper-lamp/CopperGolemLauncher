@@ -164,6 +164,18 @@ pub fn defaults() -> HashMap<String, Value> {
     m.insert("download.history_limit".into(), Value::Number(50.into()));
     // 模块：元数据发布通道过滤（stable / beta / dev，可用 `+` 组合，如 `stable+beta`）。
     m.insert("registry.channel".into(), Value::String("stable".into()));
+    // 更新（启动器自更新，与上面的模块通道是两回事）：
+    // - 仓库：GitHub Releases 来源，`owner/name` 形式。改它即改更新源，
+    //   用于自建镜像或 fork 内测；发布产物命名约定见 docs/铜核心/更新系统.md 3.2。
+    m.insert(
+        "update.repo".into(),
+        Value::String("copper-lamp/CopperGolemLauncher".into()),
+    );
+    // 更新通道：stable 只看正式版；beta / dev 额外接纳预发布。
+    m.insert("update.channel".into(), Value::String("stable".into()));
+    // 启动后自动检查一次更新。检查全程在后台且失败静默（services::updater），
+    // 关掉后仅保留设置页的手动入口。
+    m.insert("update.auto_check".into(), Value::Bool(true));
     // 内容下载：列表筛选持久化（来源 / 类型 / 游戏版本 / 排序方式；空串 = 不限）。
     m.insert("content.filter.source".into(), Value::String(String::new()));
     m.insert("content.filter.type".into(), Value::String(String::new()));

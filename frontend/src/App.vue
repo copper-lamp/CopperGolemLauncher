@@ -17,6 +17,7 @@ import SideNav from "./components/SideNav.vue";
 import MobileNav from "./components/MobileNav.vue";
 import ToastHost from "./components/ToastHost.vue";
 import LoadingScreen from "./components/LoadingScreen.vue";
+import UpdatePanel from "./components/update/UpdatePanel.vue";
 import DiagnosticOverlay from "./components/DiagnosticOverlay.vue";
 import { useKernelReady } from "./composables/useKernelReady";
 import { usePlatform } from "./composables/usePlatform";
@@ -52,6 +53,9 @@ const { isMobile } = usePlatform();
     <MobileNav />
     <ToastHost />
   </div>
+
+  <!-- 更新面板：与两态布局平级，任一形态下都能被标题栏的更新按钮唤出 -->
+  <UpdatePanel />
 
   <!-- 启动诊断面板：覆盖在最上层，引导失败时自动出现 -->
   <DiagnosticOverlay />

@@ -74,9 +74,9 @@ const LONG_RUNNING_COMMANDS: Record<string, number> = {
   home_launch: 300_000,
   // 元数据源刷新（索引 + 分片下载与校验）。
   registry_refresh: 300_000,
-  // 更新检查与安装。
+  // 更新检查与安装：检查是单次 GitHub 往返；投递需回读摘要资产，预算同下载。
   updater_check: 120_000,
-  updater_apply: 900_000,
+  updater_download: 120_000,
   updater_install: 900_000,
   // 附加模块安装（下载 + 解包 + 校验）。
   modules_install: 600_000,
