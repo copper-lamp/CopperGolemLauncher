@@ -1,28 +1,19 @@
 // 内容徽标的「色调 + 文案」映射。
 //
-// 徽标分三个维度，颜色统一由主题令牌 `--copper-badge-<tone>` 提供
-// （深色 / 浅色各一套，见 styles/tokens.css），本模块只负责选色调与取文案。
+// 徽标分三个维度（类型 / 来源 / 发布渠道），颜色统一由 `CoBadge` 的
+// `--copper-badge-<tone>` 令牌提供（见 styles/tokens.css），本模块只负责选色调与
+// 取文案；视觉实现全在 CoBadge，本文件不含任何样式。
 //
 // 抽到独立文件的原因：这些函数需被多个组件复用，而 `<script setup>` 不允许导出。
 
+import type { BadgeTone } from "../../components/ui/CoBadge.vue";
 import { t } from "../../i18n";
 
 import type { ContentType } from "./api";
 
 const MB_KEY = "module.content-download";
 
-/** 徽标色调：对应 `--copper-badge-<tone>` 令牌组。 */
-export type BadgeTone =
-  | "behavior-pack"
-  | "texture-pack"
-  | "shader"
-  | "ll-mod"
-  | "source-curseforge"
-  | "source-lip"
-  | "source-lla"
-  | "release"
-  | "beta"
-  | "alpha";
+export type { BadgeTone };
 
 /** 内容类型 → 色调（未知类型归入行为包色系，避免无样式）。 */
 export function typeBadgeTone(ct: ContentType | string): BadgeTone {

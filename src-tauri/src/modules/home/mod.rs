@@ -19,6 +19,8 @@ use crate::state::KernelContext;
 pub mod content;
 /// 触控层布局（屏幕控件）的事实源：`<版本目录>/controls.json`。
 pub mod controls;
+/// 实例隔离与版本硬规则的唯一事实源（数据目录布局、编辑器门槛）。
+pub mod isolate;
 pub mod launch;
 pub mod meta;
 pub mod mods;
@@ -35,10 +37,16 @@ pub struct VersionView {
     pub name: String,
     pub game_version: String,
     pub version_type: String,
+    /// 恒为 `true`：隔离强制开启，没有关闭入口。仍然下发是为了让前端
+    /// 能明确告诉用户「本实例的数据是独立的」，而不是让用户猜。
     pub enable_isolation: bool,
     pub enable_editor_mode: bool,
-    pub enable_render_dragon: bool,
+    /// 该游戏版本是否支持编辑器模式。不支持时 `enable_editor_mode` 会被忽略，
+    /// 前端据此禁用开关并说明原因，而不是给一个必然启动失败的 `-Editor true`。
+    pub editor_supported: bool,
     pub registered: bool,
+    /// 该实例已安装的加载器版本（`None` = 未装）。
+    pub loader: Option<String>,
     pub logo_data_url: Option<String>,
     /// 版本目录绝对路径（前端打开文件夹用）。
     pub folder: String,
@@ -49,9 +57,7 @@ pub struct VersionView {
 #[serde(rename_all = "snake_case")]
 pub struct VersionMetaUpdate {
     pub enable_editor_mode: Option<bool>,
-    pub enable_render_dragon: Option<bool>,
     pub enable_console: Option<bool>,
-    pub enable_ctrl_r_reload_resources: Option<bool>,
     pub launch_args: Option<String>,
     pub env_vars: Option<String>,
 }
@@ -141,14 +147,8 @@ impl HomeModule {
         if let Some(v) = update.enable_editor_mode {
             meta.enable_editor_mode = v;
         }
-        if let Some(v) = update.enable_render_dragon {
-            meta.enable_render_dragon = v;
-        }
         if let Some(v) = update.enable_console {
             meta.enable_console = v;
-        }
-        if let Some(v) = update.enable_ctrl_r_reload_resources {
-            meta.enable_ctrl_r_reload_resources = v;
         }
         if let Some(v) = &update.launch_args {
             meta.launch_args = v.clone();
@@ -156,6 +156,8 @@ impl HomeModule {
         if let Some(v) = &update.env_vars {
             meta.env_vars = v.clone();
         }
+        // 隔离强制开启：无论元数据里写的是什么，落盘的都是 true。
+        isolate::enforce_isolation(&mut meta);
         VersionMeta::write(&dir, &meta)?;
         Ok(to_view(&root, meta))
     }
@@ -230,17 +232,19 @@ impl HomeModule {
     }
 }
 
-/// 构建前端视图（附带图标 data URL 与目录路径）。
+/// 构建前端视图（附带图标 data URL、加载器与目录路径）。
 fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
     let dir = root.join(&meta.name);
     VersionView {
+        editor_supported: isolate::supports_editor_mode(&meta.game_version, &meta.version_type),
         name: meta.name.clone(),
         game_version: meta.game_version.clone(),
         version_type: meta.version_type.clone(),
-        enable_isolation: meta.enable_isolation,
+        // 隔离强制开启：元数据里的 false 一律按 true 对外。
+        enable_isolation: true,
         enable_editor_mode: meta.enable_editor_mode,
-        enable_render_dragon: meta.enable_render_dragon,
         registered: meta.registered,
+        loader: meta.loader.clone(),
         logo_data_url: meta::logo_data_url(&dir),
         folder: dir.to_string_lossy().into_owned(),
     }

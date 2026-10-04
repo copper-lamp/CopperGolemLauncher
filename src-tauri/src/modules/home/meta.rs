@@ -106,14 +106,14 @@ pub struct VersionMeta {
     pub version_type: String,
     #[serde(default)]
     pub enable_isolation: bool,
+    /// 以控制台子系统启动（改写游戏 exe 的 PE Subsystem）。
+    ///
+    /// 字段自始就存在但长期没有消费方（只写盘不生效），2026-10-04 起由
+    /// 启动链路真正实现，见 `docs/启动链路与实例隔离.md`。
     #[serde(default)]
     pub enable_console: bool,
     #[serde(default)]
     pub enable_editor_mode: bool,
-    #[serde(default)]
-    pub enable_render_dragon: bool,
-    #[serde(default)]
-    pub enable_ctrl_r_reload_resources: bool,
     #[serde(default)]
     pub launch_args: String,
     #[serde(default)]

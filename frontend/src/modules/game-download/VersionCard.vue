@@ -46,7 +46,7 @@ function open() {
     <CoBadge size="sm" :tone="version.kind" :icon="kindIcon">
       {{ t(`${MB_KEY}.kind.${version.kind}`) }}
     </CoBadge>
-    <CoBadge v-if="version.has_loader" size="sm" tone="loader" :icon="Blocks">
+    <CoBadge v-if="version.has_loader" size="sm" tone="ll-mod" :icon="Blocks">
       LeviLamina
     </CoBadge>
     <CoBadge v-if="version.downloaded" size="sm" tone="downloaded" :icon="HardDriveDownload">

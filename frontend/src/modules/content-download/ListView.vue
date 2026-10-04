@@ -839,16 +839,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.content-card__badge {
-  flex-shrink: 0;
-  padding: 1px 8px;
-  border-radius: var(--copper-radius-full);
-  background: color-mix(in srgb, var(--copper-accent) 14%, transparent);
-  color: var(--copper-accent);
-  font-size: var(--copper-font-size-xs);
-  line-height: 1.6;
-}
-
 .content-card__desc {
   display: -webkit-box;
   -webkit-line-clamp: 2;

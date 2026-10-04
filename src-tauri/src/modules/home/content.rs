@@ -1,8 +1,7 @@
 //! 内容管理：版本已加入资源（资源包 / 行为包 / 世界）的枚举、启用 / 禁用 / 删除。
 //!
-//! 内容根目录（与 LeviLauncher `GetContentRoots` 对齐）：
-//! - 隔离版本：`<versions>/<name>/Minecraft Bedrock/Users/...`；
-//! - 非隔离版本：通过 AppX 包定位 `<LocalAppData>/Packages/<包族名>/LocalState/games/com.mojang`。
+//! 内容根目录一律由 [`super::isolate`] 解析（隔离强制开启，规则只有一份）：
+//! `<版本目录>/Minecraft Bedrock[/Preview]/Users/Shared/games/com.mojang`。
 //!
 //! 启用 / 禁用机制：加载目录（`resource_packs` 等）只装载其下条目，禁用即把条目
 //! 移入同级 `*_backup` 目录，启用移回；删除则直接移除。
@@ -14,7 +13,13 @@ use serde::Serialize;
 use crate::error::KernelError;
 use crate::state::KernelContext;
 
+use super::isolate::{self, SHARED_GAME_DIR, WORLDS_DIR};
 use super::meta::{resolve_version_dir, VersionMeta};
+
+/// 内容根视图的对外转出：目录规则住在 `isolate`，但既有调用点
+/// （`content_download::install_target` 等）按 `content::ContentRoots` 引用，
+/// 保持这条路径不变以免规则与调用点两处都在动。
+pub use super::isolate::ContentRoots;
 
 /// 内容类型（前端过滤用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -65,114 +70,36 @@ pub struct ContentItem {
     pub path: String,
 }
 
-/// 内容根目录视图。
-pub struct ContentRoots {
-    /// 共享内容根：`.../com.mojang`。
-    pub com_mojang: PathBuf,
-    /// 用户目录根：`.../Users`。
-    pub users_root: PathBuf,
-}
-
-/// 共享内容目录名（`resource_packs` / `behavior_packs`）。
-const SHARED_GAME_DIR: &str = "games/com.mojang";
-/// 安卓实例内的游戏数据目录名（与 `CopperGameLayout.GAME_DATA_DIR` 一致）。
-const ANDROID_GAME_DIR: &str = "game";
-/// 安卓实例内 Minecraft 的 files 目录名（`CopperGameLayout.gameFilesDir`）。
-const ANDROID_FILES_DIR: &str = "files";
-/// 世界目录名。
-const WORLDS_DIR: &str = "minecraftWorlds";
-
-/// 解析版本内容根目录。
+/// 解析版本内容根目录（读取侧口径）。
 ///
-/// 非隔离版本需要 AppX 包信息，失败（未安装 / 非 Windows）时返回错误，
-/// 前端据此提示内容管理不可用。
+/// 目录规则全部委托给 [`isolate`]：隔离强制开启，没有「非隔离」分支，
+/// 也不再需要 AppX 包族名查询（那条路径只在共享官方数据目录时才成立）。
 pub fn content_roots(kernel: &KernelContext, name: &str) -> Result<ContentRoots, KernelError> {
     let dir = resolve_version_dir(&kernel.versions_root(), name)?;
-    let meta = VersionMeta::read(&dir)
-        .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
-
-    // 安卓实例：游戏按官方布局在 files 根下找 `games/com.mojang`。
-    // 该 files 根由 `CopperGameLayout.gameFilesDir()` 决定（`<root>/game/files`），
-    // 并作为 `EXTRA_FILES_DIR` 传入游戏 Activity（见 CopperGameRuntimePreparer），
-    // 故不能复用桌面的隔离布局，也不能走 AppX 分支。
-    if meta.android.is_some() {
-        let files_root = dir.join(ANDROID_GAME_DIR).join(ANDROID_FILES_DIR);
-        return Ok(ContentRoots {
-            com_mojang: files_root.join(SHARED_GAME_DIR),
-            users_root: files_root,
-        });
-    }
-
-    if meta.enable_isolation {
-        let game_dir = game_dir_name(&meta);
-        let base = dir.join(game_dir);
-        return Ok(ContentRoots {
-            com_mojang: base.join("Users").join("Shared").join(SHARED_GAME_DIR),
-            users_root: base.join("Users"),
-        });
-    }
-
-    // 非隔离：走 AppX 包族名定位 GDK 数据目录。
-    let pfn = appx_package_family_name(&meta)?;
-    let local = std::env::var("LOCALAPPDATA")
-        .map_err(|_| KernelError::InvalidArgument("无法定位用户数据目录".into()))?;
-    let base = PathBuf::from(local)
-        .join("Packages")
-        .join(pfn)
-        .join("LocalState")
-        .join("games")
-        .join("com.mojang");
-    if !base.exists() {
-        return Err(KernelError::InvalidArgument(
-            "未找到游戏数据目录，请先启动一次游戏".into(),
-        ));
-    }
-    let users_root = base
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.join("Users"))
-        .unwrap_or_else(|| base.clone());
-    Ok(ContentRoots { com_mojang: base, users_root })
+    let meta = read_meta_for(&dir, name)?;
+    Ok(isolate::content_roots_existing(&dir, &meta))
 }
 
-/// 隔离游戏目录名（正式 / 预览）。
-fn game_dir_name(meta: &VersionMeta) -> &'static str {
-    if meta.version_type.eq_ignore_ascii_case("preview") {
-        "Minecraft Bedrock Preview"
-    } else {
-        "Minecraft Bedrock"
-    }
+/// 解析版本内容根目录（写入侧口径：标准布局，并确保骨架存在）。
+///
+/// 内容删除 / 移动这类写操作必须落在标准布局上，不能因为读取侧探测到扁平
+/// 布局就把内容写进另一个目录 —— 那样内容会出现在游戏读不到的地方。
+pub fn content_roots_for_write(
+    kernel: &KernelContext,
+    name: &str,
+) -> Result<ContentRoots, KernelError> {
+    let dir = resolve_version_dir(&kernel.versions_root(), name)?;
+    let meta = read_meta_for(&dir, name)?;
+    isolate::ensure_skeleton(&dir, &meta)?;
+    Ok(isolate::content_roots(&dir, &meta))
 }
 
-/// 查询 AppX 包族名（PowerShell，与 LeviLauncher `Get-AppxPackage` 同款）。
-#[cfg(windows)]
-fn appx_package_family_name(meta: &VersionMeta) -> Result<String, KernelError> {
-    let pkg = if meta.version_type.eq_ignore_ascii_case("preview") {
-        "Microsoft.MinecraftWindowsBeta"
-    } else {
-        "Microsoft.MinecraftUWP"
-    };
-    let script = format!(
-        "Get-AppxPackage -Name '{pkg}' | Select-Object -First 1 -ExpandProperty PackageFamilyName"
-    );
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| KernelError::InvalidArgument(format!("查询游戏包失败: {e}")))?;
-    if !output.status.success() {
-        return Err(KernelError::InvalidArgument("未检测到已安装的 Minecraft".into()));
-    }
-    let pfn = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if pfn.is_empty() {
-        return Err(KernelError::InvalidArgument("未检测到已安装的 Minecraft".into()));
-    }
-    Ok(pfn)
+/// 读取实例元数据，缺失即报错（带实例名，便于前端定位）。
+fn read_meta_for(dir: &Path, name: &str) -> Result<VersionMeta, KernelError> {
+    VersionMeta::read(dir)
+        .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))
 }
 
-#[cfg(not(windows))]
-fn appx_package_family_name(_meta: &VersionMeta) -> Result<String, KernelError> {
-    Err(KernelError::InvalidArgument("内容管理暂不支持当前平台".into()))
-}
 
 /// 列出已加入资源。
 pub fn list_content(kernel: &KernelContext, name: &str) -> Result<Vec<ContentItem>, KernelError> {
@@ -303,7 +230,7 @@ pub fn worlds_dir(
     name: &str,
     create: bool,
 ) -> Result<PathBuf, KernelError> {
-    let roots = content_roots(kernel, name)?;
+    let roots = content_roots_for_write(kernel, name)?;
     let dir = first_player_worlds_dir(&roots).unwrap_or_else(|| {
         first_user_root(&roots)
             .unwrap_or_else(|| roots.com_mojang.clone())
@@ -397,7 +324,7 @@ pub fn set_content_enabled(
     item_id: &str,
     enabled: bool,
 ) -> Result<(), KernelError> {
-    let roots = content_roots(kernel, name)?;
+    let roots = content_roots_for_write(kernel, name)?;
     let (item, in_load_dir) = find_item(&roots, item_id)?;
     if item.enabled == enabled {
         return Ok(());
@@ -421,7 +348,7 @@ pub fn remove_content(
     name: &str,
     item_id: &str,
 ) -> Result<(), KernelError> {
-    let roots = content_roots(kernel, name)?;
+    let roots = content_roots_for_write(kernel, name)?;
     let (item, _) = find_item(&roots, item_id)?;
     let path = Path::new(&item.path);
     if path.is_dir() {

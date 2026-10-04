@@ -1,27 +1,47 @@
 <script setup lang="ts">
-// 徽标：内容徽标（游戏下载模块内的唯一实现）。
+// 徽标：全站唯一的徽标实现（游戏下载、内容下载、模块管理共用）。
 //
-// 为什么独立成组件：版本清单页与版本详情页都要显示「正式版 / 测试版 / LeviLamina /
-// 已下载」这几枚徽标，各写一份 CSS 的后果是两处的圆角、内边距、配色一漂移就显得
-// 像两个产品。这里把**结构与质感**收敛到一处，业务方只声明语义色与图标。
+// 视觉方案已定稿，不接受第二套：
+// - **低纯度实色底**：色相保留、饱和度压到中低。一屏十几枚徽标同时出现时，高纯度
+//   红/绿/蓝密集排列会互相抢眼，读起来像一堆告警；压低纯度后它们退回背景层。
+// - **纯白文字与图标**：语义全部由底色承担，文字不再与底色抢对比度——小字号下
+//   这才是可读性的第一瓶颈（语义色文字压在同色系淡底上只有 2:1 上下）。
+// - **扁平**：无描边、无内高光、无内阴影。徽标是配角，任何厚度感都会让它看起来
+//   像一个可以点的按钮；真要能点的东西另有按钮组件。
 //
-// 质感的来源（A + D 方案）：
-// - **实心底色 + 纯白文字与图标**：色雾底 + 语义色文字在小字号下对比度不够，浅色
-//   主题里尤其差（绿字压在 9% 绿雾上只有 2:1 上下）。「一眼看清这是正式版 / 已下载」
-//   比「底色淡雅」重要，所以底色改成实心色块，文字与图标一律纯白；
-// - 底色之上叠一层上边缘内高光 + 下边缘内阴影，纯色平涂才会变成有厚度的实体；
-// - 图标在前、文字在后：图标给形状记忆点，文字给出精确名字，二者缺一都会让徽标
-//   在一排版本号里「糊成一个小色块」；
-// - 字号小、字距略宽、字重 600：徽标是配角，不能靠放大来变醒目。
+// 因此徽标既不随深浅主题变体（实心色块不是表面色，跟着主题变浅变深只会在深色
+// 主题下变成一块发灰的补丁），也不需要两套色值。
 //
-// 配色一律走 `--copper-badge-<tone>-solid` 令牌，禁止颜色字面量（实心色块两个主题
-// 共用同一组值，深浅主题的差异只体现在 sheen / underside 的浓度上）。
+// 配色一律走 `--copper-badge-<tone>` 令牌，禁止颜色字面量。
 
 import type { Component } from "vue";
 import { computed } from "vue";
 
-/** 徽标语义色，对应 `--copper-badge-<tone>-solid` 实心底色。 */
-export type BadgeTone = "release" | "preview" | "loader" | "downloaded" | "neutral";
+/**
+ * 徽标语义色。分组对应不同维度：
+ * - 发布类型（release / beta / alpha / preview）；
+ * - 内容类型与来源（内容下载模块，三个维度必须错开色相，否则同一条内容上的三枚
+ *   徽标会撞成同一个颜色，区分就失去意义）；
+ * - 通用状态（success / warning / danger / accent / neutral）。
+ */
+export type BadgeTone =
+  | "release"
+  | "beta"
+  | "alpha"
+  | "preview"
+  | "ll-mod"
+  | "downloaded"
+  | "behavior-pack"
+  | "texture-pack"
+  | "shader"
+  | "source-curseforge"
+  | "source-lip"
+  | "source-lla"
+  | "success"
+  | "warning"
+  | "danger"
+  | "accent"
+  | "neutral";
 
 const props = withDefaults(
   defineProps<{
@@ -53,21 +73,16 @@ const toneClass = computed(() => `co-badge--${props.tone}`);
   gap: 4px;
   flex-shrink: 0;
   padding: 2px 9px;
-  /* 实心色块上没有描边可画：再套一圈线只会让徽标在小尺寸下发糊。 */
-  border: 1px solid transparent;
   border-radius: var(--copper-radius-full);
-  /* 文字与图标纯白：语义色由底色承担，文字不再与底色抢对比度。 */
+  /* 扁平：无描边、无阴影，一行都不给。 */
   color: var(--copper-on-solid);
+  background: var(--copper-badge-neutral);
   font-size: var(--copper-font-size-xs);
   font-weight: 600;
   /* 微字距：小字号下默认字距会让中文徽标挤成一团。 */
   letter-spacing: 0.3px;
   line-height: 1.5;
   white-space: nowrap;
-  /* 玻璃感：上边缘高光 + 下边缘内阴影，深浅主题各自的浓度由令牌给。 */
-  box-shadow:
-    inset 0 1px 0 var(--copper-badge-sheen),
-    inset 0 -1px 0 var(--copper-badge-underside);
 }
 
 .co-badge--sm {
@@ -78,27 +93,70 @@ const toneClass = computed(() => `co-badge--${props.tone}`);
 
 .co-badge__icon {
   flex-shrink: 0;
-  /* 图标不降透明度：可读性优先，形状记忆点必须和白字一样清楚。 */
   color: currentColor;
 }
 
+/* 发布类型 */
 .co-badge--release {
-  background: var(--copper-badge-release-solid);
+  background: var(--copper-badge-release);
 }
 
+.co-badge--beta {
+  background: var(--copper-badge-beta);
+}
+
+.co-badge--alpha,
 .co-badge--preview {
-  background: var(--copper-badge-preview-solid);
+  background: var(--copper-badge-alpha);
 }
 
-.co-badge--loader {
-  background: var(--copper-badge-loader-solid);
+/* 内容类型与来源 */
+.co-badge--ll-mod {
+  background: var(--copper-badge-ll-mod);
 }
 
+.co-badge--behavior-pack {
+  background: var(--copper-badge-behavior-pack);
+}
+
+.co-badge--texture-pack {
+  background: var(--copper-badge-texture-pack);
+}
+
+.co-badge--shader {
+  background: var(--copper-badge-shader);
+}
+
+.co-badge--source-curseforge {
+  background: var(--copper-badge-source-curseforge);
+}
+
+.co-badge--source-lip {
+  background: var(--copper-badge-source-lip);
+}
+
+.co-badge--source-lla {
+  background: var(--copper-badge-source-lla);
+}
+
+/* 通用状态 */
 .co-badge--downloaded {
-  background: var(--copper-badge-downloaded-solid);
+  background: var(--copper-badge-downloaded);
 }
 
-.co-badge--neutral {
-  background: var(--copper-badge-neutral-solid);
+.co-badge--success {
+  background: var(--copper-badge-success);
+}
+
+.co-badge--warning {
+  background: var(--copper-badge-warning);
+}
+
+.co-badge--danger {
+  background: var(--copper-badge-danger);
+}
+
+.co-badge--accent {
+  background: var(--copper-badge-accent);
 }
 </style>

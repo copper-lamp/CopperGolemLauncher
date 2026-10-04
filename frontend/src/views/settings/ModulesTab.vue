@@ -21,6 +21,7 @@ import {
 } from "@lucide/vue";
 
 import SettingSection from "./SettingSection.vue";
+import CoBadge, { type BadgeTone } from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
 import { modulesSetEnabled } from "../../api/modules";
@@ -105,7 +106,7 @@ async function toggleEnabled(row: ModuleRowView, enabled: boolean) {
 interface RowBadge {
   kind: string;
   label: string;
-  tone: "accent" | "muted" | "warning" | "danger" | "success";
+  tone: BadgeTone;
 }
 
 function badgesOf(row: ModuleRowView): RowBadge[] {
@@ -121,7 +122,7 @@ function badgesOf(row: ModuleRowView): RowBadge[] {
     });
   }
   if (!row.installed) {
-    badges.push({ kind: "uninstalled", label: t(`${M}.status.not_installed`), tone: "muted" });
+    badges.push({ kind: "uninstalled", label: t(`${M}.status.not_installed`), tone: "neutral" });
   }
   if (row.blockedBy.length > 0) {
     badges.push({ kind: "incompatible", label: t(`${M}.status.incompatible`), tone: "warning" });
@@ -136,7 +137,7 @@ function badgesOf(row: ModuleRowView): RowBadge[] {
     badges.push({ kind: "suspended", label: t(`${M}.status.suspended`), tone: "warning" });
   }
   if (row.local && row.entry === null) {
-    badges.push({ kind: "local-only", label: t(`${M}.local_only`), tone: "muted" });
+    badges.push({ kind: "local-only", label: t(`${M}.local_only`), tone: "neutral" });
   }
   return badges;
 }
@@ -301,16 +302,17 @@ const availableEmptyText = computed(() =>
           <div class="modules-tab__info">
             <div class="modules-tab__title-line">
               <span class="modules-tab__name">{{ row.displayName }}</span>
-              <span
+              <CoBadge
                 v-for="badge in badgesOf(row)"
                 :key="badge.kind"
-                :class="['modules-tab__badge', `modules-tab__badge--${badge.tone}`]"
+                size="sm"
+                :tone="badge.tone"
               >
                 {{ badge.label }}
-              </span>
-              <span v-if="row.builtin" class="modules-tab__badge modules-tab__badge--muted">
+              </CoBadge>
+              <CoBadge v-if="row.builtin" size="sm" tone="neutral">
                 {{ t(`${M}.builtin`) }}
-              </span>
+              </CoBadge>
             </div>
 
             <div v-if="row.summary" class="modules-tab__summary">{{ row.summary }}</div>
@@ -415,13 +417,14 @@ const availableEmptyText = computed(() =>
           <div class="modules-tab__info">
             <div class="modules-tab__title-line">
               <span class="modules-tab__name">{{ row.displayName }}</span>
-              <span
+              <CoBadge
                 v-for="badge in badgesOf(row)"
                 :key="badge.kind"
-                :class="['modules-tab__badge', `modules-tab__badge--${badge.tone}`]"
+                size="sm"
+                :tone="badge.tone"
               >
                 {{ badge.label }}
-              </span>
+              </CoBadge>
             </div>
 
             <div v-if="row.summary" class="modules-tab__summary">{{ row.summary }}</div>
@@ -613,37 +616,6 @@ const availableEmptyText = computed(() =>
 .modules-tab__name {
   font-size: var(--copper-font-size-md);
   font-weight: 600;
-}
-
-.modules-tab__badge {
-  padding: 1px 8px;
-  border-radius: var(--copper-radius-full);
-  font-size: var(--copper-font-size-xs);
-}
-
-.modules-tab__badge--accent {
-  background: color-mix(in srgb, var(--copper-accent) 14%, transparent);
-  color: var(--copper-accent);
-}
-
-.modules-tab__badge--muted {
-  background: var(--copper-surface-3);
-  color: var(--copper-text-secondary);
-}
-
-.modules-tab__badge--warning {
-  background: color-mix(in srgb, var(--copper-warning) 14%, transparent);
-  color: var(--copper-warning);
-}
-
-.modules-tab__badge--danger {
-  background: color-mix(in srgb, var(--copper-danger) 14%, transparent);
-  color: var(--copper-danger);
-}
-
-.modules-tab__badge--success {
-  background: color-mix(in srgb, var(--copper-success) 14%, transparent);
-  color: var(--copper-success);
 }
 
 .modules-tab__summary {

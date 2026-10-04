@@ -109,7 +109,7 @@ function goBack() {
           <CoBadge :tone="version.kind" :icon="kindIcon">
             {{ t(`${MB_KEY}.kind.${version.kind}`) }}
           </CoBadge>
-          <CoBadge v-if="version.has_loader" tone="loader" :icon="Blocks">LeviLamina</CoBadge>
+          <CoBadge v-if="version.has_loader" tone="ll-mod" :icon="Blocks">LeviLamina</CoBadge>
           <CoBadge v-if="version.downloaded" tone="downloaded" :icon="HardDriveDownload">
             {{ t(`${MB_KEY}.downloaded`) }}
           </CoBadge>
