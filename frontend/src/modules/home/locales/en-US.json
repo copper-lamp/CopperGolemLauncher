@@ -6,7 +6,8 @@
   "install_hint": "Versions are installed by the Game Downloads module; manage installed versions here",
   "go_download": "Go to Game Downloads",
   "play": "Play",
-  "playing": "Launching",
+  "launching": "Launching",
+  "stop": "Quit game",
   "mode": {
     "simple": "Simple",
     "default": "Default",
@@ -166,8 +167,9 @@
     "author_none": "Unknown author"
   },
   "toast": {
-    "launch_started": "Launching game…",
     "launch_failed": "Launch failed: {message}",
+    "stopped": "Game closed",
+    "stop_failed": "Failed to close the game: {message}",
     "deleted": "Version deleted",
     "renamed": "Version renamed",
     "saved": "Settings saved"

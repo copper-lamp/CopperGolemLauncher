@@ -6,7 +6,8 @@
   "install_hint": "版本将由游戏下载模块安装，此处管理已安装版本",
   "go_download": "前往下载游戏",
   "play": "开始游戏",
-  "playing": "启动中",
+  "launching": "启动中",
+  "stop": "退出游戏",
   "mode": {
     "simple": "简洁",
     "default": "默认",
@@ -166,8 +167,9 @@
     "author_none": "未署名"
   },
   "toast": {
-    "launch_started": "正在启动游戏…",
     "launch_failed": "启动失败：{message}",
+    "stopped": "游戏已退出",
+    "stop_failed": "退出游戏失败：{message}",
     "deleted": "版本已删除",
     "renamed": "版本已重命名",
     "saved": "设置已保存"

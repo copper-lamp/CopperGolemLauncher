@@ -15,10 +15,18 @@ import { useUpdate } from "../../composables/useUpdate";
 import { useSettings } from "../../composables/useSettings";
 import { formatBytes, formatSpeed } from "../../api/download";
 import { formatEta } from "../../components/update/updateFormat";
+import {
+  clearPreviewUpdateState,
+  nextPreviewLabelKey,
+  previewNextUpdateState,
+} from "../../updatePreview";
 import { useI18n } from "../../i18n";
 
 const { t } = useI18n();
 const { get, set } = useSettings();
+
+/** 开发期预览入口的开关（生产构建为 false，整块 UI 与代码都不生效）。 */
+const isDev = import.meta.env.DEV;
 const {
   status,
   phase,
@@ -28,6 +36,7 @@ const {
   error,
   errorKind,
   downloading,
+  ready,
   versionDelta,
   check,
   cancel,
@@ -44,7 +53,7 @@ const autoCheck = computed({
 });
 
 const checking = computed(() => phase.value === "checking");
-const downloaded = computed(() => phase.value === "downloaded");
+const downloaded = computed(() => ready.value);
 const hasUpdate = computed(() => phase.value === "available" && latest.value != null);
 
 /** 手动检查：成功与失败都在本页给出明确反馈。 */
@@ -89,9 +98,20 @@ function failureHint(): string {
             <RefreshCw v-else :size="14" />
             <span>{{ t("update.check_now") }}</span>
           </CoButton>
-          <!-- 有更新时主入口是「查看更新」，直接打开面板而不是在这重做一遍流程。 -->
-          <CoButton v-if="hasUpdate || downloading || downloaded" size="sm" variant="primary" @click="openPanel">
-            {{ downloading ? t("update.badge.downloading") : downloaded ? t("update.badge.ready") : t("update.badge.available") }}
+          <!-- 标题栏已有更新按钮时，这里只做「跳过去」：不在设置页重做一遍流程。 -->
+          <CoButton
+            v-if="hasUpdate || downloading || downloaded"
+            size="sm"
+            variant="primary"
+            @click="openPanel"
+          >
+            {{
+              downloaded
+                ? t("update.badge.ready")
+                : downloading
+                  ? t("update.badge.downloading")
+                  : t("update.badge.available")
+            }}
           </CoButton>
         </div>
       </SettingRow>
@@ -178,6 +198,26 @@ function failureHint(): string {
     <SettingSection title-key="settings.about.license">
       <SettingRow label-key="settings.about.open_source">
         <span class="about-tab__hint">{{ t("settings.about.license_text") }}</span>
+      </SettingRow>
+    </SettingSection>
+
+    <!--
+      开发期预览：仓库还没有真实 Release，「有更新」这条路径在真机上永远看不到。
+      生产构建下 `import.meta.env.DEV` 为 false，整段不渲染（见 src/updatePreview.ts）。
+    -->
+    <SettingSection v-if="isDev" title-key="settings.about.dev_preview">
+      <SettingRow
+        label-key="settings.about.dev_preview"
+        hint-key="settings.about.dev_preview_hint"
+      >
+        <div class="about-tab__check">
+          <CoButton size="sm" @click="previewNextUpdateState">
+            {{ t(nextPreviewLabelKey()) }}
+          </CoButton>
+          <CoButton variant="ghost" size="sm" @click="clearPreviewUpdateState">
+            {{ t("common.close") }}
+          </CoButton>
+        </div>
       </SettingRow>
     </SettingSection>
   </div>

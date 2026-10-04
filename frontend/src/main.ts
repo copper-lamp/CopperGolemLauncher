@@ -31,6 +31,7 @@ import { initUpdate } from "./composables/useUpdate";
 import { initAccount } from "./composables/useAccount";
 import { markKernelReady } from "./composables/useKernelReady";
 import { observeAndroidGameExit } from "./composables/useAndroidGameExit";
+import { initGameSession } from "./composables/useGameSession";
 import { loadAddonFrontends } from "./modules/addonRuntime";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -221,6 +222,12 @@ void listen<{ instance_name: string; package_name: string; version_name: string 
 // 游戏退出不走事件总线：原生库不可卸载，退出只能由 Java 宿主写文件信箱，
 // 详见 composables/useAndroidGameExit.ts。
 observeAndroidGameExit();
+
+// 游戏会话状态（启动中 / 运行中）由内核事件驱动，开始页按钮形态依赖它。
+// 不占 boot 步骤：订阅失败只影响按钮形态，界面其余部分照常。
+void initGameSession().catch((error: unknown) => {
+  forward(`game session observation failed: ${String(error)}`);
+});
 
 // 3) 诊断出口：引导失败 / 超时自动展开面板；`?diag=1` 供用户主动打开。
 // 没有这一步，安卓上「点不动」的现场就只剩用户的一句「加载中」。

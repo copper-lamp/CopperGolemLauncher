@@ -89,9 +89,19 @@ export function homeVersionDelete(name: string): Promise<void> {
   return call<void>("home_version_delete", { name });
 }
 
-/** 启动游戏（成功后后台确认进程并广播 `game.launched`）。 */
+/** 启动游戏（成功后后台确认进程并广播 `game.launched` / `game.exited`）。 */
 export function homeLaunch(name: string): Promise<LaunchOutcome> {
   return call<LaunchOutcome>("home_launch", { name });
+}
+
+/** 该版本的游戏进程是否在运行（开始页按钮形态的依据）。 */
+export function homeGameRunning(name: string): Promise<boolean> {
+  return call<boolean>("home_game_running", { name });
+}
+
+/** 结束该版本运行中的游戏进程，返回结束的进程数；未在运行时返回 0。 */
+export function homeGameKill(name: string): Promise<number> {
+  return call<number>("home_game_kill", { name });
 }
 
 /** 保存版本封面（`data:image/png;base64,...`，前端已裁剪 256×256 方形）。 */

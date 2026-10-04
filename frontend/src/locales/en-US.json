@@ -273,15 +273,27 @@
       "update_channel_hint": "stable receives releases only; beta also accepts prereleases",
       "license": "License",
       "license_text": "Copper Golem Launcher is released under the GPL-3.0 license.",
-      "open_source": "Open source"
+      "open_source": "Open source",
+      "dev_preview": "Dev preview",
+      "dev_preview_hint": "No real release yet — click to step through every state of the update button and dialog (dev builds only)"
     }
   },
   "update": {
     "badge": {
-      "available": "Update available",
+      "available": "Update available — downloading automatically",
       "downloading": "Downloading update",
-      "ready": "Update ready — click to restart",
-      "failed": "Update check failed — click to retry"
+      "ready": "Update ready",
+      "ready_short": "Update",
+      "failed": "Update check failed — click to retry",
+      "failed_short": "Retry"
+    },
+    "dialog": {
+      "available_title": "Update available",
+      "ready_title": "Update and restart now?",
+      "downloading_title": "Downloading update",
+      "failed_title": "Update failed",
+      "checking_title": "Checking for updates",
+      "idle_title": "You are up to date"
     },
     "available_title": "Update available",
     "ready_title": "Update downloaded",
@@ -301,18 +313,19 @@
     "failed_network_hint": "Could not reach the update server. Check your network and retry.",
     "failed_no_asset_hint": "This release has no package for your platform. Download it manually from the release page.",
     "failed_download_hint": "The package download failed. You can retry.",
+    "auto_download_failed_hint": "A new version is out, but the automatic download did not succeed. Check again, or download it from the release page.",
     "check_now": "Check for updates",
     "check_again": "Check again",
     "download_now": "Download update",
     "download_manually": "Download manually",
     "cancel_download": "Cancel download",
-    "restart_now": "Restart and update",
+    "restart_now": "Update and restart",
     "confirm_restart": "Click again to confirm",
     "install_now": "Restart now",
     "later": "Later",
     "view_release": "View release",
     "open_page_failed": "Could not open the release page",
-    "ready_toast": "Update v{version} is ready"
+    "ready_toast": "Update v{version} is ready — restart to apply"
   },
   "download": {
     "title": "Downloads",

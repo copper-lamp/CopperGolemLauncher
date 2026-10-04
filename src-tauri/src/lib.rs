@@ -464,6 +464,8 @@ pub fn run() {
             commands::home::home_version_rename,
             commands::home::home_version_delete,
             commands::home::home_launch,
+            commands::home::home_game_running,
+            commands::home::home_game_kill,
             commands::home::home_logo_set,
             commands::home::home_logo_remove,
             commands::home::home_content_list,

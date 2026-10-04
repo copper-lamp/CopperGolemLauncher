@@ -15,6 +15,12 @@
   --copper-danger: #f85149;
   --copper-info: #58a6ff;
 
+  /* 更新按钮专属底色（克莱因蓝 IKB）。
+     刻意不随主题强调色变化：更新是**产品级动作**，必须与普通交互控件在视觉上
+     区分开，且在两种主题下都保持同一个识别色。 */
+  --copper-update-blue: #002fa7;
+  --copper-update-blue-hover: #0a3fc7;
+
   /* 中性灰阶（深色）：主页面 --copper-bg 最深，surface 逐级提亮一档 */
   --copper-bg: #0d1117;
   --copper-surface: #161b22;

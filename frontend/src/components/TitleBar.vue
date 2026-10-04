@@ -159,11 +159,11 @@ function close() {
       </template>
     </div>
     <div class="titlebar__spacer" data-tauri-drag-region />
+    <!-- 更新入口：位于操作按钮左侧，独立控件，不参与操作区的 flex 布局 -->
+    <UpdateBadge />
     <!-- 页面注入操作区：各模块经 <Teleport to="#copper-titlebar-actions"> 放置按钮/切换。 -->
     <div class="titlebar__actions" id="copper-titlebar-actions" />
     <div class="titlebar__right">
-      <!-- 更新入口：常驻右侧，仅在有更新 / 下载中 / 已就绪 / 失败时自身可见。 -->
-      <UpdateBadge />
       <button
         v-if="hasBootTrouble"
         class="titlebar__trouble"

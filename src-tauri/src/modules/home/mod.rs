@@ -214,6 +214,20 @@ impl HomeModule {
     ) -> Result<launch::LaunchOutcome, KernelError> {
         launch::launch_game(&launch::LaunchCtx::from_kernel(kernel), name, true)
     }
+
+    /// 该版本的游戏进程是否在运行（开始页按钮形态的依据）。
+    pub fn game_running(kernel: &KernelContext, name: &str) -> Result<bool, KernelError> {
+        let root = kernel.versions_root();
+        let dir = meta::resolve_version_dir(&root, name)?;
+        Ok(launch::is_process_running_at_path(&dir.join(launch::GAME_EXE)))
+    }
+
+    /// 结束该版本运行中的游戏进程，返回结束的进程数。
+    pub fn kill_game(kernel: &KernelContext, name: &str) -> Result<usize, KernelError> {
+        let root = kernel.versions_root();
+        let dir = meta::resolve_version_dir(&root, name)?;
+        launch::terminate_process_at_path(&dir.join(launch::GAME_EXE))
+    }
 }
 
 /// 构建前端视图（附带图标 data URL 与目录路径）。

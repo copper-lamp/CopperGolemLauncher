@@ -273,15 +273,27 @@
       "update_channel_hint": "stable 只接收正式版；beta 额外接收预发布",
       "license": "许可证",
       "license_text": "铜傀儡启动器遵循 GPL-3.0 开源许可证发布。",
-      "open_source": "开源信息"
+      "open_source": "开源信息",
+      "dev_preview": "开发预览",
+      "dev_preview_hint": "仓库还没有真实 Release，点一下依次预览更新按钮与弹窗的全部形态（仅开发构建可用）"
     }
   },
   "update": {
     "badge": {
-      "available": "发现新版本",
+      "available": "发现新版本，正在自动下载",
       "downloading": "正在下载更新",
-      "ready": "更新已就绪，点击重启",
-      "failed": "更新检查失败，点击重试"
+      "ready": "更新已就绪",
+      "ready_short": "更新",
+      "failed": "更新检查失败，点击重试",
+      "failed_short": "重试"
+    },
+    "dialog": {
+      "available_title": "发现新版本",
+      "ready_title": "现在更新并重启？",
+      "downloading_title": "正在下载更新",
+      "failed_title": "更新失败",
+      "checking_title": "正在检查更新",
+      "idle_title": "已是最新版本"
     },
     "available_title": "发现新版本",
     "ready_title": "更新已下载完成",
@@ -301,18 +313,19 @@
     "failed_network_hint": "无法连接更新服务器，请检查网络后重试。",
     "failed_no_asset_hint": "该版本没有适配你当前系统的更新包，请到发行页手动下载。",
     "failed_download_hint": "更新包下载失败，可重试下载。",
+    "auto_download_failed_hint": "新版本已发布，但自动下载未成功。点击「重新检查」后再试一次，或前往发行页手动下载。",
     "check_now": "检查更新",
     "check_again": "重新检查",
     "download_now": "下载更新",
     "download_manually": "前往下载",
     "cancel_download": "取消下载",
-    "restart_now": "重启并更新",
-    "confirm_restart": "再次点击以确认",
+    "restart_now": "更新并重启",
+    "confirm_restart": "再次点击确认",
     "install_now": "立即重启",
-    "later": "稍后再说",
+    "later": "稍后",
     "view_release": "查看发行页",
     "open_page_failed": "无法打开发行页",
-    "ready_toast": "更新 v{version} 已下载完成"
+    "ready_toast": "更新 v{version} 已下载完成，重启即可生效"
   },
   "download": {
     "title": "下载",

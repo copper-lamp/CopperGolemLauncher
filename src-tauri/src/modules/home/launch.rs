@@ -69,6 +69,16 @@ fn resolve_launch_dir(paths: &Paths, settings: &SettingsService, name: &str) -> 
 /// 检测某路径下是否有游戏进程在运行（Windows 进程枚举，路径归一化比对）。
 #[cfg(windows)]
 pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
+    !pids_at_path(exe_path).is_empty()
+}
+
+/// 枚举「映像路径等于 `exe_path`」的游戏进程 pid。
+///
+/// 按**完整路径**比对而非仅进程名：多版本共存时进程名恒为 `Minecraft.Windows.exe`，
+/// 只有路径能把某个实例的进程区分出来。运行检测与结束游戏共用这一份实现，
+/// 避免两条链路对「哪个进程属于这个版本」的判断出现分歧。
+#[cfg(windows)]
+fn pids_at_path(exe_path: &std::path::Path) -> Vec<u32> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -81,13 +91,13 @@ pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
 
     let target = normalize_path(exe_path);
     if target.is_empty() {
-        return false;
+        return Vec::new();
     }
+    let mut pids = Vec::new();
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return false;
+            return Vec::new();
         };
-        let mut found = false;
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut has_entry = Process32FirstW(snapshot, &mut entry).is_ok();
@@ -95,7 +105,9 @@ pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
             let exe_name = windows::core::PWSTR(entry.szExeFile.as_ptr() as *mut u16);
             let name = exe_name.to_string().unwrap_or_default();
             if name.eq_ignore_ascii_case(GAME_EXE) {
-                if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, entry.th32ProcessID) {
+                if let Ok(handle) =
+                    OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, entry.th32ProcessID)
+                {
                     let mut buf = [0u16; 1024];
                     let mut size = buf.len() as u32;
                     let ok = QueryFullProcessImageNameW(
@@ -109,8 +121,7 @@ pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
                     if ok {
                         let path = String::from_utf16_lossy(&buf[..size as usize]);
                         if normalize_path(std::path::Path::new(&path)) == target {
-                            found = true;
-                            break;
+                            pids.push(entry.th32ProcessID);
                         }
                     }
                 }
@@ -118,14 +129,63 @@ pub fn is_process_running_at_path(exe_path: &std::path::Path) -> bool {
             has_entry = Process32NextW(snapshot, &mut entry).is_ok();
         }
         let _ = CloseHandle(snapshot);
-        found
     }
+    pids
 }
 
 /// 非 Windows 平台：不检测（返回 false，启动仍可执行，但无运行确认）。
 #[cfg(not(windows))]
 pub fn is_process_running_at_path(_exe_path: &std::path::Path) -> bool {
     false
+}
+
+/// 强制结束该版本目录下运行的游戏进程，返回结束的进程数。
+///
+/// 语义是「结束进程」而非「请求退出」：Minecraft 没有可用的退出 IPC，
+/// 只能终止。进程消失后由 `monitor_after_launch` 的观察循环广播 `game.exited`，
+/// 前端按钮因此不需要在命令返回时自行改状态（避免与真实进程状态脱节）。
+#[cfg(windows)]
+pub fn terminate_process_at_path(exe_path: &std::path::Path) -> Result<usize, KernelError> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+    };
+
+    let pids = pids_at_path(exe_path);
+    if pids.is_empty() {
+        return Ok(0);
+    }
+    let mut killed = 0usize;
+    let mut last_error: Option<String> = None;
+    for pid in pids {
+        unsafe {
+            let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) else {
+                last_error = Some(format!("进程 {pid} 拒绝访问"));
+                continue;
+            };
+            let ok = TerminateProcess(handle, 1).is_ok();
+            let _ = CloseHandle(handle);
+            if ok {
+                killed += 1;
+            } else {
+                last_error = Some(format!("进程 {pid} 结束失败"));
+            }
+        }
+    }
+    if killed == 0 {
+        return Err(KernelError::InvalidArgument(
+            last_error.unwrap_or_else(|| "结束游戏失败".into()),
+        ));
+    }
+    Ok(killed)
+}
+
+/// 非 Windows 平台（含 Android）：宿主不由本进程托管，不提供强制结束。
+#[cfg(not(windows))]
+pub fn terminate_process_at_path(_exe_path: &std::path::Path) -> Result<usize, KernelError> {
+    Err(KernelError::InvalidArgument(
+        "当前平台不支持强制结束游戏".into(),
+    ))
 }
 
 /// 路径归一化（小写 + 清理 + 去 UNC 前缀），用于进程路径比对。
@@ -261,6 +321,11 @@ fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &
         )));
     }
     crate::platform::android::request_prepare(&ctx.events, name, &android.package_name, android.version_name.as_str())?;
+    // 安卓没有进程可轮询：Java 宿主收到 prepare 请求即接管启动，
+    // 因此这里直接广播 `game.launched`。退出由宿主的文件信箱回传
+    // （`useAndroidGameExit`），不经过本模块的监控任务。
+    ctx.events
+        .publish("game.launched", serde_json::json!({ "name": name }));
     Ok(LaunchOutcome::Spawned)
 }
 
@@ -285,7 +350,11 @@ fn spawn_protocol(url: &str) -> Result<(), KernelError> {
 }
 
 /// 后台监控：轮询游戏进程，确认运行后广播 `game.launched`。
-/// 之后持续观察直到进程退出（释放监控任务）。
+/// 之后持续观察直到进程退出（广播 `game.exited` 后释放监控任务）。
+///
+/// 确认超时也会广播一次 `game.exited`（`reason = "not_started"`）：否则前端
+/// 的「启动中」态会永远停在那里 —— 启动失败（崩溃、缺 DLL、被安全软件拦下）
+/// 是常态而非例外，必须有一条把界面拉回「可启动」的路径。
 fn monitor_after_launch(
     events: &Arc<EventBus>,
     runtime: &tokio::runtime::Handle,
@@ -302,22 +371,29 @@ fn monitor_after_launch(
         while std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
             if is_process_running_at_path(&exe) {
-                if !confirmed {
-                    confirmed = true;
-                    events.publish("game.launched", serde_json::json!({ "name": name }));
-                }
+                confirmed = true;
+                events.publish("game.launched", serde_json::json!({ "name": name }));
                 break;
             }
         }
-        if confirmed {
-            // 持续观察直到退出（保持语义：一次启动对应一个生命周期）。
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                if !is_process_running_at_path(&exe) {
-                    break;
-                }
+        if !confirmed {
+            events.publish(
+                "game.exited",
+                serde_json::json!({ "name": name, "reason": "not_started" }),
+            );
+            return;
+        }
+        // 持续观察直到退出（保持语义：一次启动对应一个生命周期）。
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if !is_process_running_at_path(&exe) {
+                break;
             }
         }
+        events.publish(
+            "game.exited",
+            serde_json::json!({ "name": name, "reason": "closed" }),
+        );
     });
 }
 
@@ -344,5 +420,14 @@ mod tests {
         );
         // 无 '=' 的行被忽略
         assert_eq!(parse_env_vars("JUST_TEXT"), Vec::<(String, String)>::new());
+    }
+
+    /// 没有匹配进程时「结束游戏」是成功的空操作（幂等），不是错误。
+    #[cfg(windows)]
+    #[test]
+    fn terminate_missing_process_is_noop() {
+        let missing = std::env::temp_dir().join("copper_no_such_game_dir_9d3f/Minecraft.Windows.exe");
+        assert_eq!(terminate_process_at_path(&missing).unwrap(), 0);
+        assert!(!is_process_running_at_path(&missing));
     }
 }

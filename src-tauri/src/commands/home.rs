@@ -68,10 +68,27 @@ pub fn home_version_delete(kernel: State<'_, KernelContext>, name: String) -> Co
         .map_err(into_command_error)
 }
 
-/// 启动游戏（成功后后台确认进程并广播 `game.launched`）。
+/// 启动游戏（成功后后台确认进程并广播 `game.launched` / `game.exited`）。
 #[tauri::command]
 pub fn home_launch(kernel: State<'_, KernelContext>, name: String) -> CommandResult<LaunchOutcome> {
     crate::modules::home::HomeModule::launch(kernel.inner(), &name).map_err(into_command_error)
+}
+
+/// 该版本的游戏进程是否在运行（开始页「启动 / 退出」按钮形态的依据）。
+#[tauri::command]
+pub fn home_game_running(kernel: State<'_, KernelContext>, name: String) -> CommandResult<bool> {
+    crate::modules::home::HomeModule::game_running(kernel.inner(), &name)
+        .map_err(into_command_error)
+}
+
+/// 结束该版本运行中的游戏进程，返回结束的进程数。
+///
+/// 不在此处广播 `game.exited`：状态只由进程监控任务广播，前端因此永远以
+/// 真实进程状态为准，不会出现「按钮显示已退出但游戏还在跑」。
+#[tauri::command]
+pub fn home_game_kill(kernel: State<'_, KernelContext>, name: String) -> CommandResult<usize> {
+    crate::modules::home::HomeModule::kill_game(kernel.inner(), &name)
+        .map_err(into_command_error)
 }
 
 /// 保存版本图标（`data:image/png;base64,...`，前端已裁剪 256×256）。

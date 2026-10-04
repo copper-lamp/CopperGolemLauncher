@@ -1,56 +1,61 @@
 <script setup lang="ts">
-// 标题栏更新入口：仅在「有新版本 / 下载中 / 已就绪 / 检查失败」时出现。
+// 标题栏更新入口。
 //
-// 为什么放标题栏而不是只放在设置页：更新是**跨页面、跨时段**的事——
-// 用户可能下载完就切去下载游戏了，没有一个常驻入口就永远回不去。
+// 位置：标题栏操作按钮（`#copper-titlebar-actions`）**左边**，由 TitleBar 决定，
+// 组件自身不带任何布局偏移 —— 它是一个独立控件，不参与操作区的 flex 布局，
+// 因此不可能和页面注入的操作按钮挤在一起。
 //
-// 视觉上区分三种值得注意的状态：
-// - `available`：主色实心 + 呼吸光晕（可下载，等用户决定）；
-// - `downloading`：主色描边 + 环形进度（正在进行）；
-// - `downloaded`：成功色实心 + 脉冲（已完成，只差一次点击）。
+// 形态（两态）：
+// - 收起：直径 32 的**圆形**，克莱因蓝底 + 白色下载图标 + 白色圆形进度环；
+// - 展开：下载完成、待用户决定是否重启时，宽度变宽并露出「更新」文本，
+//   进度环走满 100%。
+//
+// 为什么收起态没有「下载中 / 待更新」的文案：32px 的圆里塞文字会挤成不可读。
+// 区分状态改用**进度环**（环的角度就是字节进度，零占用），文案只在真正需要
+// 用户决策的「已完成」态出现。
 import { computed } from "vue";
-import { ArrowUpCircle, Download, LoaderCircle, RefreshCw } from "@lucide/vue";
+import { ArrowDownToLine } from "@lucide/vue";
 
 import { useUpdate } from "../../composables/useUpdate";
 import { useI18n } from "../../i18n";
 
 const { t } = useI18n();
-const { phase, visible, downloading, ready, hasUpdate, progress, openPanel } = useUpdate();
+const { visible, downloading, ready, failed, progress, openPanel } = useUpdate();
 
-/** 环形进度比例（0~1）；无进度时退化为不确定态。 */
-const ringRatio = computed(() => {
-  if (!downloading.value) return null;
-  return progress.value?.ratio ?? null;
+/** 收起态只有「检查失败」需要可点但无新版本这一组合，其余靠相位决定。 */
+const failedOnly = computed(() => failed.value && !downloading.value && !ready.value);
+
+/** 进度环比例（0~1）。总量未知时为 null，走不确定态。 */
+const ratio = computed(() => {
+  if (ready.value) return 1;
+  if (downloading.value) return progress.value?.ratio ?? null;
+  return failedOnly.value ? 0 : null;
 });
 
-/** 环形 stroke-dasharray 偏移。 */
-const dashOffset = computed(() => {
-  const ratio = ringRatio.value;
-  const circumference = 2 * Math.PI * 9;
-  if (ratio == null) return circumference;
-  return circumference * (1 - Math.min(1, Math.max(0, ratio)));
-});
+/** 环形周长（r = 13.5 → 2πr ≈ 84.82）。 */
+const CIRCUMFERENCE = 2 * Math.PI * 13.5;
 
-const icon = computed(() => {
-  if (downloading.value) return Download;
-  if (ready.value) return ArrowUpCircle;
-  if (phase.value === "failed") return RefreshCw;
-  return ArrowUpCircle;
-});
+/** 进度环 dashoffset：比例越高，空白越少。 */
+const dashOffset = computed(() =>
+  ratio.value == null ? CIRCUMFERENCE : CIRCUMFERENCE * (1 - ratio.value),
+);
+
+/** 是否展开露出文本：仅「已下载待重启」与「检查失败」两种需要用户决策。 */
+const expanded = computed(() => ready.value || failedOnly.value);
 
 const label = computed(() => {
-  if (ready.value) return t("update.badge.ready");
+  if (ready.value) return t("update.badge.ready_short");
+  if (failedOnly.value) return t("update.badge.failed_short");
   if (downloading.value) return t("update.badge.downloading");
-  if (phase.value === "failed") return t("update.badge.failed");
   return t("update.badge.available");
 });
 
-const modifier = computed(() => {
-  if (ready.value) return "ready";
-  if (downloading.value) return "downloading";
-  if (phase.value === "failed") return "failed";
-  if (hasUpdate.value) return "available";
-  return "";
+/** 悬浮说明比 32px 圆能承载的多，放完整语义。 */
+const title = computed(() => {
+  if (ready.value) return t("update.ready_body");
+  if (failedOnly.value) return t("update.badge.failed");
+  if (downloading.value) return t("update.downloading_hint");
+  return t("update.available_title");
 });
 </script>
 
@@ -58,94 +63,96 @@ const modifier = computed(() => {
   <button
     v-if="visible"
     class="update-badge"
-    :class="[`update-badge--${modifier}`, { 'update-badge--pulse': hasUpdate }]"
+    :class="{
+      'update-badge--expanded': expanded,
+      'update-badge--ready': ready,
+      'update-badge--failed': failedOnly,
+      'update-badge--pulse': downloading && ratio == null,
+    }"
     type="button"
-    :title="label"
-    :aria-label="label"
+    :title="title"
+    :aria-label="title"
     @click="openPanel"
   >
-    <svg class="update-badge__ring" viewBox="0 0 24 24" aria-hidden="true">
-      <circle class="update-badge__ring-track" cx="12" cy="12" r="9" />
-      <circle
-        class="update-badge__ring-bar"
-        cx="12"
-        cy="12"
-        r="9"
-        :stroke-dashoffset="dashOffset"
-      />
-    </svg>
-    <LoaderCircle
-      v-if="downloading && ringRatio == null"
-      class="update-badge__spin"
-      :size="15"
-    />
-    <component :is="icon" v-else class="update-badge__icon" :size="15" />
+    <span class="update-badge__disc">
+      <svg class="update-badge__ring" viewBox="0 0 32 32" aria-hidden="true">
+        <!-- 轨道：极淡的白色，仅作为「这里是进度条」的提示，不喧宾夺主 -->
+        <circle class="update-badge__ring-track" cx="16" cy="16" r="13.5" />
+        <!-- 进度条：白色，随字节进度推进 -->
+        <circle
+          class="update-badge__ring-bar"
+          cx="16"
+          cy="16"
+          r="13.5"
+          :style="{ strokeDasharray: CIRCUMFERENCE, strokeDashoffset: dashOffset }"
+        />
+      </svg>
+      <ArrowDownToLine class="update-badge__icon" :size="15" />
+    </span>
+    <span v-if="expanded" class="update-badge__label">{{ label }}</span>
   </button>
 </template>
 
 <style scoped>
 .update-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--copper-radius-full);
+  /* 宽度过渡：收起 → 展开的横向拉伸必须是连续的，否则是「突然长出两个字」 */
+  transition:
+    padding var(--copper-duration) var(--copper-easing),
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    box-shadow var(--copper-duration) var(--copper-easing);
+  background: var(--copper-update-blue);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.update-badge:hover {
+  background: var(--copper-update-blue-hover);
+}
+
+.update-badge:active {
+  transform: scale(0.96);
+}
+
+.update-badge:focus-visible {
+  outline: 2px solid var(--copper-info);
+  outline-offset: 2px;
+}
+
+/* 展开态：右侧留白 + 文案；左侧圆盘宽度不变，图标不会横向跳动。 */
+.update-badge--expanded {
+  padding-right: 12px;
+  gap: 8px;
+}
+
+.update-badge__disc {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid transparent;
-  border-radius: var(--copper-radius-sm);
-  background: transparent;
-  color: var(--copper-text-secondary);
-  cursor: pointer;
-  transition:
-    background-color var(--copper-duration-fast) var(--copper-easing),
-    color var(--copper-duration-fast) var(--copper-easing),
-    border-color var(--copper-duration-fast) var(--copper-easing);
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--copper-radius-full);
 }
 
-.update-badge:hover {
-  background: var(--copper-hover);
-  color: var(--copper-text);
+.update-badge__icon {
+  color: #ffffff;
+  stroke-width: 2;
 }
 
-/* 有新版本：主色实心 + 呼吸光晕，从余光里也能注意到。 */
-.update-badge--available {
-  background: color-mix(in srgb, var(--copper-accent) 18%, transparent);
-  border-color: color-mix(in srgb, var(--copper-accent) 45%, transparent);
-  color: var(--copper-accent);
-  animation: update-badge-breathe 2.4s var(--copper-easing) infinite;
-}
-
-/* 下载中：描边 + 环形进度，不做呼吸（进度条已经在动，再加呼吸只会吵）。 */
-.update-badge--downloading {
-  border-color: color-mix(in srgb, var(--copper-accent) 45%, transparent);
-  color: var(--copper-accent);
-}
-
-/* 已就绪：成功色实心 + 更快的脉冲，语义是「只差一次点击就能用上」。 */
-.update-badge--ready {
-  background: color-mix(in srgb, var(--copper-success) 18%, transparent);
-  border-color: color-mix(in srgb, var(--copper-success) 50%, transparent);
-  color: var(--copper-success);
-  animation: update-badge-pulse 1.6s var(--copper-easing) infinite;
-}
-
-.update-badge--failed {
-  color: var(--copper-warning);
-}
-
-.update-badge__icon,
-.update-badge__spin {
-  position: absolute;
-}
-
-.update-badge__spin {
-  animation: update-badge-spin 1s linear infinite;
-}
-
-/* 环形进度：轨迹常隐，条形随字节比例增长。 */
+/* 进度环：白色，起点在 12 点方向（rotate -90deg 已由 CSS 处理）。 */
 .update-badge__ring {
   position: absolute;
-  inset: 3px;
+  inset: 0;
+  width: 32px;
+  height: 32px;
   transform: rotate(-90deg);
   pointer-events: none;
 }
@@ -153,48 +160,47 @@ const modifier = computed(() => {
 .update-badge__ring-track,
 .update-badge__ring-bar {
   fill: none;
-  stroke-width: 2;
+  stroke-width: 2.5;
+  stroke-linecap: round;
 }
 
 .update-badge__ring-track {
-  stroke: color-mix(in srgb, currentColor 18%, transparent);
+  stroke: rgba(255, 255, 255, 0.22);
 }
 
 .update-badge__ring-bar {
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-dasharray: 56.55;
+  stroke: #ffffff;
   transition: stroke-dashoffset var(--copper-duration) var(--copper-easing);
 }
 
-/* 总量未知时环形不做定量（dashoffset 保持满格），由 spinner 表达进行中。 */
-.update-badge--downloading .update-badge__ring-bar {
-  stroke-dasharray: none;
+/* 总量未知：环整体缓慢转动，表达「在动但不知道还剩多少」。 */
+.update-badge--pulse .update-badge__ring-bar {
+  animation: update-badge-spin 1.4s linear infinite;
+  stroke-dasharray: 26 60 !important;
 }
 
-@keyframes update-badge-breathe {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--copper-accent) 45%, transparent);
-  }
-  55% {
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--copper-accent) 0%, transparent);
-  }
-}
-
-@keyframes update-badge-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--copper-success) 50%, transparent);
-  }
-  60% {
-    box-shadow: 0 0 0 7px color-mix(in srgb, var(--copper-success) 0%, transparent);
-  }
+.update-badge__label {
+  font-size: var(--copper-font-size-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  color: #ffffff;
+  animation: update-badge-label-in var(--copper-duration) var(--copper-easing);
 }
 
 @keyframes update-badge-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes update-badge-label-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 </style>
