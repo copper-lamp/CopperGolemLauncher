@@ -197,6 +197,13 @@ pub struct VersionView {
     pub game_version: String,
     /// 该版本是否有可装的 LeviLamina（列表页据此显示加载器徽标）。
     pub has_loader: bool,
+    /// 版本安装目录下是否已有该版本的完整整包（列表页据此显示「已下载」徽标）。
+    ///
+    /// 由 `installer::local_package_slugs` **扫目录**得出，不查数据库记录：记录
+    /// 会与磁盘分叉（用户手动删包 / 手动放包），而「本地有没有这个包」只有一个
+    /// 事实源，就是那个文件。这里只判断「存在且非空」，MD5 仍由安装流水线在
+    /// 解包前强制校验。
+    pub downloaded: bool,
 }
 
 /// 载入清单（刷新或读缓存 + 可选网络），未联网时回退缓存。
@@ -278,9 +285,14 @@ pub async fn fetch_manifest(ctx: &Ctx) -> Result<HistoricalVersions, KernelError
 /// `catalog` 为加载器目录；为 `None`（未装 lip / 索引不可达）时所有版本的
 /// `has_loader` 都是 `false`——徽标宁可不显示，也不能凭「网络没通」就说这个版本能装
 /// 加载器。
+///
+/// `local_packages` 是本地已存在的整包 slug 集合（调用方扫目录得到）；不在集合里
+/// 的版本 `downloaded` 为 `false`。徽标只代表「文件在」，不代表「内容对」——完整性
+/// 由安装流水线的 MD5 校验负责，列表页不做 GB 级读盘。
 pub fn build_view(
     versions: &HistoricalVersions,
     catalog: Option<&loader_catalog::LoaderCatalog>,
+    local_packages: &std::collections::HashSet<String>,
 ) -> ManifestView {
     let mut releases: Vec<VersionView> = Vec::new();
     let mut previews: Vec<VersionView> = Vec::new();
@@ -291,8 +303,10 @@ pub fn build_view(
             VersionKind::Release => "release",
             VersionKind::Preview => "preview",
         };
+        let slug = entry.slug();
         let view = VersionView {
-            id: entry.slug(),
+            downloaded: local_packages.contains(&slug),
+            id: slug,
             kind: kind.to_string(),
             has_loader: catalog.is_some_and(|c| c.supports(&game_version)),
             game_version,
@@ -428,7 +442,7 @@ mod tests {
             ]
         }"#;
         let versions: HistoricalVersions = serde_json::from_str(sample).unwrap();
-        let view = build_view(&versions, None);
+        let view = build_view(&versions, None, &Default::default());
         let ids: Vec<&str> = view.releases.iter().map(|v| v.id.as_str()).collect();
         assert_eq!(ids, ["1.21.130.22", "1.21.120.5", "1.21.100.2"]);
         assert_eq!(view.previews.len(), 1);
@@ -458,7 +472,7 @@ mod tests {
             "previewVersions": []
         }"#;
         let versions: HistoricalVersions = serde_json::from_str(sample).unwrap();
-        let view = build_view(&versions, Some(&catalog));
+        let view = build_view(&versions, Some(&catalog), &Default::default());
         let marked: Vec<(&str, bool)> = view
             .releases
             .iter()
@@ -469,6 +483,34 @@ mod tests {
         let options = catalog.options_for("1.21.130.22");
         assert_eq!(options.len(), 2);
         assert!(options.iter().all(|option| option.compatible));
+    }
+
+    /// 「已下载」徽标由**本地整包集合**判定，与加载器目录无关。
+    ///
+    /// 同时验证反向：不在集合里的版本绝不能挂徽标——否则界面会骗用户再下一次。
+    #[test]
+    fn view_marks_downloaded_from_local_packages() {
+        let versions: HistoricalVersions = serde_json::from_str(SAMPLE).unwrap();
+        let local: std::collections::HashSet<String> = ["1.21.100.2".to_string()].into_iter().collect();
+        let view = build_view(&versions, None, &local);
+        let marked: Vec<(&str, bool)> = view
+            .releases
+            .iter()
+            .map(|v| (v.game_version.as_str(), v.downloaded))
+            .collect();
+        assert_eq!(marked, [("1.21.100.2", true)]);
+        assert!(view.previews.iter().all(|v| !v.downloaded));
+        // 正式版与快照版 slug 不同，包不会互相冒认。
+        let preview_local: std::collections::HashSet<String> =
+            ["1.21.130.20_preview".to_string()].into_iter().collect();
+        let view = build_view(&versions, None, &preview_local);
+        let marked: Vec<(&str, bool)> = view
+            .previews
+            .iter()
+            .map(|v| (v.game_version.as_str(), v.downloaded))
+            .collect();
+        assert_eq!(marked, [("1.21.130.20", true), ("1.21.120.21", false)]);
+        assert!(view.releases.iter().all(|v| !v.downloaded));
     }
 
     #[test]

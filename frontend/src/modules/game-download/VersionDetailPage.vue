@@ -107,22 +107,26 @@ function goBack() {
           </span>
         </header>
 
-        <!-- 两个下拉框：加载器 / 客户端 -->
+        <!-- 两个下拉框：加载器 / 客户端。整块放进滚动容器：
+             下拉框是「自身变长」的，展开后内容可能比一屏还高；不套滚动容器，
+             页面就会被顶长、把底部安装按钮推到屏幕外。 -->
         <div class="gd-detail__form">
-          <CoDropdown
-            v-model="loader"
-            :label="t(`${MB_KEY}.loader_label`)"
-            :placeholder="t(`${MB_KEY}.select_none`)"
-            :options="loaderChoices"
-            :empty-text="t(`${MB_KEY}.loader_unavailable`)"
-          />
-          <CoDropdown
-            v-model="client"
-            :label="t(`${MB_KEY}.client_label`)"
-            :placeholder="t(`${MB_KEY}.select_none`)"
-            :options="clientChoices"
-            :empty-text="t(`${MB_KEY}.client_empty`)"
-          />
+          <div class="gd-detail__form-scroll">
+            <CoDropdown
+              v-model="loader"
+              :label="t(`${MB_KEY}.loader_label`)"
+              :placeholder="t(`${MB_KEY}.select_none`)"
+              :options="loaderChoices"
+              :empty-text="t(`${MB_KEY}.loader_unavailable`)"
+            />
+            <CoDropdown
+              v-model="client"
+              :label="t(`${MB_KEY}.client_label`)"
+              :placeholder="t(`${MB_KEY}.select_none`)"
+              :options="clientChoices"
+              :empty-text="t(`${MB_KEY}.client_empty`)"
+            />
+          </div>
 
           <!-- lipd 缺失：装完游戏也补不上加载器，必须提前说清楚（本页唯一的告警文字） -->
           <p v-if="loader && !lipAvailable" class="gd-detail__warn" role="alert">
@@ -152,7 +156,7 @@ function goBack() {
 .gd-detail {
   height: 100%;
   padding: var(--copper-space-4);
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -172,6 +176,8 @@ function goBack() {
 
 .gd-detail__column {
   flex: 1;
+  /* 页面本体不滚动：只有下拉框那块滚动，底部安装按钮永远留在屏幕内。 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-5);
@@ -184,6 +190,8 @@ function goBack() {
   align-items: center;
   gap: var(--copper-space-3);
   flex-wrap: wrap;
+  /* 头部与底部按钮都不参与收缩：可压缩的只有下拉框那块。 */
+  flex-shrink: 0;
 }
 
 .gd-detail__icon {
@@ -235,6 +243,20 @@ function goBack() {
   flex-direction: column;
   gap: var(--copper-space-3);
   width: 100%;
+  /* 收缩到内容与可用空间的较小者：内容多则这块自己滚动，页面不被顶长。 */
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+/* 下拉框自身变长后可能超出视口，这一层负责滚动。 */
+.gd-detail__form-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-3);
+  min-height: 0;
+  overflow-y: auto;
+  /* 滚动条贴着卡片边缘，右侧留一点内边距避免压住圆角。 */
+  padding-right: var(--copper-space-1);
 }
 
 .gd-detail__warn {
@@ -255,5 +277,6 @@ function goBack() {
   display: flex;
   justify-content: center;
   padding-bottom: var(--copper-space-2);
+  flex-shrink: 0;
 }
 </style>

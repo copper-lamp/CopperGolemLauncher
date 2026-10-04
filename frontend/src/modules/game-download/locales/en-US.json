@@ -12,6 +12,12 @@
   "search_placeholder": "Search version",
   "no_match": "No matching version",
   "match_count": "{n} version(s) matched",
+  "filter": {
+    "label": "Filter",
+    "all": "All versions",
+    "with_loader": "With loader",
+    "without_loader": "Without loader"
+  },
   "installed": "Installed",
   "downloaded": "Downloaded",
   "latest": "Latest",

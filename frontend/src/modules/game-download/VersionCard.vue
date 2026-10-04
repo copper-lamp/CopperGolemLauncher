@@ -5,8 +5,10 @@
 // - 左右**顶满**容器，卡片之间上下排列（不并排）；
 // - 大尺寸：卡片本体约为原版的两倍（内边距、图标、字号都放大一档），保证在整屏
 //   列表里一眼能扫到版本号，而不是一屏挤下几十行；
-// - 左侧内容并排成一行：图标、徽标（徽标紧跟图标，在版本号左边），右侧整块留空；
-// - 无描边，悬停时整卡变浅并浮起阴影（与下载中心条目一致），点击进入二级页面。
+// - 左侧内容并排成一行：图标、版本号、徽标（徽标紧跟版本号，在其右边），右侧整块留空；
+// - 徽标依次是：版本类型、LeviLamina、本地已有整包（`downloaded`）；
+// - 无描边，悬停**只浮起阴影**（不改底色——卡片底色已经和外层白底卡片同色，
+//   再叠一层底色变化在浅色主题下会读成「变灰」而不是「高亮」），点击进入二级页面。
 
 import { useRouter } from "vue-router";
 import { Gamepad2 } from "@lucide/vue";
@@ -31,13 +33,16 @@ function open() {
     <span class="version-card__icon" aria-hidden="true">
       <Gamepad2 :size="20" />
     </span>
+    <span class="version-card__name">{{ version.game_version }}</span>
     <span class="version-card__badge" :class="`version-card__badge--${version.kind}`">
       {{ t(`${MB_KEY}.kind.${version.kind}`) }}
     </span>
     <span v-if="version.has_loader" class="version-card__badge version-card__badge--loader">
       LeviLamina
     </span>
-    <span class="version-card__name">{{ version.game_version }}</span>
+    <span v-if="version.downloaded" class="version-card__badge version-card__badge--downloaded">
+      {{ t(`${MB_KEY}.downloaded`) }}
+    </span>
   </button>
 </template>
 
@@ -63,10 +68,10 @@ function open() {
     box-shadow var(--copper-duration-fast) var(--copper-easing);
 }
 
-/* 悬停：底色提亮一档 + 浮起阴影。外层容器（顶部卡片 / 分组卡片）本身就是
- * --copper-surface，所以悬停底色必须再深/亮一档，否则等于没有反馈。 */
+/* 悬停：只浮起阴影。底色已经是外层卡片的 `--copper-surface`，改成 surface-2 在
+ * 浅色主题下就是「整行发灰」，不是高亮。 */
 .version-card:hover {
-  background: var(--copper-surface-2);
+  background: var(--copper-surface);
   box-shadow: var(--copper-shadow);
 }
 
@@ -87,10 +92,12 @@ function open() {
   color: var(--copper-accent);
 }
 
-/* 版本号：卡片里的视觉重点。右侧不排任何元素，flex:1 把它顶开、留白留在末尾。 */
+/* 版本号：卡片里的视觉重点。不参与伸展（flex:0 1 auto），徽标才会紧贴它右侧，
+ * 整行内容靠左、右侧整块留白。 */
 .version-card__name {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  margin-left: var(--copper-space-1);
   font-size: var(--copper-font-size-lg);
   font-weight: 600;
   letter-spacing: 0.2px;
@@ -124,5 +131,11 @@ function open() {
   color: var(--copper-badge-ll-mod);
   background: var(--copper-badge-ll-mod-bg);
   border-color: var(--copper-badge-ll-mod-border);
+}
+
+.version-card__badge--downloaded {
+  color: var(--copper-badge-downloaded);
+  background: var(--copper-badge-downloaded-bg);
+  border-color: var(--copper-badge-downloaded-border);
 }
 </style>

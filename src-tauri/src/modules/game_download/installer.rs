@@ -120,9 +120,7 @@ impl Ctx {
     ///
     /// 路径按**版本**而不是实例命名：同一版本的多个实例共用这一份整包。
     pub fn dest_for(&self, slug: &str) -> PathBuf {
-        self.versions_root()
-            .join(DOWNLOAD_SUBDIR)
-            .join(format!("{slug}.msixvc"))
+        self.download_dir().join(format!("{slug}.msixvc"))
     }
 
     /// 某实例安装目录（`versions_root/<实例名>`，根按设置动态解析）。
@@ -135,6 +133,11 @@ impl Ctx {
         self.paths.versions_root(&self.settings)
     }
 
+    /// 整包暂存目录（`versions_root/.download`）。
+    pub fn download_dir(&self) -> PathBuf {
+        self.versions_root().join(DOWNLOAD_SUBDIR)
+    }
+
     /// 某时间戳（Unix 秒）。
     fn now() -> i64 {
         std::time::SystemTime::now()
@@ -142,6 +145,77 @@ impl Ctx {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0)
     }
+}
+
+/// 从文件名解析出 slug：`<slug>.msixvc` → `<slug>`，其余（含 `.part`）返回 `None`。
+///
+/// 只认本模块的整包后缀，避免把用户放在同一目录下的其它文件误认成整包。
+fn package_slug_of(file_name: &str) -> Option<&str> {
+    file_name.strip_suffix(".msixvc")
+}
+
+/// 某slug 的整包是否**已经落盘**（存在、且不是零长度的截断残留）。
+///
+/// 只判断「有文件」，不校验 MD5：整包是 GB 级，逐个版本算 MD5 会让打开清单页
+/// 变成几分钟的读盘风暴。完整性由安装流水线解包前的强制校验负责（见
+/// `prepare_package`），列表页的「已下载」徽标只承诺「文件在」。
+pub fn has_local_package(ctx: &Ctx, slug: &str) -> bool {
+    let path = ctx.dest_for(slug);
+    std::fs::metadata(&path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// 本地已有整包的 slug 集合（扫 `versions_root/.download` 一遍）。
+///
+/// 之所以**扫目录**而不是查 `module_game_download_package`：
+/// - 记录会被清理（无主残留回收、取消安装），文件却还在，于是用户看到「需要下载」
+///   而实际上包就在磁盘上，白下几个 G；
+/// - 用户手动删了文件，记录还在，于是界面一直挂「已下载」徽标，点安装却报
+///   「本地没有完整安装包」——正是这套系统此前用记录当事实源时最刺眼的故障。
+///
+/// 目录不存在是正常态（还没下载过任何版本），返回空集而不是报错：清单页必须能
+/// 在全新安装上正常打开。权限异常同样降级为空集并留日志，宁可少显示徽标，
+/// 也不能让整页因为一个可选装饰打不开。
+pub fn local_package_slugs(ctx: &Ctx) -> std::collections::HashSet<String> {
+    local_package_slugs_in(&ctx.download_dir())
+}
+
+/// [`local_package_slugs`] 的纯文件系统实现（可单测）。
+fn local_package_slugs_in(dir: &std::path::Path) -> std::collections::HashSet<String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Default::default(),
+        Err(e) => {
+            log::warn!(
+                "[game-download] 扫描本地整包目录 {} 失败（已下载徽标不显示）: {e}",
+                dir.display()
+            );
+            return Default::default();
+        }
+    };
+    let mut out = std::collections::HashSet::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // `.part` 是下载断点文件，不是可用整包，`package_slug_of` 天然排除。
+        let Some(slug) = package_slug_of(name) else {
+            continue;
+        };
+        // 零长度文件是崩溃/中断留下的空壳，报「已下载」只会骗用户再下一次。
+        match entry.metadata() {
+            Ok(m) if m.is_file() && m.len() > 0 => {
+                out.insert(slug.to_string());
+            }
+            _ => log::warn!("[game-download] 忽略零长度整包 {}", path.display()),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- 安装进度上报
@@ -713,12 +787,33 @@ pub fn check_instance_name(ctx: &Ctx, raw: &str) -> InstanceCheck {
 
 /// 为某版本推荐一个可用实例名（版本号；重名时追加 `-2`、`-3`…）。
 pub fn suggest_instance_name(ctx: &Ctx, version_id: &str) -> String {
+    suggest_instance_name_with_loader(ctx, version_id, None)
+}
+
+/// 同 [`suggest_instance_name`]，但带了加载器：选了加载器就把它写进实例名。
+///
+/// 名字是**目录名**，同一版本装两次（一次带加载器、一次不带）在磁盘上就是两个目录。
+/// 默认名不带加载器时两次都会落在同一个名字上，用户只能在实例管理里手工区分，
+/// 而「这个实例有没有加载器」恰恰是最需要一眼看出来的信息。示例：`1.26.5.01-LeviLamina`。
+///
+/// 后缀只写加载器**种类**而不写它的版本号：实例名要短、要能被用户一眼念出来，
+/// `1.26.5.01-LeviLamina-1.9.9` 这种名字在窄窗口里会被省略号吃掉尾巴。
+/// 具体加载器版本由 `module_game_download_instance.loader` 记录，名义与事实都在
+/// 内核里，不依赖目录名。
+pub fn suggest_instance_name_with_loader(
+    ctx: &Ctx,
+    version_id: &str,
+    loader: Option<&str>,
+) -> String {
     let base = meta_bridge::game_version_of(version_id);
-    let base = if version_id.ends_with("_preview") {
+    let mut base = if version_id.ends_with("_preview") {
         format!("{base}-preview")
     } else {
         base
     };
+    if loader.map(str::trim).is_some_and(|v| !v.is_empty()) {
+        base.push_str("-LeviLamina");
+    }
     for index in 1..=999 {
         let candidate = if index == 1 {
             base.clone()
@@ -823,6 +918,31 @@ pub async fn enqueue(
             spawn_batch(ctx, lock, &slug, pkg.task_id);
             return Ok(0);
         }
+    }
+
+    // 无整包记录也要认磁盘上的文件：记录可能已被回收（无主清理 / 取消安装），
+    // 或者包是用户自己放进暂存目录的。此时补一条 `ready` 记录并直接进安装，
+    // 不重新下载——「文件在」这件事由文件系统说了算，不由记录说了算。
+    if has_local_package(ctx, &slug) {
+        upsert_package(
+            ctx,
+            &PackageRecord {
+                version_id: slug.clone(),
+                kind: kind.to_string(),
+                dest: dest.clone(),
+                md5: entry.md5.clone(),
+                state: "ready".into(),
+                error: None,
+                task_id: None,
+                attempts: 0,
+            },
+        )?;
+        log::info!(
+            "[game-download] 实例 {instance} 认领本地已存在的整包 {}（无下载记录）",
+            dest.display()
+        );
+        spawn_batch(ctx, lock, &slug, None);
+        return Ok(0);
     }
 
     // 落盘前确认整包暂存目录**真的**可写。
@@ -1843,11 +1963,24 @@ fn cleanup_orphan_instances(ctx: &Ctx) {
 
 /// 清理 `versions_root/.download` 下无主的整包 / 断点文件。
 ///
-/// 新模型里「有没有人要这个包」完全由实例记录表达，因此没有任何整包记录的文件就是
-/// 无主残留（旧模型下这里会把孤儿包**认领并安装**，现在那样做只会凭空造出一个用户
-/// 没要求过的实例）。清理是安全的：真要装，用户重新点安装即可。
+/// 「无主」= **既没有整包记录，也不在当前清单里**。清单里的包即使没有记录也必须
+/// 留着：本地整包的存在性以磁盘为准（见 [`local_package_slugs`]），无主清理若把
+/// 「用户自己放进来 / 记录已被回收」的包删掉，就等于每次启动都把用户下一次安装
+/// 要用的几个 G 抹掉。
+///
+/// 清单不可用时（离线且无缓存）只删 `.part` 断点文件：无法判断哪些包还有用，宁可
+/// 留着几个 G 也不误删用户资产。
 fn cleanup_orphan_packages(ctx: &Ctx) {
-    let download_dir = ctx.versions_root().join(DOWNLOAD_SUBDIR);
+    let download_dir = ctx.download_dir();
+    let known: Option<std::collections::HashSet<String>> = match block_load(ctx) {
+        Ok(versions) => Some(versions.all().iter().map(|e| e.slug()).collect()),
+        Err(error) => {
+            log::warn!(
+                "[game-download] 清单不可用（{error}），无主整包清理只处理断点文件"
+            );
+            None
+        }
+    };
     let entries = match std::fs::read_dir(&download_dir) {
         Ok(v) => v,
         // 目录不存在是正常态（尚未下载过任何版本），静默跳过；但**不可写**这类
@@ -1870,10 +2003,19 @@ fn cleanup_orphan_packages(ctx: &Ctx) {
             continue;
         };
         // 只处理本模块产物：`<slug>.msixvc` 与 `<slug>.msixvc.part`。
+        let is_part = name.ends_with(".part");
         let stem = name.strip_suffix(".part").unwrap_or(name);
-        let Some(slug) = stem.strip_suffix(".msixvc") else {
+        let Some(slug) = package_slug_of(stem) else {
             continue;
         };
+        // 清单里还有这个版本 → 包是有主的（哪怕记录丢了），留着。
+        if let Some(known) = known.as_ref() {
+            if known.contains(slug) {
+                continue;
+            }
+        } else if !is_part {
+            continue;
+        }
         match get_package(ctx, slug) {
             Ok(Some(_)) => continue,
             Ok(None) => {}
@@ -2053,6 +2195,34 @@ mod tests {
         assert!(pkg.is_file());
         // `md5_matches` 对空期望值报错而非放行——空值恒校验失败会导致无限重试。
         assert!(md5_matches(&pkg, "").is_err(), "空 md5 必须拒绝而不是恒失败");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 本地整包扫描：只认非空 `<slug>.msixvc`，`.part` 与零长度空壳都不算「已下载」。
+    #[test]
+    fn local_package_scan_only_counts_real_packages() {
+        let dir = std::env::temp_dir().join(format!("copper_gd_scan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 正常整包：算已下载。
+        std::fs::write(dir.join("1.21.130.22.msixvc"), b"payload").unwrap();
+        // 下载断点：不算。
+        std::fs::write(dir.join("1.21.120.5.msixvc.part"), b"half").unwrap();
+        // 零长度空壳（中断残留）：不算，否则界面会骗用户「已下载」再下一次。
+        std::fs::write(dir.join("1.21.100.2.msixvc"), b"").unwrap();
+        // 同目录下的无关文件：不算。
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+
+        let slugs = local_package_slugs_in(&dir);
+        assert!(slugs.contains("1.21.130.22"));
+        assert!(!slugs.contains("1.21.120.5"));
+        assert!(!slugs.contains("1.21.100.2"));
+        assert_eq!(slugs.len(), 1, "只应认出一个可用整包: {slugs:?}");
+
+        // 目录不存在（全新安装）必须返回空集而不是报错。
+        assert!(local_package_slugs_in(&dir.join("nope")).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

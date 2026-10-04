@@ -116,6 +116,21 @@ const releases = computed(() => filter(gd.manifest.value?.releases ?? []));
 const previews = computed(() => filter(gd.manifest.value?.previews ?? []));
 const matchCount = computed(() => releases.value.length + previews.value.length);
 
+/**
+ * 「最新版本」区块的两个卡片。
+ *
+ * 默认取内核给的 `latest_release` / `latest_preview`（各自最新）；一旦加载器筛选
+ * 生效，就改从**筛选后的列表**里取首个——否则会出现「下面的正式版列表全是带加载器
+ * 的，顶部却挂着一个不支持加载器的最新正式版」，用户点进去才发现没有加载器可选，
+ * 筛选条件形同虚设。搜索关键字同理（否则搜到的版本和顶部推荐对不上）。
+ */
+const latestRelease = computed<GameVersionView | null>(
+  () => releases.value[0] ?? null,
+);
+const latestPreview = computed<GameVersionView | null>(
+  () => previews.value[0] ?? null,
+);
+
 /** 是否处于「收窄列表」状态：有关键字或加载器筛选。用于空态文案与自动展开。 */
 const narrowed = computed(() => searching.value || filtering.value);
 
@@ -678,14 +693,35 @@ async function importApk() {
   top: calc(100% + var(--copper-space-1));
   right: 0;
   min-width: 100%;
+  /* 收起态必须真的收起：这一层若一直占着高度，面板就是「永远折叠不了」的下拉模式。
+   * 用 grid0fr → 1fr 过渡，和 CoDropdown 同一套手法。 */
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--copper-duration) var(--copper-easing);
+}
+
+.gd-filter--open .gd-filter__panel {
+  grid-template-rows: 1fr;
+}
+
+.gd-filter__panel-inner {
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: visibility 0s linear var(--copper-duration);
   padding: var(--copper-space-1);
   display: flex;
   flex-direction: column;
   gap: 2px;
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
+  border: none;
   border-radius: var(--copper-radius-lg);
   box-shadow: var(--copper-shadow);
+}
+
+.gd-filter--open .gd-filter__panel-inner {
+  visibility: visible;
+  transition-delay: 0s;
 }
 
 .gd-filter__option {

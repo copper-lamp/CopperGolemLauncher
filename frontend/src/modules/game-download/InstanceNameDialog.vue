@@ -98,7 +98,11 @@ watch(
     available.value = null;
     reason.value = null;
     if (!props.version) return;
-    const suggested = await gd.suggestInstance(props.version.id, props.version.game_version);
+    const suggested = await gd.suggestInstance(
+      props.version.id,
+      props.version.game_version,
+      props.loader,
+    );
     name.value = suggested;
     await runCheck(suggested);
   },

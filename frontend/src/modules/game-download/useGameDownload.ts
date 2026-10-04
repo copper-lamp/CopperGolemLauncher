@@ -10,6 +10,7 @@ import { readonly, ref } from "vue";
 
 import { showToast } from "../../composables/useToast";
 import {
+  onDownload,
   onGameDownloadCancelled,
   onGameDownloadEnqueued,
   onGameDownloadFailed,
@@ -56,6 +57,14 @@ export async function initGameDownload(): Promise<void> {
     onGameDownloadCancelled(() => {
       showToast(t("module.game-download.toast.cancelled"), "info");
     }),
+    // 整包落盘 / 被删都会改变「已下载」徽标，而下载引擎只发它自己的状态事件。
+    // 这里只认本模块的落盘路径（`.download/<slug>.msixvc`），避免内容下载每完成一个
+    // 任务就把游戏清单重拉一遍。
+    onDownload("status", (task) => {
+      if (task.status !== "done" && task.status !== "failed") return;
+      if (!task.dest.includes(".msixvc") || !task.dest.includes(".download")) return;
+      void loadManifest(false);
+    }),
   ]);
 }
 
@@ -98,10 +107,19 @@ export async function loadLoaders(id: string, force = false): Promise<LoaderOpti
   return request;
 }
 
-/** 推荐实例名（安装确认弹窗初值）。失败时回落到版本号本身。 */
-export async function suggestInstance(id: string, fallback: string): Promise<string> {
+/**
+ * 推荐实例名（安装确认弹窗初值）。失败时回落到版本号本身。
+ *
+ * `loader` 传当前选中的加载器版本（空串 / `null` 表示不用加载器）：后端据此在
+ * 默认名后追加 `-LeviLamina`。
+ */
+export async function suggestInstance(
+  id: string,
+  fallback: string,
+  loader?: string | null,
+): Promise<string> {
   try {
-    return await gameInstanceSuggest(id);
+    return await gameInstanceSuggest(id, loader ?? null);
   } catch {
     return fallback;
   }

@@ -55,6 +55,8 @@
   /* 控制件尺寸 */
   --copper-control-h: 34px;
   --copper-control-h-sm: 28px;
+  /* 承载富内容（图标 + 文字 + 说明）的控件高度，如下拉选择器。 */
+  --copper-control-h-lg: 44px;
 
   /* 标题栏 */
   --copper-titlebar-h: 40px;
@@ -129,6 +131,12 @@
   --copper-badge-alpha: #ff7b72;
   --copper-badge-alpha-bg: #2c1214;
   --copper-badge-alpha-border: #5e2a2d;
+
+  /* 「本地已有整包」徽标：蓝。与发布类型（绿/黄/红）和加载器（橙）都不同色相，
+     避免「已下载」被误读成一种版本类型。 */
+  --copper-badge-downloaded: #79c0ff;
+  --copper-badge-downloaded-bg: #0d2338;
+  --copper-badge-downloaded-border: #234f78;
 }
 
 html[data-theme="light"] {
@@ -194,4 +202,8 @@ html[data-theme="light"] {
   --copper-badge-alpha: #d1242f;
   --copper-badge-alpha-bg: rgba(209, 36, 47, 0.09);
   --copper-badge-alpha-border: rgba(209, 36, 47, 0.22);
+
+  --copper-badge-downloaded: #0969da;
+  --copper-badge-downloaded-bg: rgba(9, 105, 218, 0.09);
+  --copper-badge-downloaded-border: rgba(9, 105, 218, 0.22);
 }

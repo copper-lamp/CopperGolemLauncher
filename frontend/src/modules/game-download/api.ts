@@ -18,6 +18,14 @@ export interface GameVersionView {
   game_version: string;
   /** 该版本是否有可装的 LeviLamina（列表页据此显示加载器徽标）。 */
   has_loader: boolean;
+  /**
+   * 版本安装目录下是否已有该版本的完整整包（列表页据此显示「已下载」徽标）。
+   *
+   * 由后端**扫目录**得出而不是查数据库记录：记录会与磁盘分叉——用户手动删了包
+   * 记录还在，界面就会一直谎称「已下载」；用户手动放了包记录却不在，界面又会
+   * 让用户重下几个 G。存在性只有一个事实源，就是那个文件。
+   */
+  downloaded: boolean;
 }
 
 /** 前端清单视图（与后端 `ManifestView` 同构）：两个平表，各自新→旧。 */
@@ -79,9 +87,15 @@ export function gameLoaders(id: string): Promise<LoaderOptions> {
   return call<LoaderOptions>("game_download_loaders", { id });
 }
 
-/** 为该版本推荐一个可用实例名（安装确认弹窗初值）。 */
-export function gameInstanceSuggest(id: string): Promise<string> {
-  return call<string>("game_download_instance_suggest", { id });
+/**
+ * 为该版本推荐一个可用实例名（安装确认弹窗初值）。
+ *
+ * `loader` 非空时后端会把 `-LeviLamina` 追加进默认名：实例名同时是版本目录名，
+ * 带不带加载器必须是两个不同目录。前端不自己拼后缀——名字的唯一权威在后端，
+ * 两边各拼一次迟早漂移。
+ */
+export function gameInstanceSuggest(id: string, loader?: string | null): Promise<string> {
+  return call<string>("game_download_instance_suggest", { id, loader: loader ?? null });
 }
 
 /** 实例名可用性检查（弹窗输入即时反馈）。 */

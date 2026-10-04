@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// 下拉选择：折叠态是「标签 + 当前值」的一整行，展开后向下弹出选项面板。
+// 下拉选择：折叠态是「标签 + 当前值」的一整行，展开后**组件自身变长**，选项就排
+// 在这个组件内部（不是向下弹出的浮层）。
 //
 // 与 `CoSelect`（原生 select 套主题样式）的分工：原生 select 的弹层由系统绘制，
 // 无法承载图标与逐项说明，也无法保证与主题一致的悬停反馈。需要「图标 + 名字」这类
@@ -7,11 +8,16 @@
 //
 // 交互约定：
 // - 折叠态占满容器宽度，左侧标签、右侧当前值，无值时显示占位文案（如「未选择」）；
-// - 展开态在下方弹出，选项为**无描边**按钮，悬停时才出现阴影；
-// - 点击组件外部或按 Esc 收起；禁用时不可展开。
+// - 展开时行高由控制件高度过渡到列表自然高度，选项为**无描边**按钮，悬停时才出现阴影；
+// - **无描边**：整个组件靠底色差（`--copper-surface` 与页面背景 `--copper-bg`）区分，
+//   描边在这个页面上只会把「加载器 / 客户端」两块控件框成一堆表单边框；
+// - 选择某项后自动收起；点击组件外部或按 Esc 收起；禁用时不可展开。
+//
+// 为什么不用浮层：浮层会被父级 `overflow: hidden` 裁掉、在窄屏上横向溢出，还会挡住
+// 下方的内容；内联展开让组件始终留在文档流里，滚动与布局行为都可预期。
 
 import type { Component } from "vue";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronDown } from "@lucide/vue";
 
 /** 一个选项：图标可选，名字必填。 */
@@ -45,6 +51,10 @@ const emit = defineEmits<{
 
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
+const list = ref<HTMLElement | null>(null);
+/** 列表可滚动时，上/下边缘是否还有被截断的内容（决定要不要加渐变遮罩）。 */
+const fadeTop = ref(false);
+const fadeBottom = ref(false);
 
 const selected = computed(
   () => props.options.find((option) => option.value === props.modelValue) ?? null,
@@ -58,12 +68,41 @@ function toggle() {
   open.value = !open.value;
 }
 
+/**
+ * 依据滚动位置刷新上下渐变遮罩。
+ *
+ * 内容比可视高度长时（LeviLamina 版本库动辄几十项），列表上下边缘会「硬生生」
+ * 切掉半个选项——没有渐变的话用户根本看不出下面还有东西。加渐变的判定必须来自
+ * 真实滚动位置：无溢出时不加（否则第一项和最后一项会平白变淡），只有那一侧确实
+ * 还有内容被截断时才加。
+ */
+function updateFade() {
+  const el = list.value;
+  if (!el) {
+    fadeTop.value = false;
+    fadeBottom.value = false;
+    return;
+  }
+  const max = el.scrollHeight - el.clientHeight;
+  fadeTop.value = max > 1 && el.scrollTop > 1;
+  fadeBottom.value = max > 1 && el.scrollTop < max - 1;
+}
+
+/** 展开后等布局稳定再判定渐变（收起态内容高度为 0，判定不出结果）。 */
+watch(open, async (isOpen) => {
+  if (!isOpen) return;
+  await nextTick();
+  const el = list.value;
+  if (el) el.scrollTop = 0;
+  updateFade();
+});
+
 function choose(option: DropdownOption) {
   emit("update:modelValue", option.value);
   open.value = false;
 }
 
-/** 点击组件之外收起：面板是绝对定位的浮层，不收起会一直挡住下面的内容。 */
+/** 点击组件之外收起：面板会持续占据布局空间，不收起会把下面的内容一直挤下去。 */
 function onDocumentPointerDown(event: MouseEvent) {
   if (!open.value) return;
   if (root.value && !root.value.contains(event.target as Node)) open.value = false;
@@ -83,8 +122,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", onDocumentKeydown);
 });
 
-// 禁用时收起面板，避免留下一个悬空浮层。
-// 选项为空**不**收起：空态面板要说「暂无可用加载器」，直接关掉等于什么都不说。
+// 禁用时收起面板，避免留下一个挡住内容的展开区。
+// 选项为空**不**收起：空态要说「暂无可用加载器」，直接关掉等于什么都不说。
 watch(
   () => props.disabled,
   (disabled) => {
@@ -108,11 +147,19 @@ watch(
     >
       <span class="co-dropdown__label">{{ label }}</span>
       <span class="co-dropdown__value">{{ currentLabel }}</span>
-      <ChevronDown :size="15" class="co-dropdown__chevron" />
+      <ChevronDown :size="16" class="co-dropdown__chevron" />
     </button>
 
-    <Transition name="co-dropdown-panel">
-      <div v-if="open" class="co-dropdown__panel" role="listbox">
+    <div class="co-dropdown__panel" role="listbox">
+      <div
+        ref="list"
+        class="co-dropdown__panel-inner"
+        :class="{
+          'co-dropdown__panel-inner--fade-top': fadeTop,
+          'co-dropdown__panel-inner--fade-bottom': fadeBottom,
+        }"
+        @scroll="updateFade"
+      >
         <p v-if="isEmpty" class="co-dropdown__empty">{{ emptyText }}</p>
         <button
           v-for="option in options"
@@ -124,12 +171,17 @@ watch(
           :class="{ 'co-dropdown__option--selected': option.value === modelValue }"
           @click="choose(option)"
         >
-          <component :is="option.icon" v-if="option.icon" :size="16" class="co-dropdown__option-icon" />
+          <component
+            :is="option.icon"
+            v-if="option.icon"
+            :size="18"
+            class="co-dropdown__option-icon"
+          />
           <span class="co-dropdown__option-label">{{ option.label }}</span>
           <span v-if="option.hint" class="co-dropdown__option-hint">{{ option.hint }}</span>
         </button>
       </div>
-    </Transition>
+    </div>
   </div>
 </template>
 
@@ -137,40 +189,51 @@ watch(
 .co-dropdown {
   position: relative;
   width: 100%;
+  /* 展开态圆角内收：否则折叠行与列表拼接处会出现一个方肩。 */
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface);
+  transition: box-shadow var(--copper-duration) var(--copper-easing);
 }
 
+.co-dropdown--open {
+  box-shadow: var(--copper-shadow);
+}
+
+/* 触发行比标准控件高一档：这个组件承载「图标 + 名字」两类信息，太窄会挤成两行。 */
 .co-dropdown__trigger {
   display: flex;
   align-items: center;
-  gap: var(--copper-space-2);
+  gap: var(--copper-space-3);
   width: 100%;
-  height: var(--copper-control-h);
-  padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-md);
+  height: var(--copper-control-h-lg);
+  padding: 0 var(--copper-space-4);
+  /* 无描边：与页面背景的底色差负责分组。 */
+  border: 1px solid transparent;
+  border-radius: var(--copper-radius-lg);
   background: var(--copper-surface);
   color: var(--copper-text);
-  font-size: var(--copper-font-size-md);
+  font-size: var(--copper-font-size-lg);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
   transition:
-    border-color var(--copper-duration-fast) var(--copper-easing),
+    background-color var(--copper-duration-fast) var(--copper-easing),
     box-shadow var(--copper-duration-fast) var(--copper-easing);
 }
 
 .co-dropdown__trigger:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--copper-accent) 50%, var(--copper-border));
+  background: var(--copper-surface-2);
 }
 
 .co-dropdown__trigger:focus-visible {
   outline: none;
-  border-color: var(--copper-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--copper-accent) 22%, transparent);
 }
 
 .co-dropdown--open .co-dropdown__trigger {
-  border-color: var(--copper-accent);
+  /* 展开时下方就是列表，触发行不再自带圆角。 */
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .co-dropdown__label {
@@ -186,7 +249,6 @@ watch(
   white-space: nowrap;
 }
 
-
 .co-dropdown__chevron {
   flex-shrink: 0;
   color: var(--copper-text-secondary);
@@ -197,27 +259,69 @@ watch(
   transform: rotate(180deg);
 }
 
-
 .co-dropdown--disabled .co-dropdown__trigger {
   cursor: default;
 }
 
+/* 组件自身变长：0fr → 1fr，无需知道选项有多少个。 */
 .co-dropdown__panel {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + var(--copper-space-1));
-  left: 0;
-  right: 0;
-  max-height: 260px;
-  overflow-y: auto;
-  padding: var(--copper-space-1);
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--copper-duration) var(--copper-easing);
+}
+
+.co-dropdown--open .co-dropdown__panel {
+  grid-template-rows: 1fr;
+}
+
+.co-dropdown--open .co-dropdown__panel-inner {
+  /* 展开时立即可见（延迟为 0），收起时才等动画结束再隐藏。 */
+  visibility: visible;
+  transition-delay: 0s;
+  padding-bottom: var(--copper-space-2);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.co-dropdown__panel-inner {
+  min-height: 0;
+  overflow: hidden;
+  /* 收起后 visibility:hidden 而不是 display:none —— 前者能在收起动画播完之后再
+   * 把选项移出无障碍树与Tab 序（display:none 会直接砍掉过渡）。 */
+  visibility: hidden;
+  transition: visibility 0s linear var(--copper-duration);
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow);
+  gap: var(--copper-space-1);
+  /* 列表独立滚动：加载器版本库可能有几十项，不限高就会把页面顶长。
+   * 上限同时受视口约束，短窗口下也不会反过来顶出页面。 */
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  padding: var(--copper-space-1) var(--copper-space-2);
+  /* **无描边**，也没有负外边距：折叠态下这里必须一点东西都不剩——
+   * 哪怕一条 1px 透明边框，也会在触发行下方露出那道永远消不掉的「脚」。 */
+  border: none;
+}
+
+/* 上下渐变：那一侧确实还有内容被截断时，用「淡出到透明」提示还能滚。
+ * mask 同时作用于所有子元素，视觉上就是内容渐隐，而不是盖一层灰条。 */
+.co-dropdown__panel-inner--fade-top {
+  mask-image: linear-gradient(to bottom, transparent, #000 18px);
+}
+
+.co-dropdown__panel-inner--fade-bottom {
+  mask-image: linear-gradient(to top, transparent, #000 18px);
+}
+
+/* 两侧同时被截断：上下各一段渐隐，中间保持不透明。 */
+.co-dropdown__panel-inner--fade-top.co-dropdown__panel-inner--fade-bottom {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 18px,
+    #000 calc(100% - 18px),
+    transparent
+  );
 }
 
 .co-dropdown__empty {
@@ -282,18 +386,5 @@ watch(
   flex-shrink: 0;
   font-size: var(--copper-font-size-xs);
   color: var(--copper-text-disabled);
-}
-
-.co-dropdown-panel-enter-active,
-.co-dropdown-panel-leave-active {
-  transition:
-    opacity var(--copper-duration-fast) var(--copper-easing),
-    transform var(--copper-duration-fast) var(--copper-easing);
-}
-
-.co-dropdown-panel-enter-from,
-.co-dropdown-panel-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
 }
 </style>

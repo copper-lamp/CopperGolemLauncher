@@ -9,7 +9,7 @@ use crate::modules::game_download::manifest::{self, ManifestView};
 use crate::modules::content_download::loader_catalog;
 use crate::state::KernelContext;
 
-/// 版本清单（可选强制刷新源）+ 加载器可用性徽标。
+/// 版本清单（可选强制刷新源）+ 加载器可用性徽标 + 本地已下载徽标。
 ///
 /// 加载器目录（lipr 索引）拉取失败**不影响**清单本身：徽标退化为「不显示」，
 /// 而不是让整页因为一个可选装饰拉不到数据就空掉。
@@ -24,7 +24,9 @@ pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: O
             None
         }
     };
-    Ok(manifest::build_view(&versions, catalog.as_ref()))
+    // 「已下载」徽标扫版本安装目录得出（文件才是事实源，记录会与磁盘分叉）。
+    let local_packages = installer::local_package_slugs(&ctx);
+    Ok(manifest::build_view(&versions, catalog.as_ref(), &local_packages))
 }
 
 /// 某版本可选的加载器清单（详情页「加载器」下拉）。
@@ -34,9 +36,17 @@ pub async fn game_download_loaders(id: String) -> CommandResult<installer::Loade
 }
 
 /// 为该版本推荐一个可用实例名（安装确认弹窗的初值）。
+///
+/// `loader` 非空时默认名追加 `-LeviLamma`（见
+/// [`installer::suggest_instance_name_with_loader`]）：实例名同时是目录名，
+/// 带不带加载器必须是两个不同的目录，名字里必须看得出区别。
 #[tauri::command]
-pub fn game_download_instance_suggest(kernel: State<'_, KernelContext>, id: String) -> CommandResult<String> {
-    Ok(installer::suggest_instance_name(&Ctx::from_kernel(&kernel), &id))
+pub fn game_download_instance_suggest(kernel: State<'_, KernelContext>, id: String, loader: Option<String>) -> CommandResult<String> {
+    Ok(installer::suggest_instance_name_with_loader(
+        &Ctx::from_kernel(&kernel),
+        &id,
+        loader.as_deref(),
+    ))
 }
 
 /// 实例名可用性检查（弹窗输入即时反馈；`reason` 为原因码，文案在前端）。

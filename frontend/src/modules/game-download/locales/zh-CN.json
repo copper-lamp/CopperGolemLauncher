@@ -12,6 +12,12 @@
   "search_placeholder": "搜索版本号",
   "no_match": "没有匹配的版本",
   "match_count": "共匹配到 {n} 个版本",
+  "filter": {
+    "label": "筛选",
+    "all": "全部版本",
+    "with_loader": "有加载器",
+    "without_loader": "无加载器"
+  },
   "installed": "已安装",
   "downloaded": "已下载",
   "latest": "最新",
