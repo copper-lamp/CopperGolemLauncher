@@ -10,8 +10,9 @@
 
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { AlertTriangle, Ban, Gamepad2, PackagePlus, Puzzle } from "@lucide/vue";
+import { AlertTriangle, BadgeCheck, Ban, Blocks, FlaskConical, Gamepad2, HardDriveDownload, PackagePlus, Puzzle } from "@lucide/vue";
 
+import CoBadge from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoDropdown, { type DropdownOption } from "../../components/ui/CoDropdown.vue";
 import { useI18n } from "../../i18n";
@@ -58,6 +59,11 @@ const loaderChoices = computed<DropdownOption[]>(() => [
 /** 客户端下拉：当前没有收录任何客户端 dll，展开后由组件给出空态说明。 */
 const clientChoices = computed<DropdownOption[]>(() => []);
 
+/** 类型徽标图标（与列表页同一套：正式版已认证、测试版实验品）。 */
+const kindIcon = computed(() =>
+  version.value?.kind === "preview" ? FlaskConical : BadgeCheck,
+);
+
 const dialogOpen = ref(false);
 
 function openDialog() {
@@ -99,12 +105,14 @@ function goBack() {
             <Gamepad2 :size="30" />
           </span>
           <span class="gd-detail__name">{{ version.game_version }}</span>
-          <span class="gd-detail__badge" :class="`gd-detail__badge--${version.kind}`">
+          <!-- 徽标与列表页同源（CoBadge）：两处各写一份 CSS 迟早漂移。 -->
+          <CoBadge :tone="version.kind" :icon="kindIcon">
             {{ t(`${MB_KEY}.kind.${version.kind}`) }}
-          </span>
-          <span v-if="version.has_loader" class="gd-detail__badge gd-detail__badge--loader">
-            LeviLamina
-          </span>
+          </CoBadge>
+          <CoBadge v-if="version.has_loader" tone="loader" :icon="Blocks">LeviLamina</CoBadge>
+          <CoBadge v-if="version.downloaded" tone="downloaded" :icon="HardDriveDownload">
+            {{ t(`${MB_KEY}.downloaded`) }}
+          </CoBadge>
         </header>
 
         <!-- 两个下拉框：加载器 / 客户端。整块放进滚动容器：
@@ -210,32 +218,6 @@ function goBack() {
   font-size: var(--copper-font-size-xl);
   font-weight: 700;
   letter-spacing: 0.2px;
-}
-
-.gd-detail__badge {
-  padding: 1px 8px;
-  border-radius: var(--copper-radius-full);
-  font-size: var(--copper-font-size-xs);
-  line-height: 1.6;
-  border: 1px solid transparent;
-}
-
-.gd-detail__badge--release {
-  color: var(--copper-badge-release);
-  background: var(--copper-badge-release-bg);
-  border-color: var(--copper-badge-release-border);
-}
-
-.gd-detail__badge--preview {
-  color: var(--copper-badge-alpha);
-  background: var(--copper-badge-alpha-bg);
-  border-color: var(--copper-badge-alpha-border);
-}
-
-.gd-detail__badge--loader {
-  color: var(--copper-badge-ll-mod);
-  background: var(--copper-badge-ll-mod-bg);
-  border-color: var(--copper-badge-ll-mod-border);
 }
 
 .gd-detail__form {

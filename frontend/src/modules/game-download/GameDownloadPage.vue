@@ -20,8 +20,6 @@ import {
   Upload,
   X,
 } from "@lucide/vue";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-
 import { homeLaunch } from "../../api/home";
 import { useI18n } from "../../i18n";
 import { usePlatform } from "../../composables/usePlatform";
@@ -48,8 +46,15 @@ const releaseOpen = ref(true);
 const previewOpen = ref(false);
 /** 导入进度提示；为空表示当前无导入流程。 */
 const importStatus = ref<string | null>(null);
-/** 导入是否在进行中（按钮禁用 + 防重入）。 */
+/** 导入是否在正在进行中（按钮禁用 + 防重入）。 */
 const importing = ref(false);
+/**
+ * 是否提供「导入 APK」入口：仅安卓。
+ *
+ * 桌面端从外部导入安装包尚未实现（要处理 `.apk` / `.apks` / 权限 / 签名等一整套
+ * 校验），与其摆一个点了没用的按钮，不如先不显示。
+ */
+const canImport = computed(() => platform.value === "android-arm64");
 
 const searching = computed(() => keyword.value.trim().length > 0);
 
@@ -125,10 +130,10 @@ const matchCount = computed(() => releases.value.length + previews.value.length)
  * 筛选条件形同虚设。搜索关键字同理（否则搜到的版本和顶部推荐对不上）。
  */
 const latestRelease = computed<GameVersionView | null>(
-  () => releases.value[0] ?? null,
+  () => releases.value[0] ?? gd.manifest.value?.latest_release ?? null,
 );
 const latestPreview = computed<GameVersionView | null>(
-  () => previews.value[0] ?? null,
+  () => previews.value[0] ?? gd.manifest.value?.latest_preview ?? null,
 );
 
 /** 是否处于「收窄列表」状态：有关键字或加载器筛选。用于空态文案与自动展开。 */
@@ -191,32 +196,21 @@ function instanceNameFrom(fileName: string): string {
 /**
  * 导入一个 MCBE 包并立即启动，完成「导入 → 实例管理 → 游戏启动」闭环。
  *
- * 平台差异只有一处：安卓端必须走系统文件选择器拿到 `content://` 流
- * （见 `apkImport.ts`），桌面端直接拿绝对路径。之后的导入、刷新、启动
- * 三步在所有平台完全一致。
+ * **仅安卓端**：安卓包是用户从外部拿到的 `.apk` / `.apks`，必须走系统文件选择器
+ * 拿 `content://` 流（见 `apkImport.ts`）。Windows 端目前不支持从外部导入安装包，
+ * 因此入口按钮在桌面上根本不渲染（`canImport`），导入路径也不再有桌面分支——
+ * 留着「点了才发现不支持」的按钮等于把未实现的能力摆在用户面前。
  */
 async function importApk() {
   if (importing.value) return;
+  if (!canImport.value) return;
   importing.value = true;
   loadError.value = null;
   try {
-    let sourcePath: string;
-    let displayName: string;
-
-    if (platform.value === "android-arm64") {
-      importStatus.value = t(`${MB_KEY}.import.picking`);
-      const picked = await pickApkViaHost(t(`${MB_KEY}.import.cancelled`));
-      sourcePath = picked.path;
-      displayName = picked.displayName;
-    } else {
-      const selected = await openDialog({
-        multiple: false,
-        filters: [{ name: "Minecraft package", extensions: ["apk", "apks"] }],
-      });
-      if (typeof selected !== "string") return;
-      sourcePath = selected;
-      displayName = selected.split(/[\\/]/).pop() || "imported.apk";
-    }
+    importStatus.value = t(`${MB_KEY}.import.picking`);
+    const picked = await pickApkViaHost(t(`${MB_KEY}.import.cancelled`));
+    const sourcePath = picked.path;
+    const displayName = picked.displayName;
 
     importStatus.value = t(`${MB_KEY}.import.importing`);
     const info = await gameImportApk(sourcePath, instanceNameFrom(displayName));
@@ -254,6 +248,7 @@ async function importApk() {
     <!-- 导入 / 刷新按钮注入全局标题栏操作区 -->
     <Teleport to="#copper-titlebar-actions">
       <button
+        v-if="canImport"
         class="gd-page__refresh"
         :title="t(`${MB_KEY}.actions.import`)"
         :disabled="importing"
@@ -339,22 +334,24 @@ async function importApk() {
             </button>
             <div class="gd-filter__panel" role="listbox">
               <div class="gd-filter__panel-inner">
-                <button
-                  v-for="option in loaderFilterChoices"
-                  :key="option.value"
-                  class="gd-filter__option"
-                  role="option"
-                  :aria-selected="option.value === loaderFilter"
-                  :class="{ 'gd-filter__option--selected': option.value === loaderFilter }"
-                  @click="chooseLoaderFilter(option.value)"
-                >
-                  <CircleCheck
-                    :size="14"
-                    class="gd-filter__option-mark"
-                    :class="{ 'gd-filter__option-mark--on': option.value === loaderFilter }"
-                  />
-                  <span>{{ option.label }}</span>
-                </button>
+                <div class="gd-filter__list">
+                  <button
+                    v-for="option in loaderFilterChoices"
+                    :key="option.value"
+                    class="gd-filter__option"
+                    role="option"
+                    :aria-selected="option.value === loaderFilter"
+                    :class="{ 'gd-filter__option--selected': option.value === loaderFilter }"
+                    @click="chooseLoaderFilter(option.value)"
+                  >
+                    <CircleCheck
+                      :size="14"
+                      class="gd-filter__option-mark"
+                      :class="{ 'gd-filter__option-mark--on': option.value === loaderFilter }"
+                    />
+                    <span>{{ option.label }}</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -363,15 +360,9 @@ async function importApk() {
         <p class="gd-top__label">{{ t(`${MB_KEY}.latest_section`) }}</p>
 
         <div class="gd-top__latest">
-          <VersionCard
-            v-if="gd.manifest.value.latest_release"
-            :version="gd.manifest.value.latest_release"
-          />
+          <VersionCard v-if="latestRelease" :version="latestRelease" />
           <p v-else class="gd-top__empty">{{ t(`${MB_KEY}.empty`) }}</p>
-          <VersionCard
-            v-if="gd.manifest.value.latest_preview"
-            :version="gd.manifest.value.latest_preview"
-          />
+          <VersionCard v-if="latestPreview" :version="latestPreview" />
         </div>
       </section>
 
@@ -709,6 +700,16 @@ async function importApk() {
   overflow: hidden;
   visibility: hidden;
   transition: visibility 0s linear var(--copper-duration);
+}
+
+.gd-filter--open .gd-filter__panel-inner {
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+/* 内边距与内容都在这一层：折叠层必须零内边距，否则收起后仍会露出「一条内边距
+ * 高」的残影（`0fr` 轨道的自动最小尺寸是 min-content，含内边距）。 */
+.gd-filter__list {
   padding: var(--copper-space-1);
   display: flex;
   flex-direction: column;
@@ -717,11 +718,6 @@ async function importApk() {
   border: none;
   border-radius: var(--copper-radius-lg);
   box-shadow: var(--copper-shadow);
-}
-
-.gd-filter--open .gd-filter__panel-inner {
-  visibility: visible;
-  transition-delay: 0s;
 }
 
 .gd-filter__option {

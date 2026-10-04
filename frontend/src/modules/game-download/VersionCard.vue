@@ -10,9 +10,11 @@
 // - 无描边，悬停**只浮起阴影**（不改底色——卡片底色已经和外层白底卡片同色，
 //   再叠一层底色变化在浅色主题下会读成「变灰」而不是「高亮」），点击进入二级页面。
 
+import { computed } from "vue";
 import { useRouter } from "vue-router";
-import { Gamepad2 } from "@lucide/vue";
+import { BadgeCheck, Blocks, FlaskConical, Gamepad2, HardDriveDownload } from "@lucide/vue";
 
+import CoBadge from "../../components/ui/CoBadge.vue";
 import { useI18n } from "../../i18n";
 import type { GameVersionView } from "./api";
 
@@ -22,6 +24,13 @@ const { t } = useI18n();
 const router = useRouter();
 
 const MB_KEY = "module.game-download";
+
+/**
+ * 类型徽标的图标：正式版 = 已认证的正式发布，测试版 = 实验品。
+ * 图标给了形状记忆点，一排版本号扫过去不必逐字读徽标文字。
+ */
+const KIND_ICON = { release: BadgeCheck, preview: FlaskConical } as const;
+const kindIcon = computed(() => KIND_ICON[props.version.kind]);
 
 function open() {
   void router.push(`/game-download/${encodeURIComponent(props.version.id)}`);
@@ -34,15 +43,15 @@ function open() {
       <Gamepad2 :size="20" />
     </span>
     <span class="version-card__name">{{ version.game_version }}</span>
-    <span class="version-card__badge" :class="`version-card__badge--${version.kind}`">
+    <CoBadge size="sm" :tone="version.kind" :icon="kindIcon">
       {{ t(`${MB_KEY}.kind.${version.kind}`) }}
-    </span>
-    <span v-if="version.has_loader" class="version-card__badge version-card__badge--loader">
+    </CoBadge>
+    <CoBadge v-if="version.has_loader" size="sm" tone="loader" :icon="Blocks">
       LeviLamina
-    </span>
-    <span v-if="version.downloaded" class="version-card__badge version-card__badge--downloaded">
+    </CoBadge>
+    <CoBadge v-if="version.downloaded" size="sm" tone="downloaded" :icon="HardDriveDownload">
       {{ t(`${MB_KEY}.downloaded`) }}
-    </span>
+    </CoBadge>
   </button>
 </template>
 
@@ -104,38 +113,5 @@ function open() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.version-card__badge {
-  flex-shrink: 0;
-  padding: 1px 8px;
-  border-radius: var(--copper-radius-full);
-  font-size: var(--copper-font-size-xs);
-  line-height: 1.6;
-  border: 1px solid transparent;
-}
-
-.version-card__badge--release {
-  color: var(--copper-badge-release);
-  background: var(--copper-badge-release-bg);
-  border-color: var(--copper-badge-release-border);
-}
-
-.version-card__badge--preview {
-  color: var(--copper-badge-alpha);
-  background: var(--copper-badge-alpha-bg);
-  border-color: var(--copper-badge-alpha-border);
-}
-
-.version-card__badge--loader {
-  color: var(--copper-badge-ll-mod);
-  background: var(--copper-badge-ll-mod-bg);
-  border-color: var(--copper-badge-ll-mod-border);
-}
-
-.version-card__badge--downloaded {
-  color: var(--copper-badge-downloaded);
-  background: var(--copper-badge-downloaded-bg);
-  border-color: var(--copper-badge-downloaded-border);
 }
 </style>

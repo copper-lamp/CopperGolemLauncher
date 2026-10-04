@@ -137,6 +137,26 @@
   --copper-badge-downloaded: #79c0ff;
   --copper-badge-downloaded-bg: #0d2338;
   --copper-badge-downloaded-border: #234f78;
+
+  /* 徽标的「玻璃感」：底色之上的一道上边缘高光 + 一道下边缘内阴影。
+     纯色平涂的徽标读起来是贴纸，加了这两层才像有厚度的实体。深色主题下高光与
+     阴影都更重（底色本身已经很暗，需要靠明暗差把边缘撑出来）。 */
+  --copper-badge-sheen: rgba(255, 255, 255, 0.22);
+  --copper-badge-underside: rgba(0, 0, 0, 0.34);
+
+  /* 实心徽标底色：文字与图标一律纯白。
+     色雾底 + 语义色文字在小字号下对比度不够（浅色主题里尤其差），而「一眼看清
+     这是正式版 / 已下载」比「底色很淡很雅」重要得多。这几个色值**两个主题相同**
+     ——它们是实心色块，不是表面色，实心块不随主题变浅变深，否则深色主题下会变成
+     一块发灰的补丁。选值标准是对白色文字 ≥ 4.5:1。 */
+  --copper-badge-release-solid: #1a7f37;
+  --copper-badge-preview-solid: #d1242f;
+  --copper-badge-loader-solid: #bc4c00;
+  --copper-badge-downloaded-solid: #0969da;
+  --copper-badge-neutral-solid: #59636e;
+  /* 实心色块上的前景色：恒为纯白，不跟随强调色（强调色变了，实心徽标的文字也得
+   * 跟着变，而它的底色并没有跟着变，对比度就不可控了）。 */
+  --copper-on-solid: #ffffff;
 }
 
 html[data-theme="light"] {
@@ -206,4 +226,8 @@ html[data-theme="light"] {
   --copper-badge-downloaded: #0969da;
   --copper-badge-downloaded-bg: rgba(9, 105, 218, 0.09);
   --copper-badge-downloaded-border: rgba(9, 105, 218, 0.22);
+
+  /* 浅色主题：底色本来就是淡色雾，上边缘高光必须更轻，否则整个徽标像塑料件。 */
+  --copper-badge-sheen: rgba(255, 255, 255, 0.72);
+  --copper-badge-underside: rgba(31, 35, 40, 0.1);
 }

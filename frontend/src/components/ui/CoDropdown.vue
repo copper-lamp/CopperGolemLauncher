@@ -151,35 +151,39 @@ watch(
     </button>
 
     <div class="co-dropdown__panel" role="listbox">
-      <div
-        ref="list"
-        class="co-dropdown__panel-inner"
-        :class="{
-          'co-dropdown__panel-inner--fade-top': fadeTop,
-          'co-dropdown__panel-inner--fade-bottom': fadeBottom,
-        }"
-        @scroll="updateFade"
-      >
-        <p v-if="isEmpty" class="co-dropdown__empty">{{ emptyText }}</p>
-        <button
-          v-for="option in options"
-          :key="option.value"
-          type="button"
-          role="option"
-          :aria-selected="option.value === modelValue"
-          class="co-dropdown__option"
-          :class="{ 'co-dropdown__option--selected': option.value === modelValue }"
-          @click="choose(option)"
+      <!-- 两层：__panel-inner 只负责被折叠（必须零内边距，见样式注释），
+           __list 才是真正有内容、会滚动、会渐变的那一层。 -->
+      <div ref="panelInner" class="co-dropdown__panel-inner">
+        <div
+          ref="list"
+          class="co-dropdown__list"
+          :class="{
+            'co-dropdown__list--fade-top': fadeTop,
+            'co-dropdown__list--fade-bottom': fadeBottom,
+          }"
+          @scroll="updateFade"
         >
-          <component
-            :is="option.icon"
-            v-if="option.icon"
-            :size="18"
-            class="co-dropdown__option-icon"
-          />
-          <span class="co-dropdown__option-label">{{ option.label }}</span>
-          <span v-if="option.hint" class="co-dropdown__option-hint">{{ option.hint }}</span>
-        </button>
+          <p v-if="isEmpty" class="co-dropdown__empty">{{ emptyText }}</p>
+          <button
+            v-for="option in options"
+            :key="option.value"
+            type="button"
+            role="option"
+            :aria-selected="option.value === modelValue"
+            class="co-dropdown__option"
+            :class="{ 'co-dropdown__option--selected': option.value === modelValue }"
+            @click="choose(option)"
+          >
+            <component
+              :is="option.icon"
+              v-if="option.icon"
+              :size="18"
+              class="co-dropdown__option-icon"
+            />
+            <span class="co-dropdown__option-label">{{ option.label }}</span>
+            <span v-if="option.hint" class="co-dropdown__option-hint">{{ option.hint }}</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -278,18 +282,24 @@ watch(
   /* 展开时立即可见（延迟为 0），收起时才等动画结束再隐藏。 */
   visibility: visible;
   transition-delay: 0s;
-  padding-bottom: var(--copper-space-2);
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
 }
 
+/* 真正有内容的一层：内边距、滚动上限、上下渐变都在这里。
+ *
+ * 关键：**内边距不能写在被折叠的那一层**。`grid-template-rows: 0fr` 的自动
+ * 最小尺寸是 min-content，而 min-content 里包含内边距——内边距写在折叠层上时，
+ * 折叠后触发行下方仍会露出「一条内边距高」的浅色残影（用户报的「脚」）。
+ * 折叠层保持零内边距、零内容，min-content 才是真正的 0。 */
 .co-dropdown__panel-inner {
   min-height: 0;
   overflow: hidden;
-  /* 收起后 visibility:hidden 而不是 display:none —— 前者能在收起动画播完之后再
-   * 把选项移出无障碍树与Tab 序（display:none 会直接砍掉过渡）。 */
   visibility: hidden;
+  /* 收起后 visibility:hidden 而不是 display:none —— 前者能在收起动画播完之后
+   * 把选项移出无障碍树与 Tab 序（display:none 会直接砍掉过渡）。 */
   transition: visibility 0s linear var(--copper-duration);
+}
+
+.co-dropdown__list {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-1);
@@ -297,24 +307,23 @@ watch(
    * 上限同时受视口约束，短窗口下也不会反过来顶出页面。 */
   max-height: min(320px, 45vh);
   overflow-y: auto;
-  padding: var(--copper-space-1) var(--copper-space-2);
-  /* **无描边**，也没有负外边距：折叠态下这里必须一点东西都不剩——
-   * 哪怕一条 1px 透明边框，也会在触发行下方露出那道永远消不掉的「脚」。 */
+  padding: var(--copper-space-1) var(--copper-space-2) var(--copper-space-2);
+  /* **无描边**：这个控件在页面里靠底色差分组，任何一圈线都会读成表单边框。 */
   border: none;
 }
 
 /* 上下渐变：那一侧确实还有内容被截断时，用「淡出到透明」提示还能滚。
  * mask 同时作用于所有子元素，视觉上就是内容渐隐，而不是盖一层灰条。 */
-.co-dropdown__panel-inner--fade-top {
+.co-dropdown__list--fade-top {
   mask-image: linear-gradient(to bottom, transparent, #000 18px);
 }
 
-.co-dropdown__panel-inner--fade-bottom {
+.co-dropdown__list--fade-bottom {
   mask-image: linear-gradient(to top, transparent, #000 18px);
 }
 
 /* 两侧同时被截断：上下各一段渐隐，中间保持不透明。 */
-.co-dropdown__panel-inner--fade-top.co-dropdown__panel-inner--fade-bottom {
+.co-dropdown__list--fade-top.co-dropdown__list--fade-bottom {
   mask-image: linear-gradient(
     to bottom,
     transparent,

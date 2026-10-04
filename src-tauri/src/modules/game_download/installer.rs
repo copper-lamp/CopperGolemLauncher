@@ -791,7 +791,6 @@ pub fn suggest_instance_name(ctx: &Ctx, version_id: &str) -> String {
 }
 
 /// 同 [`suggest_instance_name`]，但带了加载器：选了加载器就把它写进实例名。
-///
 /// 名字是**目录名**，同一版本装两次（一次带加载器、一次不带）在磁盘上就是两个目录。
 /// 默认名不带加载器时两次都会落在同一个名字上，用户只能在实例管理里手工区分，
 /// 而「这个实例有没有加载器」恰恰是最需要一眼看出来的信息。示例：`1.26.5.01-LeviLamina`。
@@ -805,15 +804,7 @@ pub fn suggest_instance_name_with_loader(
     version_id: &str,
     loader: Option<&str>,
 ) -> String {
-    let base = meta_bridge::game_version_of(version_id);
-    let mut base = if version_id.ends_with("_preview") {
-        format!("{base}-preview")
-    } else {
-        base
-    };
-    if loader.map(str::trim).is_some_and(|v| !v.is_empty()) {
-        base.push_str("-LeviLamina");
-    }
+    let base = base_instance_name(version_id, loader);
     for index in 1..=999 {
         let candidate = if index == 1 {
             base.clone()
@@ -823,6 +814,24 @@ pub fn suggest_instance_name_with_loader(
         if check_instance_name(ctx, &candidate).available {
             return candidate;
         }
+    }
+    base
+}
+
+/// 推荐名的**基底**（未做重名追加）：版本号 + 可选后缀。
+///
+/// 抽成纯函数是为了能直接单测拼名规则——这条规则同时决定磁盘目录名与用户在
+/// 实例管理里看到的名字，错了要靠删目录才能纠正。
+fn base_instance_name(version_id: &str, loader: Option<&str>) -> String {
+    let version = meta_bridge::game_version_of(version_id);
+    let mut base = if version_id.ends_with("_preview") {
+        format!("{version}-preview")
+    } else {
+        version
+    };
+    // 空串 / 纯空白视为「不使用加载器」：下拉框第一项的值就是空串。
+    if loader.map(str::trim).is_some_and(|v| !v.is_empty()) {
+        base.push_str("-LeviLamina");
     }
     base
 }
@@ -2197,6 +2206,30 @@ mod tests {
         assert!(md5_matches(&pkg, "").is_err(), "空 md5 必须拒绝而不是恒失败");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 默认实例名拼装规则：带加载器必须体现在名字里（名字即目录名）。
+    #[test]
+    fn suggested_name_marks_loader() {
+        // 不带加载器：保持原来的纯版本号。
+        assert_eq!(base_instance_name("1.26.5.01", None), "1.26.5.01");
+        // 选了加载器：追加 -LeviLamina（只写种类，不写版本号）。
+        assert_eq!(
+            base_instance_name("1.26.5.01", Some("1.9.9")),
+            "1.26.5.01-LeviLamina"
+        );
+        // 空串 / 纯空白 = 不使用加载器（下拉框第一项的值就是空串）。
+        assert_eq!(base_instance_name("1.26.5.01", Some("")), "1.26.5.01");
+        assert_eq!(base_instance_name("1.26.5.01", Some("   ")), "1.26.5.01");
+        // 快照版两种情况都保留 -preview 段，后缀追加在最后。
+        assert_eq!(
+            base_instance_name("1.21.130.20_preview", None),
+            "1.21.130.20-preview"
+        );
+        assert_eq!(
+            base_instance_name("1.21.130.20_preview", Some("1.9.9")),
+            "1.21.130.20-preview-LeviLamina"
+        );
     }
 
     /// 本地整包扫描：只认非空 `<slug>.msixvc`，`.part` 与零长度空壳都不算「已下载」。
