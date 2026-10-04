@@ -1,334 +1,296 @@
-//! 内容下载模块 · 加载器（LeviLamina）目录与游戏版本匹配。
+//! 内容下载模块 · 加载器（LeviLamina）目录。
 //!
-//! 游戏下载模块在「版本详情页」要给出可选加载器，并在装完游戏实例后自动把选中的
-//! LeviLamina 装进该实例目录。加载器版本清单来自 lipr 索引（与 LL 模组同源，见
-//! [`super::lip`]），匹配规则是 **lip 语义化版本范围**。
+//! 游戏下载模块在「版本二级页」要给出该游戏版本可用的加载器，并在装完游戏实例后自动
+//! 把选中的 LeviLamina 装进去。可用清单的事实源是 LeviLauncher 使用的
+//! `levilamina-client-version-db`：
 //!
-//! 匹配方向很重要：索引里声明的是「这个 LeviLamina 版本要求哪个 Minecraft/Bedrock
-//! 版本」，而我们要回答的是「这个 MCBE 版本能不能装某个 LeviLamina」。因此实现是
-//! `范围 ⊆ 游戏版本`（用游戏版本去满足范围），而不是反过来。
+//! ```json
+//! { "format_version": 1,
+//!   "versions": { "1.26.10.04": ["26.10.14", "26.10.13", ...],
+//!                 "1.21.132.01": ["1.9.9", "1.9.8", ...] } }
+//! ```
 //!
-//! 严格性：索引没为该版本声明平台依赖时**判定为不可用**（`compatible = false`），
-//! 而不是乐观放行。徽标与下拉都据此显示——宁可少显示一个加载器，也不让用户选中一个
-//! 装不上的版本，再在安装末期拿到一个来自 lipd 依赖求解器的晦涩报错。
+//! **键就是 MCBE 版本**，值是支持该版本的全部 LeviLamina 版本。这与本模块最初尝试的
+//! 「从 lipr 索引读 LeviLamina 自述的平台依赖」完全不同：lipr 索引里 LeviLamina 条目
+//! 并不声明 Minecraft 平台依赖，于是 1.26 及以上的版本一律判为「不可用」，而实际
+//! 1.26.10.04 / 1.26.20.04 / … 都有对应加载器。改用这份专门的版本库后，可用性判定与
+//! LeviLauncher 完全一致（见 `libs/LeviLauncher/internal/mcservice/levilamina.go`）。
+//!
+//! 匹配规则：先做**精确键匹配**（正常路径，两侧都是零填充四段版本号，如 `1.26.10.04`），
+//! 失败再按「逐段数值前缀」兜底（兼容将来某一侧省掉零填充或末段的情形，如 `1.26.10.4`
+//! 命中 `1.26.10.04`）。兜底是数值比较而不是字符串前缀：字符串前缀会让 `1.26.1` 命中
+//! `1.26.10.04`。
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::error::KernelError;
-
-use super::lip;
-
-/// lipr 索引里 LeviLamina 的包标识。
-pub const LEVILAMINA_IDENTIFIER: &str = "github.com/LiteLDev/LeviLamina";
 
 /// lip 包引用基址（安装时下发的完整引用：`owner/repo#variant`）。
 pub const LEVILAMINA_CLIENT_PACKAGE_REF: &str = "github.com/LiteLDev/LeviLamina#client";
 
-/// LeviLamina 客户端 variant 键（游戏侧要装的就是它；`server` 是 BDS 侧）。
-pub const CLIENT_VARIANT: &str = "client";
-
-/// 平台依赖识别关键字（小写包含即认定）。
+/// 版本库镜像，按下标顺序尝试；前两个已实测可达（2026-10-04）。
 ///
-/// lip 的依赖键是包标识形态；MCBE / BDS 平台包一定带 `minecraft` 或 `bedrock`。
-/// 用「包含」而不是写死一个标识：lip 生态里同一平台出现过多种写法
-/// （`microsoft.minecraft.bedrock`、`mojang.minecraft.bedrock` 等），写死会漏。
-const PLATFORM_NEEDLES: &[&str] = &["minecraft", "bedrock"];
+/// 顺序沿用清单源的同一套经验：jsdelivr 的两个域名国内可达；github 直连被墙、代理镜像
+/// 经常 302 后不给内容，因此垫底而不是删掉——它们只是慢，不是永远不可达。
+const VERSION_DB_URLS: [&str; 4] = [
+    "https://fastly.jsdelivr.net/gh/LiteLDev/levilamina-client-version-db@main/v2/version-db.json",
+    "https://cdn.jsdelivr.net/gh/LiteLDev/levilamina-client-version-db@main/v2/version-db.json",
+    "https://github.bibk.top/LiteLDev/levilamina-client-version-db/raw/refs/heads/main/v2/version-db.json",
+    "https://raw.githubusercontent.com/LiteLDev/levilamina-client-version-db/refs/heads/main/v2/version-db.json",
+];
+
+/// 目录缓存 TTL：清单命令每次都会问目录，不缓存等于每次刷新都多一次网络往返。
+const CACHE_TTL: Duration = Duration::from_secs(1800);
+
+type SharedCache = Mutex<Option<(Instant, LoaderCatalog)>>;
+
+fn cache() -> &'static SharedCache {
+    static CACHE: OnceLock<SharedCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
 
 /// 一个可选加载器版本（前端下拉项）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct LoaderOption {
-    /// 加载器版本号（如 `0.16.2`）。
+    /// 加载器版本号（如 `26.10.14`）。
     pub version: String,
-    /// 是否与目标游戏版本匹配。
+    /// 是否与该游戏版本匹配。当前实现只返回匹配项，字段保留给未来的宽松模式。
     pub compatible: bool,
-    /// 该版本声明的平台依赖原文（`键 范围`）；未声明为 `None`。
-    pub requirement: Option<String>,
 }
 
-/// 加载器目录：LeviLamina 客户端版本 + 各自的平台依赖范围。
+/// 加载器目录：MCBE 版本 → 支持的 LeviLamina 版本（降序）。
 #[derive(Debug, Clone, Default)]
 pub struct LoaderCatalog {
-    entries: Vec<CatalogEntry>,
-}
-
-#[derive(Debug, Clone)]
-struct CatalogEntry {
-    version: String,
-    /// 原始依赖原文（键与范围），供界面展示与排障。
-    requirement: Option<String>,
-    /// 归一化后的范围表达式；未声明为 `None`。
-    range: Option<String>,
+    versions: HashMap<String, Vec<String>>,
 }
 
 impl LoaderCatalog {
-    /// 从 lipr 索引拉取 LeviLamina 客户端版本清单（索引自带 TTL 缓存）。
+    /// 拉取加载器版本库（带 TTL 缓存；刷新失败时回退陈旧缓存）。
     pub async fn load() -> Result<Self, KernelError> {
-        let variants = lip::variant_versions(LEVILAMINA_IDENTIFIER).await?;
-        let client = variants
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(CLIENT_VARIANT))
-            .or_else(|| variants.first());
-        let Some((_key, versions)) = client else {
-            return Ok(Self::default());
-        };
-
-        let mut entries: Vec<CatalogEntry> = versions
-            .iter()
-            .map(|(version, deps)| {
-                let platform = platform_requirement(deps);
-                CatalogEntry {
-                    version: version.clone(),
-                    requirement: platform.as_ref().map(|(key, range)| format!("{key} {range}")),
-                    range: platform.map(|(_, range)| range),
+        if let Some(cached) = read_cache() {
+            return Ok(cached);
+        }
+        match fetch().await {
+            Ok(catalog) => {
+                write_cache(&catalog);
+                Ok(catalog)
+            }
+            Err(error) => {
+                // 拉取失败但手里有旧目录（上一次成功的结果）时继续用它：
+                // 「可装加载器」只是徽标与下拉，宁可显示上一次的事实，也不要整块消失。
+                if let Some(stale) = read_stale_cache() {
+                    log::warn!("[content-download] 加载器版本库刷新失败，用旧目录: {error}");
+                    return Ok(stale);
                 }
-            })
-            .collect();
-        // 新版本在前：下拉默认项就是最新，且与索引给出的顺序无关。
-        entries.sort_by(|a, b| semver_cmp(&b.version, &a.version));
-        Ok(Self { entries })
+                Err(error)
+            }
+        }
     }
 
     /// 该游戏版本是否至少有一个可用加载器（列表页徽标据此显示）。
     pub fn supports(&self, game_version: &str) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.range.as_deref().is_some_and(|range| range_matches(range, game_version)))
+        !self.versions_for(game_version).is_empty()
     }
 
-    /// 面向某游戏版本的加载器选项（新→旧，带逐项匹配结果）。
+    /// 面向某游戏版本的加载器选项（新→旧）。
     pub fn options_for(&self, game_version: &str) -> Vec<LoaderOption> {
-        self.entries
+        self.versions_for(game_version)
             .iter()
-            .map(|entry| LoaderOption {
-                version: entry.version.clone(),
-                compatible: entry
-                    .range
-                    .as_deref()
-                    .is_some_and(|range| range_matches(range, game_version)),
-                requirement: entry.requirement.clone(),
+            .map(|version| LoaderOption {
+                version: version.clone(),
+                // 目录给出的就是「支持这个 MCBE 版本」的加载器，因此恒为可用。
+                compatible: true,
             })
             .collect()
     }
 
-    /// 目录是否为空（索引里没有 LeviLamina 条目）。
+    /// 目录是否为空（版本库里没有任何条目）。
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.versions.is_empty()
     }
-}
 
-#[cfg(test)]
-impl LoaderCatalog {
-    /// 单测构造：造一条带指定平台依赖的加载器版本。
-    ///
-    /// 索引拉取需要网络，而「按声明的平台依赖严格匹配」是纯逻辑，必须能离线验证。
-    pub fn from_entries_for_test(version: &str, requirement: Option<&str>, range: &str) -> Self {
+    /// 目录里是否至少有一条非空记录（单测用）。
+    #[cfg(test)]
+    fn supports_any(&self) -> bool {
+        self.versions.values().any(|v| !v.is_empty())
+    }
+
+    /// 某 MCBE 版本的加载器版本列表：先精确键，再逐段数值前缀兜底。
+    fn versions_for(&self, game_version: &str) -> &[String] {
+        let key = game_version.trim();
+        if let Some(exact) = self.versions.get(key) {
+            return exact;
+        }
+        let Some(target) = parse_segments(key) else {
+            return &[];
+        };
+        let mut best: Option<(&String, usize)> = None;
+        for candidate in self.versions.keys() {
+            let Some(segments) = parse_segments(candidate) else {
+                continue;
+            };
+            let shared = segments.len().min(target.len());
+            if shared == 0 || segments[..shared] != target[..shared] {
+                continue;
+            }
+            // 多段命中优先（`1.26.10` 比 `1.26` 更明确）。
+            let better = match best {
+                Some((_, best_shared)) => shared > best_shared,
+                None => true,
+            };
+            if better {
+                best = Some((candidate, shared));
+            }
+        }
+        best.and_then(|(candidate, _)| self.versions.get(candidate))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// 单测构造：直接给一份「MCBE 版本 → 加载器版本」表。
+    #[cfg(test)]
+    pub fn from_map_for_test(pairs: &[(&str, &[&str])]) -> Self {
         Self {
-            entries: vec![CatalogEntry {
-                version: version.to_string(),
-                requirement: requirement.map(str::to_string),
-                range: Some(range.to_string()),
-            }],
+            versions: pairs
+                .iter()
+                .map(|(mc, list)| {
+                    (
+                        (*mc).to_string(),
+                        list.iter().map(|v| (*v).to_string()).collect(),
+                    )
+                })
+                .collect(),
         }
     }
 }
 
-/// 从一个版本的依赖表里挑出平台依赖，返回 `(依赖键, 范围原文)`。
-fn platform_requirement(deps: &HashMap<String, String>) -> Option<(String, String)> {
-    let mut matched: Vec<(&String, &String)> = deps
-        .iter()
-        .filter(|(key, _)| {
-            let lower = key.to_lowercase();
-            PLATFORM_NEEDLES.iter().any(|needle| lower.contains(needle))
-        })
-        .collect();
-    // 多个候选时取键名最短的：平台包标识通常比具体资产包更短，
-    // 且 `HashMap` 迭代顺序不确定，不处理会让结果在两次调用间漂移。
-    matched.sort_by_key(|(key, _)| key.len());
-    matched
-        .first()
-        .map(|(key, range)| ((*key).clone(), (*range).clone()))
+// ---------------------------------------------------------------- 缓存
+
+/// 命中且未过期时返回缓存。
+fn read_cache() -> Option<LoaderCatalog> {
+    let guard = cache().lock().ok()?;
+    let (stamp, catalog) = guard.as_ref()?;
+    (stamp.elapsed() < CACHE_TTL).then(|| catalog.clone())
 }
 
-// ---------------------------------------------------------------- 版本范围匹配
-
-/// 版本范围是否被给定版本满足。
-///
-/// 支持的写法（lip / semver 生态的常见子集）：
-/// `*` / `x`（任意）、`1.21.130`（精确）、`=1.21.130`、`>=1.21.0`、`>1.21.0`、
-/// `<=1.21.0`、`<1.21.0`、`^1.21.0`、`~1.21.0`、通配 `1.21.*` / `1.21.x`；
-/// 空格或逗号分隔为「与」，`||` 分隔为「或」。
-///
-/// 语义细节：MCBE 版本是四段（`1.21.130.22`），而加载器声明的平台版本常是三段
-/// （`1.21.130`）。精确与通配比较按**声明段数**做前缀匹配（三段 `1.21.130` 命中
-/// `1.21.130.22`），比较类操作符则按数值比较、缺段补 0。
-pub fn range_matches(range: &str, version: &str) -> bool {
-    let Some(target) = parse_version(version) else {
-        return false;
-    };
-    let range = range.trim();
-    if range.is_empty() {
-        return false;
-    }
-    range.split("||").any(|branch| {
-        branch
-            .split([',', ' '])
-            .filter(|p| !p.trim().is_empty())
-            .all(|part| comparator_matches(part.trim(), target))
-    })
+/// 无论是否过期都返回缓存（刷新失败时的回退）。
+fn read_stale_cache() -> Option<LoaderCatalog> {
+    let guard = cache().lock().ok()?;
+    guard.as_ref().map(|(_, catalog)| catalog.clone())
 }
 
-/// 单个比较子句（如 `>=1.21.0`）是否被满足。
-fn comparator_matches(part: &str, target: Version) -> bool {
-    if part.is_empty() {
-        return true;
-    }
-    let (op, rest) = split_operator(part);
-    let rest = rest.trim();
-    // 任意版本：`*` / `x` / 空范围。
-    if rest.is_empty() || rest == "*" || rest.eq_ignore_ascii_case("x") {
-        return true;
-    }
-    // 通配段（`1.21.*`）：按下标逐段比较，遇到通配即只比前面数段。
-    if let Some(prefix) = wildcard_prefix(rest) {
-        return prefix_match(prefix, target);
-    }
-    let Some(bound) = parse_version(rest) else {
-        // 范围写法不认识：判为不匹配（严格），而不是放行。
-        return false;
-    };
-    match op {
-        // 精确：按声明段数前缀匹配，兼容三段声明对四段游戏版本。
-        "" | "=" => prefix_match(bound, target),
-        ">" => target.gt(&bound),
-        ">=" => target.ge(&bound),
-        "<" => target.lt(&bound),
-        "<=" => target.le(&bound),
-        "^" => target.ge(&bound) && target.lt(&caret_upper(&bound)),
-        "~" => target.ge(&bound) && target.lt(&tilde_upper(&bound)),
-        _ => false,
+fn write_cache(catalog: &LoaderCatalog) {
+    if let Ok(mut guard) = cache().lock() {
+        *guard = Some((Instant::now(), catalog.clone()));
     }
 }
 
-/// 拆出前导操作符。
-fn split_operator(part: &str) -> (&str, &str) {
-    for op in [">=", "<=", "^", "~", ">", "<", "="] {
-        if let Some(rest) = part.strip_prefix(op) {
-            return (op, rest);
+// ---------------------------------------------------------------- 拉取与解析
+
+/// 多镜像拉取并解析版本库；全部镜像失败才返回错误。
+async fn fetch() -> Result<LoaderCatalog, KernelError> {
+    let client = crate::services::http_client::client_builder(Duration::from_secs(15)).build()?;
+    let mut last_err: Option<KernelError> = None;
+    for url in VERSION_DB_URLS {
+        match client.get(url).send().await {
+            Ok(response) if response.status().is_success() => match response.json::<Value>().await {
+                Ok(json) => return Ok(parse(&json)),
+                Err(error) => {
+                    log::warn!("[content-download] 加载器版本库解析失败 {url}: {error}");
+                    last_err = Some(error.into());
+                }
+            },
+            Ok(response) => {
+                log::warn!(
+                    "[content-download] 加载器版本库 HTTP {} ({url})",
+                    response.status()
+                );
+                last_err = Some(KernelError::Config(format!(
+                    "加载器版本库 HTTP {}",
+                    response.status()
+                )));
+            }
+            Err(error) => {
+                log::warn!("[content-download] 加载器版本库请求失败 {url}: {error}");
+                last_err = Some(error.into());
+            }
         }
     }
-    ("", part)
+    Err(last_err.unwrap_or_else(|| KernelError::Config("加载器版本库拉取失败".into())))
 }
 
-/// `^1.21.0` 的上界：首个非零段的下一档（与 semver caret 一致）。
-fn caret_upper(bound: &Version) -> Version {
-    let parts = bound.parts;
-    let upper = if parts[0] > 0 {
-        [parts[0] + 1, 0, 0, 0]
-    } else if parts[1] > 0 {
-        [0, parts[1] + 1, 0, 0]
-    } else if parts[2] > 0 {
-        [0, 0, parts[2] + 1, 0]
-    } else {
-        [0, 0, 0, parts[3] + 1]
+/// 解析版本库 JSON。缺字段容错，返回空目录而不是报错（空目录 = 无可用加载器）。
+fn parse(json: &Value) -> LoaderCatalog {
+    let mut versions: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(map) = json.get("versions").and_then(Value::as_object) else {
+        return LoaderCatalog::default();
     };
-    Version { parts: upper, len: 4 }
-}
-
-/// `~1.21.0` 的上界：次段 +1。
-fn tilde_upper(bound: &Version) -> Version {
-    let parts = bound.parts;
-    Version {
-        parts: [parts[0], parts[1] + 1, 0, 0],
-        len: 4,
-    }
-}
-
-/// 通配写法（`1.21.*` / `1.21.x`）的前缀部分；非通配返回 `None`。
-fn wildcard_prefix(rest: &str) -> Option<Version> {
-    if !rest
-        .split('.')
-        .any(|seg| seg == "*" || seg.eq_ignore_ascii_case("x"))
-    {
-        return None;
-    }
-    let mut parts = [0u32; 4];
-    let mut len = 0;
-    for (index, segment) in rest.split('.').take(4).enumerate() {
-        if segment == "*" || segment.eq_ignore_ascii_case("x") {
-            break;
+    for (mc_version, list) in map {
+        let Some(list) = list.as_array() else {
+            continue;
+        };
+        let mut loader_versions: Vec<String> = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .collect();
+        if loader_versions.is_empty() {
+            continue;
         }
-        parts[index] = segment.trim().parse().ok()?;
-        len = index + 1;
+        // 去重 + 新→旧：上游列表未必有序，而下拉的第一项就是用户最容易直接确认的那个。
+        loader_versions.sort_by(|a, b| compare_loader_versions(b, a));
+        loader_versions.dedup();
+        versions.insert(mc_version.trim().to_string(), loader_versions);
     }
-    Some(Version { parts, len })
+    LoaderCatalog { versions }
 }
 
-/// 按声明段数前缀匹配：`1.21.130` 命中 `1.21.130.22`。
-///
-/// 只能比 `bound.len` 段：把三段声明补成 `[1,21,130,0]` 后再整段比对，
-/// 会让所有四段游戏版本（几乎全部正式版）都判为不匹配。
-fn prefix_match(bound: Version, target: Version) -> bool {
-    let len = bound.len.max(1);
-    bound.parts[..len] == target.parts[..len]
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Version {
-    /// 四段数值；不足补 0。
-    parts: [u32; 4],
-    /// 实际声明的段数（1~4）。前缀比较按它决定比几段。
-    len: usize,
-}
-
-impl Version {
-    fn gt(&self, other: &Self) -> bool {
-        self.parts > other.parts
-    }
-    fn ge(&self, other: &Self) -> bool {
-        self.parts >= other.parts
-    }
-    fn lt(&self, other: &Self) -> bool {
-        self.parts < other.parts
-    }
-    fn le(&self, other: &Self) -> bool {
-        self.parts <= other.parts
-    }
-}
-
-/// 解析版本串为四段数值（不足补 0，多于四段截断）；非法返回 `None`。
-fn parse_version(raw: &str) -> Option<Version> {
+/// 解析版本号为数值段；非法返回 `None`。
+fn parse_segments(raw: &str) -> Option<Vec<u32>> {
     let cleaned = raw.trim().trim_start_matches('v');
     if cleaned.is_empty() {
         return None;
     }
-    // 预发布后缀（`1.21.0-rc.1`）不参与比较。
     let core = cleaned.split(['-', '+']).next().unwrap_or(cleaned);
-    let mut parts = [0u32; 4];
-    let mut len = 0;
-    for (index, segment) in core.split('.').take(4).enumerate() {
-        let segment = segment.trim();
-        if segment.is_empty() {
-            return None;
-        }
-        parts[index] = segment.parse().ok()?;
-        len = index + 1;
-    }
-    if len == 0 {
-        return None;
-    }
-    Some(Version { parts, len })
+    let segments: Option<Vec<u32>> = core
+        .split('.')
+        .map(|segment| segment.trim().parse::<u32>().ok())
+        .collect();
+    let segments = segments?;
+    (!segments.is_empty()).then_some(segments)
 }
 
-/// 语义化版本比较（供目录排序，新版本在前）。
-fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    match (parse_version(a), parse_version(b)) {
-        (Some(x), Some(y)) => x.parts.cmp(&y.parts),
+/// 加载器版本比较：先比数值段，再比预发布标记（正式版 > 预发布，`rc.2` > `rc.1`）。
+fn compare_loader_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let (a_core, a_pre) = split_prerelease(a);
+    let (b_core, b_pre) = split_prerelease(b);
+    match (parse_segments(a_core), parse_segments(b_core)) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| match (a_pre, b_pre) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (Some(x), Some(y)) => x.cmp(y),
+        }),
         (Some(_), None) => std::cmp::Ordering::Greater,
         (None, Some(_)) => std::cmp::Ordering::Less,
         (None, None) => a.cmp(b),
+    }
+}
+
+/// 拆出预发布后缀：`1.8.0-rc.1` → (`1.8.0`, `Some("rc.1")`)。
+fn split_prerelease(raw: &str) -> (&str, Option<&str>) {
+    let trimmed = raw.trim();
+    match trimmed.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (trimmed, None),
     }
 }
 
@@ -336,87 +298,96 @@ fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 mod tests {
     use super::*;
 
-    #[test]
-    fn exact_requirement_matches_four_segment_game_version() {
-        // 加载器声明三段、游戏版本四段：必须命中，否则所有正式版都会显示「不可用」。
-        assert!(range_matches("1.21.130", "1.21.130.22"));
-        assert!(range_matches("=1.21.130", "1.21.130.22"));
-        assert!(!range_matches("1.21.130", "1.21.131.0"));
-        assert!(range_matches("1.21.130.22", "1.21.130.22"));
-        assert!(!range_matches("1.21.130.23", "1.21.130.22"));
-        // 两段声明命中同一大版本的全部小版本。
-        assert!(range_matches("1.21", "1.21.130.22"));
+    /// 真实版本库的节选（2026-10-04 拉取）：1.26 系与 1.21 系各留一条。
+    const SAMPLE: &str = r#"{
+      "format_version": 1,
+      "versions": {
+        "1.21.124.02": ["1.8.0-rc.1", "1.8.0-rc.2"],
+        "1.21.132.01": ["1.9.7", "1.9.8", "1.9.9", "1.9.10"],
+        "1.26.10.04": ["26.10.3", "26.10.14", "26.10.0"],
+        "1.26.51.01": ["26.51.6", "26.51.0"]
+      }
+    }"#;
+
+    fn catalog() -> LoaderCatalog {
+        parse(&serde_json::from_str::<Value>(SAMPLE).unwrap())
     }
 
+    /// 1.26 及以上的版本必须能匹配到加载器（此前用 lipr 索引平台依赖判定时全部落空）。
     #[test]
-    fn range_operators_behave() {
-        assert!(range_matches(">=1.21.0", "1.21.130.22"));
-        assert!(range_matches(">=1.21.0 <1.22.0", "1.21.130.22"));
-        assert!(range_matches(">=1.21.0, <1.22.0", "1.21.130.22"));
-        assert!(!range_matches(">=1.21.0 <1.22.0", "1.22.0.1"));
-        assert!(range_matches(">1.21.100", "1.21.130.22"));
-        assert!(!range_matches(">1.21.130.22", "1.21.130.22"));
-        assert!(range_matches("<=1.21.130.22", "1.21.130.22"));
+    fn matches_newer_game_versions() {
+        let catalog = catalog();
+        assert!(catalog.supports("1.26.10.04"));
+        assert!(catalog.supports("1.26.51.01"));
+        assert!(catalog.supports("1.21.132.01"));
+        // 版本库里没有的构建：不能凭空说可以装。
+        assert!(!catalog.supports("1.26.52.03"));
+        assert!(!catalog.supports("1.21.130.22"));
     }
 
+    /// 选项按加载器版本新→旧排列，第一项就是最新（用户最容易直接确认的那个）。
     #[test]
-    fn caret_and_tilde_follow_semver() {
-        assert!(range_matches("^1.21.0", "1.21.130.22"));
-        assert!(!range_matches("^1.21.0", "2.0.0"));
-        assert!(range_matches("^0.16.2", "0.16.9"));
-        assert!(!range_matches("^0.16.2", "0.17.0"));
-        assert!(range_matches("~1.21.0", "1.21.9"));
-        assert!(!range_matches("~1.21.0", "1.22.0"));
+    fn options_are_newest_first() {
+        let catalog = catalog();
+        let options = catalog.options_for("1.26.10.04");
+        let versions: Vec<&str> = options.iter().map(|o| o.version.as_str()).collect();
+        assert_eq!(versions, ["26.10.14", "26.10.3", "26.10.0"]);
+        assert!(options.iter().all(|o| o.compatible));
+        // 数值段比较而非字典序：1.9.10 必须排在 1.9.9 前面。
+        let older = catalog.options_for("1.21.132.01");
+        assert_eq!(older[0].version, "1.9.10");
     }
 
+    /// 预发布版排在同数值的正式版之后，且 rc.2 在 rc.1 之前。
     #[test]
-    fn wildcards_and_disjunction() {
-        assert!(range_matches("1.21.*", "1.21.130.22"));
-        assert!(!range_matches("1.21.*", "1.22.0"));
-        assert!(range_matches("x", "1.21.130.22"));
-        assert!(range_matches("*", "1.21.130.22"));
-        assert!(range_matches("1.20.0 || 1.21.130", "1.21.130.22"));
-        // 不认识的写法必须判为不匹配（严格），否则会放行装上不的版本。
-        assert!(!range_matches("latest", "1.21.130.22"));
-        assert!(!range_matches("1.21.130", "not-a-version"));
+    fn prerelease_ordering() {
+        let catalog = catalog();
+        let versions: Vec<String> = catalog
+            .options_for("1.21.124.02")
+            .into_iter()
+            .map(|o| o.version)
+            .collect();
+        assert_eq!(versions, ["1.8.0-rc.2", "1.8.0-rc.1"]);
     }
 
+    /// 键的零填充差异走数值前缀兜底，而不是字符串前缀（`1.26.1` 不得命中 `1.26.10.04`）。
     #[test]
-    fn platform_requirement_picks_bedrock_key() {
-        let mut deps = HashMap::new();
-        deps.insert("github.com/LiteLDev/LeviLamina".to_string(), ">=1.0.0".to_string());
-        deps.insert("microsoft.minecraft.bedrock".to_string(), "1.21.130".to_string());
-        let (key, range) = platform_requirement(&deps).expect("应识别出平台依赖");
-        assert_eq!(key, "microsoft.minecraft.bedrock");
-        assert_eq!(range, "1.21.130");
-
-        let mut unrelated = HashMap::new();
-        unrelated.insert("github.com/other/mod".to_string(), "1.0.0".to_string());
-        assert!(platform_requirement(&unrelated).is_none());
+    fn segment_fallback_is_numeric() {
+        let catalog = LoaderCatalog::from_map_for_test(&[("1.26.10.04", &["26.10.14"])]);
+        assert!(catalog.supports("1.26.10.4"));
+        assert!(catalog.supports("1.26.10.04"));
+        assert!(!catalog.supports("1.26.1"));
+        // 反过来（三段查询对四段键）是**预期**命中：上游某天改格式时不至于全灭。
+        assert!(catalog.supports("1.26.10"));
+        // 三段键对四段游戏版本：同前缀即命中（上游某天改格式时不至于全灭）。
+        let short = LoaderCatalog::from_map_for_test(&[("1.26.10", &["26.10.14"])]);
+        assert!(short.supports("1.26.10.04"));
+        assert!(!short.supports("1.26.11.01"));
     }
 
+    /// 多段命中优先：`1.26.10` 比 `1.26` 更明确。
     #[test]
-    fn catalog_requires_declared_platform_requirement() {
-        let catalog = LoaderCatalog {
-            entries: vec![
-                CatalogEntry {
-                    version: "0.16.2".into(),
-                    requirement: Some("microsoft.minecraft.bedrock 1.21.130".into()),
-                    range: Some("1.21.130".into()),
-                },
-                CatalogEntry {
-                    version: "0.15.0".into(),
-                    requirement: None,
-                    range: None,
-                },
-            ],
-        };
-        assert!(catalog.supports("1.21.130.22"));
-        assert!(!catalog.supports("1.21.131.0"));
-        let options = catalog.options_for("1.21.130.22");
-        assert!(options[0].compatible);
-        // 未声明平台依赖的版本一律不可用（严格）。
-        assert!(!options[1].compatible);
-        assert!(options[1].requirement.is_none());
+    fn most_specific_key_wins() {
+        let catalog =
+            LoaderCatalog::from_map_for_test(&[("1.26", &["generic"]), ("1.26.10", &["specific"])]);
+        let versions: Vec<String> = catalog
+            .options_for("1.26.10.04")
+            .into_iter()
+            .map(|o| o.version)
+            .collect();
+        assert_eq!(versions, ["specific"]);
+    }
+
+    /// 缺字段 / 脏数据不能变成「可用」。
+    #[test]
+    fn malformed_input_yields_empty_catalog() {
+        assert!(parse(&serde_json::json!({})).is_empty());
+        assert!(parse(&serde_json::json!({ "versions": [] })).is_empty());
+        assert!(!parse(&serde_json::json!({ "versions": { "1.26.10.04": [] } })).supports_any());
+        // 非字符串项被丢弃，剩下的仍然可用。
+        let mixed = parse(&serde_json::json!({
+            "versions": { "1.26.10.04": [1, null, "26.10.14", " "] }
+        }));
+        assert_eq!(mixed.options_for("1.26.10.04").len(), 1);
     }
 }

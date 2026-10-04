@@ -33,6 +33,9 @@
   --copper-hover: rgba(255, 255, 255, 0.06);
   --copper-active: rgba(255, 255, 255, 0.1);
   --copper-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  /* 轻微阴影：给「白底无描边」的卡片用。它与 --copper-shadow 的差别只有浓度，
+   * 不改变阴影的方向与扩散，保证同一屏卡片之间的投影语言一致。 */
+  --copper-shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.28);
   --copper-overlay: rgba(0, 0, 0, 0.6);
 
   /* 圆角 */
@@ -140,6 +143,8 @@ html[data-theme="light"] {
   --copper-hover: rgba(0, 0, 0, 0.05);
   --copper-active: rgba(0, 0, 0, 0.09);
   --copper-shadow: 0 4px 16px rgba(31, 35, 40, 0.12);
+  /* 浅色下的「轻微阴影」必须更淡：白底上同样的浓度看起来会发灰、显脏。 */
+  --copper-shadow-subtle: 0 1px 2px rgba(31, 35, 40, 0.06);
   --copper-overlay: rgba(31, 35, 40, 0.45);
 
   --copper-success: #1a7f37;

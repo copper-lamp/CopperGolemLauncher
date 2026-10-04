@@ -54,7 +54,7 @@ const currentLabel = computed(() => selected.value?.label ?? props.placeholder);
 const isEmpty = computed(() => props.options.length === 0);
 
 function toggle() {
-  if (props.disabled || isEmpty.value) return;
+  if (props.disabled) return;
   open.value = !open.value;
 }
 
@@ -83,11 +83,12 @@ onBeforeUnmount(() => {
   document.removeEventListener("keydown", onDocumentKeydown);
 });
 
-// 禁用或选项清空（如切换版本后没有可用加载器）时收起面板，避免留下一个悬空浮层。
+// 禁用时收起面板，避免留下一个悬空浮层。
+// 选项为空**不**收起：空态面板要说「暂无可用加载器」，直接关掉等于什么都不说。
 watch(
-  () => [props.disabled, props.options.length] as const,
-  ([disabled, count]) => {
-    if (disabled || count === 0) open.value = false;
+  () => props.disabled,
+  (disabled) => {
+    if (disabled) open.value = false;
   },
 );
 </script>
@@ -106,9 +107,7 @@ watch(
       @click="toggle"
     >
       <span class="co-dropdown__label">{{ label }}</span>
-      <span class="co-dropdown__value" :class="{ 'co-dropdown__value--empty': !selected }">
-        {{ currentLabel }}
-      </span>
+      <span class="co-dropdown__value">{{ currentLabel }}</span>
       <ChevronDown :size="15" class="co-dropdown__chevron" />
     </button>
 
@@ -187,9 +186,6 @@ watch(
   white-space: nowrap;
 }
 
-.co-dropdown__value--empty {
-  color: var(--copper-text-disabled);
-}
 
 .co-dropdown__chevron {
   flex-shrink: 0;
@@ -201,9 +197,6 @@ watch(
   transform: rotate(180deg);
 }
 
-.co-dropdown--disabled {
-  opacity: 0.5;
-}
 
 .co-dropdown--disabled .co-dropdown__trigger {
   cursor: default;

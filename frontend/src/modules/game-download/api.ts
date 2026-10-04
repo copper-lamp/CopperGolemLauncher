@@ -31,10 +31,13 @@ export interface GameManifestView {
 /** 加载器候选版本（与后端 `loader_catalog::LoaderOption` 同构）。 */
 export interface LoaderOption {
   version: string;
-  /** 是否与该游戏版本匹配（后端按索引声明的平台依赖严格判定）。 */
+  /**
+   * 是否与该游戏版本匹配。
+   *
+   * 可用性由后端的 LeviLamina 版本库（`levilamina-client-version-db`，键即 MCBE 版本）
+   * 判定，后端只返回该游戏版本真正可用的加载器，因此这里恒为 `true`。
+   */
   compatible: boolean;
-  /** 该版本声明的平台依赖原文；未声明为 `null`。 */
-  requirement: string | null;
 }
 
 /** 某版本的加载器清单（与后端 `LoaderOptions` 同构）。 */

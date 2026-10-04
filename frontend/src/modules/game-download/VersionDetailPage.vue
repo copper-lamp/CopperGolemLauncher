@@ -3,7 +3,7 @@
 //
 // 版式由需求钉死：顶部是版本图标与版本号（无边框），下面是「加载器」「客户端」两个
 // 下拉框（自绘组件，折叠态显示「标签 + 未选择」，展开向下弹出），页面正下方居中一个
-// 安装按钮。左右只留很小的边距，内容尽量铺满。
+// 安装按钮。左右只留很小的边距，内容尽量铺满；除必要告警外不写说明性文字。
 //
 // 这里**不列实例、不画进度**：一次安装产出一个实例，进度统一在下载中心看（下载引擎
 // 是任务的事实源），本页只负责发起。
@@ -37,34 +37,25 @@ const version = computed<GameVersionView | null>(() => {
   return [...m.releases, ...m.previews].find((v) => v.id === id.value) ?? null;
 });
 
-/** 加载器清单（本机 lipd 可用性 + 该游戏版本的全部 LeviLamina 候选）。 */
+/** 加载器清单（本机 lipd 可用性 + 该游戏版本的 LeviLamina 候选，已按版本库筛过）。 */
 const loaders = computed(() => gd.loaderCatalogs.value[id.value] ?? null);
 const lipAvailable = computed(() => loaders.value?.lip_available ?? true);
-/**
- * 下拉里只列**可用**的加载器。
- *
- * 不兼容的版本在数据里仍然存在（列表页徽标要看全量），但对用户而言「选一个装不上的
- * 版本」没有意义：后端按索引声明的平台依赖严格判定，放进去只会让安装走到一半才由
- * lipd 报依赖冲突，那是最差的一种反馈。声明的要求随选项一起给出，用户能看到「凭什么
- * 是这几个」。
- */
-const compatibleLoaders = computed(() => (loaders.value?.loaders ?? []).filter((l) => l.compatible));
+const availableLoaders = computed(() => loaders.value?.loaders ?? []);
 
 const loader = ref("");
 const client = ref("");
 
-/** 加载器选项：首项是「不使用加载器」，其余为可用的 LeviLamina。 */
+/** 加载器选项：首项是「不使用加载器」，其余为版本库给出的可用 LeviLamina。 */
 const loaderChoices = computed<DropdownOption[]>(() => [
   { value: "", label: t(`${MB_KEY}.loader_none`), icon: Ban },
-  ...compatibleLoaders.value.map((l) => ({
-    value: l.version,
-    label: `LeviLamina ${l.version}`,
+  ...availableLoaders.value.map((option) => ({
+    value: option.version,
+    label: `LeviLamina ${option.version}`,
     icon: Puzzle,
-    hint: l.requirement ?? undefined,
   })),
 ]);
 
-/** 客户端下拉：当前没有收录任何客户端 dll，保持空表（组件显示空态提示）。 */
+/** 客户端下拉：当前没有收录任何客户端 dll，展开后由组件给出空态说明。 */
 const clientChoices = computed<DropdownOption[]>(() => []);
 
 const dialogOpen = ref(false);
@@ -118,32 +109,22 @@ function goBack() {
 
         <!-- 两个下拉框：加载器 / 客户端 -->
         <div class="gd-detail__form">
-          <div class="gd-detail__field">
-            <CoDropdown
-              v-model="loader"
-              :label="t(`${MB_KEY}.loader_label`)"
-              :placeholder="t(`${MB_KEY}.select_none`)"
-              :options="loaderChoices"
-              :empty-text="t(`${MB_KEY}.loader_unavailable`)"
-            />
-            <span v-if="compatibleLoaders.length === 0" class="gd-detail__hint">
-              {{ t(`${MB_KEY}.loader_unavailable`) }}
-            </span>
-          </div>
+          <CoDropdown
+            v-model="loader"
+            :label="t(`${MB_KEY}.loader_label`)"
+            :placeholder="t(`${MB_KEY}.select_none`)"
+            :options="loaderChoices"
+            :empty-text="t(`${MB_KEY}.loader_unavailable`)"
+          />
+          <CoDropdown
+            v-model="client"
+            :label="t(`${MB_KEY}.client_label`)"
+            :placeholder="t(`${MB_KEY}.select_none`)"
+            :options="clientChoices"
+            :empty-text="t(`${MB_KEY}.client_empty`)"
+          />
 
-          <div class="gd-detail__field">
-            <CoDropdown
-              v-model="client"
-              :label="t(`${MB_KEY}.client_label`)"
-              :placeholder="t(`${MB_KEY}.select_none`)"
-              :options="clientChoices"
-              :empty-text="t(`${MB_KEY}.client_empty`)"
-              disabled
-            />
-            <span class="gd-detail__hint">{{ t(`${MB_KEY}.client_hint`) }}</span>
-          </div>
-
-          <!-- lipd 缺失：装完游戏也补不上加载器，必须提前说清楚 -->
+          <!-- lipd 缺失：装完游戏也补不上加载器，必须提前说清楚（本页唯一的告警文字） -->
           <p v-if="loader && !lipAvailable" class="gd-detail__warn" role="alert">
             <AlertTriangle :size="14" />
             {{ t(`${MB_KEY}.lip_missing`) }}
@@ -158,7 +139,6 @@ function goBack() {
             <PackagePlus :size="16" />
             {{ t(`${MB_KEY}.actions.install`) }}
           </CoButton>
-          <span class="gd-detail__actions-hint">{{ t(`${MB_KEY}.progress_hint`) }}</span>
         </div>
       </div>
 
@@ -253,19 +233,8 @@ function goBack() {
 .gd-detail__form {
   display: flex;
   flex-direction: column;
-  gap: var(--copper-space-4);
-}
-
-.gd-detail__field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--copper-space-1);
+  gap: var(--copper-space-3);
   width: 100%;
-}
-
-.gd-detail__hint {
-  font-size: var(--copper-font-size-xs);
-  color: var(--copper-text-disabled);
 }
 
 .gd-detail__warn {
@@ -284,14 +253,7 @@ function goBack() {
 
 .gd-detail__actions {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--copper-space-2);
+  justify-content: center;
   padding-bottom: var(--copper-space-2);
-}
-
-.gd-detail__actions-hint {
-  font-size: var(--copper-font-size-xs);
-  color: var(--copper-text-disabled);
 }
 </style>

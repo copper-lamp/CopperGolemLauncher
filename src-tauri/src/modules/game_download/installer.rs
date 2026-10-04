@@ -675,6 +675,10 @@ pub struct InstanceCheck {
 ///
 /// 「在途任务冲突」必须单独判：排队中的实例还没有目录，只查目录会让用户提交一个
 /// 已经排着队的名字，两条流水线随后抢同一个输出目录。
+///
+/// 但**失败**的实例记录不算占用名字：它对应的目录已经在失败时清掉了，用户想用同一个
+/// 名字重试是最自然的动作。`enqueue` 的 upsert 会把这条失败记录改回排队，正是这个
+/// 语义（否则用户每次重试都被迫换一个名字，磁盘上会堆起 `1.21.130.22-2`、`-3`…）。
 pub fn check_instance_name(ctx: &Ctx, raw: &str) -> InstanceCheck {
     let name = meta::sanitize_instance_name(raw);
     if let Err(reason) = meta::validate_version_name_reason(&ctx.versions_root(), &name) {
@@ -685,7 +689,7 @@ pub fn check_instance_name(ctx: &Ctx, raw: &str) -> InstanceCheck {
         };
     }
     match get_instance(ctx, &name) {
-        Ok(Some(_)) => InstanceCheck {
+        Ok(Some(rec)) if rec.state != "failed" => InstanceCheck {
             name,
             available: false,
             reason: Some(meta::NameRejection::Taken),
@@ -699,7 +703,7 @@ pub fn check_instance_name(ctx: &Ctx, raw: &str) -> InstanceCheck {
                 reason: Some(meta::NameRejection::Taken),
             }
         }
-        Ok(None) => InstanceCheck {
+        Ok(_) => InstanceCheck {
             name,
             available: true,
             reason: None,

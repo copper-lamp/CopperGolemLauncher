@@ -233,35 +233,6 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
 
 // ---------------------------------------------------------------- 对外接口
 
-/// 列出某个包各 variant 的版本与依赖（identifier 大小写不敏感）。
-///
-/// 返回 `Vec<(variant 键, Vec<(版本号, 依赖表)>)>`，variant 内部按版本降序；
-/// 包不存在返回空表（调用方据此区分「索引里没有这个包」与「索引拉取失败」——
-/// 后者是 `Err`，不能混为一谈，否则加载器徽标会在断网时静默全灭）。
-///
-/// 供加载器目录（[`super::loader_catalog`]）取 LeviLamina 的客户端版本清单：
-/// 索引模型（`Package` / `Variant`）是私有实现细节，故以值形态给出，
-/// 而不是把内部结构体暴露出去。
-pub async fn variant_versions(
-    identifier: &str,
-) -> Result<Vec<(String, Vec<(String, HashMap<String, String>)>)>, KernelError> {
-    let wanted = identifier.trim().to_lowercase();
-    let data = index().await?;
-    let Some(pkg) = data
-        .packages
-        .iter()
-        .find(|(key, _)| key.to_lowercase() == wanted)
-        .map(|(_, pkg)| pkg)
-    else {
-        return Ok(Vec::new());
-    };
-    Ok(pkg
-        .preferred_variants
-        .iter()
-        .map(|variant| (variant.key.clone(), variant.versions.clone()))
-        .collect())
-}
-
 /// 列表：关键字搜索 + 排序 + 页码分页。
 ///
 /// 游戏版本过滤对 LL 模组不适用：lipr 索引只声明 LeviLamina 依赖，没有 MCBE

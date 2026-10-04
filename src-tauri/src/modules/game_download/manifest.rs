@@ -444,16 +444,11 @@ mod tests {
         assert!(view.releases.iter().all(|v| !v.has_loader));
     }
 
-    /// 加载器徽标由目录按游戏版本严格判定。
+    /// 加载器徽标由目录按游戏版本判定（版本库给的就是支持该版本的加载器）。
     #[test]
     fn view_marks_loader_from_catalog() {
-        use crate::modules::content_download::loader_catalog::{LoaderCatalog, LoaderOption};
-        // 直接用公开构造路径：目录从一个「只有 1.21.130 可用」的条目建立。
-        let catalog = LoaderCatalog::from_entries_for_test(
-            "0.16.2",
-            Some("microsoft.minecraft.bedrock 1.21.130"),
-            "1.21.130",
-        );
+        use crate::modules::content_download::loader_catalog::LoaderCatalog;
+        let catalog = LoaderCatalog::from_map_for_test(&[("1.21.130.22", &["1.9.9", "1.9.8"])]);
         let sample = r#"{
             "fileVersion": 1,
             "releaseVersions": [
@@ -471,8 +466,9 @@ mod tests {
             .collect();
         assert_eq!(marked, [("1.21.130.22", true), ("1.21.120.5", false)]);
         // 顺带确认选项视图与目录判定一致（下拉项的 compatible 与徽标同源）。
-        let options: Vec<LoaderOption> = catalog.options_for("1.21.130.22");
-        assert!(options[0].compatible);
+        let options = catalog.options_for("1.21.130.22");
+        assert_eq!(options.len(), 2);
+        assert!(options.iter().all(|option| option.compatible));
     }
 
     #[test]

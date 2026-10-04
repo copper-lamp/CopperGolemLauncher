@@ -15,16 +15,13 @@
   "installed": "已安装",
   "downloaded": "已下载",
   "latest": "最新",
-  "progress_hint": "下载与安装进度可在下载中心查看",
   "loader_label": "加载器",
   "select_none": "未选择",
   "loader_none": "不使用加载器",
   "loader_unavailable": "该版本暂无兼容的 LeviLamina",
-  "loader_requirement": "该加载器要求 Minecraft {requirement}",
   "lip_missing": "未检测到 lipd：游戏会正常安装，但加载器无法安装（需要先安装 lip 与 .NET 10 运行时）",
   "client_label": "客户端",
   "client_empty": "暂无可用客户端",
-  "client_hint": "客户端 dll 收录后在这里选择，暂时留空",
   "kind": {
     "release": "正式版",
     "preview": "测试版"

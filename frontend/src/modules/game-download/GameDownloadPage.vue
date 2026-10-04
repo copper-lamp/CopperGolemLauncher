@@ -8,7 +8,7 @@
 //   卡片**，直接把该类型的全部版本从新到旧平铺；
 // - 点任意版本卡片进入二级页面（安装在那里发起）。
 
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   ChevronDown,
   CircleCheck,
@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Search,
+  SlidersHorizontal,
   Upload,
   X,
 } from "@lucide/vue";
@@ -52,20 +53,75 @@ const importing = ref(false);
 
 const searching = computed(() => keyword.value.trim().length > 0);
 
-/** 按关键字过滤（版本号子串，大小写不敏感）。只读入参：清单是只读状态。 */
+/** 加载器筛选档位：全部 / 仅带加载器 / 仅无加载器。 */
+type LoaderFilter = "all" | "with" | "without";
+
+const loaderFilter = ref<LoaderFilter>("all");
+const filterOpen = ref(false);
+const filterRoot = ref<HTMLElement | null>(null);
+
+/** 筛选档位选项：文案走 i18n，顺序即展示顺序。 */
+const loaderFilterChoices = computed<{ value: LoaderFilter; label: string }[]>(() => [
+  { value: "all", label: t(`${MB_KEY}.filter.all`) },
+  { value: "with", label: t(`${MB_KEY}.filter.with_loader`) },
+  { value: "without", label: t(`${MB_KEY}.filter.without_loader`) },
+]);
+
+const filtering = computed(() => loaderFilter.value !== "all");
+const loaderFilterLabel = computed(
+  () => loaderFilterChoices.value.find((o) => o.value === loaderFilter.value)?.label ?? "",
+);
+
+function chooseLoaderFilter(value: LoaderFilter) {
+  loaderFilter.value = value;
+  filterOpen.value = false;
+}
+
+/** 点击筛选按钮之外收起：面板是绝对定位浮层，不收起会一直挡住下面的版本卡片。 */
+function onDocumentPointerDown(event: MouseEvent) {
+  if (!filterOpen.value) return;
+  if (filterRoot.value && !filterRoot.value.contains(event.target as Node)) filterOpen.value = false;
+}
+
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") filterOpen.value = false;
+}
+
+onMounted(() => {
+  document.addEventListener("mousedown", onDocumentPointerDown);
+  document.addEventListener("keydown", onDocumentKeydown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("mousedown", onDocumentPointerDown);
+  document.removeEventListener("keydown", onDocumentKeydown);
+});
+
+/**
+ * 按关键字 + 加载器档位过滤（版本号子串大小写不敏感，加载器看 `has_loader`）。
+ * 只读入参：清单是只读状态。
+ */
 function filter(list: readonly GameVersionView[]): GameVersionView[] {
   const needle = keyword.value.trim().toLowerCase();
-  if (!needle) return [...list];
-  return list.filter((v) => v.game_version.toLowerCase().includes(needle));
+  const wantLoader = loaderFilter.value;
+  return list.filter((v) => {
+    if (needle && !v.game_version.toLowerCase().includes(needle)) return false;
+    if (wantLoader === "with" && !v.has_loader) return false;
+    if (wantLoader === "without" && v.has_loader) return false;
+    return true;
+  });
 }
 
 const releases = computed(() => filter(gd.manifest.value?.releases ?? []));
 const previews = computed(() => filter(gd.manifest.value?.previews ?? []));
 const matchCount = computed(() => releases.value.length + previews.value.length);
 
-/** 测试版是否展开：用户手动展开，或正在搜索且确有命中。 */
+/** 是否处于「收窄列表」状态：有关键字或加载器筛选。用于空态文案与自动展开。 */
+const narrowed = computed(() => searching.value || filtering.value);
+
+/** 测试版是否展开：用户手动展开，或正在收窄且确有命中。 */
 const previewExpanded = computed(
-  () => previewOpen.value || (searching.value && previews.value.length > 0),
+  () => previewOpen.value || (narrowed.value && previews.value.length > 0),
 );
 
 async function refresh() {
@@ -234,22 +290,59 @@ async function importApk() {
     <div v-else class="gd-page__scope">
       <!-- 顶部卡片：搜索框 + 最新版本（正式版 / 测试版上下排列） -->
       <section class="gd-top">
-        <div class="gd-search">
-          <Search :size="15" class="gd-search__icon" />
-          <input
-            v-model="keyword"
-            class="gd-search__input"
-            type="search"
-            :placeholder="t(`${MB_KEY}.search_placeholder`)"
-          />
-          <button
-            v-if="searching"
-            class="gd-search__clear"
-            :title="t(`${MB_KEY}.actions.clear_search`)"
-            @click="keyword = ''"
-          >
-            <X :size="14" />
-          </button>
+        <div class="gd-search-row">
+          <div class="gd-search">
+            <Search :size="15" class="gd-search__icon" />
+            <input
+              v-model="keyword"
+              class="gd-search__input"
+              type="search"
+              :placeholder="t(`${MB_KEY}.search_placeholder`)"
+            />
+            <button
+              v-if="searching"
+              class="gd-search__clear"
+              :title="t(`${MB_KEY}.actions.clear_search`)"
+              @click="keyword = ''"
+            >
+              <X :size="14" />
+            </button>
+          </div>
+
+          <!-- 加载器筛选：与搜索框同一行的次级控件，展开在按钮自身下方 -->
+          <div ref="filterRoot" class="gd-filter" :class="{ 'gd-filter--open': filterOpen }">
+            <button
+              class="gd-filter__trigger"
+              :class="{ 'gd-filter__trigger--on': filtering }"
+              :aria-expanded="filterOpen"
+              :title="t(`${MB_KEY}.filter.label`)"
+              @click="filterOpen = !filterOpen"
+            >
+              <SlidersHorizontal :size="15" />
+              <span class="gd-filter__value">{{ loaderFilterLabel }}</span>
+              <ChevronDown :size="14" class="gd-filter__chevron" />
+            </button>
+            <div class="gd-filter__panel" role="listbox">
+              <div class="gd-filter__panel-inner">
+                <button
+                  v-for="option in loaderFilterChoices"
+                  :key="option.value"
+                  class="gd-filter__option"
+                  role="option"
+                  :aria-selected="option.value === loaderFilter"
+                  :class="{ 'gd-filter__option--selected': option.value === loaderFilter }"
+                  @click="chooseLoaderFilter(option.value)"
+                >
+                  <CircleCheck
+                    :size="14"
+                    class="gd-filter__option-mark"
+                    :class="{ 'gd-filter__option-mark--on': option.value === loaderFilter }"
+                  />
+                  <span>{{ option.label }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <p class="gd-top__label">{{ t(`${MB_KEY}.latest_section`) }}</p>
@@ -281,12 +374,14 @@ async function importApk() {
             {{ t(`${MB_KEY}.versionsCount`, { n: gd.manifest.value.releases.length }) }}
           </span>
         </button>
-        <div v-show="releaseOpen" class="gd-group__body">
-          <div v-if="releases.length === 0" class="gd-group__none">
-            {{ searching ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
-          </div>
-          <div v-else class="gd-list">
-            <VersionCard v-for="version in releases" :key="version.id" :version="version" />
+        <div class="gd-group__body" :class="{ 'gd-group__body--open': releaseOpen }">
+          <div class="gd-group__body-inner">
+            <div v-if="releases.length === 0" class="gd-group__none">
+              {{ narrowed ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
+            </div>
+            <div v-else class="gd-list">
+              <VersionCard v-for="version in releases" :key="version.id" :version="version" />
+            </div>
           </div>
         </div>
       </section>
@@ -305,18 +400,20 @@ async function importApk() {
             {{ t(`${MB_KEY}.versionsCount`, { n: gd.manifest.value.previews.length }) }}
           </span>
         </button>
-        <div v-show="previewExpanded" class="gd-group__body">
-          <div v-if="previews.length === 0" class="gd-group__none">
-            {{ searching ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
-          </div>
-          <div v-else class="gd-list">
-            <VersionCard v-for="version in previews" :key="version.id" :version="version" />
+        <div class="gd-group__body" :class="{ 'gd-group__body--open': previewExpanded }">
+          <div class="gd-group__body-inner">
+            <div v-if="previews.length === 0" class="gd-group__none">
+              {{ narrowed ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
+            </div>
+            <div v-else class="gd-list">
+              <VersionCard v-for="version in previews" :key="version.id" :version="version" />
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- 搜索命中数：给「搜到了但没有可见结果」一个明确交代 -->
-      <p v-if="searching" class="gd-page__match">
+      <!-- 命中数：给「搜到了但没有可见结果」一个明确交代 -->
+      <p v-if="narrowed" class="gd-page__match">
         {{ t(`${MB_KEY}.match_count`, { n: matchCount }) }}
       </p>
     </div>
@@ -419,18 +516,18 @@ async function importApk() {
 /* ---------------------------------------------------------------- 顶部卡片 */
 
 /*
- * 顶部卡片刻意**不填底色**：里面的版本卡片悬停时要「变浅」（与下载中心一致），
- * 一旦容器本身就是 `--copper-surface`，悬停到同色就等于没有反馈。质感交给描边与
- * 圆角，反馈留给卡片自己。
+ * 顶部卡片：**无描边的白底卡片**，质感只靠极轻微的阴影。描边在这里是多余的——卡片
+ * 内部本来就有描边控件（搜索框 / 筛选按钮），外壳再加一圈线会变成三层框。
  */
 .gd-top {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-3);
   padding: var(--copper-space-4);
-  border: 1px solid var(--copper-border);
+  border: none;
   border-radius: var(--copper-radius-lg);
-  background: transparent;
+  background: var(--copper-surface);
+  box-shadow: var(--copper-shadow-subtle);
 }
 
 .gd-top__label {
@@ -444,7 +541,7 @@ async function importApk() {
 .gd-top__latest {
   display: flex;
   flex-direction: column;
-  gap: var(--copper-space-1);
+  gap: 2px;
 }
 
 .gd-top__empty {
@@ -454,11 +551,20 @@ async function importApk() {
   color: var(--copper-text-secondary);
 }
 
+/* 搜索框 + 筛选按钮同一行：搜索框吃掉剩余宽度，筛选按钮按内容自适应。 */
+.gd-search-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--copper-space-2);
+}
+
 .gd-search {
   position: relative;
   display: flex;
   align-items: center;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 
 .gd-search__icon {
@@ -519,11 +625,114 @@ async function importApk() {
   color: var(--copper-text);
 }
 
+/* ---------------------------------------------------------------- 筛选按钮 */
+
+.gd-filter {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.gd-filter__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--copper-control-h);
+  padding: 0 var(--copper-space-3);
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-md);
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing),
+    background-color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.gd-filter__trigger:hover {
+  border-color: color-mix(in srgb, var(--copper-accent) 50%, var(--copper-border));
+  color: var(--copper-text);
+}
+
+/* 已生效的非默认档位：立刻可读地告诉用户「列表被筛过了」。 */
+.gd-filter__trigger--on {
+  border-color: var(--copper-accent);
+  color: var(--copper-accent);
+  background: color-mix(in srgb, var(--copper-accent) 8%, var(--copper-surface));
+}
+
+.gd-filter__chevron {
+  transition: transform var(--copper-duration) var(--copper-easing);
+}
+
+.gd-filter--open .gd-filter__chevron {
+  transform: rotate(180deg);
+}
+
+.gd-filter__panel {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + var(--copper-space-1));
+  right: 0;
+  min-width: 100%;
+  padding: var(--copper-space-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--copper-surface);
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-lg);
+  box-shadow: var(--copper-shadow);
+}
+
+.gd-filter__option {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  padding: var(--copper-space-2) var(--copper-space-3);
+  border: none;
+  border-radius: var(--copper-radius-md);
+  background: transparent;
+  color: var(--copper-text);
+  font-size: var(--copper-font-size-md);
+  font-family: inherit;
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.gd-filter__option:hover {
+  background: var(--copper-hover);
+}
+
+.gd-filter__option-mark {
+  flex-shrink: 0;
+  /* 未选中时留空位但不画勾：图标槽位宽度固定，三行文字才能对齐。 */
+  color: transparent;
+}
+
+.gd-filter__option-mark--on,
+.gd-filter__option--selected {
+  color: var(--copper-accent);
+}
+
 /* ---------------------------------------------------------------- 全部版本 */
 
-/* 大卡片同样不填底色：里面每一张版本卡片都要能在悬停时变浅。 */
+/*
+ * 分组卡片本身是白底圆角卡片，展开时**卡片自己变长**（高度增加），而不是弹出
+ * 浮层——折叠体就在卡片内部，所以底色、圆角、阴影全程连续，视觉上是同一张
+ * 卡片在长大。
+ */
 .gd-group {
-  background: transparent;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface);
+  box-shadow: var(--copper-shadow-subtle);
 }
 
 .gd-group__head {
@@ -531,9 +740,8 @@ async function importApk() {
   align-items: center;
   gap: var(--copper-space-2);
   width: 100%;
-  padding: var(--copper-space-2) var(--copper-space-4);
+  padding: var(--copper-space-3) var(--copper-space-4);
   border: none;
-  border-bottom: 1px solid var(--copper-border);
   background: transparent;
   color: var(--copper-text);
   font-size: var(--copper-font-size-lg);
@@ -565,12 +773,25 @@ async function importApk() {
   transform: rotate(180deg);
 }
 
+/* 0fr → 1fr 的行高过渡：不需要测量内容高度，卡片多长都能正确动画。 */
 .gd-group__body {
-  padding: var(--copper-space-2) 0 0;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--copper-duration) var(--copper-easing);
+}
+
+.gd-group__body--open {
+  grid-template-rows: 1fr;
+}
+
+.gd-group__body-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 var(--copper-space-3) var(--copper-space-3);
 }
 
 .gd-group__none {
-  padding: var(--copper-space-3) var(--copper-space-4);
+  padding: var(--copper-space-3) var(--copper-space-1);
   font-size: var(--copper-font-size-sm);
   color: var(--copper-text-secondary);
 }
@@ -585,7 +806,7 @@ async function importApk() {
 /* ---------------------------------------------------------------- 骨架 */
 
 .gd-top--skeleton {
-  border-color: transparent;
+  box-shadow: none;
 }
 
 .gd-top--skeleton .gd-skeleton-line {

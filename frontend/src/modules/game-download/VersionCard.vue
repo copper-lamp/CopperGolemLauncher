@@ -3,8 +3,9 @@
 //
 // 版式由需求钉死：
 // - 左右**顶满**容器，卡片之间上下排列（不并排）；
-// - 左侧内容并排成一行：图标、版本号、徽标（徽标在版本号右边），右侧什么都不显示；
-// - 版本号是卡片里唯一的重点，字号大于其余文字；
+// - 大尺寸：卡片本体约为原版的两倍（内边距、图标、字号都放大一档），保证在整屏
+//   列表里一眼能扫到版本号，而不是一屏挤下几十行；
+// - 左侧内容并排成一行：图标、徽标（徽标紧跟图标，在版本号左边），右侧整块留空；
 // - 无描边，悬停时整卡变浅并浮起阴影（与下载中心条目一致），点击进入二级页面。
 
 import { useRouter } from "vue-router";
@@ -28,15 +29,15 @@ function open() {
 <template>
   <button class="version-card" :title="version.game_version" @click="open">
     <span class="version-card__icon" aria-hidden="true">
-      <Gamepad2 :size="18" />
+      <Gamepad2 :size="20" />
     </span>
-    <span class="version-card__name">{{ version.game_version }}</span>
     <span class="version-card__badge" :class="`version-card__badge--${version.kind}`">
       {{ t(`${MB_KEY}.kind.${version.kind}`) }}
     </span>
     <span v-if="version.has_loader" class="version-card__badge version-card__badge--loader">
       LeviLamina
     </span>
+    <span class="version-card__name">{{ version.game_version }}</span>
   </button>
 </template>
 
@@ -44,14 +45,15 @@ function open() {
 .version-card {
   display: flex;
   align-items: center;
-  gap: var(--copper-space-3);
+  /* 与徽标之间留一点呼吸，版本号与徽标贴太近会读成一行乱码。 */
+  gap: var(--copper-space-2);
   /* 顶满容器：列表里每张卡都占满一行，卡与卡上下排列。 */
   width: 100%;
   min-width: 0;
-  padding: var(--copper-space-3) var(--copper-space-4);
+  padding: var(--copper-space-3);
   /* 无描边：保留透明边框占位，悬停出现阴影时卡片不会因边框出现而位移。 */
   border: 1px solid transparent;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-md);
   background: transparent;
   color: var(--copper-text);
   text-align: left;
@@ -61,9 +63,10 @@ function open() {
     box-shadow var(--copper-duration-fast) var(--copper-easing);
 }
 
-/* 悬停效果与下载中心条目一致：底色提亮一档 + 浮起阴影。 */
+/* 悬停：底色提亮一档 + 浮起阴影。外层容器（顶部卡片 / 分组卡片）本身就是
+ * --copper-surface，所以悬停底色必须再深/亮一档，否则等于没有反馈。 */
 .version-card:hover {
-  background: var(--copper-surface);
+  background: var(--copper-surface-2);
   box-shadow: var(--copper-shadow);
 }
 
@@ -76,20 +79,24 @@ function open() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
-  border-radius: var(--copper-radius-md);
+  border-radius: var(--copper-radius-sm);
   background: var(--copper-surface-2);
   color: var(--copper-accent);
 }
 
-/* 版本号：卡片里的视觉重点，字号明显大于徽标与其它文字。 */
+/* 版本号：卡片里的视觉重点。右侧不排任何元素，flex:1 把它顶开、留白留在末尾。 */
 .version-card__name {
-  font-size: var(--copper-font-size-xl);
+  flex: 1;
+  min-width: 0;
+  font-size: var(--copper-font-size-lg);
   font-weight: 600;
   letter-spacing: 0.2px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .version-card__badge {
