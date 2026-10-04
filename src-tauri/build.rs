@@ -107,11 +107,64 @@ fn embed_app_manifest() {
     println!("cargo:rustc-link-arg={}", object.display());
 }
 
+/// 定位 hook DLL（`copper-core-hook` 的 cdylib 产物）并把绝对路径交给编译期。
+///
+/// 内核启动游戏前要把这个 DLL 写进实例目录，所以字节必须**编进二进制**：
+/// 运行时去 target 目录找产物，在发布安装包里不存在。
+///
+/// DLL 缺失即构建失败：没有 DLL = 没有隔离、没有加载器注入，功能等于
+/// 悄悄关掉。那种「构建过了但用户发现资源装了不起」的失败比构建失败难查得多。
+///
+/// 目标平台非 Windows 时不产出路径（隔离与原生预加载是 Windows GDK 专属）。
+fn export_hook_dll_path() {
+    if !target_is_windows() {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("cargo 必须提供 CARGO_MANIFEST_DIR"),
+    );
+    // 允许用环境变量覆盖，便于 IDE / CI 指向自定义产物目录。
+    let dir = match std::env::var("COPPER_HOOK_DLL_DIR") {
+        Ok(custom) => std::path::PathBuf::from(custom),
+        Err(_) => {
+            let target_triple = std::env::var("TARGET").unwrap_or_else(|_| {
+                // 交叉编译时 TARGET 一定存在；这里只是给出可读的失败信息。
+                "unknown-target".to_string()
+            });
+            // 用本次构建的 profile，而不是写死 release：`cargo check` / `cargo test`
+            // 走 debug，产物也在 debug 目录。写死 release 会让最常用的开发命令
+            // 直接失败。
+            let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+            manifest_dir
+                .join("..")
+                .join("native")
+                .join("hook")
+                .join("target")
+                .join(target_triple)
+                .join(profile)
+        }
+    };
+    let dll = dir.join("copper_core_hook.dll");
+    if !dll.is_file() {
+        panic!(
+            "找不到 hook DLL：{}\n\
+             该 DLL 由 `native/hook` 产出，内核在启动游戏前需要把它写进实例目录。\n\
+             请先构建：cargo build -p copper-core-hook --release",
+            dll.display()
+        );
+    }
+    println!("cargo:rustc-env=COPPER_HOOK_DLL={}", dll.display());
+    // 变更 DLL 产物本身也要触发重新编译（include_bytes! 的依赖追踪对绝对路径有效，
+    // 这里显式声明一次以防目录调整后失效）。
+    println!("cargo:rerun-if-changed={}", dll.display());
+}
+
 fn main() {
     // 只在目标平台是 Windows 时嵌清单：构建脚本跑在宿主上，用 `cfg(windows)` 会在
     // 「Windows 宿主 + 安卓目标」时错误地嵌进一份 COFF 资源库（见文件头说明）。
     if target_is_windows() {
         embed_app_manifest();
+        export_hook_dll_path();
     }
     // `new_without_app_manifest()` 对所有平台都给：它关掉的是 `tauri-build` 自己那份
     // `RT_MANIFEST`。本 crate 的 Windows 资源由上面的 `embed_app_manifest()` 独占提供，

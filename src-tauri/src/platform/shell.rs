@@ -14,6 +14,10 @@
 
 use std::path::Path;
 
+/// `Command::raw_arg` 属于 Windows 扩展 trait，必须显式引入。
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 /// 在系统文件管理器中定位 `path`。
 ///
 /// 失败返回用户可读原因（供命令层透传到前端提示）。
@@ -27,15 +31,24 @@ pub fn reveal(path: &Path) -> Result<(), String> {
 /// 已确认存在的路径 → 唤起文件管理器。
 #[cfg(windows)]
 fn reveal_existing(path: &Path) -> Result<(), String> {
-    // `explorer.exe` 对 `/select,` 的解析：逗号后紧跟路径，路径含空格时
-    // 必须带引号，否则会被当成多个参数、直接打开「文档」。
-    let arg = if path.is_dir() {
-        path.to_string_lossy().into_owned()
+    // **必须用 `raw_arg`**：`std::process::Command::arg` 会按 MSVC 规则再包一层
+    // 引号并转义内部引号，`/select,"D:\My Pack\x.mcpack"` 会被拼成
+    // `"/select,\"D:\My Pack\x.mcpack\""`，而 explorer.exe 用自己的一套命令行
+    // 解析，根本认不 backslash 转义 —— 结果就是进程起来了、文件管理器没动，
+    // 用户看到「点了没有任何作用」。`raw_arg` 让原始文本原样进命令行。
+    let raw = if path.is_dir() {
+        // 目录不能带尾随反斜杠：`explorer "C:\dir\"` 里的 `\"` 会被当成转义引号。
+        let mut dir = path.to_string_lossy().into_owned();
+        while dir.len() > 1 && dir.ends_with('\\') {
+            dir.pop();
+        }
+        format!("\"{dir}\"")
     } else {
+        // 逗号后紧跟路径；路径含空格时必须带引号，否则会被拆成多个参数。
         format!("/select,\"{}\"", path.display())
     };
     std::process::Command::new("explorer.exe")
-        .arg(arg)
+        .raw_arg(&raw)
         // explorer 常驻，立刻返回是正常现象，不能等它退出。
         .spawn()
         .map(|_| ())

@@ -160,7 +160,13 @@
       "after_launch": "After launch",
       "after_launch_keep": "Keep window",
       "after_launch_minimize": "Minimize to tray",
-      "after_launch_hide": "Hide window"
+      "after_launch_hide": "Hide window",
+      "after_launch_hint": "What the launcher window does once the game window is up",
+      "after_game_exit": "After the game exits",
+      "after_game_exit_hint": "What the launcher window does once the game closes",
+      "after_exit_keep": "Leave as is",
+      "after_exit_reopen": "Show again",
+      "after_exit_close": "Quit launcher"
     },
     "appearance": {
       "list_density": "List density",

@@ -56,6 +56,8 @@ copper-module-abi = { path = "../copper-module-abi" }
 
 # TLS 后端按平台选择：Windows 走系统 Schannel（native-tls，无额外依赖、
 # 跟随系统证书库）；Android/Linux 走 rustls（纯 Rust，交叉编译无需 OpenSSL）。
+copper-core-hook = { path = "../native/hook" }
+
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 windows = { version = "0.58", features = [
@@ -74,6 +76,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     # SHGetKnownFolderPath / FOLDERID_Downloads：解析系统「下载」目录（platform/known_dirs.rs）
     "Win32_UI_Shell",
+    # DwmGetWindowAttribute(DWMWA_CLOAKED)：判断游戏窗口是否真的上了屏（其它虚拟桌面 / UWP 框会伪可见）
+    "Win32_Graphics_Dwm",
     "Foundation",
     "Foundation_Collections",
     "Security_Authentication_Web_Core",

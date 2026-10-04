@@ -1,0 +1,24 @@
+[package]
+name = "copper-core-hook"
+version = "0.1.0"
+description = "铜傀儡注入侧 hook DLL：实例隔离（目录重定向）与原生预加载清单执行"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib：被游戏按 PE 导入表加载的 DLL 产物。
+# rlib：让 src-tauri 以普通路径依赖引用本 crate —— Cargo 才保证「先构建 hook、
+# 再编译内核」，`src-tauri/build.rs` 才拿得到 DLL 产物；同时 rlib 让契约常量
+# （`contract` 模块）能被内核直接 import，避免两侧各写一份字符串常量而漂移。
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# 只用仓库内已在依赖链上的两个 crate，许可链不因此变长。
+# 刻意不引 C++ 参考实现那套 vendored JSON。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 刻意不引 `windows` crate：本 DLL 只需要十余个 Win32 符号，手写 FFI 声明
+# 能让产物保持极小、且不随 `windows` crate 的 feature 变动而漂移。
+# 符号面收敛在 `src/sys.rs`，是本 crate 唯一的 unsafe 外部依赖入口。

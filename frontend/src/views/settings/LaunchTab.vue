@@ -59,6 +59,11 @@ const afterLaunch = computed({
   set: (value: string) => void set("launch.after_launch", value),
 });
 
+const afterGameExit = computed({
+  get: () => get<string>("launch.after_game_exit", "keep"),
+  set: (value: string) => void set("launch.after_game_exit", value),
+});
+
 const memoryOptions = [2048, 3072, 4096, 6144, 8192, 12288, 16384].map((mb) => ({
   value: String(mb),
   label: `${Math.round(mb / 1024)} GB (${mb} MB)`,
@@ -68,6 +73,12 @@ const afterLaunchOptions = [
   { value: "keep", label: t("settings.launch.after_launch_keep") },
   { value: "minimize", label: t("settings.launch.after_launch_minimize") },
   { value: "hide", label: t("settings.launch.after_launch_hide") },
+];
+
+const afterGameExitOptions = [
+  { value: "keep", label: t("settings.launch.after_exit_keep") },
+  { value: "reopen", label: t("settings.launch.after_exit_reopen") },
+  { value: "close", label: t("settings.launch.after_exit_close") },
 ];
 
 function updateMemory(value: string) {
@@ -102,11 +113,24 @@ function updateMemory(value: string) {
       <SettingRow label-key="settings.launch.show_logs">
         <CoSwitch :model-value="showLogs" @update:model-value="showLogs = $event" />
       </SettingRow>
-      <SettingRow label-key="settings.launch.after_launch">
+      <SettingRow
+        label-key="settings.launch.after_launch"
+        hint-key="settings.launch.after_launch_hint"
+      >
         <CoSegmented
           :model-value="afterLaunch"
           :options="afterLaunchOptions"
           @update:model-value="afterLaunch = $event"
+        />
+      </SettingRow>
+      <SettingRow
+        label-key="settings.launch.after_game_exit"
+        hint-key="settings.launch.after_game_exit_hint"
+      >
+        <CoSegmented
+          :model-value="afterGameExit"
+          :options="afterGameExitOptions"
+          @update:model-value="afterGameExit = $event"
         />
       </SettingRow>
     </SettingSection>

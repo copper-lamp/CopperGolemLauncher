@@ -10,8 +10,8 @@
 // 重命名与设置写入在本组件内完成（便于失败时回滚输入框草稿），成功后经 `updated`
 // 把新视图交回 `VersionSettings` 同步清单与路由；删除涉及路由跳转，由父级处理。
 
-import { computed, ref, watch } from "vue";
-import { FolderOpen, Gamepad2, Puzzle, Trash2, Upload } from "@lucide/vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { FolderOpen, Gamepad2, Puzzle, Trash2, Upload, RotateCcw, Eraser } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -19,9 +19,15 @@ import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import {
+  homeLaunchBackupDelete,
+  homeLaunchFileRestore,
+  homeLaunchFileState,
+  homePreloadSummary,
   homeVersionOpenDir,
   homeVersionRename,
   homeVersionSaveMeta,
+  type LaunchFileState,
+  type PreloadSummary,
   type VersionDirKind,
   type VersionView,
 } from "../../api/home";
@@ -56,6 +62,95 @@ const typeLabel = computed(() => {
   return label === key ? props.version.version_type : label;
 });
 
+/** 加载器说明：装了就说明来源与生效方式（注入），没装则提示去哪里装。 */
+const loaderHint = computed(() =>
+  props.version.loader
+    ? t("module.home.basic.loader_hint")
+    : t("module.home.basic.loader_hint_none"),
+);
+
+// ---------------------------------------------------------------- 启动文件维护
+
+const launchFile = ref<LaunchFileState | null>(null);
+const preload = ref<PreloadSummary | null>(null);
+const busy = ref(false);
+
+async function refreshLaunchState() {
+  const name = props.version.name;
+  try {
+    launchFile.value = await homeLaunchFileState(name);
+  } catch {
+    // 非 Windows / 未注入过：状态拿不到就隐藏该区块，不给用户假信息。
+    launchFile.value = null;
+  }
+  try {
+    preload.value = await homePreloadSummary(name);
+  } catch {
+    preload.value = null;
+  }
+}
+
+onMounted(() => void refreshLaunchState());
+watch(() => props.version.name, () => void refreshLaunchState());
+
+/** 备份文件大小的人类可读文本。 */
+const backupLabel = computed(() => {
+  const bytes = launchFile.value?.backup_bytes ?? 0;
+  if (bytes <= 0) return "";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+});
+
+/** 预加载说明：外部预加载器接管 / 列出条目 / 无原生模块。 */
+const preloadLabel = computed(() => {
+  const info = preload.value;
+  if (!info) return "";
+  if (info.external_preloader) return t("module.home.basic.preload_external");
+  if (info.entry_count > 0) {
+    return t("module.home.basic.preload_entries", { count: info.entry_count });
+  }
+  return t("module.home.basic.preload_none");
+});
+
+/** 启动文件状态说明：注入是否生效 + 备份情况。 */
+const launchFileHint = computed(() => {
+  const state = launchFile.value;
+  if (!state) return "";
+  const injected = state.injected
+    ? t("module.home.basic.injected_yes")
+    : t("module.home.basic.injected_no");
+  return state.backup_exists
+    ? `${injected} · ${t("module.home.basic.backup_exists")}`
+    : injected;
+});
+
+async function restoreLaunchFile() {
+  const name = props.version.name;
+  busy.value = true;
+  try {
+    await homeLaunchFileRestore(name);
+    showToast(t("module.home.toast.launch_file_restored"), "success");
+  } catch (e) {
+    showToast(t("module.home.toast.launch_file_restore_failed", { message: String(e) }), "error");
+  } finally {
+    busy.value = false;
+    await refreshLaunchState();
+  }
+}
+
+async function deleteBackup() {
+  const name = props.version.name;
+  busy.value = true;
+  try {
+    await homeLaunchBackupDelete(name);
+    showToast(t("module.home.toast.backup_deleted"), "success");
+  } catch (e) {
+    showToast(t("module.home.toast.backup_delete_failed", { message: String(e) }), "error");
+  } finally {
+    busy.value = false;
+    await refreshLaunchState();
+  }
+}
+
 /** 提交重命名（值未变时直接还原草稿）。 */
 async function saveName() {
   const target = props.version;
@@ -75,8 +170,8 @@ async function saveName() {
 }
 
 async function saveMeta(update: {
-  enable_render_dragon?: boolean;
   enable_editor_mode?: boolean;
+  enable_console?: boolean;
 }) {
   try {
     const updated = await homeVersionSaveMeta(props.version.name, update);
@@ -156,21 +251,70 @@ async function openDir(kind: VersionDirKind) {
       </li>
       <li class="basic__row">
         <div class="basic__row-text">
-          <span class="basic__row-title">{{ t("module.home.meta.render_dragon") }}</span>
+          <span class="basic__row-title">{{ t("module.home.meta.isolation") }}</span>
+          <span class="basic__row-hint">{{ t("module.home.basic.isolation_hint") }}</span>
         </div>
-        <CoSwitch
-          :model-value="version.enable_render_dragon"
-          @update:model-value="(v: boolean) => void saveMeta({ enable_render_dragon: v })"
-        />
+        <span class="basic__row-value">{{ t("module.home.basic.isolation_on") }}</span>
+      </li>
+      <li class="basic__row">
+        <div class="basic__row-text">
+          <span class="basic__row-title">{{ t("module.home.meta.loader") }}</span>
+          <span class="basic__row-hint">{{ loaderHint }}</span>
+        </div>
+        <span class="basic__row-value">{{ version.loader ?? t("module.home.basic.loader_none") }}</span>
       </li>
       <li class="basic__row">
         <div class="basic__row-text">
           <span class="basic__row-title">{{ t("module.home.meta.editor_mode") }}</span>
+          <span v-if="!version.editor_supported" class="basic__row-hint">
+            {{ t("module.home.basic.editor_unsupported") }}
+          </span>
         </div>
         <CoSwitch
-          :model-value="version.enable_editor_mode"
+          :model-value="version.enable_editor_mode && version.editor_supported"
+          :disabled="!version.editor_supported"
           @update:model-value="(v: boolean) => void saveMeta({ enable_editor_mode: v })"
         />
+      </li>
+      <li class="basic__row">
+        <div class="basic__row-text">
+          <span class="basic__row-title">{{ t("module.home.meta.console") }}</span>
+          <span class="basic__row-hint">{{ t("module.home.basic.console_hint") }}</span>
+        </div>
+        <CoSwitch
+          :model-value="version.enable_console"
+          @update:model-value="(v: boolean) => void saveMeta({ enable_console: v })"
+        />
+      </li>
+      <li v-if="launchFile" class="basic__row">
+        <div class="basic__row-text">
+          <span class="basic__row-title">{{ t("module.home.basic.launch_file") }}</span>
+          <span class="basic__row-hint">{{ launchFileHint }}</span>
+          <span v-if="preloadLabel" class="basic__row-hint">{{ preloadLabel }}</span>
+        </div>
+        <div class="basic__shortcuts">
+          <button
+            type="button"
+            class="basic__shortcut"
+            :disabled="!launchFile.backup_exists || busy"
+            @click="restoreLaunchFile"
+          >
+            <RotateCcw :size="14" />
+            <span>{{ t("module.home.basic.restore_launch_file") }}</span>
+          </button>
+          <button
+            v-if="launchFile.backup_exists"
+            type="button"
+            class="basic__shortcut"
+            :disabled="busy"
+            @click="deleteBackup"
+          >
+            <Eraser :size="14" />
+            <span>
+              {{ t("module.home.basic.delete_backup") }}{{ backupLabel ? ` (${backupLabel})` : "" }}
+            </span>
+          </button>
+        </div>
       </li>
     </ul>
 

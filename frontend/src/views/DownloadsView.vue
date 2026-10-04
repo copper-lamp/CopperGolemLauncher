@@ -92,7 +92,8 @@ const sorted = computed(() => [...tasks.value].sort((a, b) => b.id - a.id));
 const historyLimit = computed(() => get<number>("download.history_limit", 50));
 
 /**
- * 历史下载：暂停 / 失败 / 取消 / 已完成的任务，按倒序取前 N 条。
+ * 历史区要展示的行。
+ *
  * 上限为 0 时整区不渲染（用户选择「不显示」）。
  */
 const contentRecords = ref<ContentDownloadRecord[]>([]);
@@ -109,6 +110,22 @@ const installDetails = ref<Record<string, string>>({});
  * 另一个版本。缺失的条目不显示安装按钮，而不是显示一个点了就报错的按钮。
  */
 const gameBindings = ref<Record<number, string>>({});
+
+/**
+ * 已被内容下载记录认领的内核任务 id：这些行改由内容记录代替展示。
+ *
+ * 内核任务行的 `dest` 是解包前的暂存归档路径，内容落位成功后那个文件已被
+ * 删除——对它执行「打开文件夹」必然是「路径不存在」。内容记录行的 `dest`
+ * 才是真实落点（解包后的内容目录 / 系统下载目录），一次下载只应该出现一行。
+ */
+const contentClaimedTasks = computed(
+  () =>
+    new Set(
+      contentRecords.value
+        .map((record) => record.taskId)
+        .filter((id): id is number => typeof id === "number"),
+    ),
+);
 
 /** 该条目是否可手动触发安装：整包已落盘、且不处于下载中 / 安装中。 */
 function installableVersion(task: DownloadTask): string | null {
@@ -149,10 +166,14 @@ function contentRecordTask(record: ContentDownloadRecord, index: number): Downlo
 const historyTasks = computed(() => {
   const limit = historyLimit.value;
   if (limit <= 0) return [];
+  // 内容记录里「正在下载 / 正在安装」的已由 activeTasks 呈现，历史区只收终态。
   const contentHistory: DownloadTask[] = contentRecords.value
-    .filter((record) => !record.taskId && record.state !== "installing")
+    .filter((record) => record.state !== "installing" && record.state !== "downloading")
     .map(contentRecordTask);
-  return [...sorted.value.filter((task) => !ACTIVE_STATUSES.has(task.status)), ...contentHistory].slice(0, limit);
+  const coreHistory = sorted.value.filter(
+    (task) => !ACTIVE_STATUSES.has(task.status) && !contentClaimedTasks.value.has(task.id),
+  );
+  return [...coreHistory, ...contentHistory].slice(0, limit);
 });
 
 const activeTasks = computed(() => [

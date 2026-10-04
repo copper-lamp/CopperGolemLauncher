@@ -14,10 +14,16 @@ export interface VersionView {
   name: string;
   game_version: string;
   version_type: string;
+  /** 恒为 true：隔离强制开启，没有关闭入口。 */
   enable_isolation: boolean;
   enable_editor_mode: boolean;
-  enable_render_dragon: boolean;
+  /** 以控制台子系统启动（后端改写游戏 exe 的 PE Subsystem，下次启动生效）。 */
+  enable_console: boolean;
+  /** 该游戏版本是否支持编辑器模式；false 时前端应禁用该开关。 */
+  editor_supported: boolean;
   registered: boolean;
+  /** 该实例已安装的加载器版本；null = 未装。 */
+  loader: string | null;
   logo_data_url: string | null;
   /** 版本目录绝对路径（打开文件夹用）。 */
   folder: string;
@@ -26,9 +32,7 @@ export interface VersionView {
 /** 版本设置部分更新（仅覆盖提供的字段；字段名 snake_case 与后端一致）。 */
 export interface VersionMetaUpdate {
   enable_editor_mode?: boolean;
-  enable_render_dragon?: boolean;
   enable_console?: boolean;
-  enable_ctrl_r_reload_resources?: boolean;
   launch_args?: string;
   env_vars?: string;
 }
@@ -102,6 +106,42 @@ export function homeGameRunning(name: string): Promise<boolean> {
 /** 结束该版本运行中的游戏进程，返回结束的进程数；未在运行时返回 0。 */
 export function homeGameKill(name: string): Promise<number> {
   return call<number>("home_game_kill", { name });
+}
+
+/** 启动文件状态（hook 是否落位、导入是否生效、原始备份是否存在）。 */
+export interface LaunchFileState {
+  hook_dll_present: boolean;
+  /** exe 导入表里已有 hook —— true 才代表隔离 / 加载器注入在生效。 */
+  injected: boolean;
+  backup_exists: boolean;
+  backup_bytes: number;
+  console: boolean;
+}
+
+export function homeLaunchFileState(name: string): Promise<LaunchFileState> {
+  return call<LaunchFileState>("home_launch_file_state", { name });
+}
+
+/** 还原为未注入的原始启动文件。 */
+export function homeLaunchFileRestore(name: string): Promise<void> {
+  return call<void>("home_launch_file_restore", { name });
+}
+
+/** 删除原始启动文件备份。 */
+export function homeLaunchBackupDelete(name: string): Promise<void> {
+  return call<void>("home_launch_backup_delete", { name });
+}
+
+/** 预加载清单探测摘要。 */
+export interface PreloadSummary {
+  entry_count: number;
+  loader_name: string | null;
+  /** 被外部预加载器接管时为 true（此时本启动器不加载任何原生模块）。 */
+  external_preloader: boolean;
+}
+
+export function homePreloadSummary(name: string): Promise<PreloadSummary> {
+  return call<PreloadSummary>("home_preload_summary", { name });
 }
 
 /** 保存版本封面（`data:image/png;base64,...`，前端已裁剪 256×256 方形）。 */

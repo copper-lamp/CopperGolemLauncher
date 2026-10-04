@@ -1,5 +1,11 @@
 [workspace]
-members = ["src-tauri", "copper-downloader", "copper-module-abi", "fixtures/abi-fixture-echo"]
+members = [
+    "src-tauri",
+    "copper-downloader",
+    "copper-module-abi",
+    "native/hook",
+    "fixtures/abi-fixture-echo",
+]
 resolver = "2"
 
 [workspace.package]
@@ -13,3 +19,11 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# 注入侧 hook DLL 覆盖工作区的发布配置：
+# - `strip = false` + `debug = "line-tables-only"`：游戏崩溃时必须能拿到符号，
+#   否则注入侧问题（重定向没生效 / 预加载失败）无从定位。体积换可诊断性。
+# 详见 docs/启动链路与实例隔离.md §2.2。
+[profile.release.package.copper-core-hook]
+strip = false
+debug = "line-tables-only"

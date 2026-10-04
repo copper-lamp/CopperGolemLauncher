@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use crate::error::KernelError;
 use crate::modules::home::content;
+use crate::modules::home::meta;
 use crate::services::paths::ensure_writable_dir;
 use crate::state::KernelContext;
 
@@ -229,12 +230,17 @@ pub fn resolve(
     let Some(version) = version.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(download_only(kernel, filename));
     };
-    // 无实例（版本根下没有可用版本）→ 纯下载。前端据此弹确认。
-    if crate::modules::home::meta::scan_versions(&kernel.versions_root()).is_empty() {
+    // 目标版本必须**真实存在**（目录 + 元数据都在），而不是「版本根下有没有
+    // 任何版本」。全局判空会在「有实例 A、没有实例 B、偏偏选中了 B」时误判成
+    // 可安装，随后在内容根解析处报一个跟用户操作无关的错；版本不存在就是
+    // 没有可用实例，按纯下载处理（前端据此弹确认）。
+    if !instance_exists(kernel, version) {
         return Ok(download_only(kernel, filename));
     }
-    // 实例存在但内容根不可用 → 报错，不静默降级。
-    let roots = content::content_roots(kernel, version)?;
+    // 内容根不可用（实例元数据异常 / 骨架建不出来）→ 报错，不静默降级。
+    // 用写入侧口径：投递是写操作，必须落在标准布局上，并顺带把骨架建好，
+    // 否则「装完游戏还没启动过」的实例会没有落点目录。
+    let roots = content::content_roots_for_write(kernel, version)?;
 
     // 暂存目录先建好并探测可写：内容根可用但缓存不可写是可能的，
     // 让它在投递前就带着路径报错，而不是等下载完成才失败。
@@ -250,6 +256,17 @@ pub fn resolve(
         dir: staging.to_string_lossy().into_owned(),
         install_kind: "install",
     })
+}
+
+/// 目标实例是否真实存在（版本目录 + 可读元数据）。
+///
+/// 与 [`content::content_roots_for_write`] 的存在性前提一致，但**不创建任何
+/// 目录**：这里只是判定「有没有可用实例」，不产生副作用。
+fn instance_exists(kernel: &KernelContext, version: &str) -> bool {
+    let Ok(dir) = meta::resolve_version_dir(&kernel.versions_root(), version) else {
+        return false;
+    };
+    meta::VersionMeta::read(&dir).is_some()
 }
 
 /// 落系统「下载」目录。
@@ -488,11 +505,15 @@ fn place_one(src: &Path, target: &InstallTargetPath) -> Result<PathBuf, KernelEr
 ///
 /// 与 `home/content.rs::first_player_worlds_dir` 同一口径：真实存档在
 /// `<Users>/<首个玩家>/games/com.mojang/minecraftWorlds`，找不到玩家目录时
-/// 退回 `<com.mojang>/minecraftWorlds`。这里重写一遍而不是调用内核的
+/// 退回 `<com_mojang>/minecraftWorlds`。这里重写一遍而不是调用内核的
 /// `content::worlds_dir`，是因为下载完成钩子拿不到 `KernelContext`（落点
 /// 已在投递时冻结），而扫描 `users_root` 本身只需要冻结下来的两个路径。
+///
+/// 注意 `shared` 是**直接**从 `com_mojang` 往下拼：再补一层
+/// `games/com.mojang` 会得到 `.../com.mojang/games/com.mojang/minecraftWorlds`
+/// 这种游戏永远不读的路径，与 `content::load_dir_for` 的世界兜底也会分叉。
 fn worlds_dir_for(roots: &content::ContentRoots) -> PathBuf {
-    let shared = roots.com_mojang.join(SHARED_GAME_DIR).join(WORLDS_DIR);
+    let shared = roots.com_mojang.join(WORLDS_DIR);
     let Ok(entries) = std::fs::read_dir(&roots.users_root) else {
         return shared;
     };
@@ -510,11 +531,12 @@ fn worlds_dir_for(roots: &content::ContentRoots) -> PathBuf {
         if worlds.is_dir() {
             return worlds;
         }
-        fallback.get_or_insert(path);
+        fallback.get_or_insert(worlds);
     }
-    fallback
-        .map(|p| p.join(SHARED_GAME_DIR).join(WORLDS_DIR))
-        .unwrap_or(shared)
+    // 玩家目录存在但 `minecraftWorlds` 还没生成时，用它当落点而不是
+    // `com.mojang/minecraftWorlds`：游戏会把存档写在**玩家**目录下，写到
+    // Shared 里等于下完就找不到。这里返回的目录由 `place_one` 负责创建。
+    fallback.unwrap_or(shared)
 }
 
 /// 递归复制目录（不跟随符号链接——归档里出现链接即拒绝，见 `extract_archive`）。
@@ -802,6 +824,33 @@ mod tests {
             manifest_module_type(&base, TYPE_BEHAVIOR_PACK),
             Some(ModuleType::Resources)
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 世界落点：玩家目录优先；`com.mojang` 下**不得**再拼一层
+    /// `games/com.mojang`（那是一个游戏永远不读的路径）。
+    #[test]
+    fn worlds_dir_prefers_player_and_never_double_nests() {
+        let base = std::env::temp_dir().join("copper-worlds-dir-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let cm = base.join("Users").join("Shared").join(SHARED_GAME_DIR);
+        std::fs::create_dir_all(&cm).unwrap();
+        let roots = content::ContentRoots {
+            com_mojang: cm.clone(),
+            users_root: base.join("Users"),
+        };
+        // 没有玩家目录 → 退回 com.mojang/minecraftWorlds（不多套一层）
+        assert_eq!(worlds_dir_for(&roots), cm.join(WORLDS_DIR));
+
+        // 玩家目录下已有 minecraftWorlds → 用它
+        let player_worlds = base
+            .join("Users")
+            .join("PlayerOne")
+            .join(SHARED_GAME_DIR)
+            .join(WORLDS_DIR);
+        std::fs::create_dir_all(&player_worlds).unwrap();
+        assert_eq!(worlds_dir_for(&roots), player_worlds);
+
         let _ = std::fs::remove_dir_all(&base);
     }
 

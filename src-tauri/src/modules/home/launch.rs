@@ -6,9 +6,10 @@
 //!
 //! 启动成功后由后台任务监控进程状态，确认游戏运行时广播 `game.launched`。
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 #[cfg(target_os = "android")]
 use crate::modules::home::meta::AndroidVersionMeta;
@@ -28,7 +29,9 @@ pub const GAME_EXE: &str = "Minecraft.Windows.exe";
 /// 启动后确认游戏进程运行的最长等待（秒）。
 const LAUNCH_CONFIRM_TIMEOUT_SECS: u64 = 90;
 /// 进程状态轮询间隔（毫秒）。
-const POLL_INTERVAL_MS: u64 = 800;
+const POLL_INTERVAL_MS: u64 = 400;
+/// 确认启动后观察生命周期的轮询间隔（毫秒）。
+const WATCH_INTERVAL_MS: u64 = 1500;
 
 /// 启动所需的内核能力集（意图处理器等 `'static` 场景捕获用）。
 #[derive(Clone)]
@@ -37,6 +40,8 @@ pub struct LaunchCtx {
     pub settings: Arc<SettingsService>,
     pub runtime: tokio::runtime::Handle,
     pub events: Arc<EventBus>,
+    /// 启动器主窗口句柄（窗口行为用；0 = 尚未就绪）。
+    pub hwnd: isize,
 }
 
 impl LaunchCtx {
@@ -47,8 +52,17 @@ impl LaunchCtx {
             settings: kernel.settings().clone(),
             runtime: kernel.runtime().clone(),
             events: kernel.events().clone(),
+            hwnd: kernel.window().get(),
         }
     }
+}
+
+/// 按路径查找运行中的游戏进程 pid（取第一个）。
+///
+/// 监控要用 pid 判定「窗口是否真的上了屏」；协议唤起拿不到启动 pid，只能
+/// 这样反查。
+pub fn find_pid_at_path(exe_path: &std::path::Path) -> Option<u32> {
+    pids_at_path(exe_path).first().copied()
 }
 
 /// 启动结果（供前端反馈）。
@@ -244,90 +258,229 @@ fn parse_env_vars(input: &str) -> Vec<(String, String)> {
 }
 
 /// 启动游戏。`check_running` 为 true 时，若该版本已在运行则返回错误。
+///
+/// 顺序固定为 **prepare → inject → 分流 → 监控**（`docs/启动链路与实例隔离.md` §2.7）：
+/// 注入必须**先于**任何一种启动方式，否则协议唤起的实例里根本没有 hook DLL，
+/// 隔离与加载器静默失效 —— 而这种失效没有任何报错。
 pub fn launch_game(
     ctx: &LaunchCtx,
     name: &str,
     check_running: bool,
 ) -> Result<LaunchOutcome, KernelError> {
     let dir = resolve_launch_dir(&ctx.paths, &ctx.settings, name)?;
-    let meta = VersionMeta::read(&dir)
+    let mut meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
     #[cfg(target_os = "android")]
-    if let Some(android) = meta.android.as_ref() {
+    if let let android) = meta.android.as_ref() {
         return launch_android(ctx, name, &dir, android);
     }
-    let exe = dir.join(GAME_EXE);
+    let exe = game_exe_path(&dir);
     if !exe.is_file() {
         return Err(KernelError::InvalidArgument(format!(
             "版本 `{name}` 缺少 {GAME_EXE}"
         )));
     }
-
-    // 已注册 AppX：协议唤起。
-    //
-    // 协议唤起只在「该版本确实被注册进系统」时成立：`minecraft://` 的处理程序
-    // 是全局唯一的，注册别的包（或压根没注册）时唤起起来的不是这个版本目录。
-    // 因此协议失败一律回落到直接启动 exe，并把 `registered` 就地纠正为 false，
-    // 让后续启动与界面显示（版本元信息「已注册」）都与事实一致。
-    if meta.registered && is_version_registered(&dir) {
-        if check_running && is_process_running_at_path(&exe) {
-            return Err(KernelError::InvalidArgument("游戏已在运行".into()));
-        }
-        let is_preview = meta.version_type.eq_ignore_ascii_case("preview");
-        let protocol = if is_preview {
-            "minecraft-preview://"
-        } else {
-            "minecraft://"
-        };
-        let url = if meta.enable_editor_mode {
-            format!("{protocol}creator/?Editor=true")
-        } else {
-            protocol.to_string()
-        };
-        match spawn_protocol(&url) {
-            Ok(()) => {
-                monitor_after_launch(&ctx.events, &ctx.runtime, name, dir.clone());
-                return Ok(LaunchOutcome::Protocol);
-            }
-            Err(error) => {
-                log::warn!(
-                    "[home/launch] 版本 `{name}` 协议唤起失败（{error}），回落到直接启动"
-                );
-                demote_registered(&dir);
-            }
-        }
-    } else if meta.registered {
-        // 元数据说已注册、系统说没有：多半是从别处迁入的目录。就地纠正，
-        // 避免每次启动都白跑一次 AppX 查询，也让界面上的「已注册」不再误导。
-        log::info!("[home/launch] 版本 `{name}` 未在系统中注册，改走直接启动");
-        demote_registered(&dir);
-    }
-
-    // 未注册：直接启动 exe。
-    let args: Vec<String> = if meta.enable_editor_mode {
-        vec!["-Editor".into(), "true".into()]
-    } else {
-        parse_launch_args(&meta.launch_args)
-    };
-
     if check_running && is_process_running_at_path(&exe) {
         return Err(KernelError::InvalidArgument("游戏已在运行".into()));
     }
 
+    // 0) prepare：骨架目录 + 预加载清单 + 控制台子系统
+    prepare_instance(ctx, name, &dir, &exe, &mut meta)?;
+
+    // 1) inject：hook DLL 落位 + 导入表改写
+    #[cfg(windows)]
+    match super::inject::inject(&dir, &exe) {
+        Ok(outcome) => {
+            if outcome.dll_written || outcome.exe_patched {
+                log::info!(
+                    "[home/launch] 版本 `{name}` 已注入 hook（dll={} exe={}）",
+                    outcome.dll_written,
+                    outcome.exe_patched
+                );
+            }
+        }
+        Err(error) => {
+            // 注入失败必须显式失败：继续启动等于给用户一个「数据写在启动器
+            // 管不到的地方」的实例，比报错难收拾得多。
+            return Err(error);
+        }
+    }
+
+    // 2) 分流：已注册 AppX 走协议唤起，否则直接启动 exe。
+    //
+    // 协议唤起只在「该版本确实被注册进系统」时成立：`minecraft://` 的处理程序
+    // 是全局唯一的，注册别的包（或压根没注册）时唤起起来的不是这个版本目录。
+    // 协议失败一律回落到直接启动，并把 `registered` 就地纠正为 false。
+    if meta.registered {
+        if is_version_registered(&dir) {
+            let is_preview = meta.version_type.eq_ignore_ascii_case("preview");
+            let protocol = if is_preview {
+                "minecraft-preview://"
+            } else {
+                "minecraft://"
+            };
+            let editor_supported =
+                super::isolate::supports_editor_mode(&meta.game_version, &meta.version_type);
+            let url = if meta.enable_editor_mode && editor_supported {
+                format!("{protocol}creator/?Editor=true")
+            } else {
+                protocol.to_string()
+            };
+            if spawn_protocol(&url).is_ok() {
+                monitor_after_launch(ctx, name, dir, 0);
+                return Ok(LaunchOutcome::Protocol);
+            }
+            log::warn!("[home/launch] 版本 `{name}` 协议唤起失败，回落到直接启动");
+        } else {
+            log::info!("[home/launch] 版本 `{name}` 未在系统中注册，改走直接启动");
+        }
+        demote_registered(&dir);
+    }
+
+    // 3) 直启
+    let args = launch_args(&meta, name);
     let mut cmd = Command::new(&exe);
     cmd.args(&args);
     cmd.current_dir(&dir);
-    let envs = parse_env_vars(&meta.env_vars);
-    for (k, v) in envs {
+    for (k, v) in parse_env_vars(&meta.env_vars) {
         cmd.env(k, v);
     }
+    apply_hook_env(&mut cmd, &dir, &meta);
     // 启动后丢弃子进程句柄：游戏进程脱离启动器独立运行，由后台监控接管。
-    let _child = cmd.spawn().map_err(|e| {
-        KernelError::InvalidArgument(format!("启动游戏失败: {e}"))
-    })?;
+    // 但 pid 要留下 —— 它是唯一能区分「秒退」与「迟迟没起来」的依据。
+    let pid = cmd
+        .spawn()
+        .map_err(|e| KernelError::InvalidArgument(format!("启动游戏失败: {e}")))?
+        .id();
 
-    monitor_after_launch(&ctx.events, &ctx.runtime, name, dir);
+    monitor_after_launch(ctx, name, dir, pid);
     Ok(LaunchOutcome::Spawned)
+}
+
+/// 游戏主程序在实例目录下的路径。
+pub fn game_exe_path(version_dir: &std::path::Path) -> PathBuf {
+    version_dir.join(GAME_EXE)
+}
+
+/// 组装启动参数。
+///
+/// 编辑器模式走 `-Editor true`，但**先过版本门槛**：门槛以下硬塞 `-Editor`
+/// 只会让游戏启动失败（正式版 1.21.50 / 预览版 1.19.80.20 起才有编辑器）。
+fn launch_args(meta: &VersionMeta, name: &str) -> Vec<String> {
+    let editor = meta.enable_editor_mode
+        && super::isolate::supports_editor_mode(&meta.game_version, &meta.version_type);
+    if meta.enable_editor_mode && !editor {
+        log::warn!(
+            "[home/launch] 版本 `{name}`（{} {}）不支持编辑器模式，已忽略该开关",
+            meta.version_type,
+            meta.game_version
+        );
+        return parse_launch_args(&meta.launch_args);
+    }
+    if editor {
+        return vec!["-Editor".into(), "true".into()];
+    }
+    parse_launch_args(&meta.launch_args)
+}
+
+/// 启动前的实例准备：骨架目录、预加载清单、控制台子系统。
+fn prepare_instance(
+    ctx: &LaunchCtx,
+    name: &str,
+    dir: &std::path::Path,
+    exe: &std::path::Path,
+    meta: &mut VersionMeta,
+) -> Result<(), KernelError> {
+    // 隔离强制：无论元数据写的是什么，本次启动都按隔离实例处理。
+    if super::isolate::enforce_isolation(meta) {
+        // 自愈写盘失败不阻断启动：隔离本身不依赖这个字段。
+        if let Err(error) = VersionMeta::write(dir, meta) {
+            log::warn!("[home/launch] 归一隔离标记失败（不影响启动）: {error}");
+        }
+    }
+    super::isolate::ensure_skeleton(dir, meta)?;
+
+    // 预加载清单：探测原生模块 → 写清单 → 注入侧按清单加载。
+    match super::preload::write_manifest_by_dir(ctx, name, dir) {
+        Ok(summary) => {
+            if summary.entry_count > 0 {
+                log::info!(
+                    "[home/launch] 版本 `{name}` 预加载清单：{} 项（加载器 {:?}）",
+                    summary.entry_count,
+                    summary.loader_name
+                );
+            }
+        }
+        Err(error) => log::warn!("[home/preload] 生成清单失败（不影响启动）: {error}"),
+    }
+
+    // 控制台子系统（只改 PE 的一个字段，随时可逆）。
+    #[cfg(windows)]
+    if let Err(error) = super::inject::apply_console(exe, meta.enable_console) {
+        log::warn!("[home/launch] 应用控制台设置失败（不影响启动）: {error}");
+    }
+    Ok(())
+}
+
+/// 交接给注入侧的环境变量。
+///
+/// **数据根目录由启动器显式下发**（`COPPER_HOOK_DATA_DIR`）：注入侧不再自己
+/// 推导目录规则，两侧共用 `isolate` 的同一份结论，避免 LeviLauncher 那种
+/// 「Go 侧与 C++ 侧对 1.26+ 判断相反」的分叉。
+fn apply_hook_env(cmd: &mut Command, dir: &std::path::Path, meta: &VersionMeta) {
+    use copper_core_hook::contract as contract;
+    let data_dir = super::isolate::data_dir(dir, meta);
+    cmd.env(contract::ENV_DATA_DIR, &data_dir);
+    cmd.env(contract::ENV_ROOT, dir);
+    cmd.env(
+        contract::ENV_CHANNEL,
+        if super::isolate::is_preview(meta) {
+            "preview"
+        } else {
+            "release"
+        },
+    );
+    cmd.env(
+        contract::ENV_PRELOAD,
+        super::inject::manifest_path(dir),
+    );
+}
+
+/// 启动后台监控（注入已完成后调用）。
+fn monitor_after_launch(ctx: &LaunchCtx, name: &str, dir: PathBuf, launch_pid: u32) {
+    let settings = ctx.settings.clone();
+    let hwnd = ctx.hwnd;
+    let on_launched: Option<Box<dyn FnOnce() + Send>> = {
+        let settings = settings.clone();
+        let action = window::AfterLaunch::parse(
+            &settings
+                .get_or::<String>("launch.after_launch".to_string(), "keep".to_string()),
+        );
+        Some(Box::new(move || {
+            if let Err(error) = window::apply_launcher_action(hwnd, action) {
+                log::warn!("[home/launch] 应用启动后窗口行为失败: {error}");
+            }
+        }))
+    };
+    let on_finished: Box<dyn FnOnce(monitor::ExitReason) + Send> = Box::new(move |reason| {
+        let action = window::AfterGameExit::parse(
+            &settings
+                .get_or::<String>("launch.after_game_exit".to_string(), "keep".to_string()),
+        );
+        if let Err(error) = window::apply_exit_action(hwnd, action) {
+            log::warn!("[home/launch] 应用游戏退出后窗口行为失败: {error}");
+        }
+        log::info!("[home/monitor] 会话结束：{reason:?}");
+    });
+    super::monitor::spawn_after_launch(
+        &ctx.events,
+        &ctx.runtime,
+        name,
+        dir,
+        launch_pid,
+        on_launched,
+        on_finished,
+    );
 }
 
 #[cfg(target_os = "android")]
@@ -438,54 +591,6 @@ fn spawn_protocol(url: &str) -> Result<(), KernelError> {
     Err(KernelError::InvalidArgument("协议启动仅支持 Windows".into()))
 }
 
-/// 后台监控：轮询游戏进程，确认运行后广播 `game.launched`。
-/// 之后持续观察直到进程退出（广播 `game.exited` 后释放监控任务）。
-///
-/// 确认超时也会广播一次 `game.exited`（`reason = "not_started"`）：否则前端
-/// 的「启动中」态会永远停在那里 —— 启动失败（崩溃、缺 DLL、被安全软件拦下）
-/// 是常态而非例外，必须有一条把界面拉回「可启动」的路径。
-fn monitor_after_launch(
-    events: &Arc<EventBus>,
-    runtime: &tokio::runtime::Handle,
-    name: &str,
-    dir: PathBuf,
-) {
-    let events = events.clone();
-    let name = name.to_string();
-    runtime.spawn(async move {
-        let exe = dir.join(GAME_EXE);
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(LAUNCH_CONFIRM_TIMEOUT_SECS);
-        let mut confirmed = false;
-        while std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-            if is_process_running_at_path(&exe) {
-                confirmed = true;
-                events.publish("game.launched", serde_json::json!({ "name": name }));
-                break;
-            }
-        }
-        if !confirmed {
-            events.publish(
-                "game.exited",
-                serde_json::json!({ "name": name, "reason": "not_started" }),
-            );
-            return;
-        }
-        // 持续观察直到退出（保持语义：一次启动对应一个生命周期）。
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if !is_process_running_at_path(&exe) {
-                break;
-            }
-        }
-        events.publish(
-            "game.exited",
-            serde_json::json!({ "name": name, "reason": "closed" }),
-        );
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,5 +654,39 @@ mod tests {
         demote_registered(&dir);
         assert!(!VersionMeta::read(&dir).unwrap().registered);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同一实例的监控任务必须去重：否则一次启动会广播多对
+    /// `game.launched` / `game.exited`，前端按钮在一次启动里被复位两次。
+    #[test]
+    fn monitor_registration_dedupes_per_instance() {
+        let a = std::path::PathBuf::from("D:/v/A");
+        let b = std::path::PathBuf::from("D:/v/B");
+        assert!(register_monitor(&a));
+        // 同实例重复登记被拒；不同实例互不影响
+        assert!(!register_monitor(&a));
+        assert!(register_monitor(&b));
+
+        unregister_monitor(&a);
+        assert!(register_monitor(&a));
+
+        // 清理，避免影响其它测试
+        unregister_monitor(&a);
+        unregister_monitor(&b);
+        assert!(register_monitor(&a));
+        unregister_monitor(&a);
+    }
+
+    /// 编辑器门槛以下的实例不得硬塞 `-Editor`（那只会让游戏启动失败）。
+    #[test]
+    fn editor_switch_is_ignored_below_threshold() {
+        assert!(!super::super::isolate::supports_editor_mode(
+            "1.21.40.10",
+            "release"
+        ));
+        assert!(super::super::isolate::supports_editor_mode(
+            "1.21.50.0",
+            "release"
+        ));
     }
 }

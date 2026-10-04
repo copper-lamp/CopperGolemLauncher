@@ -147,6 +147,7 @@ pub fn defaults() -> HashMap<String, Value> {
     m.insert("launch.args".into(), Value::String(String::new()));
     m.insert("launch.show_logs".into(), Value::Bool(false));
     m.insert("launch.after_launch".into(), Value::String("keep".into()));
+        m.insert("launch.after_game_exit".into(), Value::String("keep".into()));
     // 个性
     m.insert("appearance.list_density".into(), Value::String("comfortable".into()));
     m.insert("appearance.animations".into(), Value::Bool(true));

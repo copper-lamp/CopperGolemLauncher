@@ -160,7 +160,13 @@
       "after_launch": "启动后行为",
       "after_launch_keep": "保持窗口",
       "after_launch_minimize": "最小化到托盘",
-      "after_launch_hide": "隐藏窗口"
+      "after_launch_hide": "隐藏窗口",
+      "after_launch_hint": "游戏窗口出现后启动器自己的窗口怎么处理",
+      "after_game_exit": "游戏退出后",
+      "after_game_exit_hint": "游戏关闭后启动器自己的窗口怎么处理",
+      "after_exit_keep": "保持现状",
+      "after_exit_reopen": "重新显示",
+      "after_exit_close": "关闭启动器"
     },
     "appearance": {
       "list_density": "列表密度",

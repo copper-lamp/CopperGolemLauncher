@@ -558,6 +558,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
+ "copper-core-hook",
  "copper-downloader",
  "copper-module-abi",
  "ed25519-dalek",
@@ -587,6 +588,14 @@ dependencies = [
  "uuid",
  "windows 0.58.0",
  "zip",
+]
+
+[[package]]
+name = "copper-core-hook"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

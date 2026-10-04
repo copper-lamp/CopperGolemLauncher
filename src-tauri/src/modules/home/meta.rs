@@ -413,15 +413,33 @@ mod tests {
             name: "1.21.0".into(),
             game_version: "1.21.0.28".into(),
             version_type: "release".into(),
-            enable_render_dragon: true,
+            enable_console: true,
             ..Default::default()
         };
         VersionMeta::write(&dir, &meta).unwrap();
         let read = VersionMeta::read(&dir).expect("meta readable");
         assert_eq!(read.name, "1.21.0");
         assert_eq!(read.game_version, "1.21.0.28");
-        assert!(read.enable_render_dragon);
+        assert!(read.enable_console);
         assert!(!read.enable_editor_mode);
+    }
+
+    /// 回归：`enableRenderDragon` / `enableCtrlRReloadResources` 已从元数据移除
+    /// （只写盘不生效的假开关）。旧 `version.json` 里若仍有这些键，读的时候
+    /// 必须被忽略而不是让整个元数据解析失败 —— 否则用户的版本会凭空消失。
+    #[test]
+    fn legacy_dead_switches_are_ignored_not_fatal() {
+        let dir = temp_dir("legacy_switches");
+        std::fs::write(
+            dir.join(META_FILE),
+            br#"{"name":"demo","gameVersion":"1.21.0.28","type":"release",
+                "enableRenderDragon":true,"enableCtrlRReloadResources":true,
+                "enableIsolation":true}"#,
+        )
+        .unwrap();
+        let meta = VersionMeta::read(&dir).expect("旧文件仍可解析");
+        assert_eq!(meta.name, "demo");
+        assert!(meta.enable_isolation);
     }
 
     #[test]

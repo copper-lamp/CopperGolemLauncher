@@ -83,11 +83,45 @@ pub fn home_game_running(kernel: State<'_, KernelContext>, name: String) -> Comm
 
 /// 结束该版本运行中的游戏进程，返回结束的进程数。
 ///
-/// 不在此处广播 `game.exited`：状态只由进程监控任务广播，前端因此永远以
+/// 不在此处广播 `game.exited`：状态只由进程监控广播，前端因此永远以
 /// 真实进程状态为准，不会出现「按钮显示已退出但游戏还在跑」。
 #[tauri::command]
 pub fn home_game_kill(kernel: State<'_, KernelContext>, name: String) -> CommandResult<usize> {
     crate::modules::home::HomeModule::kill_game(kernel.inner(), &name)
+        .map_err(into_command_error)
+}
+
+/// 启动文件状态：hook DLL 是否落位、导入表是否已改写、原始备份是否存在。
+#[tauri::command]
+pub fn home_launch_file_state(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<crate::modules::home::inject::LaunchFileState> {
+    crate::modules::home::HomeModule::launch_file_state(kernel.inner(), &name)
+        .map_err(into_command_error)
+}
+
+/// 还原为未注入的原始启动文件。
+#[tauri::command]
+pub fn home_launch_file_restore(kernel: State<'_, KernelContext>, name: String) -> CommandResult<()> {
+    crate::modules::home::HomeModule::restore_launch_file(kernel.inner(), &name)
+        .map_err(into_command_error)
+}
+
+/// 删除原始启动文件备份。
+#[tauri::command]
+pub fn home_launch_backup_delete(kernel: State<'_, KernelContext>, name: String) -> CommandResult<()> {
+    crate::modules::home::HomeModule::delete_launch_backup(kernel.inner(), &name)
+        .map_err(into_command_error)
+}
+
+/// 预加载清单探测摘要（将要注入哪些原生 DLL）。
+#[tauri::command]
+pub fn home_preload_summary(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<crate::modules::home::preload::PreloadSummary> {
+    crate::modules::home::HomeModule::preload_summary(kernel.inner(), &name)
         .map_err(into_command_error)
 }
 
