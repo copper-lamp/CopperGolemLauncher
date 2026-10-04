@@ -483,12 +483,13 @@ pub fn run() {
             commands::home::home_version_open_dir,
             // 游戏下载模块（game-download）
             commands::game_download::game_download_manifest,
-            commands::game_download::game_download_detail,
-            commands::game_download::game_download_enqueue,
-            commands::game_download::game_download_refresh_source,
-            commands::game_download::game_download_cancel,
-            commands::game_download::game_download_status,
+            commands::game_download::game_download_loaders,
+            commands::game_download::game_download_instance_suggest,
+            commands::game_download::game_download_instance_check,
             commands::game_download::game_download_install,
+            commands::game_download::game_download_retry,
+            commands::game_download::game_download_retry_version,
+            commands::game_download::game_download_cancel,
             commands::game_download::game_download_task_bindings,
             commands::game_download::game_download_import_apk,
             // 安卓游戏宿主（所有平台注册，桌面端返回 None）

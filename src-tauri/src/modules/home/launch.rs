@@ -264,7 +264,12 @@ pub fn launch_game(
     }
 
     // 已注册 AppX：协议唤起。
-    if meta.registered {
+    //
+    // 协议唤起只在「该版本确实被注册进系统」时成立：`minecraft://` 的处理程序
+    // 是全局唯一的，注册别的包（或压根没注册）时唤起起来的不是这个版本目录。
+    // 因此协议失败一律回落到直接启动 exe，并把 `registered` 就地纠正为 false，
+    // 让后续启动与界面显示（版本元信息「已注册」）都与事实一致。
+    if meta.registered && is_version_registered(&dir) {
         if check_running && is_process_running_at_path(&exe) {
             return Err(KernelError::InvalidArgument("游戏已在运行".into()));
         }
@@ -279,9 +284,23 @@ pub fn launch_game(
         } else {
             protocol.to_string()
         };
-        spawn_protocol(&url)?;
-        monitor_after_launch(&ctx.events, &ctx.runtime, name, dir.clone());
-        return Ok(LaunchOutcome::Protocol);
+        match spawn_protocol(&url) {
+            Ok(()) => {
+                monitor_after_launch(&ctx.events, &ctx.runtime, name, dir.clone());
+                return Ok(LaunchOutcome::Protocol);
+            }
+            Err(error) => {
+                log::warn!(
+                    "[home/launch] 版本 `{name}` 协议唤起失败（{error}），回落到直接启动"
+                );
+                demote_registered(&dir);
+            }
+        }
+    } else if meta.registered {
+        // 元数据说已注册、系统说没有：多半是从别处迁入的目录。就地纠正，
+        // 避免每次启动都白跑一次 AppX 查询，也让界面上的「已注册」不再误导。
+        log::info!("[home/launch] 版本 `{name}` 未在系统中注册，改走直接启动");
+        demote_registered(&dir);
     }
 
     // 未注册：直接启动 exe。
@@ -329,18 +348,88 @@ fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &
     Ok(LaunchOutcome::Spawned)
 }
 
-/// 通过协议 URL 唤起游戏（`cmd /c start "" <url>`）。
+/// 纠正版本元数据：标记为「未注册」。
+///
+/// 只在协议唤起失败后调用（此时已证明该版本不受系统协议接管）。
+/// 写失败只记日志 —— 启动路径不能因为元数据纠正失败而中断。
+fn demote_registered(dir: &std::path::Path) {
+    let Some(mut meta) = VersionMeta::read(dir) else {
+        return;
+    };
+    if !meta.registered {
+        return;
+    }
+    meta.registered = false;
+    if let Err(error) = VersionMeta::write(dir, &meta) {
+        log::warn!("[home/launch] 纠正 registered 标记失败: {error}");
+    }
+}
+
+/// 判断该版本目录**当前是否真的被注册进系统**（存在 `InstallLocation` 为该目录的 AppX 包）。
+///
+/// 元数据里的 `registered` 是历史事实，会骗人：本启动器自己安装的版本全部只是解包，
+/// 从未注册；但用户从 LeviLauncher 迁过来的版本目录里可能写着 `registered: true`，
+/// 而系统上注册的是另一个包。此时唤起 `minecraft://` 起来的是**别人的游戏**，
+/// 比启动失败更难排查。因此协议唤起前必须向系统核实一次。
+#[cfg(windows)]
+fn is_version_registered(dir: &std::path::Path) -> bool {
+    let path = dir.to_string_lossy().to_string();
+    // 脚本以单引号包裹字面量：出现引号 / 反引号即无法安全内联，直接判定未注册。
+    if path.contains('\'') || path.contains('`') || path.contains('"') {
+        return false;
+    }
+    let script = format!(
+        "$p = Get-AppxPackage | Where-Object {{ $_.InstallLocation -eq '{path}' }} \
+         | Select-Object -First 1 -ExpandProperty InstallLocation; \
+         if ($p) {{ 'yes' }} else {{ 'no' }}"
+    );
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).trim() == "yes"
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn is_version_registered(_dir: &std::path::Path) -> bool {
+    false
+}
+
+/// 通过协议 URL 唤起游戏（`ShellExecuteW`，系统 URL 激活的标准入口）。
+///
+/// 此前用 `cmd /c start`：它只报告 cmd 自身启动成功，协议没有处理程序时
+/// 照样返回成功，用户看到的是 Windows 的「服务器启动失败」弹窗而后端毫不知情。
+/// `ShellExecuteW` 的返回值 ≤32 即激活失败，调用方据此回落直接启动。
 #[cfg(windows)]
 fn spawn_protocol(url: &str) -> Result<(), KernelError> {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/c", "start", "", url]);
-    // 隐藏 cmd 窗口。
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| KernelError::InvalidArgument(format!("唤起游戏失败: {e}")))
+    use windows::core::HSTRING;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb = HSTRING::from("open");
+    let wide = HSTRING::from(url);
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::PCWSTR(verb.as_ptr()),
+            windows::core::PCWSTR(wide.as_ptr()),
+            windows::core::PCWSTR::null(),
+            windows::core::PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecute 的惯例：>32 成功，≤32 为错误码。
+    if result.0 as isize > 32 {
+        Ok(())
+    } else {
+        Err(KernelError::InvalidArgument(format!(
+            "协议 `{url}` 唤起失败（ShellExecute 返回 {}）",
+            result.0 as isize
+        )))
+    }
 }
 
 #[cfg(not(windows))]
@@ -429,5 +518,36 @@ mod tests {
         let missing = std::env::temp_dir().join("copper_no_such_game_dir_9d3f/Minecraft.Windows.exe");
         assert_eq!(terminate_process_at_path(&missing).unwrap(), 0);
         assert!(!is_process_running_at_path(&missing));
+    }
+
+    /// 未注册的临时目录不得被判定为已注册（否则会去唤起别人的游戏）。
+    #[cfg(windows)]
+    #[test]
+    fn temp_dir_is_not_registered() {
+        assert!(!is_version_registered(&std::env::temp_dir()));
+    }
+
+    /// 纠正 `registered` 幂等，且只动这一个字段。
+    #[test]
+    fn demote_registered_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("copper_demote_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = VersionMeta {
+            name: "demo".into(),
+            registered: true,
+            ..Default::default()
+        };
+        VersionMeta::write(&dir, &meta).unwrap();
+
+        demote_registered(&dir);
+        let after = VersionMeta::read(&dir).unwrap();
+        assert!(!after.registered);
+        assert_eq!(after.name, "demo");
+
+        // 再调一次不报错，也不改动其它字段
+        demote_registered(&dir);
+        assert!(!VersionMeta::read(&dir).unwrap().registered);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

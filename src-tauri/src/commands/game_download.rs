@@ -1,4 +1,4 @@
-//! 游戏下载模块命令：清单 / 下载 / APK 导入。
+//! 游戏下载模块命令：清单 / 加载器 / 实例安装 / APK 导入。
 use std::path::PathBuf;
 use tauri::State;
 use crate::commands::into_command_error;
@@ -6,41 +6,90 @@ use crate::error::{CommandResult, KernelError};
 use crate::modules::game_download::{apk, installer::{self, Ctx}};
 use crate::modules::home::meta::{self, AndroidVersionMeta, VersionMeta};
 use crate::modules::game_download::manifest::{self, ManifestView};
+use crate::modules::content_download::loader_catalog;
 use crate::state::KernelContext;
 
+/// 版本清单（可选强制刷新源）+ 加载器可用性徽标。
+///
+/// 加载器目录（lipr 索引）拉取失败**不影响**清单本身：徽标退化为「不显示」，
+/// 而不是让整页因为一个可选装饰拉不到数据就空掉。
 #[tauri::command]
 pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: Option<bool>) -> CommandResult<ManifestView> {
     let ctx = Ctx::from_kernel(&kernel);
     let versions = manifest::load_manifest(&ctx, refresh.unwrap_or(false)).await.map_err(into_command_error)?;
-    Ok(manifest::build_view(&ctx, &versions))
+    let catalog = match loader_catalog::LoaderCatalog::load().await {
+        Ok(catalog) => Some(catalog),
+        Err(error) => {
+            log::warn!("[game-download] 加载器目录拉取失败（加载器徽标不显示）: {error}");
+            None
+        }
+    };
+    Ok(manifest::build_view(&versions, catalog.as_ref()))
 }
-#[tauri::command]
-pub async fn game_download_detail(kernel: State<'_, KernelContext>, id: String) -> CommandResult<Option<installer::TaskView>> { installer::status(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
-#[tauri::command]
-pub async fn game_download_enqueue(kernel: State<'_, KernelContext>, id: String) -> CommandResult<u64> { installer::enqueue(&Ctx::from_kernel(&kernel), &id).await.map_err(into_command_error) }
-#[tauri::command]
-pub async fn game_download_refresh_source(kernel: State<'_, KernelContext>) -> CommandResult<()> { installer::refresh_source(&Ctx::from_kernel(&kernel)).await.map_err(into_command_error) }
-#[tauri::command]
-pub async fn game_download_cancel(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> { installer::cancel(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
-#[tauri::command]
-pub async fn game_download_status(kernel: State<'_, KernelContext>, id: String) -> CommandResult<Option<installer::TaskView>> { installer::status(&Ctx::from_kernel(&kernel), &id).map_err(into_command_error) }
 
-/// 仅重装：整包已在本地时重跑安装流水线，不重新下载。
-///
-/// 安装阶段失败（商店授权、md5、解包中断）后的补救路径——此前只能
-/// `game_download_enqueue` 重来，等于把数 GB 的下载重做一遍。
-/// 本地整包缺失或校验不符时**明确报错**而不是悄悄改走下载。
+/// 某版本可选的加载器清单（详情页「加载器」下拉）。
 #[tauri::command]
-pub async fn game_download_install(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
-    // 传入进程级单飞锁：它同时是「有没有工作在跑」的唯一判据。命令层只持有
-    // `KernelContext`，拿不到模块实例，所以锁必须是进程级单例（见 `installer::install_lock`）。
-    installer::install(&Ctx::from_kernel(&kernel), &id, &installer::install_lock())
+pub async fn game_download_loaders(id: String) -> CommandResult<installer::LoaderOptions> {
+    installer::loader_options(&id).await.map_err(into_command_error)
+}
+
+/// 为该版本推荐一个可用实例名（安装确认弹窗的初值）。
+#[tauri::command]
+pub fn game_download_instance_suggest(kernel: State<'_, KernelContext>, id: String) -> CommandResult<String> {
+    Ok(installer::suggest_instance_name(&Ctx::from_kernel(&kernel), &id))
+}
+
+/// 实例名可用性检查（弹窗输入即时反馈；`reason` 为原因码，文案在前端）。
+#[tauri::command]
+pub fn game_download_instance_check(kernel: State<'_, KernelContext>, name: String) -> CommandResult<installer::InstanceCheck> {
+    Ok(installer::check_instance_name(&Ctx::from_kernel(&kernel), &name))
+}
+
+/// 以指定实例名安装某版本，返回整包下载任务 id。
+///
+/// 返回 0 表示整包已在本地、无需下载（安装已经开始）；前端据此决定是否提示「开始下载」。
+/// 同一个版本可以用不同的实例名安装任意多次，实例之间完全隔离。
+#[tauri::command]
+pub async fn game_download_install(
+    kernel: State<'_, KernelContext>,
+    id: String,
+    instance: String,
+    loader: Option<String>,
+) -> CommandResult<u64> {
+    installer::enqueue(
+        &Ctx::from_kernel(&kernel),
+        &installer::install_lock(),
+        &id,
+        &instance,
+        loader.as_deref(),
+    )
+    .await
+    .map_err(into_command_error)
+}
+
+/// 实例级重试安装：整包在本地时**不重新下载**。
+#[tauri::command]
+pub fn game_download_retry(kernel: State<'_, KernelContext>, instance: String) -> CommandResult<()> {
+    installer::retry_instance(&Ctx::from_kernel(&kernel), &installer::install_lock(), &instance)
         .map_err(into_command_error)
+}
+
+/// 版本级重试安装：把该版本下所有未装好的实例重新排进安装（下载中心的「安装」入口）。
+#[tauri::command]
+pub fn game_download_retry_version(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    installer::retry_version(&Ctx::from_kernel(&kernel), &installer::install_lock(), &id)
+        .map_err(into_command_error)
+}
+
+/// 取消一次实例安装（该版本再无待装实例时连整包下载一起放弃）。
+#[tauri::command]
+pub fn game_download_cancel(kernel: State<'_, KernelContext>, instance: String) -> CommandResult<()> {
+    installer::cancel(&Ctx::from_kernel(&kernel), &instance).map_err(into_command_error)
 }
 
 /// 下载任务 → 游戏版本的绑定关系。
 ///
-/// 下载中心按核心下载任务展示条目，而安装按版本 id 取记录；这个映射由内核给出，
+/// 下载中心按核心下载任务展示条目，而安装按版本取待装实例；这个映射由内核给出，
 /// 前端不依据 dest / 文件名猜测，避免把安装指向另一个版本。
 #[tauri::command]
 pub fn game_download_task_bindings(

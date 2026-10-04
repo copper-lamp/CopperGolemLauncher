@@ -118,6 +118,13 @@ pub struct VersionMeta {
     pub launch_args: String,
     #[serde(default)]
     pub env_vars: String,
+    /// 该实例已安装的加载器版本（如 LeviLamina `0.16.2`）；未装加载器为 `None`。
+    ///
+    /// 由游戏下载模块在装完游戏后写入，是「这个实例到底装没装加载器」的**落盘事实**：
+    /// 数据库里的任务记录是过程状态，用户清一次下载记录就没了，而实例是否带加载器
+    /// 必须跟着实例目录走。字段是可选的，旧 `version.json` 与 LeviLauncher 均不受影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader: Option<String>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -182,23 +189,69 @@ pub fn resolve_version_dir(versions_root: &Path, name: &str) -> Result<PathBuf, 
     Ok(dir)
 }
 
-/// 校验版本名合法性（Windows 文件命名规则 + 保留名 + 冲突检查）。
-pub fn validate_version_name(versions_root: &Path, name: &str) -> Result<(), KernelError> {
+/// 版本名（实例名）被拒绝的原因。
+///
+/// 结构化而不是直接给中文句子：实例命名弹窗要**当场**告诉用户哪里不对，而文案
+/// 属于前端 i18n 的职责。后端只负责判定，前端按码取词，两侧不会漂移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameRejection {
+    /// 空名（规整后为空也会落到这里）。
+    Empty,
+    /// 超过 [`INSTANCE_NAME_MAX_CHARS`] 字符。
+    TooLong,
+    /// 以点或空格结尾（Windows 无法创建这样的目录）。
+    TrailingDotOrSpace,
+    /// 含 Windows 非法字符。
+    IllegalChar,
+    /// 含控制字符。
+    ControlChar,
+    /// 与系统保留设备名冲突（`CON` / `NUL` / `COM1`…）。
+    Reserved,
+    /// 同名版本目录已存在。
+    Taken,
+}
+
+impl NameRejection {
+    /// 中文默认文案（后端日志、错误通道用；界面文案走前端 i18n）。
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Empty => "版本名不能为空",
+            Self::TooLong => "版本名过长（最多 64 字符）",
+            Self::TrailingDotOrSpace => "版本名不能以点或空格结尾",
+            Self::IllegalChar => "版本名含非法字符",
+            Self::ControlChar => "版本名含控制字符",
+            Self::Reserved => "版本名与系统保留名冲突",
+            Self::Taken => "同名版本已存在",
+        }
+    }
+}
+
+/// 校验版本名，失败时给出结构化原因。
+///
+/// 与 [`validate_version_name`] 共用同一套规则——后者只是把原因翻成
+/// [`KernelError`]。判定逻辑只写在这里一份。
+pub fn validate_version_name_reason(
+    versions_root: &Path,
+    name: &str,
+) -> Result<(), NameRejection> {
     let n = name.trim();
     if n.is_empty() {
-        return Err(KernelError::InvalidArgument("版本名不能为空".into()));
+        return Err(NameRejection::Empty);
     }
     if n.len() > 64 {
-        return Err(KernelError::InvalidArgument("版本名过长（最多 64 字符）".into()));
+        return Err(NameRejection::TooLong);
     }
     if n.ends_with('.') || n.ends_with(' ') {
-        return Err(KernelError::InvalidArgument("版本名不能以点或空格结尾".into()));
+        return Err(NameRejection::TrailingDotOrSpace);
     }
-    if n.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')) {
-        return Err(KernelError::InvalidArgument("版本名含非法字符".into()));
+    if n.chars()
+        .any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+    {
+        return Err(NameRejection::IllegalChar);
     }
     if n.chars().any(|c| c.is_control()) {
-        return Err(KernelError::InvalidArgument("版本名含控制字符".into()));
+        return Err(NameRejection::ControlChar);
     }
     let lower = n.to_lowercase();
     const RESERVED: &[&str] = &[
@@ -206,12 +259,18 @@ pub fn validate_version_name(versions_root: &Path, name: &str) -> Result<(), Ker
         "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
     ];
     if RESERVED.contains(&lower.as_str()) {
-        return Err(KernelError::InvalidArgument("版本名与系统保留名冲突".into()));
+        return Err(NameRejection::Reserved);
     }
     if versions_root.join(n).exists() {
-        return Err(KernelError::InvalidArgument("同名版本已存在".into()));
+        return Err(NameRejection::Taken);
     }
     Ok(())
+}
+
+/// 校验版本名合法性（Windows 文件命名规则 + 保留名 + 冲突检查）。
+pub fn validate_version_name(versions_root: &Path, name: &str) -> Result<(), KernelError> {
+    validate_version_name_reason(versions_root, name)
+        .map_err(|reason| KernelError::InvalidArgument(reason.message().into()))
 }
 
 /// 读取版本图标为 data URL（`data:image/png;base64,...`），无图标返回 `None`。
@@ -395,6 +454,61 @@ mod tests {
         assert!(validate_version_name(&root, "a<b").is_err());
         assert!(validate_version_name(&root, "con").is_err());
         assert!(validate_version_name(&root, "ends.").is_err());
+    }
+
+    /// 结构化拒绝原因必须与旧的中文错误一一对应（前端按码取词，判定只有一份）。
+    #[test]
+    fn name_rejection_is_structured() {
+        let root = temp_dir("name_reason");
+        assert_eq!(validate_version_name_reason(&root, "  "), Err(NameRejection::Empty));
+        assert_eq!(
+            validate_version_name_reason(&root, "a<b"),
+            Err(NameRejection::IllegalChar)
+        );
+        assert_eq!(
+            validate_version_name_reason(&root, "con"),
+            Err(NameRejection::Reserved)
+        );
+        assert_eq!(
+            validate_version_name_reason(&root, "ends."),
+            Err(NameRejection::TrailingDotOrSpace)
+        );
+        assert_eq!(
+            validate_version_name_reason(&root, &"a".repeat(65)),
+            Err(NameRejection::TooLong)
+        );
+        fs::create_dir_all(root.join("taken")).unwrap();
+        assert_eq!(
+            validate_version_name_reason(&root, "taken"),
+            Err(NameRejection::Taken)
+        );
+        // 中文错误消息与结构化原因来自同一处判定。
+        assert!(validate_version_name(&root, "taken")
+            .unwrap_err()
+            .to_string()
+            .contains("同名版本"));
+        assert!(validate_version_name_reason(&root, "free").is_ok());
+    }
+
+    /// 加载器字段必须可选：旧 `version.json`（无该字段）要能读，读出来是 `None`。
+    #[test]
+    fn loader_field_is_backward_compatible() {
+        let dir = temp_dir("loader");
+        let legacy = r#"{"name":"1.21.130.22","gameVersion":"1.21.130.22","type":"release"}"#;
+        fs::write(dir.join(META_FILE), legacy).unwrap();
+        let meta = VersionMeta::read(&dir).expect("旧元数据必须可读");
+        assert!(meta.loader.is_none());
+
+        let with_loader = VersionMeta {
+            name: "1.21.130.22".into(),
+            loader: Some("0.16.2".into()),
+            ..Default::default()
+        };
+        VersionMeta::write(&dir, &with_loader).unwrap();
+        assert_eq!(
+            VersionMeta::read(&dir).unwrap().loader.as_deref(),
+            Some("0.16.2")
+        );
     }
 
     #[test]

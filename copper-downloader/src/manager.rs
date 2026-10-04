@@ -566,6 +566,12 @@ impl DownloadManager {
     ///
     /// 状态不符（不在内存 / 仍在下载 / 已取消）时返回 `InvalidArgument`，
     /// 由调用方忽略。
+    ///
+    /// `Failed` 也允许进入：下载完成后进入安装阶段（授权 / 校验 / 解包）失败时，
+    /// 任务已被 [`Self::finish_phase`] 落成 `Failed`；「重试安装」不需要重新下载，
+    /// 不放行就会让重试期间这条记录既没有进度、也永远回不到 `Done`。调用方必须自己
+    /// 确认本地包仍然完整（见 `game_download::installer::retry_instance`），
+    /// 阶段上报本身不改变任何字节状态。
     pub fn begin_phase(
         &self,
         id: u64,
@@ -574,7 +580,10 @@ impl DownloadManager {
     ) -> Result<(), DownloadError> {
         let state = self.require_task(id)?;
         let current = *state.status.lock();
-        if !matches!(current, DownloadStatus::Done | DownloadStatus::Installing) {
+        if !matches!(
+            current,
+            DownloadStatus::Done | DownloadStatus::Installing | DownloadStatus::Failed
+        ) {
             return Err(DownloadError::InvalidArgument(format!(
                 "任务 {id} 不处于可进入安装阶段的状态（当前 {current:?}）"
             )));

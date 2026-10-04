@@ -1,105 +1,122 @@
-// 游戏下载模块 API：版本清单 / 详情 / 投递下载 / 刷新源 / 取消 / 状态。
+// 游戏下载模块 API：版本清单 / 加载器 / 实例安装 / 取消 / 重试。
 //
-// 后端命令均为异步、错误经 `KernelApiError` 抛出；模型字段与后端
-// Rust `ManifestView` / `TaskView` 保持 snake_case 同构。
+// 后端命令均为异步、错误经 `KernelApiError` 抛出；模型字段与后端 Rust 视图保持
+// snake_case 同构。命令**参数**名则是 Tauri v2 的 camelCase 约定（见
+// `tauri-macros` 的 `ArgumentCase::Camel`），因此这里一律用 camelCase 传参。
 
 import { call } from "../../api/core";
 
 /** 版本类型（与后端 `VersionKind` 对应）。 */
 export type GameVersionKind = "release" | "preview";
 
-/** 版本任务状态（与后端 `TaskView.state` 对应）。 */
-export type GameDownloadState =
-  | "downloading"
-  | "extracting"
-  | "installed"
-  | "failed";
-
-/** 单版本行视图（与后端 `VersionView` 同构，camelCase）。 */
+/** 单版本卡片视图（与后端 `VersionView` 同构）。 */
 export interface GameVersionView {
+  /** 版本 slug，同时是整包暂存文件名。 */
   id: string;
   kind: GameVersionKind;
+  /** 数值版本号（如 `1.21.130.22`）。 */
   game_version: string;
-  md5: string;
-  is_installed: boolean;
-  is_downloaded: boolean;
-  is_latest: boolean;
-  timestamp: number;
-  url: string | null;
+  /** 该版本是否有可装的 LeviLamina（列表页据此显示加载器徽标）。 */
+  has_loader: boolean;
 }
 
-/** 一个大版本分组（与后端 `VersionGroupView` 同构）。 */
-export interface GameVersionGroup {
-  major: string;
-  latest: boolean;
-  items: GameVersionView[];
-}
-
-/** 前端清单视图（与后端 `ManifestView` 同构）。 */
+/** 前端清单视图（与后端 `ManifestView` 同构）：两个平表，各自新→旧。 */
 export interface GameManifestView {
   latest_release: GameVersionView | null;
   latest_preview: GameVersionView | null;
-  groups: GameVersionGroup[];
+  releases: GameVersionView[];
+  previews: GameVersionView[];
 }
 
-/** 下载引擎快照（与后端 `DownloadState` 同构）。 */
-export interface GameDownloadSnapshot {
-  task_id: number;
-  total_bytes: number;
-  downloaded_bytes: number;
-  speed_bytes_per_sec: number;
+/** 加载器候选版本（与后端 `loader_catalog::LoaderOption` 同构）。 */
+export interface LoaderOption {
+  version: string;
+  /** 是否与该游戏版本匹配（后端按索引声明的平台依赖严格判定）。 */
+  compatible: boolean;
+  /** 该版本声明的平台依赖原文；未声明为 `null`。 */
+  requirement: string | null;
 }
 
-/** 单版本任务视图（与后端 `TaskView` 同构）。 */
-export interface GameTaskView {
-  version_id: string;
-  kind: GameVersionKind;
-  dest: string;
-  state: GameDownloadState;
-  error: string | null;
-  download: GameDownloadSnapshot | null;
+/** 某版本的加载器清单（与后端 `LoaderOptions` 同构）。 */
+export interface LoaderOptions {
+  /** 本机是否有 lipd；为假时选中的加载器装不上，前端应提前提示。 */
+  lip_available: boolean;
+  loaders: LoaderOption[];
 }
 
-/** 版本清单（含已安装 / 下载中状态）。 */
+/**
+ * 实例名不可用原因码（与后端 `home::meta::NameRejection` 同构）。
+ *
+ * 文案由前端 i18n 按码取词：后端只判定，不做本地化。
+ */
+export type InstanceNameRejection =
+  | "empty"
+  | "too_long"
+  | "trailing_dot_or_space"
+  | "illegal_char"
+  | "control_char"
+  | "reserved"
+  | "taken";
+
+/** 实例名检查结果（与后端 `InstanceCheck` 同构）。 */
+export interface InstanceCheck {
+  /** 规整后的实例名；提交时用它，而不是用户原始输入。 */
+  name: string;
+  available: boolean;
+  reason: InstanceNameRejection | null;
+}
+
+/** 版本清单（含每个版本的加载器可用性）。 */
 export function gameManifest(refresh?: boolean): Promise<GameManifestView> {
   return call<GameManifestView>("game_download_manifest", { refresh });
 }
 
-/** 单版本详情（任务状态；无任务返回 null）。 */
-export function gameDetail(id: string): Promise<GameTaskView | null> {
-  return call<GameTaskView | null>("game_download_detail", { id });
+/** 某版本可选的加载器清单（详情页「加载器」下拉）。 */
+export function gameLoaders(id: string): Promise<LoaderOptions> {
+  return call<LoaderOptions>("game_download_loaders", { id });
 }
 
-/** 投递下载（幂等），返回下载任务 id。 */
-export function gameEnqueue(id: string): Promise<number> {
-  return call<number>("game_download_enqueue", { id });
+/** 为该版本推荐一个可用实例名（安装确认弹窗初值）。 */
+export function gameInstanceSuggest(id: string): Promise<string> {
+  return call<string>("game_download_instance_suggest", { id });
 }
 
-/** 强制刷新版本清单源。 */
-export function gameRefreshSource(): Promise<void> {
-  return call<void>("game_download_refresh_source");
-}
-
-/** 取消下载任务。 */
-export function gameCancel(id: string): Promise<void> {
-  return call<void>("game_download_cancel", { id });
-}
-
-/** 单版本任务状态。 */
-export function gameStatus(id: string): Promise<GameTaskView | null> {
-  return call<GameTaskView | null>("game_download_status", { id });
+/** 实例名可用性检查（弹窗输入即时反馈）。 */
+export function gameInstanceCheck(name: string): Promise<InstanceCheck> {
+  return call<InstanceCheck>("game_download_instance_check", { name });
 }
 
 /**
- * 仅重装：整包已在本地时重跑安装流水线，**不重新下载**。
+ * 以指定实例名安装某版本，返回整包下载任务 id。
  *
- * 安装阶段失败（商店授权、md5、解包中断）后的补救路径。此前只能
- * `gameEnqueue` 重来，等于把数 GB 的下载重做一遍。
- *
- * 本地整包缺失或校验不符时后端明确报错，不会悄悄改走下载。
+ * 返回 `0` 表示整包已在本地、无需下载（安装已经开始）。
+ * 同一个版本可以用不同实例名安装任意多次，实例之间完全隔离。
  */
-export function gameInstall(id: string): Promise<void> {
-  return call<void>("game_download_install", { id });
+export function gameInstall(
+  id: string,
+  instance: string,
+  loader?: string | null,
+): Promise<number> {
+  return call<number>("game_download_install", {
+    id,
+    instance,
+    loader: loader ?? null,
+  });
+}
+
+/** 实例级重试安装：整包在本地时**不重新下载**。 */
+export function gameRetry(instance: string): Promise<void> {
+  return call<void>("game_download_retry", { instance });
+}
+
+/** 版本级重试：把该版本下所有未装好的实例重新排进安装（下载中心的安装入口）。 */
+export function gameRetryVersion(id: string): Promise<void> {
+  return call<void>("game_download_retry_version", { id });
+}
+
+/** 取消一次实例安装（该版本再无待装实例时连整包下载一起放弃）。 */
+export function gameCancel(instance: string): Promise<void> {
+  return call<void>("game_download_cancel", { instance });
 }
 
 /** 下载任务 → 游戏版本的绑定（下载中心据此显示「安装」入口）。 */
@@ -111,15 +128,15 @@ export interface GameTaskBinding {
 /**
  * 取「下载任务 → 游戏版本」绑定。
  *
- * 下载中心列出的是核心下载任务 id，安装却按版本 id 取记录。这个映射由内核给出，
- * 前端不依据 dest / 文件名猜测——猜错会把安装指向另一个版本。只有确实存在
- * 游戏下载记录的任务才会出现。
+ * 下载中心列出的是核心下载任务 id，安装却按版本取待装实例。这个映射由内核给出，
+ * 前端不依据 dest / 文件名猜测——猜错会把安装指向另一个版本。只有确实存在游戏下载
+ * 记录的任务才会出现。
  */
 export function gameTaskBindings(): Promise<GameTaskBinding[]> {
   return call<GameTaskBinding[]>("game_download_task_bindings");
 }
 
-/** APK 导入记录（与后端 `apk::ApkPackageInfo` 同构，camelCase→原样）。 */
+/** APK 导入记录（与后端 `apk::ApkPackageInfo` 同构）。 */
 export interface ApkPackageInfo {
   package_name: string;
   version_code: number;
@@ -144,7 +161,7 @@ export interface ApkImportResult {
 /**
  * 导入一个 APK / APKS。
  *
- * `source_path` 必须是应用私有目录内的路径：安卓端先由 `importApkToInbox`
+ * `sourcePath` 必须是应用私有目录内的路径：安卓端先由 `importApkToInbox`
  * 把系统选择器返回的 URI 复制进 `cache/inbox/`。
  *
  * 包名、版本号由后端从二进制 `AndroidManifest.xml` 解码，前端不参与——
@@ -153,8 +170,8 @@ export interface ApkImportResult {
  * `name` 会由后端规整（空格 / 中文 / 通配符收敛为 `_`），后续流程请使用返回的
  * `instance_name`。
  */
-export function gameImportApk(source_path: string, name: string): Promise<ApkImportResult> {
-  return call<ApkImportResult>("game_download_import_apk", { source_path, name });
+export function gameImportApk(sourcePath: string, name: string): Promise<ApkImportResult> {
+  return call<ApkImportResult>("game_download_import_apk", { sourcePath, name });
 }
 
 /** 安卓游戏退出记录（与后端 `platform::android::ExitRecord` 同构）。 */
@@ -187,8 +204,8 @@ export interface AndroidApkPickResult {
  *
  * 返回 `null` 表示安卓宿主尚未写回（仍在系统选择器中，或正在复制）。
  */
-export function androidApkPickResult(request_id: string): Promise<AndroidApkPickResult | null> {
-  return call<AndroidApkPickResult | null>("android_apk_pick_result", { request_id });
+export function androidApkPickResult(requestId: string): Promise<AndroidApkPickResult | null> {
+  return call<AndroidApkPickResult | null>("android_apk_pick_result", { requestId });
 }
 
 /** 格式化字节数（与内核下载页一致）。 */
@@ -202,10 +219,4 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
-
-/** 计算下载百分比（0~1）；无总量时返回 0。 */
-export function progressRatio(snapshot: GameDownloadSnapshot | null): number {
-  if (!snapshot || snapshot.total_bytes <= 0) return 0;
-  return Math.min(snapshot.downloaded_bytes / snapshot.total_bytes, 1);
 }

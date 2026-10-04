@@ -1,11 +1,22 @@
-//! 游戏下载安装流水线：以数据库「下载任务→版本」为事实源，驱动 下载→校验→解包→写元数据→广播。
+//! 游戏下载安装流水线：以「版本整包 + 实例」两张表为事实源，驱动
+//! 下载 → 复用 → 校验 → 解包 → 写元数据 → 装加载器 → 广播。
+//!
+//! 两张表的分工是这套模型的核心：
+//! - `module_game_download_package`：**下载单元**，一个版本一份整包。GB 级的包只下
+//!   一次，同一版本的多个实例共用它，装完最后一批实例才清理。
+//! - `module_game_download_instance`：**安装单元**，一次安装产出一个实例目录。实例名
+//!   由用户在安装确认弹窗里指定（即版本目录名），同一个版本可以并存任意多个互相隔离
+//!   的实例。
+//!
+//! 拆表的直接原因：旧模型以 `version_id` 作主键，把「版本」当成了安装单元，于是
+//! 「同一个版本装两次」在数据层就不可能——第二次安装会命中同一条记录被当成重装，
+//! 把前一个实例的目录覆盖掉。
 //!
 //! 生命周期：
-//! - `enqueue`：幂等投递下载（防重复安装 / 防重复排队），返回下载任务 id。
-//! - 订阅 `download.status`：任务 `Done` → 触发异步安装（单飞锁串行）；`Failed/Cancelled` → 落失败。
-//! - `finish_install`：商店授权取 content key（失败**显式落错**，不静默回退）→ md5 自验
-//!   → 纯 Rust 解包 → 写 `version.json` → 清理整包 → 广播 `version.installed`。
-//! - `resume_pending`：`start` 时续传未完成下载 / 续装中断解包 / 回收孤儿整包 / 失败重试限次。
+//! - `enqueue`：建实例记录 → 复用或投递整包下载 → 包已在本地时立刻进入安装。
+//! - 订阅 `download.status`：整包 `Done` → 该版本全部未装好的实例排队安装（单飞锁串行）。
+//! - `run_batch`：整包级只做一次授权与校验，随后逐实例 解包 → 写元数据 → 装加载器。
+//! - `resume_pending`：重启后续传整包 / 续装实例 / 清理无主整包。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,18 +27,20 @@ use md5::{Digest as _Md5Digest, Md5};
 use serde_json::Value;
 
 use crate::error::KernelError;
+use crate::modules::content_download::lip_install;
+use crate::modules::content_download::lipd;
+use crate::modules::content_download::loader_catalog;
+use crate::modules::home::meta;
 use crate::registry::events::EventBus;
-use crate::services::database::DatabaseService;
 use crate::services::account::AccountService;
+use crate::services::database::DatabaseService;
 use crate::services::download::DownloadService;
 use crate::services::native_install;
 use crate::services::paths::Paths;
 use crate::services::settings::SettingsService;
 use crate::state::KernelContext;
 
-use super::extractor;
-use super::manifest;
-use super::meta_bridge;
+use super::{extractor, manifest, meta_bridge};
 
 /// 模块在 cache 下的下载子目录。
 const CACHE_SUBDIR: &str = "game-download";
@@ -48,9 +61,7 @@ const MAX_RESUME_ATTEMPTS: i64 = 3;
 /// 拿不到模块实例；若命令侧另建一把锁，自动安装与手动重装就会并发解包。
 pub fn install_lock() -> Arc<tokio::sync::Mutex<()>> {
     static LOCK: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
-    Arc::clone(
-        LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))),
-    )
+    Arc::clone(LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))))
 }
 
 /// 安装流水线上下文：把 `KernelContext` 需要跨 async 捕获的能力拆出为可克隆 Arcs。
@@ -106,15 +117,17 @@ impl Ctx {
     /// 暂存与安装同盘（同在 `versions_root`，避免占用系统盘缓存），但**独立于**版本
     /// 解包输出目录（`install_dir`）：若把源包放进解包目标目录，原生解包库在清空/
     /// 消费输出目录时会把源包一并销毁，导致“下载完但装不上”。解压校验后移除该包。
+    ///
+    /// 路径按**版本**而不是实例命名：同一版本的多个实例共用这一份整包。
     pub fn dest_for(&self, slug: &str) -> PathBuf {
         self.versions_root()
             .join(DOWNLOAD_SUBDIR)
             .join(format!("{slug}.msixvc"))
     }
 
-    /// 某版本安装目录（`versions_root/<folder>`，根按设置动态解析）。
-    pub fn install_dir(&self, folder: &str) -> PathBuf {
-        self.versions_root().join(folder)
+    /// 某实例安装目录（`versions_root/<实例名>`，根按设置动态解析）。
+    pub fn install_dir(&self, instance: &str) -> PathBuf {
+        self.versions_root().join(instance)
     }
 
     /// 当前游戏（版本）根目录（复用 paths 的唯一解析入口）。
@@ -135,15 +148,16 @@ impl Ctx {
 
 /// 安装阶段表：`(i18n 键, 阶段权重)`，数组顺序即执行顺序。
 ///
-/// 权重按实测耗时给：解包是绝对大头（GB 级顺序读写 + AES-XTS 逐页解密），
-/// 授权与收尾各占几个百分点。权重写死而不是按字节动态算，是因为授权阶段
-/// 根本没有字节可算，而只有一套固定权重才能保证进度条**单调递增**——
-/// 动态权重会在阶段切换时把进度条拽回去，看起来像倒退了。
+/// 权重按实测耗时给：解包是绝对大头（GB 级顺序读写 + AES-XTS 逐页解密），加载器安装
+/// （lipd 依赖求解 + 下载）次之，授权与收尾各占几个百分点。权重写死而不是按字节动态
+/// 算，是因为授权阶段根本没有字节可算，而只有一套固定权重才能保证进度条**单调递增**
+/// ——动态权重会在阶段切换时把进度条拽回去，看起来像倒退了。
 const INSTALL_PHASES: &[(&str, f64)] = &[
     ("download.stage.install_authorizing", 0.02),
     ("download.stage.install_preparing", 0.01),
-    ("download.stage.install_verifying", 0.10),
-    ("download.stage.install_extracting", 0.85),
+    ("download.stage.install_verifying", 0.08),
+    ("download.stage.install_extracting", 0.59),
+    ("download.stage.install_loader", 0.28),
     ("download.stage.install_finalizing", 0.02),
 ];
 
@@ -152,7 +166,8 @@ const PHASE_AUTHORIZING: usize = 0;
 const PHASE_PREPARING: usize = 1;
 const PHASE_VERIFYING: usize = 2;
 const PHASE_EXTRACTING: usize = 3;
-const PHASE_FINALIZING: usize = 4;
+const PHASE_LOADER: usize = 4;
+const PHASE_FINALIZING: usize = 5;
 
 /// 某阶段起点 = 前面所有阶段权重之和。
 fn phase_base(index: usize) -> f64 {
@@ -161,22 +176,32 @@ fn phase_base(index: usize) -> f64 {
 
 /// 安装阶段进度上报器。
 ///
-/// 只在任务仍存在于下载引擎内存时生效：`task_id` 为 `None`（孤儿包续装、
-/// 历史记录手动重装）或任务已被移除时全部静默。上报失败绝不影响安装本身，
-/// 这是刻意的——进度条是观测手段，不能成为安装的失败点。
+/// 一批可以包含多个实例（同一版本的多份安装），进度按实例数**摊平**：第 `completed`
+/// 个实例内部的进度落在 `[completed/total, (completed+1)/total)`。摊平而不是每个实例
+/// 都把进度条重跑一遍：重跑在界面上就是「进度条从 100% 退回 0%」，用户会以为装崩了。
+///
+/// 只在任务仍存在于下载引擎内存时生效：`task_id` 为 `None`（重启后续装、包已在本地
+/// 且没有可复用的任务）或任务已被移除时全部静默。上报失败绝不影响安装本身，这是刻意
+/// 的——进度条是观测手段，不能成为安装的失败点。
 struct InstallProgress {
     download: Arc<DownloadService>,
     task_id: Option<u64>,
     /// 当前阶段下标。
     index: usize,
+    /// 本批已完成的实例数。
+    completed: usize,
+    /// 本批实例总数（至少 1，避免除零）。
+    total: usize,
 }
 
 impl InstallProgress {
-    fn new(ctx: &Ctx, task_id: Option<u64>) -> Self {
+    fn new(ctx: &Ctx, task_id: Option<u64>, total: usize) -> Self {
         Self {
             download: ctx.download.clone(),
             task_id,
             index: PHASE_AUTHORIZING,
+            completed: 0,
+            total: total.max(1),
         }
     }
 
@@ -190,16 +215,21 @@ impl InstallProgress {
             .begin_phase(id, INSTALL_PHASES[PHASE_AUTHORIZING].0, None);
     }
 
+    /// 把「单个实例内的进度」换算成整批进度。
+    fn scaled(&self, value: f64) -> f64 {
+        (self.completed as f64 + value) / self.total as f64
+    }
+
     /// 进入指定阶段（阶段内部进度归零）。
     fn enter(&mut self, index: usize, detail: Option<String>) {
-        let Some(id) = self.task_id else { return };
         if index >= INSTALL_PHASES.len() {
             return;
         }
         self.index = index;
+        let Some(id) = self.task_id else { return };
         let (key, _) = INSTALL_PHASES[index];
-        let value = phase_base(index);
-        self.download.report_phase(id, value, key, detail);
+        self.download
+            .report_phase(id, self.scaled(phase_base(index)), key, detail);
     }
 
     /// 上报当前阶段的内部进度（0.0~1.0）。
@@ -207,13 +237,53 @@ impl InstallProgress {
         let Some(id) = self.task_id else { return };
         let (key, weight) = INSTALL_PHASES[self.index];
         let value = phase_base(self.index) + weight * fraction.clamp(0.0, 1.0);
-        self.download.report_phase(id, value, key, detail);
+        self.download.report_phase(id, self.scaled(value), key, detail);
+    }
+
+    /// 记录本批已完成的实例数（每个实例开始前调用）。
+    fn set_completed(&mut self, completed: usize) {
+        self.completed = completed;
     }
 
     /// 收尾：`error` 为空落已完成，否则落失败。
     fn finish(&self, error: Option<String>) {
         let Some(id) = self.task_id else { return };
         self.download.finish_phase(id, error);
+    }
+
+    /// 供 lipd 回调使用的独立上报句柄。
+    ///
+    /// `lipd::CallbackSink` 要求 `'static + Send + Sync`，闭包不能借用 `self`；
+    /// 这里复制出最小的一组标量 + `Arc<DownloadService>`，语义与 [`Self::inner`] 一致。
+    fn loader_handle(&self) -> Option<LoaderProgress> {
+        Some(LoaderProgress {
+            download: self.download.clone(),
+            task_id: self.task_id?,
+            completed: self.completed,
+            total: self.total,
+        })
+    }
+}
+
+/// 加载器安装阶段的上报句柄（由 [`InstallProgress::loader_handle`] 生成）。
+struct LoaderProgress {
+    download: Arc<DownloadService>,
+    task_id: u64,
+    completed: usize,
+    total: usize,
+}
+
+impl LoaderProgress {
+    /// 上报加载器安装进度；`fraction` 为 `None` 时给阶段中点。
+    ///
+    /// lipd 的依赖求解步骤不报百分比（协议里该字段就是缺的），报阶段起点会让进度条
+    /// 看起来停死，报中点则如实表达「这步在跑，但量不出来」。
+    fn report(&self, fraction: Option<f64>, detail: Option<String>) {
+        let (key, weight) = INSTALL_PHASES[PHASE_LOADER];
+        let inner = fraction.map(|f| f.clamp(0.0, 1.0)).unwrap_or(0.5);
+        let value =
+            (self.completed as f64 + phase_base(PHASE_LOADER) + weight * inner) / self.total as f64;
+        let _ = self.download.report_phase(self.task_id, value, key, detail);
     }
 }
 
@@ -247,6 +317,10 @@ fn shorten_entry(path: &str) -> String {
 
 // ---------------------------------------------------------------- DB
 
+/// v1：旧的「版本即安装单元」表。
+///
+/// 已被 v3 拆成 package + instance 两张表，但**不能删改**：它是已发布迁移链的一环，
+/// 改它会让「已升级的库」与「全新建的库」拿到不同 schema。
 pub const MIGRATION: crate::services::database::Migration = crate::services::database::Migration {
     version: 1,
     name: "game_download_task",
@@ -263,7 +337,7 @@ pub const MIGRATION: crate::services::database::Migration = crate::services::dat
           );",
 };
 
-/// 启动续传重投计数（防 failed 状态无限自动重下）。
+/// v2：启动续传重投计数（防 failed 状态无限自动重下）。
 pub const MIGRATION_ATTEMPTS: crate::services::database::Migration =
     crate::services::database::Migration {
         version: 2,
@@ -271,114 +345,192 @@ pub const MIGRATION_ATTEMPTS: crate::services::database::Migration =
         sql: "ALTER TABLE module_game_download_task ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
     };
 
+/// v3：拆表 —— 版本整包（下载单元）+ 实例（安装单元），并把旧记录就地迁移。
+///
+/// 旧记录的 `folder` 就是当年的版本目录名，因此直接当作实例名迁移：用户已装好的
+/// 版本在新模型里表现为「一个与版本同名的实例」，不会凭空消失。
+pub const MIGRATION_INSTANCES: crate::services::database::Migration =
+    crate::services::database::Migration {
+        version: 3,
+        name: "game_download_instances",
+        sql: "CREATE TABLE IF NOT EXISTS module_game_download_package (
+                version_id TEXT PRIMARY KEY,
+                kind       TEXT NOT NULL,
+                dest       TEXT NOT NULL,
+                md5        TEXT NOT NULL,
+                state      TEXT NOT NULL DEFAULT 'downloading',
+                error      TEXT,
+                task_id    INTEGER,
+                attempts   INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+              );
+              CREATE TABLE IF NOT EXISTS module_game_download_instance (
+                instance   TEXT PRIMARY KEY,
+                version_id TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                loader     TEXT,
+                state      TEXT NOT NULL DEFAULT 'queued',
+                error      TEXT,
+                created_at INTEGER NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS idx_gd_instance_version
+                ON module_game_download_instance(version_id);
+              INSERT OR IGNORE INTO module_game_download_package
+                (version_id, kind, dest, md5, state, error, task_id, attempts, created_at)
+                SELECT version_id, kind, dest, md5,
+                       CASE state
+                         WHEN 'extracting'       THEN 'ready'
+                         WHEN 'authorizing'      THEN 'downloading'
+                         WHEN 'failed_permanent' THEN 'failed'
+                         ELSE state
+                       END,
+                       error, task_id, attempts, created_at
+                  FROM module_game_download_task
+                 WHERE state <> 'installed';
+              INSERT OR IGNORE INTO module_game_download_instance
+                (instance, version_id, kind, loader, state, error, created_at)
+                SELECT folder, version_id, kind, NULL,
+                       CASE state
+                         WHEN 'installed'        THEN 'installed'
+                         WHEN 'failed'           THEN 'failed'
+                         WHEN 'failed_permanent' THEN 'failed'
+                         ELSE 'queued'
+                       END,
+                       error, created_at
+                  FROM module_game_download_task;
+              DROP TABLE IF EXISTS module_game_download_task;",
+    };
+
 /// 本模块全部迁移（按版本升序执行）。
 pub const MIGRATIONS: &[crate::services::database::Migration] =
-    &[MIGRATION, MIGRATION_ATTEMPTS];
+    &[MIGRATION, MIGRATION_ATTEMPTS, MIGRATION_INSTANCES];
 
-/// 任务 DB 记录。
+/// 版本整包记录（下载单元）：一个版本一份整包，多实例共享。
 #[derive(Debug, Clone)]
-pub struct TaskRecord {
+pub struct PackageRecord {
     pub version_id: String,
     pub kind: String,
-    pub folder: String,
     pub dest: PathBuf,
     pub md5: String,
+    /// `downloading` | `ready` | `failed` | `failed_permanent` | `cancelling`。
     pub state: String,
     pub error: Option<String>,
     pub task_id: Option<u64>,
     pub attempts: i64,
 }
 
-fn row_to_record(r: &rusqlite::Row) -> rusqlite::Result<TaskRecord> {
-    Ok(TaskRecord {
+/// 实例记录（安装单元）：实例名即版本目录名。
+#[derive(Debug, Clone)]
+pub struct InstanceRecord {
+    pub instance: String,
+    pub version_id: String,
+    pub kind: String,
+    /// 用户选定的加载器版本（LeviLamina）；未选为 `None`。
+    pub loader: Option<String>,
+    /// `queued` | `installing` | `installed` | `failed`。
+    pub state: String,
+    pub error: Option<String>,
+}
+
+const PACKAGE_COLUMNS: &str = "version_id, kind, dest, md5, state, error, task_id, attempts";
+const INSTANCE_COLUMNS: &str = "instance, version_id, kind, loader, state, error";
+
+fn row_to_package(r: &rusqlite::Row) -> rusqlite::Result<PackageRecord> {
+    Ok(PackageRecord {
         version_id: r.get(0)?,
         kind: r.get(1)?,
-        folder: r.get(2)?,
-        dest: PathBuf::from(r.get::<_, String>(3)?),
-        md5: r.get(4)?,
-        state: r.get(5)?,
-        error: r.get(6)?,
-        task_id: r.get(7)?,
-        attempts: r.get(8)?,
+        dest: PathBuf::from(r.get::<_, String>(2)?),
+        md5: r.get(3)?,
+        state: r.get(4)?,
+        error: r.get(5)?,
+        task_id: r.get(6)?,
+        attempts: r.get(7)?,
     })
 }
 
-fn get_record(ctx: &Ctx, version_id: &str) -> Result<Option<TaskRecord>, KernelError> {
-    ctx.db.with_conn(|conn| -> Result<Option<TaskRecord>, KernelError> {
-        let mut stmt = conn.prepare(
-            "SELECT version_id, kind, folder, dest, md5, state, error, task_id, attempts
-             FROM module_game_download_task WHERE version_id = ?1",
-        )?;
-        let mut rows = stmt.query_map([version_id], row_to_record)?;
-        let rec = match rows.next() {
-            Some(r) => Some(r?),
-            None => None,
-        };
-        Ok(rec)
+fn row_to_instance(r: &rusqlite::Row) -> rusqlite::Result<InstanceRecord> {
+    Ok(InstanceRecord {
+        instance: r.get(0)?,
+        version_id: r.get(1)?,
+        kind: r.get(2)?,
+        loader: r.get(3)?,
+        state: r.get(4)?,
+        error: r.get(5)?,
     })
 }
 
-/// 下载任务 → 游戏版本的绑定关系（供下载中心提供「安装」入口）。
+fn get_package(ctx: &Ctx, version_id: &str) -> Result<Option<PackageRecord>, KernelError> {
+    ctx.db.with_conn(|conn| -> Result<Option<PackageRecord>, KernelError> {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {PACKAGE_COLUMNS} FROM module_game_download_package WHERE version_id = ?1"
+        ))?;
+        let mut rows = stmt.query_map([version_id], row_to_package)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    })
+}
+
+fn get_instance(ctx: &Ctx, instance: &str) -> Result<Option<InstanceRecord>, KernelError> {
+    ctx.db.with_conn(|conn| -> Result<Option<InstanceRecord>, KernelError> {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {INSTANCE_COLUMNS} FROM module_game_download_instance WHERE instance = ?1"
+        ))?;
+        let mut rows = stmt.query_map([instance], row_to_instance)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    })
+}
+
+/// 某版本下所有「尚未装好」的实例（`queued` / `installing` / `failed`）。
 ///
-/// 下载中心列出的是核心下载引擎的任务，而安装流水线按**版本 id** 取记录。
-/// 这个映射由内核给出，前端不去猜 dest 或文件名：猜错就会把安装指向另一个
-/// 版本。只有确实存在游戏下载记录的任务才在这里出现。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct TaskBinding {
-    pub task_id: u64,
-    pub version_id: String,
-}
-
-/// 列出所有「下载任务 → 游戏版本」绑定。
-pub fn task_bindings(ctx: &Ctx) -> Result<Vec<TaskBinding>, KernelError> {
-    ctx.db.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT task_id, version_id FROM module_game_download_task
-             WHERE task_id IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(TaskBinding {
-                task_id: row.get::<_, i64>(0)? as u64,
-                version_id: row.get(1)?,
-            })
-        })?;
+/// 已装好（`installed`）的实例不在其中：再来一次安装会**新建另一个实例**，
+/// 而不是重装已有实例——这正是「同版本多实例」的语义。
+fn pending_instances(ctx: &Ctx, version_id: &str) -> Result<Vec<InstanceRecord>, KernelError> {
+    ctx.db.with_conn(|conn| -> Result<Vec<InstanceRecord>, KernelError> {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {INSTANCE_COLUMNS} FROM module_game_download_instance
+              WHERE version_id = ?1 AND state <> 'installed'
+              ORDER BY created_at ASC, instance ASC"
+        ))?;
+        let rows = stmt.query_map([version_id], row_to_instance)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(KernelError::from)
     })
 }
 
-fn list_records(ctx: &Ctx, states: &[&str]) -> Result<Vec<TaskRecord>, KernelError> {
-    ctx.db.with_conn(|conn| {
+/// 按状态列出整包记录。
+fn list_packages(ctx: &Ctx, states: &[&str]) -> Result<Vec<PackageRecord>, KernelError> {
+    ctx.db.with_conn(|conn| -> Result<Vec<PackageRecord>, KernelError> {
         let placeholders = states.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT version_id, kind, folder, dest, md5, state, error, task_id, attempts
-             FROM module_game_download_task WHERE state IN ({placeholders})"
+            "SELECT {PACKAGE_COLUMNS} FROM module_game_download_package
+              WHERE state IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
         let params: Vec<rusqlite::types::Value> = states
             .iter()
             .map(|s| rusqlite::types::Value::Text(s.to_string()))
             .collect();
-        let rows = stmt.query_map(rusqlite::params_from_iter(params), row_to_record)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), row_to_package)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(KernelError::from)
     })
 }
 
-/// 幂等 upsert 记录。
-fn upsert_record(ctx: &Ctx, rec: &TaskRecord) -> Result<(), KernelError> {
+fn upsert_package(ctx: &Ctx, rec: &PackageRecord) -> Result<(), KernelError> {
     ctx.db.with_conn(|conn| -> Result<(), KernelError> {
         conn.execute(
-            "INSERT INTO module_game_download_task
-               (version_id, kind, folder, dest, md5, state, error, task_id, attempts, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO module_game_download_package
+               (version_id, kind, dest, md5, state, error, task_id, attempts, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(version_id) DO UPDATE SET
-               kind=excluded.kind, folder=excluded.folder, dest=excluded.dest,
-               md5=excluded.md5, state=excluded.state, error=excluded.error,
-               task_id=excluded.task_id, attempts=excluded.attempts",
+               kind=excluded.kind, dest=excluded.dest, md5=excluded.md5, state=excluded.state,
+               error=excluded.error, task_id=excluded.task_id, attempts=excluded.attempts",
             rusqlite::params![
                 rec.version_id,
                 rec.kind,
-                rec.folder,
                 rec.dest.to_string_lossy(),
                 rec.md5,
                 rec.state,
@@ -392,25 +544,186 @@ fn upsert_record(ctx: &Ctx, rec: &TaskRecord) -> Result<(), KernelError> {
     })
 }
 
-fn set_state(ctx: &Ctx, version_id: &str, state: &str, error: Option<&str>) -> Result<(), KernelError> {
+fn upsert_instance(ctx: &Ctx, rec: &InstanceRecord) -> Result<(), KernelError> {
     ctx.db.with_conn(|conn| -> Result<(), KernelError> {
         conn.execute(
-            "UPDATE module_game_download_task SET state = ?1, error = ?2 WHERE version_id = ?3",
+            "INSERT INTO module_game_download_instance
+               (instance, version_id, kind, loader, state, error, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(instance) DO UPDATE SET
+               version_id=excluded.version_id, kind=excluded.kind, loader=excluded.loader,
+               state=excluded.state, error=excluded.error",
+            rusqlite::params![
+                rec.instance,
+                rec.version_id,
+                rec.kind,
+                rec.loader,
+                rec.state,
+                rec.error,
+                Ctx::now()
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+fn set_package_state(
+    ctx: &Ctx,
+    version_id: &str,
+    state: &str,
+    error: Option<&str>,
+) -> Result<(), KernelError> {
+    ctx.db.with_conn(|conn| -> Result<(), KernelError> {
+        conn.execute(
+            "UPDATE module_game_download_package SET state = ?1, error = ?2 WHERE version_id = ?3",
             rusqlite::params![state, error, version_id],
         )?;
         Ok(())
     })
 }
 
-/// 删除任务记录（放弃安装 / 显式取消）。
-fn delete_record(ctx: &Ctx, version_id: &str) -> Result<(), KernelError> {
+fn set_package_task(ctx: &Ctx, version_id: &str, task_id: Option<u64>) -> Result<(), KernelError> {
     ctx.db.with_conn(|conn| -> Result<(), KernelError> {
         conn.execute(
-            "DELETE FROM module_game_download_task WHERE version_id = ?1",
+            "UPDATE module_game_download_package SET task_id = ?1 WHERE version_id = ?2",
+            rusqlite::params![task_id, version_id],
+        )?;
+        Ok(())
+    })
+}
+
+fn set_instance_state(
+    ctx: &Ctx,
+    instance: &str,
+    state: &str,
+    error: Option<&str>,
+) -> Result<(), KernelError> {
+    ctx.db.with_conn(|conn| -> Result<(), KernelError> {
+        conn.execute(
+            "UPDATE module_game_download_instance SET state = ?1, error = ?2 WHERE instance = ?3",
+            rusqlite::params![state, error, instance],
+        )?;
+        Ok(())
+    })
+}
+
+fn delete_package(ctx: &Ctx, version_id: &str) -> Result<(), KernelError> {
+    ctx.db.with_conn(|conn| -> Result<(), KernelError> {
+        conn.execute(
+            "DELETE FROM module_game_download_package WHERE version_id = ?1",
             rusqlite::params![version_id],
         )?;
         Ok(())
     })
+}
+
+fn delete_instance(ctx: &Ctx, instance: &str) -> Result<(), KernelError> {
+    ctx.db.with_conn(|conn| -> Result<(), KernelError> {
+        conn.execute(
+            "DELETE FROM module_game_download_instance WHERE instance = ?1",
+            rusqlite::params![instance],
+        )?;
+        Ok(())
+    })
+}
+
+/// 下载任务 → 游戏版本的绑定关系（供下载中心提供「安装」入口）。
+///
+/// 下载中心列出的是核心下载引擎的任务，而安装按**实例**推进；这个映射由内核给出，
+/// 前端不去猜 dest 或文件名：猜错就会把安装指向另一个版本。只有确实存在整包下载
+/// 记录的任务才在这里出现。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskBinding {
+    pub task_id: u64,
+    pub version_id: String,
+}
+
+/// 列出所有「下载任务 → 游戏版本」绑定。
+pub fn task_bindings(ctx: &Ctx) -> Result<Vec<TaskBinding>, KernelError> {
+    ctx.db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT task_id, version_id FROM module_game_download_package
+              WHERE task_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(TaskBinding {
+                task_id: row.get::<_, i64>(0)? as u64,
+                version_id: row.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(KernelError::from)
+    })
+}
+
+// ---------------------------------------------------------------- 实例命名
+
+/// 实例名可用性检查结果（安装确认弹窗据此实时反馈）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InstanceCheck {
+    /// 规整后的实例名：前端提交这个名字，不再自己推导第二遍。
+    pub name: String,
+    pub available: bool,
+    /// 不可用原因码；可用时为 `None`。文案由前端按码本地化。
+    pub reason: Option<meta::NameRejection>,
+}
+
+/// 检查实例名：先按全项目唯一规则规整，再判目录冲突与在途任务冲突。
+///
+/// 「在途任务冲突」必须单独判：排队中的实例还没有目录，只查目录会让用户提交一个
+/// 已经排着队的名字，两条流水线随后抢同一个输出目录。
+pub fn check_instance_name(ctx: &Ctx, raw: &str) -> InstanceCheck {
+    let name = meta::sanitize_instance_name(raw);
+    if let Err(reason) = meta::validate_version_name_reason(&ctx.versions_root(), &name) {
+        return InstanceCheck {
+            name,
+            available: false,
+            reason: Some(reason),
+        };
+    }
+    match get_instance(ctx, &name) {
+        Ok(Some(_)) => InstanceCheck {
+            name,
+            available: false,
+            reason: Some(meta::NameRejection::Taken),
+        },
+        // 查询失败不能当作「可用」：放行会绕过唯一性约束。
+        Err(error) => {
+            log::warn!("[game-download] 实例名冲突查询失败: {error}");
+            InstanceCheck {
+                name,
+                available: false,
+                reason: Some(meta::NameRejection::Taken),
+            }
+        }
+        Ok(None) => InstanceCheck {
+            name,
+            available: true,
+            reason: None,
+        },
+    }
+}
+
+/// 为某版本推荐一个可用实例名（版本号；重名时追加 `-2`、`-3`…）。
+pub fn suggest_instance_name(ctx: &Ctx, version_id: &str) -> String {
+    let base = meta_bridge::game_version_of(version_id);
+    let base = if version_id.ends_with("_preview") {
+        format!("{base}-preview")
+    } else {
+        base
+    };
+    for index in 1..=999 {
+        let candidate = if index == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{index}")
+        };
+        if check_instance_name(ctx, &candidate).available {
+            return candidate;
+        }
+    }
+    base
 }
 
 // ---------------------------------------------------------------- 命令核心
@@ -423,43 +736,87 @@ fn annotate_versions_root(ctx: &Ctx, error: KernelError) -> KernelError {
     crate::services::paths::annotate_versions_root_error(&ctx.versions_root(), error)
 }
 
-/// 投递下载：查已安装幂等拒绝 → 定目录 → upsert 记录 → 投递全局下载队列 → 回填 task_id → 广播。
-pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
-    // 已安装幂等拒绝。
-    if meta_bridge::is_installed(&ctx.install_dir(id)) {
-        return Err(KernelError::InvalidArgument("该版本已安装".into()));
+/// 创建实例并开始安装（幂等）。
+///
+/// 流程：校验实例名 → 落实例记录 → 复用本地整包或投递下载 → 该装就立刻装。
+///
+/// 返回下载任务 id；**0 表示整包已在本地、无需下载**（此时安装已经开始）。
+pub async fn enqueue(
+    ctx: &Ctx,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    version_id: &str,
+    instance: &str,
+    loader: Option<&str>,
+) -> Result<u64, KernelError> {
+    let check = check_instance_name(ctx, instance);
+    if !check.available {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例名 `{}` 不可用：{}",
+            check.name,
+            check.reason.map(|r| r.message()).unwrap_or("未知原因")
+        )));
     }
+    let instance = check.name;
+    let loader = loader
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
 
     // 清单取版本条目。
     let versions = manifest::load_manifest(ctx, false).await?;
     let entry = versions
-        .find_by_id(id)
-        .ok_or_else(|| KernelError::InvalidArgument(format!("清单中找不到版本 `{id}`")))?;
-    // CDN 故障转移：取全部候选 URL，首个投递成功即停（引擎侧也有 3 次重试，这里只挑 host）。
-    let urls = entry
-        .all_urls()
-        .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{id}` 没有可用下载链接")))?;
-    // md5 是唯一的完整性防线（引擎只校验 sha256，清单只给 md5）——缺失直接拒绝，避免空值恒校验失败。
-    if entry.md5.trim().is_empty() {
-        return Err(KernelError::InvalidArgument(format!(
-            "版本 `{id}` 的清单条目缺少 MD5 校验值，无法安全安装"
-        )));
-    }
-    let slug = entry.slug();
+        .find_by_id(version_id)
+        .ok_or_else(|| KernelError::InvalidArgument(format!("清单中找不到版本 `{version_id}`")))?;
     let kind = match entry.kind() {
         manifest::VersionKind::Release => "release",
         manifest::VersionKind::Preview => "preview",
     };
+    // md5 是唯一的完整性防线（引擎只校验 sha256，清单只给 md5）——缺失直接拒绝，
+    // 避免空值恒校验失败。
+    if entry.md5.trim().is_empty() {
+        return Err(KernelError::InvalidArgument(format!(
+            "版本 `{version_id}` 的清单条目缺少 MD5 校验值，无法安全安装"
+        )));
+    }
+    let slug = entry.slug();
     let dest = ctx.dest_for(&slug);
 
-    // 已存在进行中任务 → 幂等返回原 task_id，避免重复排队。
-    if let Some(rec) = get_record(ctx, &slug)? {
-        if rec.state == "downloading" || rec.state == "authorizing" || rec.state == "extracting" {
-            return rec.task_id.ok_or_else(|| {
-                KernelError::Module(format!("版本 {slug} 已有任务但缺 task_id"))
-            });
+    // 实例记录先落库：后面所有环节都以「这条实例在等安装」为依据。
+    upsert_instance(
+        ctx,
+        &InstanceRecord {
+            instance: instance.clone(),
+            version_id: slug.clone(),
+            kind: kind.to_string(),
+            loader: loader.clone(),
+            state: "queued".into(),
+            error: None,
+        },
+    )?;
+
+    if let Some(pkg) = get_package(ctx, &slug)? {
+        // 已有整包下载在途 → 直接挂到同一个任务上，绝不重复投递：
+        // 两个任务写同一个文件会互相截断，最终谁都没下完。
+        if pkg.state == "downloading" {
+            if let Some(task_id) = pkg.task_id.filter(|t| ctx.download.task(*t).is_some()) {
+                log::info!("[game-download] 实例 {instance} 复用进行中的整包下载（任务 {task_id}）");
+                ctx.events.publish(
+                    "game-download.enqueued",
+                    serde_json::json!({ "id": slug, "instance": instance, "taskId": task_id }),
+                );
+                return Ok(task_id);
+            }
         }
-        // installed / failed → 允许重装，重置状态继续。
+        // 整包已在本地且校验通过 → 不重新下载，直接进入安装。
+        if pkg.dest.is_file() && md5_matches(&pkg.dest, &pkg.md5).unwrap_or(false) {
+            set_package_state(ctx, &slug, "ready", None)?;
+            log::info!(
+                "[game-download] 实例 {instance} 复用本地整包 {}",
+                pkg.dest.display()
+            );
+            spawn_batch(ctx, lock, &slug, pkg.task_id);
+            return Ok(0);
+        }
     }
 
     // 落盘前确认整包暂存目录**真的**可写。
@@ -468,12 +825,13 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
     // 受限卷、被收紧的 ACL、占用中的挂载点）`create_dir_all` 会直接成功，直到引擎
     // 第一次写 `.part` 才失败，而失败会以不带任何路径的 `os error 5` 冒泡到界面，
     // 用户无从判断是「网络」还是「目录权限」。改为带写探针 + 带路径的报错。
-    crate::services::paths::ensure_writable_dir(
-        dest.parent().unwrap_or(Path::new(".")),
-        "下载暂存",
-    )
-    .map_err(|e| annotate_versions_root(ctx, e))?;
+    crate::services::paths::ensure_writable_dir(dest.parent().unwrap_or(Path::new(".")), "下载暂存")
+        .map_err(|e| annotate_versions_root(ctx, e))?;
 
+    // CDN 故障转移：取全部候选 URL，首个投递成功即停（引擎侧也有 3 次重试，这里只挑 host）。
+    let urls = entry.all_urls().ok_or_else(|| {
+        KernelError::InvalidArgument(format!("版本 `{version_id}` 没有可用下载链接"))
+    })?;
     let opts = DownloadOptions {
         resume: true,
         remove_on_cancel: true,
@@ -481,13 +839,12 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
         filename: Some(format!("{slug}.msixvc")),
         ..Default::default()
     };
-    // 逐个候选 URL 投递：引擎内部对瞬时错误有 3 次指数退避重试，这里在 host 粒度再兜一层。
     let mut enqueued: Option<u64> = None;
     let mut last_err: Option<KernelError> = None;
-    for (i, url) in urls.iter().enumerate() {
+    for (index, url) in urls.iter().enumerate() {
         match ctx.download.enqueue(url, &dest, opts.clone()) {
             Ok(task_id) => {
-                if i > 0 {
+                if index > 0 {
                     log::info!("[game-download] 主链路失败，已切到备用 CDN: {url}");
                 }
                 enqueued = Some(task_id);
@@ -499,176 +856,172 @@ pub async fn enqueue(ctx: &Ctx, id: &str) -> Result<u64, KernelError> {
             }
         }
     }
-    let task_id = match enqueued {
-        Some(id) => id,
-        None => {
-            return Err(last_err.unwrap_or_else(|| {
-                KernelError::Module("下载队列投递失败".into())
-            }))
-        }
+    let Some(task_id) = enqueued else {
+        // 投递失败：实例记录留着没有意义（没有任何东西会推进它），就地回滚。
+        let _ = delete_instance(ctx, &instance);
+        return Err(last_err.unwrap_or_else(|| KernelError::Module("下载队列投递失败".into())));
     };
 
-    let rec = TaskRecord {
-        version_id: slug.clone(),
-        kind: kind.to_string(),
-        folder: slug.clone(),
-        dest: dest.clone(),
-        md5: entry.md5.clone(),
-        state: "downloading".into(),
-        error: None,
-        task_id: Some(task_id),
-        attempts: 0,
-    };
-    upsert_record(ctx, &rec)?;
+    upsert_package(
+        ctx,
+        &PackageRecord {
+            version_id: slug.clone(),
+            kind: kind.to_string(),
+            dest: dest.clone(),
+            md5: entry.md5.clone(),
+            state: "downloading".into(),
+            error: None,
+            task_id: Some(task_id),
+            attempts: 0,
+        },
+    )?;
 
     ctx.events.publish(
         "game-download.enqueued",
-        serde_json::json!({ "id": slug, "taskId": task_id }),
+        serde_json::json!({ "id": slug, "instance": instance, "taskId": task_id }),
     );
     Ok(task_id)
 }
 
-/// 单版本任务视图（供前端渲染状态与进度）。
-pub fn status(ctx: &Ctx, id: &str) -> Result<Option<TaskView>, KernelError> {
-    let Some(rec) = get_record(ctx, id)? else {
-        return Ok(None);
-    };
-    let snapshot = rec
-        .task_id
-        .and_then(|t| ctx.download.task(t))
-        .map(DownloadState::from_snapshot);
-    Ok(Some(TaskView {
-        version_id: rec.version_id,
-        kind: rec.kind,
-        dest: rec.dest.to_string_lossy().into_owned(),
-        state: rec.state.clone(),
-        error: rec.error,
-        download: snapshot,
-    }))
-}
-
-/// 取消任务（下载中取消 → 放弃安装）。
+/// 实例级重装：整包在本地且校验通过时重跑安装流水线，**不重新下载**。
 ///
-/// 语义：取消下载即“完全放弃该版本下载”，取消引擎任务、立即清除本地缓存
-/// （整包 + 断点 `.part`）、删除数据库记录，从而确保：
-/// - 缓存立刻释放，不残留占用盘空间的临时文件；
-/// - 前端行/详情页状态回退为“可下载”；
-/// - `start` 重启后 `resume_pending` 不再续传（无记录）。
-///
-/// 仅 `installed` / `extracting`（正在解包，无法中断）不可取消；其余状态
-/// （downloading / queued / paused / failed）一律视为放弃并清理。
-pub fn cancel(ctx: &Ctx, id: &str) -> Result<(), KernelError> {
-    let Some(rec) = get_record(ctx, id)? else {
-        return Err(KernelError::InvalidArgument(format!("无任务 `{id}`")));
-    };
-    if rec.state == "installed" || rec.state == "extracting" {
-        return Ok(());
-    }
-    // 先置中间态，避免引擎 `download.status(Cancelled)` 被误判为失败并回写 failed。
-    set_state(ctx, id, "cancelling", Some("已取消"))?;
-    // 取消引擎任务。容错：任务可能已不在队列（如已移除）。
-    if let Some(task_id) = rec.task_id {
-        let _ = ctx.download.cancel(task_id);
-    }
-    // 立即清除本地缓存（整包 + 断点 `.part`），不依赖引擎 `remove_on_cancel`，
-    // 保证“马上清除缓存”。
-    cleanup_package(&rec.dest);
-    // 删除记录 → 前端回退为“可下载”，重启后 `resume_pending` 不会续传。
-    delete_record(ctx, id)?;
-    ctx.events.publish("game-download.cancelled", serde_json::json!({ "id": id }));
-    Ok(())
-}
-
-/// 仅重装：整包已在本地时直接重跑安装流水线，**不重新下载**。
-///
-/// 与 `enqueue` 的分工：`enqueue` 负责「把包拿到手」，本函数负责「把包装上」。
-/// 缺了它，安装阶段失败（商店授权未过、md5 不符、解包中断）后唯一的出路是
-/// `enqueue` 重来一遍——对数 GB 的包而言这是把最贵的一步重做一次，而失败点
-/// 往往与下载毫无关系。
-///
-/// 前置条件：本地整包存在且 md5 与清单一致。不满足时**拒绝并说明原因**，
-/// 而不是悄悄重新下载——用户点的是「安装」，替他改下几个 G 的流量是不可预期的。
-///
-/// 状态流转与自动安装共用 `finish_install`（含单飞锁与 md5 自验），
-/// 因此重复点击是幂等安全的：正在解包时直接返回，不排队。
-pub fn install(ctx: &Ctx, id: &str, lock: &Arc<tokio::sync::Mutex<()>>) -> Result<(), KernelError> {
-    let rec = get_record(ctx, id)?
-        .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{id}` 没有下载记录，无法安装")))?;
-
-    // 并发门禁由**单飞锁**决定，而不是由数据库状态决定。
-    //
-    // 旧写法见到 `authorizing` 就直接返回 `Ok(())`，本意是「正在授权就别重复点」。
-    // 但它把「真的在跑」和「上次跑崩了、状态没回写」混为一谈：一旦进程在授权阶段
-    // 被杀（或状态回写失败），记录会永远停在 `authorizing`，此后每次点安装都返回
-    // 成功却什么都不做——用户侧就是「点安装没反应」，而且没有任何错误提示。
-    //
-    // 现在改为问锁：锁被持有 = 真有一条安装流水线在跑 → 幂等拒绝；锁空闲 = 没有任何
-    // 在跑的工作 → 即使状态写着 `authorizing` 也只是残留，放行走完整流水线（`finish_install`
-    // 会重新置位并推进状态）。
-    if lock.try_lock().is_err() {
-        return Err(KernelError::Conflict(format!(
-            "版本 `{id}` 的安装/授权正在进行中，请等待当前任务结束"
-        )));
-    }
-
-    // 正在解包：重复点击直接返回，不排队、不打断（解包不可中断，重跑代价过高）。
-    if rec.state == "extracting" {
-        return Ok(());
-    }
-    // 已安装即无需动作。
-    if meta_bridge::is_installed(&ctx.install_dir(&rec.folder)) {
-        return Ok(());
-    }
-    // 下载仍在途：必须等下载完成，不能拿半包去装。
-    if let Some(task_id) = rec.task_id {
-        if let Some(snapshot) = ctx.download.task(task_id) {
-            if matches!(snapshot.status, DownloadStatus::Queued | DownloadStatus::Downloading) {
-                return Err(KernelError::Conflict(format!(
-                    "版本 `{id}` 仍在下载，请等待下载完成后再安装"
-                )));
-            }
-        }
-    }
-    if !rec.dest.is_file() {
+/// 前置条件不满足时**明确报错**，而不是偷偷改走下载——用户点的是「重试安装」，
+/// 替他下几个 G 的流量是不可预期的。
+pub fn retry_instance(
+    ctx: &Ctx,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    instance: &str,
+) -> Result<(), KernelError> {
+    let rec = get_instance(ctx, instance)?
+        .ok_or_else(|| KernelError::InvalidArgument(format!("实例 `{instance}` 没有安装记录")))?;
+    if rec.state == "installed" {
         return Err(KernelError::InvalidArgument(format!(
-            "本地没有版本 `{id}` 的完整安装包，请先下载"
+            "实例 `{instance}` 已安装完成"
         )));
     }
-    if rec.md5.trim().is_empty() {
+    if lock.try_lock().is_err() {
+        return Err(KernelError::Conflict(
+            "已有安装正在进行中，请等待当前任务结束".into(),
+        ));
+    }
+    let pkg = get_package(ctx, &rec.version_id)?.ok_or_else(|| {
+        KernelError::InvalidArgument(format!("版本 `{}` 没有下载记录，无法安装", rec.version_id))
+    })?;
+    if !pkg.dest.is_file() {
+        return Err(KernelError::InvalidArgument(format!(
+            "本地没有版本 `{}` 的完整安装包，请重新下载",
+            rec.version_id
+        )));
+    }
+    if pkg.md5.trim().is_empty() {
         return Err(KernelError::Config("清单缺少 MD5 校验值，拒绝安装".into()));
     }
-    if !md5_matches(&rec.dest, &rec.md5)? {
-        // 包已损坏：删掉它，否则它会一直卡住后续安装尝试
-        // （每次都走到这里失败，而用户看不出为什么）。
-        let path = rec.dest.clone();
-        cleanup_package(&path);
+    if !md5_matches(&pkg.dest, &pkg.md5)? {
+        // 包已损坏：删掉它，否则它会一直卡住后续安装尝试（每次都走到这里失败，
+        // 而用户看不出为什么）。
+        cleanup_package(&pkg.dest);
         return Err(KernelError::Config(format!(
             "本地安装包校验失败（{}），已删除该文件，请重新下载",
-            rec.dest.to_string_lossy()
+            pkg.dest.to_string_lossy()
         )));
     }
-
-    let lock = lock.clone();
-    let next_ctx = ctx.clone();
-    let vid = rec.version_id.clone();
-    ctx.runtime.spawn(async move {
-        if let Err(e) = finish_install(&next_ctx, &lock, rec).await {
-            // `mark_failed` 必须落库成功：失败后记录若仍停在 `authorizing`，
-            // 状态机就再也回不到可重试的状态。回写失败时明确留痕，而不是静默吞掉。
-            if let Err(write_error) = mark_failed(&next_ctx, &vid, &e.to_string()) {
-                log::error!(
-                    "[game-download] 手动重装 {vid} 失败后回写失败状态也失败: {write_error}（记录可能停在非终态）"
-                );
-            }
-            log::error!("[game-download] 手动重装 {vid} 失败: {e}");
-        }
-    });
+    set_instance_state(ctx, instance, "queued", None)?;
+    spawn_batch(ctx, lock, &rec.version_id, pkg.task_id);
     Ok(())
 }
 
-/// 强制刷新清单源并重建缓存。
-pub async fn refresh_source(ctx: &Ctx) -> Result<(), KernelError> {
-    manifest::load_manifest(ctx, true).await.map(|_| ())
+/// 版本级重试：把该版本下所有未装好的实例重新排进安装（下载中心的「安装」入口）。
+pub fn retry_version(
+    ctx: &Ctx,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    version_id: &str,
+) -> Result<(), KernelError> {
+    let pkg = get_package(ctx, version_id)?.ok_or_else(|| {
+        KernelError::InvalidArgument(format!("版本 `{version_id}` 没有下载记录，无法安装"))
+    })?;
+    let targets = pending_instances(ctx, version_id)?;
+    if targets.is_empty() {
+        return Err(KernelError::InvalidArgument(format!(
+            "版本 `{version_id}` 没有待安装的实例"
+        )));
+    }
+    if !pkg.dest.is_file() {
+        return Err(KernelError::InvalidArgument(format!(
+            "本地没有版本 `{version_id}` 的完整安装包，请重新下载"
+        )));
+    }
+    for target in &targets {
+        set_instance_state(ctx, &target.instance, "queued", None)?;
+    }
+    spawn_batch(ctx, lock, version_id, pkg.task_id);
+    Ok(())
+}
+
+/// 取消一次安装（放弃该实例）。
+///
+/// 语义：删掉实例记录；该版本**再无待装实例**时，连同整包下载一起放弃——取消引擎
+/// 任务、清除整包与断点、删除整包记录。这样缓存立刻释放，重启也不会续传。
+///
+/// 只有 `installed` 的实例不可取消（要删已装好的实例请去开始页），`installing`
+/// （正在解包）为 no-op：解包不可中断，重跑代价过高。
+pub fn cancel(ctx: &Ctx, instance: &str) -> Result<(), KernelError> {
+    let Some(rec) = get_instance(ctx, instance)? else {
+        return Err(KernelError::InvalidArgument(format!(
+            "实例 `{instance}` 没有安装记录"
+        )));
+    };
+    if rec.state == "installed" || rec.state == "installing" {
+        return Ok(());
+    }
+    delete_instance(ctx, instance)?;
+
+    // 还有别的实例在等这个版本的包 → 只放弃这一个实例，下载继续。
+    if !pending_instances(ctx, &rec.version_id)?.is_empty() {
+        ctx.events.publish(
+            "game-download.cancelled",
+            serde_json::json!({ "id": rec.version_id, "instance": instance }),
+        );
+        return Ok(());
+    }
+
+    // 先置中间态，避免引擎 `download.status(Cancelled)` 被误判为失败并回写 failed。
+    if let Some(pkg) = get_package(ctx, &rec.version_id)? {
+        set_package_state(ctx, &rec.version_id, "cancelling", Some("已取消"))?;
+        if let Some(task_id) = pkg.task_id {
+            // 容错：任务可能已不在队列（如已移除）。
+            let _ = ctx.download.cancel(task_id);
+        }
+        // 立即清除本地缓存（整包 + 断点 `.part`），不依赖引擎 `remove_on_cancel`，
+        // 保证「马上清除缓存」。
+        cleanup_package(&pkg.dest);
+        delete_package(ctx, &rec.version_id)?;
+    }
+    ctx.events.publish(
+        "game-download.cancelled",
+        serde_json::json!({ "id": rec.version_id, "instance": instance }),
+    );
+    Ok(())
+}
+
+/// 取某版本可选的加载器清单（详情页「加载器」下拉）。
+///
+/// `lip_available` 为假表示本机没有 lipd：加载器下拉仍列出候选项，但选中后装不上，
+/// 前端据此提前提示，而不是让用户在下完几个 G 之后才在安装末期失败。
+pub async fn loader_options(version_id: &str) -> Result<LoaderOptions, KernelError> {
+    let catalog = loader_catalog::LoaderCatalog::load().await?;
+    Ok(LoaderOptions {
+        lip_available: lipd::find_lip_executable().is_some(),
+        loaders: catalog.options_for(&meta_bridge::game_version_of(version_id)),
+    })
+}
+
+/// 某版本的可选加载器清单。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LoaderOptions {
+    /// 本机是否可用 lipd（决定选中的加载器能否真的装上）。
+    pub lip_available: bool,
+    pub loaders: Vec<loader_catalog::LoaderOption>,
 }
 
 // ---------------------------------------------------------------- 事件驱动
@@ -678,57 +1031,43 @@ pub fn handle_status(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>, payload: &Va
     let Some((task_id, status, _dest)) = parse_snapshot(payload) else {
         return;
     };
-    let Some(rec) = find_by_task_id(ctx, task_id) else {
+    let Some(pkg) = find_package_by_task(ctx, task_id) else {
         return; // 非本模块任务
     };
 
-    let next_ctx = ctx.clone();
-    let next_lock = lock.clone();
     match status {
         DownloadStatus::Done => {
-            // md5 校验 + 解包 + 写元数据：异步、串行。
-            let vid = rec.version_id.clone();
-            let task_ctx = next_ctx.clone();
-            let task_lock = next_lock.clone();
-            next_ctx.runtime.clone().spawn(async move {
-                if let Err(e) = finish_install(&task_ctx, &task_lock, rec).await {
-                    if let Err(write_error) = mark_failed(&task_ctx, &vid, &e.to_string()) {
-                        log::error!(
-                            "[game-download] 安装 {vid} 失败后回写失败状态也失败: {write_error}（记录可能停在非终态）"
-                        );
-                    }
-                    log::error!("[game-download] 安装 {vid} 失败: {e}");
-                }
-            });
+            // 整包下载完成 → 该版本所有未装好的实例进入安装（串行）。
+            if let Err(error) = set_package_state(ctx, &pkg.version_id, "ready", None) {
+                log::error!(
+                    "[game-download] 整包 {} 状态回写失败: {error}",
+                    pkg.version_id
+                );
+            }
+            spawn_batch(ctx, lock, &pkg.version_id, Some(task_id));
         }
         DownloadStatus::Failed => {
-            let msg = payload
+            let message = payload
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("下载失败")
                 .to_string();
-            if let Err(write_error) = mark_failed(ctx, &rec.version_id, &msg) {
-
-                log::error!(
-
-                    "[game-download] 下载失败状态回写失败: {write_error}（记录可能停在非终态）"
-
-                );
-
-            }
+            // 回写失败会在 `mark_version_failed` 内部明确落 error 日志，这里不必再处理。
+            mark_version_failed(ctx, &pkg.version_id, &message);
         }
         DownloadStatus::Cancelled => {
-            // “cancelling”为版本页主动取消的中间态，清理由 cancel() 完成后继续，此处不重复。
-            if rec.state == "cancelling" {
+            // `cancelling` 是版本页主动取消的中间态，清理由 `cancel` 收尾，此处不重复。
+            if pkg.state == "cancelling" {
                 return;
             }
-            // 非版本页主动取消（如全局下载列表取消）→ 同样“放弃下载”：
-            // 清除缓存并删除记录，避免 `resume_pending` 在重启时续传已取消的下载。
-            cleanup_package(&rec.dest);
-            let _ = delete_record(ctx, &rec.version_id);
+            // 非版本页主动取消（如全局下载列表取消）→ 同样「放弃下载」：
+            // 清除缓存并删掉整包与实例记录，避免 `resume_pending` 在重启时续传。
+            cleanup_package(&pkg.dest);
+            let _ = delete_package(ctx, &pkg.version_id);
+            let _ = discard_instances(ctx, &pkg.version_id, "已取消");
             ctx.events.publish(
                 "game-download.cancelled",
-                serde_json::json!({ "id": rec.version_id }),
+                serde_json::json!({ "id": pkg.version_id }),
             );
         }
         _ => {}
@@ -756,47 +1095,53 @@ fn parse_snapshot(payload: &Value) -> Option<(u64, DownloadStatus, String)> {
     Some((id, status, dest))
 }
 
-fn find_by_task_id(ctx: &Ctx, task_id: u64) -> Option<TaskRecord> {
+fn find_package_by_task(ctx: &Ctx, task_id: u64) -> Option<PackageRecord> {
     ctx.db
-        .with_conn(
-            |conn| -> Result<Option<TaskRecord>, KernelError> {
-                let mut stmt = conn.prepare(
-                    "SELECT version_id, kind, folder, dest, md5, state, error, task_id, attempts
-                     FROM module_game_download_task WHERE task_id = ?1",
-                )?;
-                let mut rows = stmt.query_map([task_id], row_to_record)?;
-                let rec = match rows.next() {
-                    Some(r) => Some(r?),
-                    None => None,
-                };
-                Ok(rec)
-            },
-        )
+        .with_conn(|conn| -> Result<Option<PackageRecord>, KernelError> {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {PACKAGE_COLUMNS} FROM module_game_download_package WHERE task_id = ?1"
+            ))?;
+            let mut rows = stmt.query_map([task_id], row_to_package)?;
+            match rows.next() {
+                Some(r) => Ok(Some(r?)),
+                None => Ok(None),
+            }
+        })
         .ok()
         .flatten()
 }
 
-/// 落失败 + 广播 `version.download_failed`。
+/// 把某版本整包与其实例一起落失败，并广播。
 ///
-/// 返回回写结果：调用方必须能知道「失败状态有没有真的落库」。此前这里吞掉错误，
-/// 于是回写失败时记录会永久停在 `authorizing`，而状态机把该状态当成「正在跑」，
-/// 用户点安装就永远没反应。
-fn mark_failed(ctx: &Ctx, version_id: &str, error: &str) -> Result<(), KernelError> {
-    let written = set_state(ctx, version_id, "failed", Some(error));
-    if let Err(write_error) = &written {
+/// 回写失败**必须留痕**：记录若停在中间态，而状态机又把该状态当成「正在跑」，
+/// 用户此后点安装就永远没反应。此前这里吞掉回写错误，正是这条故障链的起点；
+/// 现在失败会带原因落 error 日志，调用方无需（也不该）再各自处理一遍。
+fn mark_version_failed(ctx: &Ctx, version_id: &str, error: &str) {
+    if let Err(write_error) = set_package_state(ctx, version_id, "failed", Some(error))
+        .and_then(|()| fail_pending_instances(ctx, version_id, error))
+    {
         log::error!(
             "[game-download] {version_id} 的失败状态回写失败: {write_error}（记录可能停在非终态）"
         );
     }
-    ctx.events.publish(
-        "version.download_failed",
-        serde_json::json!({ "id": version_id, "error": error }),
-    );
-    ctx.events.publish(
-        "game-download.failed",
-        serde_json::json!({ "id": version_id, "error": error }),
-    );
-    written
+    publish_failed(ctx, version_id, error);
+}
+
+/// 把某版本下所有未装好的实例标记为失败（附带原因）。
+fn fail_pending_instances(ctx: &Ctx, version_id: &str, error: &str) -> Result<(), KernelError> {
+    for rec in pending_instances(ctx, version_id)? {
+        set_instance_state(ctx, &rec.instance, "failed", Some(error))?;
+    }
+    Ok(())
+}
+
+/// 丢弃某版本下所有未装好的实例记录（取消 / 放弃安装时用）。
+fn discard_instances(ctx: &Ctx, version_id: &str, error: &str) -> Result<(), KernelError> {
+    for rec in pending_instances(ctx, version_id)? {
+        delete_instance(ctx, &rec.instance)?;
+        log::info!("[game-download] 丢弃实例 {}（{error}）", rec.instance);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- 安装
@@ -838,54 +1183,373 @@ fn md5_matches_with_progress(
     Ok(format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected.trim()))
 }
 
-/// 异步安装：单飞锁串行解包（避免并发 GB 级解压）；幂等重入安全。
+/// 派生一批安装（异步、串行）。
 ///
-/// 全程把阶段进度写回下载引擎的任务：下载条目因此能从「下载完成」无缝切成
-/// 「正在安装」的进度条，而不是在下载到 100% 之后凭空消失、过几分钟又冒出来。
-/// 阶段收尾（成功 / 失败）由本函数统一负责，**任何**中途返回的错误都会先
-/// 落下终态再向上抛，避免任务永远卡在 `Installing`。
-pub async fn finish_install(
+/// 目标列表在派生时刻确定：调用方已经知道「哪些实例在等这个版本」，而不是让后台任务
+/// 自己去猜——猜法一旦变化（比如把 failed 排除掉），失败重试就会静默失效。
+fn spawn_batch(
     ctx: &Ctx,
     lock: &Arc<tokio::sync::Mutex<()>>,
-    rec: TaskRecord,
-) -> Result<(), KernelError> {
-    // The single-flight lock must cover Store authorization too, not just the
-    // unpack. Authorization registers a device credential and drives a system
-    // account UI; running several at once made them race on the device cache
-    // and each surface the same "another installation is using this device
-    // cache" failure. It also meant several concurrent account prompts.
-    let _guard = lock.lock().await;
-
-    let mut progress = InstallProgress::new(ctx, rec.task_id);
-    progress.begin();
-    let result = finish_install_authorized(ctx, rec, &mut progress).await;
-    progress.finish(result.as_ref().err().map(|e| e.to_string()));
-    result
+    version_id: &str,
+    task_id: Option<u64>,
+) {
+    let targets = match pending_instances(ctx, version_id) {
+        Ok(targets) => targets,
+        Err(error) => {
+            log::error!("[game-download] 取 {version_id} 待装实例失败: {error}");
+            return;
+        }
+    };
+    if targets.is_empty() {
+        log::info!("[game-download] 版本 {version_id} 没有待装实例，安装无需进行");
+        return;
+    }
+    let next_ctx = ctx.clone();
+    let next_lock = lock.clone();
+    let version = version_id.to_string();
+    ctx.runtime.spawn(async move {
+        run_batch(&next_ctx, &next_lock, version, targets, task_id).await;
+    });
 }
 
-/// 授权 + 安装的主体（单飞锁已持有、阶段上报器已就位）。
-async fn finish_install_authorized(
+/// 一批安装的主体：整包级只做一次授权与校验，随后逐实例安装。
+///
+/// 单飞锁覆盖整批（含授权）：授权会注册设备凭证并可能拉起系统账户界面，并发跑会
+/// 在设备缓存上互相打架，每个都报同一句「另一个安装正在使用该设备缓存」。
+pub async fn run_batch(
     ctx: &Ctx,
-    rec: TaskRecord,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    version_id: String,
+    targets: Vec<InstanceRecord>,
+    task_id: Option<u64>,
+) {
+    let _guard = lock.lock().await;
+
+    let total = targets.len();
+    let mut progress = InstallProgress::new(ctx, task_id, total);
+    progress.begin();
+
+    let pkg = match get_package(ctx, &version_id) {
+        Ok(Some(pkg)) => pkg,
+        Ok(None) => {
+            // 整包记录已消失（用户在排队期间取消了）：实例一并放弃，
+            // 不留下永远排队的孤儿。
+            log::warn!("[game-download] 版本 {version_id} 的整包记录已消失，放弃这批安装");
+            for target in &targets {
+                let _ = delete_instance(ctx, &target.instance);
+            }
+            progress.finish(Some("下载记录已被取消".into()));
+            return;
+        }
+        Err(error) => {
+            let message = error.to_string();
+            log::error!("[game-download] 读取整包记录失败: {message}");
+            progress.finish(Some(message));
+            return;
+        }
+    };
+
+    // 整包级准备（授权 + 完整性校验），每批只做一次。
+    let content_key = match prepare_package(ctx, &pkg, &mut progress).await {
+        Ok(key) => key,
+        Err(error) => {
+            let message = error.to_string();
+            log::error!("[game-download] 版本 {version_id} 安装准备失败: {message}");
+            for target in &targets {
+                if let Err(write_error) =
+                    set_instance_state(ctx, &target.instance, "failed", Some(&message))
+                {
+                    log::error!(
+                        "[game-download] 实例 {} 失败状态回写失败: {write_error}",
+                        target.instance
+                    );
+                }
+            }
+            // 整包留着：授权恢复后重试不必重新下载。
+            let _ = set_package_state(ctx, &version_id, "ready", Some(&message));
+            progress.finish(Some(message.clone()));
+            publish_failed(ctx, &version_id, &message);
+            return;
+        }
+    };
+
+    // 逐实例安装。单个实例失败不打断整批：一个失败就放弃其余的，用户会看到
+    // 「其余实例既没装也没说为什么」，而它们的失败原因往往就是同一个。
+    let mut first_error: Option<String> = None;
+    let mut installed = 0usize;
+    for (index, target) in targets.iter().enumerate() {
+        progress.set_completed(index);
+        match install_instance(ctx, &pkg, target, content_key.as_deref(), &mut progress).await {
+            Ok(()) => {
+                installed += 1;
+                if let Err(error) = set_instance_state(ctx, &target.instance, "installed", None) {
+                    log::error!(
+                        "[game-download] 实例 {} 完成状态回写失败: {error}",
+                        target.instance
+                    );
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                log::error!("[game-download] 实例 {} 安装失败: {message}", target.instance);
+                if let Err(write_error) =
+                    set_instance_state(ctx, &target.instance, "failed", Some(&message))
+                {
+                    log::error!(
+                        "[game-download] 实例 {} 失败状态回写失败: {write_error}",
+                        target.instance
+                    );
+                }
+                first_error.get_or_insert(message);
+            }
+        }
+    }
+    progress.set_completed(installed);
+
+    match &first_error {
+        None => {
+            // 整批成功：整包已消费完毕，清掉文件与记录，不留占用磁盘的残留。
+            cleanup_package(&pkg.dest);
+            let _ = delete_package(ctx, &version_id);
+            progress.finish(None);
+        }
+        Some(message) => {
+            // 保留整包以便「重试安装」不必重新下载；失败原因落在实例记录上。
+            let _ = set_package_state(ctx, &version_id, "ready", Some(message));
+            progress.finish(Some(message.clone()));
+            publish_failed(ctx, &version_id, message);
+        }
+    }
+}
+
+/// 整包级准备：取商店内容密钥并校验完整性，返回借用中的内容密钥。
+async fn prepare_package(
+    ctx: &Ctx,
+    pkg: &PackageRecord,
+    progress: &mut InstallProgress,
+) -> Result<Option<Vec<u8>>, KernelError> {
+    // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不静默回退：
+    // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
+    progress.enter(PHASE_AUTHORIZING, Some(pkg.version_id.clone()));
+    let lease = store_content_key(ctx, &pkg.dest).await?;
+    let content_key = lease.as_ref().map(|lease| lease.key().to_vec());
+
+    // md5 自验（引擎只保留 sha256，清单提供的是 md5）。GB 级包要读完全文件，
+    // 因此这里按已读字节上报——否则「校验中」这一步会面无表情地卡上好几分钟。
+    progress.enter(PHASE_VERIFYING, Some(pkg.version_id.clone()));
+    let verified = md5_matches_with_progress(&pkg.dest, &pkg.md5, &mut |done, total| {
+        let fraction = if total > 0 {
+            done as f64 / total as f64
+        } else {
+            0.0
+        };
+        progress.inner(
+            fraction,
+            Some(format!("{} / {}", human_bytes(done), human_bytes(total))),
+        );
+    })?;
+    if !verified {
+        return Err(KernelError::Config(format!(
+            "MD5 校验失败：{} 与清单不符",
+            pkg.dest.to_string_lossy()
+        )));
+    }
+    // `lease` 必须活到这里之后：内容密钥借自它，提前释放会让 `content_key` 悬空。
+    drop(lease);
+    Ok(content_key)
+}
+
+/// 安装一个实例：解包 → 写元数据 → 装加载器。
+///
+/// 幂等：游戏已装好则跳过解包（重试只补没做完的部分，例如加载器）。
+async fn install_instance(
+    ctx: &Ctx,
+    pkg: &PackageRecord,
+    target: &InstanceRecord,
+    content_key: Option<&[u8]>,
     progress: &mut InstallProgress,
 ) -> Result<(), KernelError> {
-    // Mark the authorizing phase so a second manual trigger is rejected with a
-    // reason instead of queueing another full authorization chain.
-    set_state(ctx, &rec.version_id, "authorizing", None)?;
+    set_instance_state(ctx, &target.instance, "installing", None)?;
+    let install_dir = ctx.install_dir(&target.instance);
 
-    // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不再静默回退：
-    // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
-    progress.enter(PHASE_AUTHORIZING, None);
-    let lease = store_content_key(ctx, &rec.dest).await?;
-    let content_key = lease.as_ref().map(|lease| lease.key());
-    install_locked(ctx, rec, content_key, progress).await
+    if !meta_bridge::is_installed(&install_dir) {
+        progress.enter(PHASE_PREPARING, Some(target.instance.clone()));
+        // 半成品输出目录自愈：上次失败可能留下空目录（remove_dir_all 自身失败 / 用户
+        // 手建），解包器遇到已存在输出必失败。真冲突（已有 version.json 的完整安装）
+        // 由上面的 `is_installed` 分支拦住，走不到这里。
+        if install_dir.exists() {
+            log::warn!(
+                "[game-download] 清理上次失败残留的半成品目录 {}",
+                install_dir.display()
+            );
+            progress.inner(0.0, Some(install_dir.to_string_lossy().into_owned()));
+            std::fs::remove_dir_all(&install_dir).map_err(|e| {
+                KernelError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("无法清理残留安装目录 {}: {e}", install_dir.display()),
+                ))
+            })?;
+        }
+
+        log::info!(
+            "[game-download] 开始安装实例 {} <- {}",
+            target.instance,
+            pkg.dest.to_string_lossy()
+        );
+        progress.enter(PHASE_EXTRACTING, Some(target.instance.clone()));
+        let extract_result = extractor::extract_package_with_progress(
+            &pkg.dest,
+            &install_dir,
+            content_key,
+            &mut |done, total, entry| {
+                let fraction = if total > 0 {
+                    done as f64 / total as f64
+                } else {
+                    0.0
+                };
+                progress.inner(
+                    fraction,
+                    Some(format!("{} ({}/{})", shorten_entry(entry), done + 1, total)),
+                );
+            },
+        );
+        if let Err(error) = extract_result {
+            // 失败即清空输出目录，去掉「名为已装、实则空目录」的假成功。
+            let _ = std::fs::remove_dir_all(&install_dir);
+            return Err(KernelError::from(error));
+        }
+
+        progress.enter(PHASE_FINALIZING, Some(target.instance.clone()));
+        meta_bridge::write_meta(
+            &install_dir,
+            &target.instance,
+            &target.version_id,
+            &target.kind,
+            None,
+        )?;
+        // 游戏本体已就位 → 立刻让开始页看到它，不必等加载器装完。
+        ctx.events.publish(
+            "version.installed",
+            serde_json::json!({ "name": target.instance }),
+        );
+    }
+
+    // 加载器：只在「这次要求的版本与磁盘上已装的版本不同」时才跑 lipd。
+    // 这既是幂等（重试不会重复安装），也让失败重试能精确补装加载器。
+    if let Some(loader) = target
+        .loader
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        if meta_bridge::installed_loader(&install_dir).as_deref() != Some(loader) {
+            progress.enter(PHASE_LOADER, Some(format!("LeviLamina {loader}")));
+            install_loader(ctx, &install_dir, loader, progress).await?;
+            progress.enter(PHASE_FINALIZING, Some(target.instance.clone()));
+            meta_bridge::write_meta(
+                &install_dir,
+                &target.instance,
+                &target.version_id,
+                &target.kind,
+                Some(loader),
+            )?;
+        }
+    }
+
+    log::info!(
+        "[game-download] 实例 {} 安装完成 -> {}",
+        target.instance,
+        install_dir.to_string_lossy()
+    );
+    ctx.events.publish(
+        "game-download.installed",
+        serde_json::json!({ "instance": target.instance, "id": target.version_id }),
+    );
+    Ok(())
+}
+
+/// 把 LeviLamina 装进实例目录（经 lipd；依赖解析与下载都由它完成）。
+///
+/// 这里直接调用内容下载模块的**内核无关核心**（[`lip_install::install_resolved`]）：
+/// 游戏下载流水线跑在内核事件里，手里只有一组 Arc 服务，既拿不到也用不上整个
+/// `KernelContext`。加载器目录与安装实现都归内容下载模块，本模块只负责「什么时候装、
+/// 装到哪个目录、进度怎么报」。
+async fn install_loader(
+    ctx: &Ctx,
+    install_dir: &Path,
+    loader: &str,
+    progress: &mut InstallProgress,
+) -> Result<(), KernelError> {
+    let Some(exe) = lipd::find_lip_executable() else {
+        return Err(KernelError::Config(
+            "未检测到 lipd，无法安装加载器（需要先安装 lip 与 .NET 10 运行时）".into(),
+        ));
+    };
+    let handle = progress.loader_handle();
+    let sink: lipd::CallbackSink = Arc::new(move |callback: lipd::DaemonCallback| {
+        let Some(handle) = handle.as_ref() else { return };
+        match callback {
+            lipd::DaemonCallback::Progress { item, percent } => {
+                // lipd 的百分比是 0~100；缺省（协议里就没有该字段）时给阶段中点，
+                // 而不是起点——报起点会让进度条看起来停死在这 28% 上。
+                handle.report(percent.map(|p| p / 100.0), Some(item));
+            }
+            lipd::DaemonCallback::Log(text) => {
+                // 步骤文本比百分比更细，但也更吵：这里只留诊断日志。
+                if !text.trim().is_empty() {
+                    log::debug!("[game-download] lipd: {text}");
+                }
+            }
+        }
+    });
+
+    let _ = ctx;
+    let outcome = lip_install::install_resolved(
+        &exe,
+        loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF,
+        loader,
+        install_dir,
+        Some(&sink),
+    )
+    .await;
+    if outcome.success {
+        log::info!(
+            "[game-download] 实例加载器安装完成 {} -> {}",
+            outcome.package,
+            install_dir.display()
+        );
+        return Ok(());
+    }
+    let code = outcome.error_code.unwrap_or_default();
+    Err(KernelError::Module(format!(
+        "加载器 LeviLamina {loader} 安装失败（{code}）：{}",
+        outcome.stderr
+    )))
+}
+
+/// 广播安装失败（供下载中心 / 详情提示）。
+fn publish_failed(ctx: &Ctx, version_id: &str, error: &str) {
+    ctx.events.publish(
+        "version.download_failed",
+        serde_json::json!({ "id": version_id, "error": error }),
+    );
+    ctx.events.publish(
+        "game-download.failed",
+        serde_json::json!({ "id": version_id, "error": error }),
+    );
 }
 
 /// 商店授权可复用的缓存 key 文件路径（`store-key/<key_id>.dpapi`）。
 fn cached_key_path(ctx: &Ctx, key_id: &str) -> PathBuf {
     let safe: String = key_id
         .chars()
-        .map(|c| if c.is_ascii_hexdigit() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_hexdigit() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     ctx.store_key_dir().join(format!("{safe}.dpapi"))
 }
@@ -898,7 +1562,7 @@ fn auth_error(stage: &'static str, detail: String) -> KernelError {
 /// 为加密 MSIXVC 走完 Store 授权链，取得打包绑定的内容密钥。
 ///
 /// 顺序：本地 key 缓存命中（离线）→ 在线授权链。任一步失败都返回**结构化错误**
-/// 供 `finish_install` 落库并广播，绝不静默回退。密钥只在返回的租约内存活。
+/// 供调用方落库并广播，绝不静默回退。密钥只在返回的租约内存活。
 async fn store_content_key(
     ctx: &Ctx,
     dest: &Path,
@@ -920,9 +1584,7 @@ async fn store_content_key(
             ))
         }
     };
-    if let Ok(Some(lease)) =
-        native_install::load_cached_key(ctx, &identifiers.key_id, &xuid)
-    {
+    if let Ok(Some(lease)) = native_install::load_cached_key(ctx, &identifiers.key_id, &xuid) {
         log::info!(
             "[game-download] 命中本地授权缓存 key_id={}（离线）",
             identifiers.key_id
@@ -977,150 +1639,6 @@ fn store_market(ctx: &Ctx) -> String {
     }
 }
 
-/// 将后端授权服务取得的 content key 借用到同步提取调用中。
-///
-/// key 不进入任务记录、数据库、事件或错误文本；`None` 保持历史兼容回退，
-/// 直到 Windows Store/WAM 服务完成真实接入。
-pub async fn finish_install_with_key(
-    ctx: &Ctx,
-    lock: &Arc<tokio::sync::Mutex<()>>,
-    rec: TaskRecord,
-    content_key: Option<&[u8]>,
-) -> Result<(), KernelError> {
-    if let Some(key) = content_key {
-        if key.len() != 32 {
-            return Err(KernelError::Config("content key 长度必须为 32 字节".into()));
-        }
-    }
-    let _guard = lock.lock().await;
-    let mut progress = InstallProgress::new(ctx, rec.task_id);
-    progress.begin();
-    let result = install_locked(ctx, rec, content_key, &mut progress).await;
-    progress.finish(result.as_ref().err().map(|e| e.to_string()));
-    result
-}
-
-/// The install body, with the single-flight lock already held.
-///
-/// Split out so the authorization phase and the unpack phase run under **one**
-/// acquisition. Calling the locked body from a path that already holds the lock
-/// would deadlock on this non-reentrant mutex.
-async fn install_locked(
-    ctx: &Ctx,
-    rec: TaskRecord,
-    content_key: Option<&[u8]>,
-    progress: &mut InstallProgress,
-) -> Result<(), KernelError> {
-    // 取消竞态：若记录已被取消删除，放弃本次安装（取消已完成清理）。
-    if get_record(ctx, &rec.version_id)?.is_none() {
-        return Ok(());
-    }
-
-    // 幂等：已安装即直接收尾（供续装 / 重复事件）。
-    let install_dir = ctx.install_dir(&rec.folder);
-    if meta_bridge::is_installed(&install_dir) {
-        set_state(ctx, &rec.version_id, "installed", None)?;
-        publish_installed(ctx, &rec);
-        cleanup_package(&rec.dest);
-        return Ok(());
-    }
-
-    progress.enter(PHASE_PREPARING, None);
-    // 半成品输出目录自愈：上次失败可能留下空目录（remove_dir_all 自身失败 / 用户手建），
-    // `extract_xvc` 遇到已存在输出必失败。这里对“未完成安装的残留目录”先清理。
-    // 真冲突（已有 version.json 的完整安装）由上面的幂等分支拦住，走不到这里。
-    if install_dir.exists() && !meta_bridge::is_installed(&install_dir) {
-        log::warn!(
-            "[game-download] 清理上次失败残留的半成品目录 {}",
-            install_dir.display()
-        );
-        progress.inner(0.0, Some(install_dir.to_string_lossy().into_owned()));
-        std::fs::remove_dir_all(&install_dir).map_err(|e| {
-            KernelError::Io(std::io::Error::new(
-                e.kind(),
-                format!("无法清理残留安装目录 {}: {e}", install_dir.display()),
-            ))
-        })?;
-    }
-
-    set_state(ctx, &rec.version_id, "extracting", None)?;
-    log::info!(
-        "[game-download] 开始安装 {} <- {}",
-        rec.version_id,
-        rec.dest.to_string_lossy()
-    );
-
-    // md5 自验（引擎只保留 sha256，清单提供的是 md5）。GB 级包要读完全文件，
-    // 因此这里按已读字节上报——否则「校验中」这一步会面无表情地卡上好几分钟。
-    progress.enter(PHASE_VERIFYING, None);
-    let verified = md5_matches_with_progress(&rec.dest, &rec.md5, &mut |done, total| {
-        let fraction = if total > 0 {
-            done as f64 / total as f64
-        } else {
-            0.0
-        };
-        progress.inner(
-            fraction,
-            Some(format!("{} / {}", human_bytes(done), human_bytes(total))),
-        );
-    })?;
-    if !verified {
-        return Err(KernelError::Config(format!(
-            "MD5 校验失败：{} 与清单不符",
-            rec.dest.to_string_lossy()
-        )));
-    }
-
-    // 解包（MSIXVC → 纯 Rust 提取；历史 .appx → zip）→ 校验主程序（exe + config + PE x64）→ 写元数据。
-    // 失败时清理输出目录，去掉残留的“半安装”目录，避免前端看到名为已装、实则空目录的假成功。
-    progress.enter(PHASE_EXTRACTING, None);
-    let extract_result = extractor::extract_package_with_progress(
-        &rec.dest,
-        &install_dir,
-        content_key,
-        &mut |done, total, entry| {
-            let fraction = if total > 0 {
-                done as f64 / total as f64
-            } else {
-                0.0
-            };
-            progress.inner(
-                fraction,
-                Some(format!("{} ({}/{})", shorten_entry(entry), done + 1, total)),
-            );
-        },
-    );
-    if let Err(e) = extract_result {
-        let _ = std::fs::remove_dir_all(&install_dir);
-        return Err(KernelError::from(e));
-    }
-
-    progress.enter(PHASE_FINALIZING, None);
-    let kind = rec.kind.clone();
-    if let Err(error) = meta_bridge::write_meta(&install_dir, &rec.folder, &rec.version_id, &kind) {
-        let _ = std::fs::remove_dir_all(&install_dir);
-        return Err(error);
-    }
-
-    set_state(ctx, &rec.version_id, "installed", None)?;
-    log::info!("[game-download] 安装完成 {} -> {}", rec.version_id, install_dir.to_string_lossy());
-    cleanup_package(&rec.dest);
-    publish_installed(ctx, &rec);
-    Ok(())
-}
-
-fn publish_installed(ctx: &Ctx, rec: &TaskRecord) {
-    // `version.installed` 供开始页刷新清单；`game-download.installed` 供详情页联动。
-    ctx.events.publish(
-        "version.installed",
-        serde_json::json!({ "name": rec.version_id }),
-    );
-    ctx.events.publish(
-        "game-download.installed",
-        serde_json::json!({ "id": rec.version_id }),
-    );
-}
-
 /// 清理已消费的整包。
 fn cleanup_package(dest: &Path) {
     let _ = std::fs::remove_file(dest);
@@ -1129,132 +1647,140 @@ fn cleanup_package(dest: &Path) {
 
 // ---------------------------------------------------------------- 续传
 
-/// 启动恢复：对未完成的记录续传/续装，回收孤儿整包，失败任务限次重投。
+/// 启动恢复：对未完成的整包续传/续装，清理无主整包。
 pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
-    // `authorizing` 一并纳入：进程在授权阶段崩溃会留下该状态，不恢复就会永远
-    // 卡在「正在授权」，用户既看不到也重试不了。
-    let recs = match list_records(ctx, &["downloading", "authorizing", "extracting", "failed"]) {
+    // `ready` 一并纳入：整包下完但进程在安装前退出（或安装失败保留整包）时会留下该
+    // 状态，不恢复就永远不会有实例装上。
+    let packages = match list_packages(ctx, &["downloading", "ready", "failed", "cancelling"]) {
         Ok(v) => v,
-        Err(e) => {
-            log::warn!("[game-download] resume_pending 读取记录失败: {e}");
+        Err(error) => {
+            log::warn!("[game-download] resume_pending 读取记录失败: {error}");
             return;
         }
     };
-    for rec in recs {
-        // 已装但未同步 → 补收尾。
-        if meta_bridge::is_installed(&ctx.install_dir(&rec.folder)) {
-            set_state(ctx, &rec.version_id, "installed", None).ok();
-            publish_installed(ctx, &rec);
-            cleanup_package(&rec.dest);
+
+    for pkg in packages {
+        // 没有实例在等这个包（用户取消了全部安装）→ 整包与记录一并清理，
+        // 不留下无人认领的 GB 级文件。
+        let pending = match pending_instances(ctx, &pkg.version_id) {
+            Ok(v) => v,
+            Err(error) => {
+                log::warn!(
+                    "[game-download] 读取 {} 的待装实例失败: {error}",
+                    pkg.version_id
+                );
+                continue;
+            }
+        };
+        if pending.is_empty() {
+            log::info!("[game-download] 版本 {} 已无待装实例，清理整包", pkg.version_id);
+            cleanup_package(&pkg.dest);
+            delete_package(ctx, &pkg.version_id).ok();
             continue;
         }
+
         // 整包已完整且 md5 命中 → 直接续装。
-        if rec.dest.is_file() && md5_matches(&rec.dest, &rec.md5).unwrap_or(false) {
-            let next_ctx = ctx.clone();
-            let next_lock = lock.clone();
-            let vid = rec.version_id.clone();
-            ctx.runtime.spawn(async move {
-                if let Err(e) = finish_install(&next_ctx, &next_lock, rec).await {
-                    log::error!("[game-download] 续装 {vid} 失败: {e}");
-                }
-            });
+        if pkg.dest.is_file() && md5_matches(&pkg.dest, &pkg.md5).unwrap_or(false) {
+            set_package_state(ctx, &pkg.version_id, "ready", None).ok();
+            spawn_batch(ctx, lock, &pkg.version_id, pkg.task_id);
             continue;
         }
-        // 整包不完整 → 提前清除“已放弃”残留：本地无整包、无断点字节，且引擎无在途任务，
-        // 说明下载已取消/无任何可恢复内容，删除记录避免重启白白续传（甚至反复失败）。
-        let part = PathBuf::from(format!("{}.part", rec.dest.to_string_lossy()));
-        let has_live = rec.task_id.map(|t| ctx.download.task(t).is_some()).unwrap_or(false);
-        if !rec.dest.is_file() && !part.is_file() && !has_live {
-            log::warn!("[game-download] 丢弃无内容的下载残留记录 {}", rec.version_id);
-            delete_record(ctx, &rec.version_id).ok();
+
+        // 整包不完整 → 提前清除“已放弃”残留：本地无整包、无断点字节，且引擎无在途
+        // 任务，说明下载已取消/无任何可恢复内容，丢弃记录避免重启白白续传。
+        let part = PathBuf::from(format!("{}.part", pkg.dest.to_string_lossy()));
+        let has_live = pkg
+            .task_id
+            .map(|t| ctx.download.task(t).is_some())
+            .unwrap_or(false);
+        if !pkg.dest.is_file() && !part.is_file() && !has_live {
+            log::warn!(
+                "[game-download] 丢弃无内容的下载残留记录 {}",
+                pkg.version_id
+            );
+            discard_instances(ctx, &pkg.version_id, "下载残留已丢弃").ok();
+            delete_package(ctx, &pkg.version_id).ok();
             continue;
         }
+
         // failed 限次重投：连续 N 次启动重试仍失败 → 标记为永久失败，不再自动重下。
-        if rec.state == "failed" {
-            if rec.attempts >= MAX_RESUME_ATTEMPTS {
+        if pkg.state == "failed" {
+            if pkg.attempts >= MAX_RESUME_ATTEMPTS {
                 log::warn!(
                     "[game-download] {} 已自动重试 {} 次仍失败，停止自动重试",
-                    rec.version_id,
-                    rec.attempts
+                    pkg.version_id,
+                    pkg.attempts
                 );
-                let _ = ctx.db.with_conn(|conn| {
+                set_package_state(ctx, &pkg.version_id, "failed_permanent", pkg.error.as_deref()).ok();
+                continue;
+            }
+            ctx.db
+                .with_conn(|conn| {
                     conn.execute(
-                        "UPDATE module_game_download_task SET state = 'failed_permanent' WHERE version_id = ?1",
-                        [rec.version_id.as_str()],
+                        "UPDATE module_game_download_package SET attempts = attempts + 1
+                          WHERE version_id = ?1",
+                        [pkg.version_id.as_str()],
                     )
                     .map(|_| ())
                     .map_err(KernelError::from)
-                });
-                continue;
-            }
-            let _ = ctx.db.with_conn(|conn| {
-                conn.execute(
-                    "UPDATE module_game_download_task SET attempts = attempts + 1 WHERE version_id = ?1",
-                    [rec.version_id.as_str()],
-                )
-                .map(|_| ())
-                .map_err(KernelError::from)
-            });
+                })
+                .ok();
         }
+
         // 重新投递续传（引擎按 `.part` Range 续传）。
         let entry = match block_load(ctx).and_then(|v| {
-            v.find_by_id(&rec.version_id)
+            v.find_by_id(&pkg.version_id)
                 .ok_or_else(|| KernelError::InvalidArgument("清单无此版本".into()))
         }) {
-            Ok(e) => e,
-            Err(e) => {
+            Ok(entry) => entry,
+            Err(error) => {
                 // 清单异常不阻塞其余任务。
-                if let Some(t) = rec.task_id {
-                    let _ = ctx.download.resume(t);
+                if let Some(task_id) = pkg.task_id {
+                    let _ = ctx.download.resume(task_id);
                 }
-                log::warn!("[game-download] 续传 {} 取清单失败: {e}", rec.version_id);
+                log::warn!("[game-download] 续传 {} 取清单失败: {error}", pkg.version_id);
                 continue;
             }
         };
-        let urls = match entry.all_urls() {
-            Some(v) => v,
-            None => continue,
-        };
+        let Some(urls) = entry.all_urls() else { continue };
         let opts = DownloadOptions {
             resume: true,
             remove_on_cancel: true,
             expected_sha256: None,
-            filename: Some(format!("{}.msixvc", rec.version_id)),
+            filename: Some(format!("{}.msixvc", pkg.version_id)),
             ..Default::default()
         };
         let mut new_task: Option<u64> = None;
         for url in &urls {
-            match ctx.download.enqueue(url, &rec.dest, opts.clone()) {
+            match ctx.download.enqueue(url, &pkg.dest, opts.clone()) {
                 Ok(task_id) => {
                     new_task = Some(task_id);
                     break;
                 }
-                Err(e) => log::warn!("[game-download] 续传 {} CDN 失败 {url}: {e}", rec.version_id),
+                Err(error) => log::warn!(
+                    "[game-download] 续传 {} CDN 失败 {url}: {error}",
+                    pkg.version_id
+                ),
             }
         }
         match new_task {
             Some(task_id) => {
-                set_state(ctx, &rec.version_id, "downloading", None).ok();
-                let _ = ctx.db.with_conn(|conn| {
-                    conn.execute(
-                        "UPDATE module_game_download_task SET task_id = ?1 WHERE version_id = ?2",
-                        rusqlite::params![task_id, rec.version_id],
-                    )
-                    .map(|_| ())
-                    .map_err(KernelError::from)
-                });
+                set_package_state(ctx, &pkg.version_id, "downloading", None).ok();
+                set_package_task(ctx, &pkg.version_id, Some(task_id)).ok();
             }
-            None => log::warn!("[game-download] 续传 {} 全部 CDN 投递失败", rec.version_id),
+            None => log::warn!("[game-download] 续传 {} 全部 CDN 投递失败", pkg.version_id),
         }
     }
 
-    // 回收孤儿整包：DB 记录丢失但 `.download/*.msixvc` 完整且清单 md5 命中
-    // → 补建记录直接续装（不重新下载），救回历史会话留下的包。
-    recover_orphan_packages(ctx, lock);
+    cleanup_orphan_packages(ctx);
 }
 
-/// 扫描 `versions_root/.download/*.msixvc`，对无 DB 记录但 md5 命中清单的整包补建任务并安装。
-fn recover_orphan_packages(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
+/// 清理 `versions_root/.download` 下无主的整包 / 断点文件。
+///
+/// 新模型里「有没有人要这个包」完全由实例记录表达，因此没有任何整包记录的文件就是
+/// 无主残留（旧模型下这里会把孤儿包**认领并安装**，现在那样做只会凭空造出一个用户
+/// 没要求过的实例）。清理是安全的：真要装，用户重新点安装即可。
+fn cleanup_orphan_packages(ctx: &Ctx) {
     let download_dir = ctx.versions_root().join(DOWNLOAD_SUBDIR);
     let entries = match std::fs::read_dir(&download_dir) {
         Ok(v) => v,
@@ -1263,130 +1789,46 @@ fn recover_orphan_packages(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
             log::warn!(
-                "[game-download] 孤儿包回收读取 {} 失败: {e}",
+                "[game-download] 无主整包清理读取 {} 失败: {e}",
                 download_dir.display()
             );
             return;
         }
     };
-    let manifest = match block_load(ctx) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("[game-download] 孤儿包回收取清单失败: {e}");
-            return;
-        }
-    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("msixvc") {
+        if !path.is_file() {
             continue;
         }
-        let stem = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
         };
-        // 已有记录的交给上面的续传逻辑。
-        match get_record(ctx, &stem) {
+        // 只处理本模块产物：`<slug>.msixvc` 与 `<slug>.msixvc.part`。
+        let stem = name.strip_suffix(".part").unwrap_or(name);
+        let Some(slug) = stem.strip_suffix(".msixvc") else {
+            continue;
+        };
+        match get_package(ctx, slug) {
             Ok(Some(_)) => continue,
             Ok(None) => {}
-            Err(e) => {
-                log::warn!("[game-download] 孤儿包回收查记录失败 {stem}: {e}");
+            Err(error) => {
+                log::warn!("[game-download] 无主整包 {slug} 查记录失败: {error}");
                 continue;
             }
         }
-        // 已安装的包直接清理。
-        if meta_bridge::is_installed(&ctx.install_dir(&stem)) {
-            cleanup_package(&path);
-            continue;
-        }
-        let Some(v) = manifest.find_by_id(&stem) else {
-            // 清单里没有 → 无法校验，保留但不自动安装。
-            log::info!("[game-download] 发现孤儿包 {stem}，清单无此版本，保留待手动处理");
-            continue;
-        };
-        if v.md5.trim().is_empty() {
-            continue;
-        }
-        // md5 命中才认领（分块流式，避免整包读内存）。
-        if !md5_matches(&path, &v.md5).unwrap_or(false) {
-            log::warn!("[game-download] 孤儿包 {stem} md5 不符清单，跳过");
-            continue;
-        }
-        let kind = match v.kind() {
-            manifest::VersionKind::Release => "release",
-            manifest::VersionKind::Preview => "preview",
-        };
-        let rec = TaskRecord {
-            version_id: stem.clone(),
-            kind: kind.to_string(),
-            folder: stem.clone(),
-            dest: path.clone(),
-            md5: v.md5.clone(),
-            state: "extracting".into(),
-            error: None,
-            task_id: None,
-            attempts: 0,
-        };
-        if let Err(e) = upsert_record(ctx, &rec) {
-            log::warn!("[game-download] 孤儿包 {stem} 补建记录失败: {e}");
-            continue;
-        }
-        log::info!("[game-download] 回收孤儿整包 {stem}（{} 字节），直接续装", entry.metadata().map(|m| m.len()).unwrap_or(0));
-        let next_ctx = ctx.clone();
-        let next_lock = lock.clone();
-        let vid = stem.clone();
-        ctx.runtime.spawn(async move {
-            if let Err(e) = finish_install(&next_ctx, &next_lock, rec).await {
-                log::error!("[game-download] 孤儿包 {vid} 续装失败: {e}");
-                if let Err(write_error) = mark_failed(&next_ctx, &vid, &e.to_string()) {
-                    log::error!(
-                        "[game-download] 孤儿包 {vid} 失败状态回写失败: {write_error}（记录可能停在非终态）"
-                    );
-                }
-            }
-        });
+        log::info!(
+            "[game-download] 清理无主下载残留 {}（{} 字节）",
+            path.display(),
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
 
-/// 同步读取清单（供 `start` 等非 async 上下文使用；阻塞运行时线程）。
+/// 同步读取清单（供 `resume_pending` 等非 async 上下文使用；阻塞运行时线程）。
 fn block_load(ctx: &Ctx) -> Result<manifest::HistoricalVersions, KernelError> {
     ctx.runtime
         .block_on(manifest::load_manifest(ctx, false))
-}
-
-// ---------------------------------------------------------------- 视图
-
-/// 下载引擎快照的轻量视图。
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DownloadState {
-    pub task_id: u64,
-    pub total_bytes: u64,
-    pub downloaded_bytes: u64,
-    pub speed_bytes_per_sec: u64,
-}
-
-impl DownloadState {
-    fn from_snapshot(s: copper_downloader::TaskSnapshot) -> Self {
-        Self {
-            task_id: s.id,
-            total_bytes: s.total_bytes,
-            downloaded_bytes: s.downloaded_bytes,
-            speed_bytes_per_sec: s.speed_bytes_per_sec,
-        }
-    }
-}
-
-/// 单版本任务视图。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskView {
-    pub version_id: String,
-    pub kind: String,
-    pub dest: String,
-    /// `downloading` | `extracting` | `installed` | `failed`。
-    pub state: String,
-    pub error: Option<String>,
-    pub download: Option<DownloadState>,
 }
 
 // ---------------------------------------------------------------- 测试
@@ -1421,10 +1863,11 @@ mod tests {
         std::fs::write(&p, &payload).unwrap();
 
         let mut samples: Vec<(u64, u64)> = Vec::new();
-        let ok = md5_matches_with_progress(&p, "00000000000000000000000000000000", &mut |done, total| {
-            samples.push((done, total));
-        })
-        .unwrap();
+        let ok =
+            md5_matches_with_progress(&p, "00000000000000000000000000000000", &mut |done, total| {
+                samples.push((done, total));
+            })
+            .unwrap();
         assert!(!ok, "故意给错的期望值不应通过");
         assert!(!samples.is_empty(), "GB 级包必须上报中间进度");
         for (_, total) in &samples {
@@ -1452,6 +1895,22 @@ mod tests {
         for (key, _) in INSTALL_PHASES {
             assert!(key.starts_with("download.stage."), "阶段键命名空间不对: {key}");
         }
+    }
+
+    /// 多实例进度必须按实例数摊平，且整批单调递增（不许中途倒退）。
+    #[test]
+    fn batch_progress_is_flat_and_monotonic() {
+        let scaled = |completed: usize, seen: usize, total: usize, value: f64| {
+            let completed = if seen > completed { seen } else { completed };
+            (completed as f64 + value) / total as f64
+        };
+        // 两个实例：第一个实例走到解包一半，第二个实例刚开始，最后走到整批结束。
+        let first = scaled(0, 0, 2, phase_base(PHASE_EXTRACTING) + 0.5 * INSTALL_PHASES[PHASE_EXTRACTING].1);
+        let second_start = scaled(1, 1, 2, phase_base(PHASE_PREPARING));
+        let second_end = scaled(1, 1, 2, phase_base(PHASE_FINALIZING) + INSTALL_PHASES[PHASE_FINALIZING].1);
+        assert!(first < second_start, "实例切换处进度不得倒退");
+        assert!(second_start < second_end);
+        assert!((second_end - 1.0).abs() < 1e-9, "整批结束应到 100%");
     }
 
     /// 进度文案的字节格式化不能出现 `1024.0 KB` 这种越界写法。
@@ -1489,35 +1948,6 @@ mod tests {
         assert!(parse_snapshot(&serde_json::json!({ "id": 1, "status": "doing" })).is_none());
     }
 
-    #[test]
-    fn row_roundtrip_fields_consistent() {
-        // 静态校验：视图字段与 DB 列对齐（避免拼写漂移）。
-        let task = TaskView {
-            version_id: "1.21.0".into(),
-            kind: "release".into(),
-            dest: "/tmp/x".into(),
-            state: "downloading".into(),
-            error: None,
-            download: None,
-        };
-        let json = serde_json::to_value(task).unwrap();
-        let map = json.as_object().unwrap();
-        for k in ["versionId", "kind", "dest", "state", "error", "download"] {
-            assert!(map.contains_key(k), "缺字段 {k}");
-        }
-    }
-
-    #[test]
-    fn list_records_builds_placeholders() {
-        // 纯字符串拼接逻辑冒烟。
-        let states = ["downloading", "extracting"];
-        let sql = format!(
-            "SELECT ... WHERE state IN ({})",
-            states.iter().map(|_| "?").collect::<Vec<_>>().join(",")
-        );
-        assert!(sql.contains("IN (?,?)"));
-    }
-
     /// 安装单飞锁必须是进程级同一个实例。
     ///
     /// 回归点：锁若挂在模块实例上，命令层（只持有 `KernelContext`）会另建一把，
@@ -1529,10 +1959,20 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b), "安装锁不是同一个实例，会导致并发解包");
     }
 
+    /// 迁移 SQL 必须把旧表拆成两张表：整包按版本、实例按目录名。
+    #[test]
+    fn instance_migration_splits_tables() {
+        let sql = MIGRATION_INSTANCES.sql;
+        assert!(sql.contains("module_game_download_package"));
+        assert!(sql.contains("module_game_download_instance"));
+        assert_eq!(sql.matches("INSERT OR IGNORE").count(), 2);
+        assert!(sql.contains("DROP TABLE IF EXISTS module_game_download_task"));
+        assert!(sql.contains("WHERE state <> 'installed'"));
+    }
+
     /// 手动重装的前置判定：这些情况必须在下载/安装前拒绝，而不是重下数 GB 的包。
     #[test]
     fn install_preconditions_are_strict() {
-        // 无记录：拒绝（没有包可装）。
         let dir = std::env::temp_dir().join(format!("copper_gd_inst_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1545,10 +1985,20 @@ mod tests {
         let pkg = dir.join("ok.msixvc");
         std::fs::write(&pkg, b"abc").unwrap();
         assert!(pkg.is_file());
-        let md5_empty = md5_matches(&pkg, "");
         // `md5_matches` 对空期望值报错而非放行——空值恒校验失败会导致无限重试。
-        assert!(md5_empty.is_err(), "空 md5 必须拒绝而不是恒失败");
+        assert!(md5_matches(&pkg, "").is_err(), "空 md5 必须拒绝而不是恒失败");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 建议实例名的基础换算（preview 后缀必须保留，否则两种版本会撞名）。
+    #[test]
+    fn suggested_instance_name_avoids_taken() {
+        assert_eq!(meta_bridge::game_version_of("1.21.130.22"), "1.21.130.22");
+        assert_eq!(meta_bridge::game_version_of("1.21.130.22_preview"), "1.21.130.22");
+        assert_eq!(
+            meta::sanitize_instance_name("1.21.130.22-preview"),
+            "1.21.130.22-preview"
+        );
     }
 }

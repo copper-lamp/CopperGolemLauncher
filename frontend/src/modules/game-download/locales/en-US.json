@@ -4,13 +4,26 @@
   "detailTitle": "Version Details",
   "title": "Game Download",
   "detail": "Version Details",
+  "latest_section": "Latest Versions",
   "latest_release": "Latest Release",
   "latest_preview": "Latest Preview",
   "categories": "All Versions",
   "versionsCount": "{n} versions",
+  "search_placeholder": "Search version",
+  "no_match": "No matching version",
+  "match_count": "{n} version(s) matched",
   "installed": "Installed",
   "downloaded": "Downloaded",
   "latest": "Latest",
+  "progress_hint": "Download and install progress is shown in Downloads",
+  "loader_label": "Loader",
+  "loader_none": "No loader",
+  "loader_unavailable": "No compatible LeviLamina for this version",
+  "loader_requirement": "This loader requires Minecraft {requirement}",
+  "lip_missing": "lipd not detected: the game installs normally, but the loader cannot be installed (install lip and the .NET 10 runtime first)",
+  "client_label": "Client",
+  "client_empty": "No client available",
+  "client_hint": "Client DLLs will be selectable here once collected; left empty for now",
   "kind": {
     "release": "Release",
     "preview": "Preview"
@@ -25,6 +38,7 @@
     "import": "Import APK",
     "back": "Back",
     "cancel": "Cancel",
+    "clear_search": "Clear search",
     "open": "Open",
     "task": "Copy task link"
   },
@@ -36,6 +50,25 @@
     "installed": "Installed",
     "failed": "Failed"
   },
+  "dialog": {
+    "title": "Name the instance",
+    "intro": "The same version can be installed many times; each install becomes an isolated instance.",
+    "field_name": "Instance name",
+    "name_placeholder": "e.g. 1.21.130.22",
+    "checking": "Checking instance name",
+    "available": "Instance name is available",
+    "confirm": "Start install",
+    "reason": {
+      "empty": "Instance name cannot be empty",
+      "too_long": "Instance name is too long (64 characters max)",
+      "trailing_dot_or_space": "Instance name cannot end with a dot or space",
+      "illegal_char": "Instance name contains illegal characters (< > : \" / \\ | ? *)",
+      "control_char": "Instance name contains control characters",
+      "reserved": "Instance name conflicts with a reserved device name (CON, NUL, ...)",
+      "taken": "An instance with this name already exists, choose another",
+      "unknown": "Cannot verify the instance name right now, retry later"
+    }
+  },
   "meta": {
     "game_version": "Game version",
     "kind": "Type",
@@ -46,6 +79,7 @@
     "already_installed": "This version is already installed",
     "no_url": "No download link available for this version",
     "no_manifest": "Failed to fetch version list, check your network and retry",
+    "not_found": "Version not found, go back to the list and retry",
     "md5_mismatch": "Download verification failed, please retry",
     "authorization_required": "Microsoft Store authorization is required. Sign in and retry",
     "authorization_failed": "Store authorization failed. Verify this account owns the game and retry",
@@ -63,11 +97,12 @@
     "unknown": "Unknown extraction error"
   },
   "toast": {
-    "enqueued": "Added to download queue",
+    "enqueued": "Added to the download queue, see Downloads for progress",
+    "reusing": "Reusing the local package, installing now",
     "installing": "Installing",
-    "installed": "Downloaded and installed",
-    "failed": "Download failed",
-    "cancelled": "Cancelled",
+    "installed": "Instance {name} installed",
+    "failed": "Install failed",
+    "cancelled": "Install cancelled",
     "refresh_ok": "List refreshed"
   },
   "import": {

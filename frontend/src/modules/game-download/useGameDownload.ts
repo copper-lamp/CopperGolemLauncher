@@ -1,15 +1,15 @@
-// 游戏下载状态：初始化拉取清单 + 订阅引擎事件增量更新 + 模块生命周期事件。
+// 游戏下载状态：清单 + 加载器清单 + 安装投递 + 模块事件。
 //
-// 作为模块级单例（如 `useDownloads`），供列表页与详情页共用。任务进度来自
-// 内核全局 `download.progress/status` 事件（按本模块文件名 `{slug}.msixvc` 过滤），
-// 安装完成 / 失败 / 取消经模块专用事件驱动清单刷新与反馈。
+// 作为模块级单例（如 `useDownloads`），供列表页与详情页共用。
+//
+// **这里不跟踪下载 / 安装进度**：进度由内核下载引擎统一上报，界面统一在下载中心
+// 展示（含解包与加载器安装的阶段进度）。模块再存一份实时进度只会造成两处显示不同步
+// ——下载中心是任务的事实源，这里只负责「清单」与「投递」。
 
 import { readonly, ref } from "vue";
 
-import type { DownloadTask } from "../../api/download";
 import { showToast } from "../../composables/useToast";
 import {
-  onDownload,
   onGameDownloadCancelled,
   onGameDownloadEnqueued,
   onGameDownloadFailed,
@@ -17,98 +17,44 @@ import {
 } from "../../events";
 import { t } from "../../i18n";
 import {
-  formatBytes as fmtBytes,
   gameCancel,
-  gameDetail,
-  gameEnqueue,
   gameInstall,
+  gameInstanceCheck,
+  gameInstanceSuggest,
+  gameLoaders,
   gameManifest,
-  progressRatio,
+  gameRetry,
   type GameManifestView,
-  type GameTaskView,
+  type InstanceCheck,
+  type LoaderOptions,
 } from "./api";
-
-/** 版本 id → 实时下载任务（来自全局事件，按文件名过滤）。 */
-const liveTasks = ref<Record<string, DownloadTask>>({});
-/** 版本 id → 版本任务视图（从事务查询，含解包/失败状态与错误）。 */
-const taskStates = ref<Record<string, GameTaskView>>({});
 
 const manifest = ref<GameManifestView | null>(null);
 const loading = ref(false);
 const initialized = ref(false);
+/** 版本 id → 加载器清单（按需拉取后在本次会话内缓存）。 */
+const loaderCatalogs = ref<Record<string, LoaderOptions>>({});
+/** 同一版本的加载器清单并发请求去重（详情页快速切换时会出现）。 */
+const loaderInflight = new Map<string, Promise<LoaderOptions | null>>();
 
-/** 从全局任务快照反解本模块版本 id（文件名 `{slug}.msixvc`）。 */
-function versionIdOf(task: DownloadTask): string | null {
-  const name = task.filename ?? "";
-  const base = name.endsWith(".msixvc") ? name.slice(0, -7) : null;
-  return base && base.length > 0 ? base : null;
-}
-
-function upsertLive(task: DownloadTask) {
-  const id = versionIdOf(task);
-  if (!id) return; // 非本模块任务
-  liveTasks.value = { ...liveTasks.value, [id]: task };
-}
-
-/** 移除某个版本的实时下载项（终态 / 取消时调用，避免行内残留“下载中”）。 */
-function removeLive(id: string) {
-  if (!(id in liveTasks.value)) return;
-  const next = { ...liveTasks.value };
-  delete next[id];
-  liveTasks.value = next;
-}
-
-/** 移除某个版本的全部任务状态（实时 + 事务视图）。 */
-function clearTask(id: string) {
-  removeLive(id);
-  if (id in taskStates.value) {
-    const next = { ...taskStates.value };
-    delete next[id];
-    taskStates.value = next;
-  }
-}
-
-function setTaskState(state: GameTaskView) {
-  taskStates.value = { ...taskStates.value, [state.version_id]: state };
-}
-
-/** 订阅状态事件：仅保留非终态为“下载中”；done / cancelled 及时清理实时项。 */
-function handleStatus(task: DownloadTask) {
-  const id = versionIdOf(task);
-  if (!id) return;
-  if (task.status === "done" || task.status === "cancelled") {
-    removeLive(id);
-  } else {
-    upsertLive(task);
-  }
-}
-
-/** 初始化：订阅一次全局下载 + 模块事件。 */
+/** 初始化：订阅模块事件（幂等）。 */
 export async function initGameDownload(): Promise<void> {
   if (initialized.value) return;
   initialized.value = true;
   await Promise.all([
-    onDownload("progress", upsertLive),
-    onDownload("status", handleStatus),
-    onGameDownloadEnqueued(({ id }) => {
-      // 入队即开始回填状态；随后 progress/status 事件驱动实时进度。
-      void refreshState(id);
-    }),
-    onGameDownloadInstalled(() => {
-      showToast(t("module.game-download.toast.installed"), "success");
+    onGameDownloadEnqueued(() => {
+      // 入队即刷新清单：加载器徽标等派生信息可能因此变化。
       void loadManifest(false);
     }),
-    onGameDownloadFailed(({ id, error }) => {
+    onGameDownloadInstalled(({ instance }) => {
+      showToast(t("module.game-download.toast.installed", { name: instance }), "success");
+      void loadManifest(false);
+    }),
+    onGameDownloadFailed(({ error }) => {
       showToast(error || t("module.game-download.toast.failed"), "error");
-      removeLive(id);
-      void refreshState(id);
-      void loadManifest(false);
     }),
-    onGameDownloadCancelled((id) => {
+    onGameDownloadCancelled(() => {
       showToast(t("module.game-download.toast.cancelled"), "info");
-      // 取消即放弃安装：清空状态，行/详情回退为“可下载”。
-      clearTask(id);
-      void loadManifest(false);
     }),
   ]);
 }
@@ -126,112 +72,108 @@ export async function loadManifest(refresh = false): Promise<void> {
   }
 }
 
-/** 刷新单个版本的任务状态（详情页 / 入队后回填）。 */
-export async function refreshState(id: string): Promise<void> {
+/**
+ * 拉取某版本的加载器清单。
+ *
+ * 失败时返回 `null` 并提示：加载器是**可选**项，服务不可达不该阻断安装流程，
+ * 下拉退化为「无可用加载器」即可。
+ */
+export async function loadLoaders(id: string, force = false): Promise<LoaderOptions | null> {
+  if (!force && loaderCatalogs.value[id]) return loaderCatalogs.value[id];
+  const existing = loaderInflight.get(id);
+  if (existing) return existing;
+  const request = (async () => {
+    try {
+      const options = await gameLoaders(id);
+      loaderCatalogs.value = { ...loaderCatalogs.value, [id]: options };
+      return options;
+    } catch (e) {
+      showToast(String(e), "error");
+      return null;
+    } finally {
+      loaderInflight.delete(id);
+    }
+  })();
+  loaderInflight.set(id, request);
+  return request;
+}
+
+/** 推荐实例名（安装确认弹窗初值）。失败时回落到版本号本身。 */
+export async function suggestInstance(id: string, fallback: string): Promise<string> {
   try {
-    const state = await gameDetail(id);
-    if (state) setTaskState(state);
+    return await gameInstanceSuggest(id);
   } catch {
-    // 忽略：无任务或查询失败不影响界面。
+    return fallback;
   }
 }
 
-/** 投递下载。 */
-export async function enqueue(id: string): Promise<void> {
+/** 实例名可用性检查；查询失败时返回 `null`（调用方按「无法确认」处理，不放行）。 */
+export async function checkInstance(name: string): Promise<InstanceCheck | null> {
   try {
-    const taskId = await gameEnqueue(id);
-    await refreshState(id);
-    if (taskId > 0) showToast(t("module.game-download.toast.enqueued"), "success");
-  } catch (e) {
-    showToast(String(e), "error");
-  }
-}
-
-/** 取消任务。 */
-export async function cancel(id: string): Promise<void> {
-  try {
-    await gameCancel(id);
-  } catch (e) {
-    showToast(String(e), "error");
+    return await gameInstanceCheck(name);
+  } catch {
+    return null;
   }
 }
 
 /**
- * 仅重装：本地已有完整整包时重跑安装流水线，不重新下载。
+ * 投递安装：以 `instance` 为实例名安装版本 `id`，可选加载器 `loader`。
  *
- * 供「下载条码」上的安装按钮调用。安装阶段失败后，用户不该被迫把数 GB
- * 的包重下一遍——后端会校验整包存在且 md5 相符，不满足时明确报错。
+ * 返回 `true` 表示投递成功（弹窗可以关闭）。返回的任务 id 为 0 时说明整包已在本地，
+ * 后端已直接开始安装——不必提示「开始下载」。
  */
-export async function install(id: string): Promise<void> {
+export async function install(
+  id: string,
+  instance: string,
+  loader?: string | null,
+): Promise<boolean> {
   try {
-    await gameInstall(id);
-    await refreshState(id);
+    const taskId = await gameInstall(id, instance, loader);
+    showToast(
+      taskId > 0
+        ? t("module.game-download.toast.enqueued")
+        : t("module.game-download.toast.reusing"),
+      "success",
+    );
+    await loadManifest(false);
+    return true;
+  } catch (e) {
+    showToast(String(e), "error");
+    return false;
+  }
+}
+
+/** 取消某实例的安装（该版本再无待装实例时连整包下载一起放弃）。 */
+export async function cancel(instance: string): Promise<void> {
+  try {
+    await gameCancel(instance);
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
+/** 重试某实例的安装：整包在本地时不重新下载。 */
+export async function retry(instance: string): Promise<void> {
+  try {
+    await gameRetry(instance);
     showToast(t("module.game-download.toast.installing"), "info");
   } catch (e) {
     showToast(String(e), "error");
   }
 }
 
-/** 强制刷新清单源。 */
-export async function refreshSource(): Promise<void> {
-  await loadManifest(true);
-}
-
-/** 单一版本视图（时间序最近一次任务状态优先）。 */
+/** 游戏下载模块的共享状态与操作。 */
 export function useGameDownload() {
   return {
     manifest: readonly(manifest),
     loading: readonly(loading),
-    liveTasks: readonly(liveTasks),
-    taskStates: readonly(taskStates),
+    loaderCatalogs: readonly(loaderCatalogs),
     loadManifest,
-    refreshState,
-    enqueue,
-    cancel,
+    loadLoaders,
+    suggestInstance,
+    checkInstance,
     install,
-    refreshSource,
-    percentOf: (id: string): number => {
-      const live = liveTasks.value[id];
-      if (live) return progressRatioFromSnapshot(live);
-      const state = taskStates.value[id];
-      return progressRatio(state?.download ?? null);
-    },
-    speedOf: (id: string): string => {
-      const live = liveTasks.value[id];
-      // 安装阶段没有字节速率可言：报「0 B/s」比留空更像故障。
-      if (!live || live.stage) return "";
-      return fmtBytes(live.speed_bytes_per_sec) + "/s";
-    },
-    rawOf: (id: string): string => {
-      const live = liveTasks.value[id];
-      if (live) {
-        // 安装阶段：把「已下 / 总量」换成阶段文案，否则界面会在下载到 100%
-        // 之后长时间停在「3.2 GB / 3.2 GB」上，看起来像卡死了。
-        const stage = stageTextOf(live);
-        if (stage) return stage;
-        return `${fmtBytes(live.downloaded_bytes)} / ${fmtBytes(live.total_bytes)}`;
-      }
-      const state = taskStates.value[id];
-      if (state?.download) {
-        return `${fmtBytes(state.download.downloaded_bytes)} / ${fmtBytes(state.download.total_bytes)}`;
-      }
-      return "";
-    },
+    cancel,
+    retry,
   };
-}
-
-/** 阶段文案（i18n 键 + 动态细节）；无阶段信息时为空串。 */
-export function stageTextOf(task: DownloadTask): string {
-  if (!task.stage) return "";
-  const label = t(task.stage);
-  return task.stage_detail ? `${label} · ${task.stage_detail}` : label;
-}
-
-/** 从全局任务快照计算进度（0~1）：阶段进度优先于字节进度。 */
-function progressRatioFromSnapshot(task: DownloadTask): number {
-  if (task.phase_progress != null) {
-    return Math.min(Math.max(task.phase_progress, 0), 1);
-  }
-  if (task.total_bytes <= 0) return 0;
-  return Math.min(task.downloaded_bytes / task.total_bytes, 1);
 }

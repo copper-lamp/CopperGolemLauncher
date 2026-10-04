@@ -1,4 +1,4 @@
-﻿//! 内容下载模块（`content-download`）：拉取网络内容、浏览并下载。
+//! 内容下载模块（`content-download`）：拉取网络内容、浏览并下载。
 //!
 //! 两类数据源：
 //! - **CurseForge**（行为包 / 材质包 / 光影包）：列表 / 详情 / 文件直链齐备，
@@ -66,9 +66,10 @@ pub mod curseforge;
 pub mod http;
 pub mod install_target;
 pub mod lip;
-pub mod ll_android;
 pub mod lip_install;
 pub mod lipd;
+pub mod ll_android;
+pub mod loader_catalog;
 pub mod model;
 
 /// 模块唯一标识。

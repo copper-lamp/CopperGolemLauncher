@@ -1,24 +1,20 @@
 <script setup lang="ts">
-// 版本详情页：展示版本元数据与实时任务状态（下载进度 / 解包 / 结果），
-// 提供投递 / 取消 / 重试操作。数据来自模块单例（`useGameDownload`）。
+// 版本二级页面：选加载器 / 客户端 → 安装（弹窗命名实例）。
+//
+// 版式由需求钉死：顶部是版本图标与版本号（无边框），下面是「加载器」「客户端」两个
+// 下拉框，页面正下方居中一个安装按钮。这里**不列实例、不画进度**：一次安装产出一个
+// 实例，进度统一在下载中心看（下载引擎是任务的事实源），本页只负责发起。
 
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import {
-  CheckCircle2,
-  Download,
-  FileKey,
-  Gamepad2,
-  LoaderCircle,
-  PackageCheck,
-  RefreshCw,
-  ShieldAlert,
-  X,
-} from "@lucide/vue";
+import { AlertTriangle, Gamepad2, PackagePlus } from "@lucide/vue";
 
+import CoButton from "../../components/ui/CoButton.vue";
+import CoSelect from "../../components/ui/CoSelect.vue";
 import { useI18n } from "../../i18n";
+import InstanceNameDialog from "./InstanceNameDialog.vue";
+import type { GameVersionView } from "./api";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
-import { formatBytes, type GameVersionView } from "./api";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -29,201 +25,138 @@ const MB_KEY = "module.game-download";
 
 const id = computed(() => String(route.params.id ?? ""));
 
-/** 从清单视图定位当前版本（最新或分组内）。 */
+/** 从清单视图定位当前版本（正式版 / 测试版两张平表 + 顶部最新卡）。 */
 const version = computed<GameVersionView | null>(() => {
   const m = gd.manifest.value;
   if (!m) return null;
-  const inLatest = [m.latest_release, m.latest_preview].find((v) => v?.id === id.value);
-  if (inLatest) return inLatest;
-  for (const group of m.groups) {
-    const v = group.items.find((i) => i.id === id.value);
-    if (v) return v;
-  }
-  return null;
+  const latest = [m.latest_release, m.latest_preview].find((v) => v?.id === id.value);
+  if (latest) return latest;
+  return [...m.releases, ...m.previews].find((v) => v.id === id.value) ?? null;
 });
 
-const state = computed(() => gd.taskStates.value[id.value]);
-const live = computed(() => gd.liveTasks.value[id.value]);
-
-const isDownloading = computed(() => !!live.value);
-const isExtracting = computed(() => state.value?.state === "extracting");
-const failed = computed(() =>
-  state.value?.state === "failed" ? (state.value.error ?? "") : null,
-);
-
+/** 加载器清单（本机 lipd 可用性 + 该游戏版本的全部 LeviLamina 候选）。 */
+const loaders = computed(() => gd.loaderCatalogs.value[id.value] ?? null);
+const lipAvailable = computed(() => loaders.value?.lip_available ?? true);
 /**
- * 能否「仅重装」：本地已有完整整包但尚未安装成功。
+ * 下拉里只列**可用**的加载器。
  *
- * 下载完成、安装失败时这是正确的补救动作——重装只跑安装流水线，
- * 不重下数 GB 的包。为真时它优先于「重试」（后者会重新下载）。
+ * 不兼容的版本在数据里仍然存在（列表页徽标要看全量），但对用户而言「选一个装不上的
+ * 版本」没有意义：后端按索引声明的平台依赖严格判定，放进去只会让安装走到一半才由
+ * lipd 报依赖冲突，那是最差的一种反馈。
  */
-const canInstall = computed(
-  () =>
-    !!version.value?.is_downloaded &&
-    !version.value?.is_installed &&
-    !isDownloading.value &&
-    !isExtracting.value,
+const compatibleLoaders = computed(() => (loaders.value?.loaders ?? []).filter((l) => l.compatible));
+
+const loader = ref("");
+const client = ref("");
+
+const loaderChoices = computed(() => [
+  { value: "", label: t(`${MB_KEY}.loader_none`) },
+  ...compatibleLoaders.value.map((l) => ({
+    value: l.version,
+    label: `LeviLamina ${l.version}`,
+  })),
+]);
+
+/** 客户端下拉：当前没有收录任何客户端 dll，保持空表 + 占位项。 */
+const clientChoices = computed(() => [{ value: "", label: t(`${MB_KEY}.client_empty`) }]);
+
+/** 选中加载器声明的平台依赖（给用户一个「为什么可选的是这几个」的交代）。 */
+const requirement = computed(
+  () => compatibleLoaders.value.find((l) => l.version === loader.value)?.requirement ?? null,
 );
 
-const percent = computed(() => gd.percentOf(id.value));
-const raw = computed(() => gd.rawOf(id.value));
-const speed = computed(() => gd.speedOf(id.value));
+const dialogOpen = ref(false);
 
-async function onDownload() {
-  await gd.enqueue(id.value);
+function openDialog() {
+  if (!version.value) return;
+  dialogOpen.value = true;
 }
 
-async function onCancel() {
-  await gd.cancel(id.value);
-}
+onMounted(async () => {
+  await initGameDownload();
+  await gd.loadManifest(gd.manifest.value === null);
+  await gd.loadLoaders(id.value);
+});
 
-async function onInstall() {
-  await gd.install(id.value);
-}
+watch(id, async (next) => {
+  loader.value = "";
+  client.value = "";
+  if (next) await gd.loadLoaders(next);
+});
 
 /** 返回列表（未找到版本等兜底引导）。 */
 function goBack() {
   void router.push("/game-download");
 }
-
-onMounted(async () => {
-  await initGameDownload();
-  await gd.loadManifest(false);
-  await gd.refreshState(id.value);
-});
-
-watch(id, () => {
-  void gd.refreshState(id.value);
-});
 </script>
 
 <template>
   <div class="gd-detail">
     <!-- 未找到版本 -->
     <div v-if="!version" class="gd-detail__state">
-      <p class="gd-detail__state-text">{{ t(`${MB_KEY}.error.no_url`) }}</p>
-      <button class="gd-detail__primary" @click="goBack">
-        {{ t(`${MB_KEY}.actions.back`) }}
-      </button>
+      <p class="gd-detail__state-text">{{ t(`${MB_KEY}.error.not_found`) }}</p>
+      <CoButton variant="secondary" @click="goBack">{{ t(`${MB_KEY}.actions.back`) }}</CoButton>
     </div>
 
     <template v-else>
-      <!-- 头部：版本信息 -->
-      <div class="gd-detail__hero">
-        <div class="gd-detail__icon">
-          <Gamepad2 :size="30" />
-        </div>
-        <div class="gd-detail__hero-info">
-          <div class="gd-detail__hero-line">
+      <div class="gd-detail__column">
+        <!-- 顶部：版本图标与版本号，无边框 -->
+        <header class="gd-detail__hero">
+          <span class="gd-detail__icon" aria-hidden="true">
+            <Gamepad2 :size="30" />
+          </span>
+          <div class="gd-detail__hero-text">
             <span class="gd-detail__name">{{ version.game_version }}</span>
-            <span
-              class="gd-detail__kind"
-              :class="`gd-detail__kind--${version.kind}`"
-            >
-              {{ t(`${MB_KEY}.kind.${version.kind}`) }}
+            <span class="gd-detail__badges">
+              <span class="gd-detail__badge" :class="`gd-detail__badge--${version.kind}`">
+                {{ t(`${MB_KEY}.kind.${version.kind}`) }}
+              </span>
+              <span v-if="version.has_loader" class="gd-detail__badge gd-detail__badge--loader">
+                LeviLamina
+              </span>
             </span>
           </div>
-          <span
-            v-if="version.is_installed"
-            class="gd-detail__badge gd-detail__badge--installed"
-          >
-            <CheckCircle2 :size="14" />
-            {{ t(`${MB_KEY}.installed`) }}
-          </span>
-        </div>
-      </div>
+        </header>
 
-      <!-- 元数据 -->
-      <div class="gd-detail__meta">
-        <div class="gd-detail__meta-item">
-          <span class="gd-detail__meta-label">
-            <FileKey :size="13" /> {{ t(`${MB_KEY}.meta.md5`) }}
-          </span>
-          <code class="gd-detail__meta-value">{{ version.md5 || "—" }}</code>
-        </div>
-        <div
-          class="gd-detail__meta-item"
-          v-if="state?.download?.total_bytes"
-        >
-          <span class="gd-detail__meta-label">{{ t(`${MB_KEY}.meta.size`) }}</span>
-          <span class="gd-detail__meta-value">
-            {{ formatBytes(state.download.total_bytes) }}
-          </span>
-        </div>
-      </div>
+        <!-- 两个下拉框：加载器 / 客户端 -->
+        <div class="gd-detail__form">
+          <label class="gd-detail__field">
+            <span class="gd-detail__label">{{ t(`${MB_KEY}.loader_label`) }}</span>
+            <CoSelect v-model="loader" :options="loaderChoices" />
+            <span v-if="requirement" class="gd-detail__hint">
+              {{ t(`${MB_KEY}.loader_requirement`, { requirement }) }}
+            </span>
+            <span v-else-if="compatibleLoaders.length === 0" class="gd-detail__hint">
+              {{ t(`${MB_KEY}.loader_unavailable`) }}
+            </span>
+          </label>
 
-      <!-- 状态与操作 -->
-      <div class="gd-detail__status">
-        <!-- 下载完成未安装：只重装，不重下 -->
-        <div v-if="canInstall" class="gd-detail__state-block">
-          <PackageCheck :size="20" class="accent" />
-          <span>{{ t(`${MB_KEY}.state.downloaded`) }}</span>
-          <button class="gd-detail__primary" @click="onInstall">
-            <PackageCheck :size="14" />
+          <label class="gd-detail__field">
+            <span class="gd-detail__label">{{ t(`${MB_KEY}.client_label`) }}</span>
+            <CoSelect v-model="client" :options="clientChoices" disabled />
+            <span class="gd-detail__hint">{{ t(`${MB_KEY}.client_hint`) }}</span>
+          </label>
+
+          <!-- lipd 缺失：装完游戏也补不上加载器，必须提前说清楚 -->
+          <p v-if="loader && !lipAvailable" class="gd-detail__warn" role="alert">
+            <AlertTriangle :size="14" />
+            {{ t(`${MB_KEY}.lip_missing`) }}
+          </p>
+        </div>
+
+        <div class="gd-detail__spacer" />
+
+        <!-- 正下方居中的安装按钮 -->
+        <div class="gd-detail__actions">
+          <CoButton variant="primary" @click="openDialog">
+            <PackagePlus :size="16" />
             {{ t(`${MB_KEY}.actions.install`) }}
-          </button>
-        </div>
-
-        <!-- 解包中 -->
-        <div v-else-if="isExtracting" class="gd-detail__state-block">
-          <LoaderCircle :size="20" class="spin" />
-          <span>{{ t(`${MB_KEY}.state.extracting`) }}</span>
-        </div>
-
-        <!-- 下载进度 -->
-        <div v-else-if="isDownloading" class="gd-detail__state-block">
-          <div class="gd-detail__progress">
-            <div class="gd-detail__progress-track">
-              <div
-                class="gd-detail__progress-bar"
-                :style="{ width: `${percent * 100}%` }"
-              />
-            </div>
-            <div class="gd-detail__progress-caption">
-              <span>
-                {{ Math.round(percent * 100) }}%<template v-if="raw"> · {{ raw }}</template>
-              </span>
-              <span>{{ speed }}</span>
-            </div>
-          </div>
-          <button
-            class="gd-detail__ghost gd-detail__ghost--danger"
-            :title="t(`${MB_KEY}.actions.cancel`)"
-            @click="onCancel"
-          >
-            <X :size="15" />
-            {{ t(`${MB_KEY}.actions.cancel`) }}
-          </button>
-        </div>
-
-        <!-- 失败 -->
-        <div v-else-if="failed" class="gd-detail__state-block gd-detail__state-block--error">
-          <ShieldAlert :size="20" />
-          <span class="gd-detail__error-text">{{ failed }}</span>
-          <button class="gd-detail__primary" @click="onDownload">
-            <RefreshCw :size="14" />
-            {{ t(`${MB_KEY}.actions.retry`) }}
-          </button>
-        </div>
-
-        <!-- 已安装 -->
-        <div v-else-if="version.is_installed" class="gd-detail__state-block">
-          <CheckCircle2 :size="20" class="ok" />
-          <span>{{ t(`${MB_KEY}.installed`) }}</span>
-          <button class="gd-detail__primary" @click="onDownload">
-            <Download :size="14" />
-            {{ t(`${MB_KEY}.actions.reinstall`) }}
-          </button>
-        </div>
-
-        <!-- 可下载 -->
-        <div v-else class="gd-detail__state-block">
-          <button class="gd-detail__primary" @click="onDownload">
-            <Download :size="16" />
-            {{ t(`${MB_KEY}.actions.download`) }}
-          </button>
+          </CoButton>
+          <span class="gd-detail__actions-hint">{{ t(`${MB_KEY}.progress_hint`) }}</span>
         </div>
       </div>
+
+      <InstanceNameDialog v-model:open="dialogOpen" :version="version" :loader="loader || null" />
     </template>
   </div>
 </template>
@@ -235,9 +168,6 @@ watch(id, () => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--copper-space-4);
-  max-width: 720px;
-  margin: 0 auto;
 }
 
 .gd-detail__state {
@@ -253,14 +183,21 @@ watch(id, () => {
   color: var(--copper-text-secondary);
 }
 
+.gd-detail__column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-5);
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+/* 无边框头部：只有图标与文字，不做卡片。 */
 .gd-detail__hero {
   display: flex;
   align-items: center;
   gap: var(--copper-space-3);
-  padding: var(--copper-space-4);
-  background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
 }
 
 .gd-detail__icon {
@@ -269,195 +206,104 @@ watch(id, () => {
   justify-content: center;
   width: 56px;
   height: 56px;
+  flex-shrink: 0;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface-2);
   color: var(--copper-accent);
-  flex-shrink: 0;
 }
 
-.gd-detail__hero-info {
-  min-width: 0;
-}
-
-.gd-detail__hero-line {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-2);
-  flex-wrap: wrap;
-}
-
-.gd-detail__name {
-  font-size: var(--copper-font-size-lg);
-  font-weight: 700;
-}
-
-.gd-detail__kind {
-  padding: 1px 8px;
-  border-radius: var(--copper-radius-full);
-  font-size: var(--copper-font-size-xs);
-}
-
-.gd-detail__kind--release {
-  background: color-mix(in srgb, var(--copper-accent) 14%, transparent);
-  color: var(--copper-accent);
-}
-
-.gd-detail__kind--preview {
-  background: color-mix(in srgb, var(--copper-danger) 14%, transparent);
-  color: var(--copper-danger);
-}
-
-.gd-detail__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: var(--copper-space-1);
-  font-size: var(--copper-font-size-xs);
-}
-
-.gd-detail__badge--installed {
-  color: var(--copper-success);
-}
-
-.gd-detail__meta {
-  display: flex;
-  flex-direction: column;
-  gap: var(--copper-space-2);
-  padding: var(--copper-space-3) var(--copper-space-4);
-  background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-}
-
-.gd-detail__meta-item {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-2);
-  font-size: var(--copper-font-size-sm);
-}
-
-.gd-detail__meta-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--copper-text-secondary);
-  min-width: 90px;
-}
-
-.gd-detail__meta-value {
-  color: var(--copper-text);
-  word-break: break-all;
-}
-
-.gd-detail__status {
-  padding: var(--copper-space-4);
-  background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-}
-
-.gd-detail__state-block {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-3);
-  flex-wrap: wrap;
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-sm);
-}
-
-.gd-detail__state-block--error {
-  color: var(--copper-danger);
-}
-
-.gd-detail__error-text {
-  flex: 1;
-  min-width: 180px;
-  word-break: break-word;
-}
-
-.gd-detail__progress {
-  flex: 1;
-  min-width: 220px;
+.gd-detail__hero-text {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-1);
+  min-width: 0;
 }
 
-.gd-detail__progress-track {
-  height: 8px;
-  border-radius: var(--copper-radius-full);
-  background: var(--copper-surface-3);
-  overflow: hidden;
+.gd-detail__name {
+  font-size: var(--copper-font-size-xl);
+  font-weight: 700;
 }
 
-.gd-detail__progress-bar {
-  height: 100%;
-  border-radius: var(--copper-radius-full);
-  background: var(--copper-accent);
-  transition: width var(--copper-duration-fast) var(--copper-easing);
-}
-
-.gd-detail__progress-caption {
+.gd-detail__badges {
   display: flex;
-  justify-content: space-between;
-  font-size: var(--copper-font-size-xs);
-}
-
-.gd-detail__primary,
-.gd-detail__ghost {
-  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: var(--copper-control-h);
-  padding: 0 var(--copper-space-4);
-  border-radius: var(--copper-radius-md);
+  gap: var(--copper-space-1);
+  flex-wrap: wrap;
+}
+
+.gd-detail__badge {
+  padding: 1px 8px;
+  border-radius: var(--copper-radius-full);
+  font-size: var(--copper-font-size-xs);
+  line-height: 1.5;
   border: 1px solid transparent;
+}
+
+.gd-detail__badge--release {
+  color: var(--copper-badge-release);
+  background: var(--copper-badge-release-bg);
+  border-color: var(--copper-badge-release-border);
+}
+
+.gd-detail__badge--preview {
+  color: var(--copper-badge-alpha);
+  background: var(--copper-badge-alpha-bg);
+  border-color: var(--copper-badge-alpha-border);
+}
+
+.gd-detail__badge--loader {
+  color: var(--copper-badge-ll-mod);
+  background: var(--copper-badge-ll-mod-bg);
+  border-color: var(--copper-badge-ll-mod-border);
+}
+
+.gd-detail__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-4);
+}
+
+.gd-detail__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-1);
+  align-items: flex-start;
+}
+
+.gd-detail__label {
   font-size: var(--copper-font-size-sm);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: opacity var(--copper-duration-fast) var(--copper-easing);
+  color: var(--copper-text-secondary);
 }
 
-.gd-detail__primary {
-  background: var(--copper-accent);
-  color: var(--copper-on-accent, #fff);
+.gd-detail__hint {
+  font-size: var(--copper-font-size-xs);
+  color: var(--copper-text-disabled);
 }
 
-.gd-detail__primary:hover {
-  opacity: 0.9;
+.gd-detail__warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--copper-font-size-sm);
+  color: var(--copper-warning);
 }
 
-.gd-detail__ghost {
-  background: var(--copper-surface);
-  border-color: var(--copper-border);
-  color: var(--copper-text);
+.gd-detail__spacer {
+  flex: 1;
+  min-height: var(--copper-space-4);
 }
 
-.gd-detail__ghost:hover {
-  background: var(--copper-surface-2);
+.gd-detail__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--copper-space-2);
+  padding-bottom: var(--copper-space-2);
 }
 
-.gd-detail__ghost--danger {
-  color: var(--copper-danger);
-  border-color: color-mix(in srgb, var(--copper-danger) 35%, var(--copper-border));
-}
-
-.ok {
-  color: var(--copper-success);
-}
-
-.accent {
-  color: var(--copper-accent);
-}
-
-.spin {
-  animation: spin 1.2s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+.gd-detail__actions-hint {
+  font-size: var(--copper-font-size-xs);
+  color: var(--copper-text-disabled);
 }
 </style>

@@ -270,13 +270,37 @@ pub async fn install(
         }
     };
 
+    install_resolved(&exe, &package_ref_base, version, &target_dir, sink).await
+}
+
+/// 内核无关的安装核心：把已解析的包引用装进一个**已存在**的目标目录。
+///
+/// 从 [`install`] 拆出来是为了让「游戏下载」模块能在装完游戏实例后自动补装
+/// LeviLamina：那条链路跑在内核事件里、手里只有一组 Arc 服务（`game_download::Ctx`），
+/// 既拿不到也用不上整个 `KernelContext`。拆出的边界正好落在「一切环境探测与路径解析
+/// 都已完成」之后——本函数只依赖 `lipd`、包引用、版本号与目标目录。
+pub async fn install_resolved(
+    exe: &std::path::Path,
+    package_ref_base: &str,
+    version: &str,
+    target_dir: &std::path::Path,
+    sink: Option<&lipd::CallbackSink>,
+) -> LipInstallOutcome {
+    let version = version.trim();
+    if version.is_empty() {
+        return LipInstallOutcome::failure(ERR_LIP_PACKAGE_VERSION_REQUIRED, "lip 安装需要指定版本号");
+    }
+    if !target_dir.is_dir() {
+        return LipInstallOutcome::failure(ERR_TARGET_NOT_FOUND, "目标版本目录不存在");
+    }
+
     let package = format!("{package_ref_base}@{version}");
     let target_only = vec![package.clone()];
     let mut install_packages = vec![package.clone()];
     let mut pinned_levilamina = false;
 
     // 查询安装状态：失败仅记日志，不阻断安装（与 LeviLauncher 一致）。
-    let states = match lipd::list_package_states(&exe, &target_dir).await {
+    let states = match lipd::list_package_states(exe, target_dir).await {
         Ok(states) => states,
         Err(e) => {
             log::warn!("[content-download] 查询 lip 安装状态失败（忽略）：{e}");
@@ -301,7 +325,7 @@ pub async fn install(
 
     if target_explicit {
         log::info!("[content-download] lip 更新 {package} → {}", target_dir.display());
-        return match lipd::update_packages(&exe, &target_dir, &install_packages, sink).await {
+        return match lipd::update_packages(exe, target_dir, &install_packages, sink).await {
             Ok(logs) => LipInstallOutcome::done(&package, logs),
             Err(failure) => {
                 LipInstallOutcome::daemon_failure(&package, ERR_LIP_PACKAGE_INSTALL_FAILED, failure)
@@ -310,7 +334,7 @@ pub async fn install(
     }
 
     log::info!("[content-download] lip 安装 {package} → {}", target_dir.display());
-    match lipd::install_packages(&exe, &target_dir, &install_packages, sink).await {
+    match lipd::install_packages(exe, target_dir, &install_packages, sink).await {
         Ok(logs) => LipInstallOutcome::done(&package, logs),
         Err(mut failure) => {
             // 锁定的 LeviLamina 已装导致冲突 → 仅用目标包重试一次 Install。
@@ -320,7 +344,7 @@ pub async fn install(
                     LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE,
                 )
             {
-                match lipd::install_packages(&exe, &target_dir, &target_only, sink).await {
+                match lipd::install_packages(exe, target_dir, &target_only, sink).await {
                     Ok(logs) => return LipInstallOutcome::done(&package, logs),
                     Err(retry) => failure = retry,
                 }
@@ -328,7 +352,7 @@ pub async fn install(
             // 任意「已显式安装」冲突 → 回退为仅更新目标包。
             if is_already_installed_error(&failure.message) {
                 log::warn!("[content-download] lip 安装冲突，回退更新：{}", failure.message);
-                return match lipd::update_packages(&exe, &target_dir, &target_only, sink).await {
+                return match lipd::update_packages(exe, target_dir, &target_only, sink).await {
                     Ok(logs) => LipInstallOutcome::done(&package, logs),
                     Err(update) => LipInstallOutcome::daemon_failure(
                         &package,

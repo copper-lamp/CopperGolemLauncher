@@ -91,21 +91,22 @@ export function onModsChanged(
   );
 }
 
-/** 游戏下载模块：任务已投递（负载 `{ id, taskId }`）。 */
+/** 游戏下载模块：任务已投递（负载 `{ id, instance, taskId }`）。 */
 export function onGameDownloadEnqueued(
-  handler: (payload: { id: string; taskId: number }) => void,
+  handler: (payload: { id: string; instance: string; taskId: number }) => void,
 ): Promise<Unlisten> {
-  return listen<{ id: string; taskId: number }>("game-download-enqueued", (e) =>
-    handler(e.payload),
+  return listen<{ id: string; instance: string; taskId: number }>(
+    "game-download-enqueued",
+    (e) => handler(e.payload),
   );
 }
 
-/** 游戏下载模块：版本安装完成（负载 `id`）。 */
+/** 游戏下载模块：一次实例安装完成（负载 `{ id, instance }`）。 */
 export function onGameDownloadInstalled(
-  handler: (id: string) => void,
+  handler: (payload: { id: string; instance: string }) => void,
 ): Promise<Unlisten> {
-  return listen<{ id: string }>("game-download-installed", (e) =>
-    handler(e.payload.id),
+  return listen<{ id: string; instance: string }>("game-download-installed", (e) =>
+    handler(e.payload),
   );
 }
 
@@ -118,12 +119,12 @@ export function onGameDownloadFailed(
   );
 }
 
-/** 游戏下载模块：任务取消（负载 `id`）。 */
+/** 游戏下载模块：安装被取消（负载 `{ id, instance? }`；`instance` 缺省表示整包放弃）。 */
 export function onGameDownloadCancelled(
-  handler: (id: string) => void,
+  handler: (payload: { id: string; instance?: string }) => void,
 ): Promise<Unlisten> {
-  return listen<{ id: string }>("game-download-cancelled", (e) =>
-    handler(e.payload.id),
+  return listen<{ id: string; instance?: string }>("game-download-cancelled", (e) =>
+    handler(e.payload),
   );
 }
 

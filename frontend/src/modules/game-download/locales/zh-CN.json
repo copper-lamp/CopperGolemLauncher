@@ -4,16 +4,29 @@
   "detailTitle": "版本详情",
   "title": "游戏下载",
   "detail": "版本详情",
+  "latest_section": "最新版本",
   "latest_release": "最新正式版",
   "latest_preview": "最新预览版",
   "categories": "全部版本",
   "versionsCount": "{n} 个版本",
+  "search_placeholder": "搜索版本号",
+  "no_match": "没有匹配的版本",
+  "match_count": "共匹配到 {n} 个版本",
   "installed": "已安装",
   "downloaded": "已下载",
   "latest": "最新",
+  "progress_hint": "下载与安装进度可在下载中心查看",
+  "loader_label": "加载器",
+  "loader_none": "不使用加载器",
+  "loader_unavailable": "该版本暂无兼容的 LeviLamina",
+  "loader_requirement": "该加载器要求 Minecraft {requirement}",
+  "lip_missing": "未检测到 lipd：游戏会正常安装，但加载器无法安装（需要先安装 lip 与 .NET 10 运行时）",
+  "client_label": "客户端",
+  "client_empty": "暂无可用客户端",
+  "client_hint": "客户端 dll 收录后在这里选择，暂时留空",
   "kind": {
     "release": "正式版",
-    "preview": "预览版"
+    "preview": "测试版"
   },
   "actions": {
     "download": "下载",
@@ -25,6 +38,7 @@
     "import": "导入 APK",
     "back": "返回",
     "cancel": "取消",
+    "clear_search": "清空搜索",
     "open": "打开",
     "task": "复制任务链接"
   },
@@ -36,6 +50,25 @@
     "installed": "已安装",
     "failed": "失败"
   },
+  "dialog": {
+    "title": "命名实例",
+    "intro": "同一个版本可以安装多次，每次都会生成一个互相隔离的实例。",
+    "field_name": "实例名",
+    "name_placeholder": "例如 1.21.130.22",
+    "checking": "正在检查实例名",
+    "available": "实例名可用",
+    "confirm": "开始安装",
+    "reason": {
+      "empty": "实例名不能为空",
+      "too_long": "实例名过长（最多 64 字符）",
+      "trailing_dot_or_space": "实例名不能以点或空格结尾",
+      "illegal_char": "实例名含非法字符（< > : \" / \\ | ? *）",
+      "control_char": "实例名含控制字符",
+      "reserved": "实例名与系统保留名冲突（如 CON、NUL）",
+      "taken": "已有同名实例，请换一个名字",
+      "unknown": "无法确认实例名是否可用，请稍后重试"
+    }
+  },
   "meta": {
     "game_version": "游戏版本",
     "kind": "类型",
@@ -46,6 +79,7 @@
     "already_installed": "该版本已安装",
     "no_url": "该版本没有可用的下载链接",
     "no_manifest": "版本清单获取失败，请检查网络后重试",
+    "not_found": "找不到该版本，请返回列表重试",
     "md5_mismatch": "下载文件校验不通过，请重试",
     "authorization_required": "需要微软账户的 Store 授权才能安装，请先登录后重试",
     "authorization_failed": "Store 授权失败，请确认账户拥有该游戏并重试",
@@ -54,7 +88,7 @@
     "exception": "解包出现异常",
     "invalid_params": "解包参数错误",
     "key_not_found": "缺少内容密钥，请先登录微软账户后重试",
-    "unauthorized": "授权校验失败，请确认账户拥有 Store 版 Minecraft" ,
+    "unauthorized": "授权校验失败，请确认账户拥有 Store 版 Minecraft",
     "pipe_open_failed": "解包管道打开失败",
     "input_not_found": "找不到待解包文件",
     "output_dir_invalid": "解包输出目录无效",
@@ -63,11 +97,12 @@
     "unknown": "未知解包错误"
   },
   "toast": {
-    "enqueued": "已加入下载队列",
+    "enqueued": "已加入下载队列，进度见下载中心",
+    "reusing": "已复用本地安装包，开始安装",
     "installing": "开始安装",
-    "installed": "下载并安装完成",
-    "failed": "下载失败",
-    "cancelled": "已取消",
+    "installed": "实例 {name} 安装完成",
+    "failed": "安装失败",
+    "cancelled": "已取消安装",
     "refresh_ok": "清单已刷新"
   },
   "import": {

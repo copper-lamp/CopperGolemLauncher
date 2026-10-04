@@ -4,13 +4,13 @@
 //! `historical_versions.json`，内含历代 GDK 正式版 / 快照版的 CDN 直链与 md5。
 //! 三镜像（github / 代理 / gitcode）按设置 `download.mirror` 排序，失败回退缓存。
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::KernelError;
-use crate::modules::home::meta;
+use crate::modules::content_download::loader_catalog;
+
 use super::installer::Ctx;
 
 /// 版本库镜像源，按下标顺序依次尝试，前面可达即成功。
@@ -167,45 +167,36 @@ fn parse_numeric(s: &str) -> Option<(u32, u32, u32, u32)> {
 
 // ------------------------------------------------------------------ 视图
 
-/// 前端清单视图：顶部最新正式 / 最新快照 + 按大版本分组。
+/// 前端清单视图：顶部「最新版本」两张卡 + 全部版本按类型平铺（新→旧）。
+///
 /// 输出 snake_case，与前端 `GameManifestView` 等类型一致。
+///
+/// 旧视图按大版本（`1.21`）分组成树，前端再套一层可展开卡片；现在列表页要求
+/// 「两个大卡片（正式版 / 测试版）里直接平铺全部版本」，分组层既没有展示位、也
+/// 让「从新到旧」这条唯一的排序意图埋进了树里。故视图直接给出两个已排序的平表。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ManifestView {
     pub latest_release: Option<VersionView>,
     pub latest_preview: Option<VersionView>,
-    pub groups: Vec<VersionGroupView>,
+    /// 全部正式版，新→旧。
+    pub releases: Vec<VersionView>,
+    /// 全部测试版（快照 / 预览），新→旧。
+    pub previews: Vec<VersionView>,
 }
 
-/// 一个大版本分组卡片。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub struct VersionGroupView {
-    pub major: String,
-    /// 组内是否含该组最新版本（供前端高亮）。
-    pub latest: bool,
-    pub items: Vec<VersionView>,
-}
-
-/// 单版本行视图。
+/// 单版本卡片视图。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct VersionView {
-    /// 唯一键（=版本目录名）。
+    /// 唯一键（= 版本 slug，同时是整包暂存文件名）。
     pub id: String,
     /// 版本类型 `release` / `preview`。
     pub kind: String,
     /// 数值版本号（如 `1.21.120.21`）。
     pub game_version: String,
-    pub md5: String,
-    pub is_installed: bool,
-    /// 本地缓存是否已有整包（尚未安装）。
-    pub is_downloaded: bool,
-    pub timestamp: i64,
-    /// 是否当前分组内最新。
-    pub is_latest: bool,
-    /// 首选下载直链。
-    pub url: Option<String>,
+    /// 该版本是否有可装的 LeviLamina（列表页据此显示加载器徽标）。
+    pub has_loader: bool,
 }
 
 /// 载入清单（刷新或读缓存 + 可选网络），未联网时回退缓存。
@@ -246,10 +237,7 @@ pub async fn fetch_manifest(ctx: &Ctx) -> Result<HistoricalVersions, KernelError
     let _mirror = ctx
         .settings
         .get_or("download.mirror", "auto".to_string());
-    let mut order: Vec<usize> = (0..MANIFEST_URLS.len()).collect();
-    if order.is_empty() {
-        order = vec![0, 1, 2, 3, 4, 5];
-    }
+    let order: Vec<usize> = (0..MANIFEST_URLS.len()).collect();
 
     let client = crate::services::http_client::client_builder(Duration::from_secs(15)).build()?;
 
@@ -286,88 +274,60 @@ pub async fn fetch_manifest(ctx: &Ctx) -> Result<HistoricalVersions, KernelError
 }
 
 /// 构建前端视图（纯计算，可测）。
-pub fn build_view(ctx: &Ctx, versions: &HistoricalVersions) -> ManifestView {
-    let installed_set = installed_set(ctx);
-    let mut groups: BTreeMap<String, Vec<VersionView>> = BTreeMap::new();
-    let mut all_views: Vec<VersionView> = Vec::new();
+///
+/// `catalog` 为加载器目录；为 `None`（未装 lip / 索引不可达）时所有版本的
+/// `has_loader` 都是 `false`——徽标宁可不显示，也不能凭「网络没通」就说这个版本能装
+/// 加载器。
+pub fn build_view(
+    versions: &HistoricalVersions,
+    catalog: Option<&loader_catalog::LoaderCatalog>,
+) -> ManifestView {
+    let mut releases: Vec<VersionView> = Vec::new();
+    let mut previews: Vec<VersionView> = Vec::new();
 
     for entry in versions.all() {
-        let slug = entry.slug();
-        let v = VersionView {
-            id: slug.clone(),
-            kind: match entry.kind() {
-                VersionKind::Release => "release",
-                VersionKind::Preview => "preview",
-            }
-            .to_string(),
-            game_version: entry.game_version(),
-            md5: entry.md5.clone(),
-            is_installed: installed_set.contains(&slug),
-            is_downloaded: dest_exists(ctx, &slug),
-            timestamp: entry.timestamp,
-            is_latest: false,
-            url: entry.primary_url(),
+        let game_version = entry.game_version();
+        let kind = match entry.kind() {
+            VersionKind::Release => "release",
+            VersionKind::Preview => "preview",
         };
-        groups
-            .entry(entry.major())
-            .or_default()
-            .push(v.clone());
-        all_views.push(v);
-    }
-
-    // 组内按数值降序，标记组内最新。
-    for views in groups.values_mut() {
-        views.sort_by_key(|v| std::cmp::Reverse(b_numeric(v)));
-        if let Some(first) = views.first_mut() {
-            first.is_latest = true;
+        let view = VersionView {
+            id: entry.slug(),
+            kind: kind.to_string(),
+            has_loader: catalog.is_some_and(|c| c.supports(&game_version)),
+            game_version,
+        };
+        match entry.kind() {
+            VersionKind::Release => releases.push(view),
+            VersionKind::Preview => previews.push(view),
         }
     }
 
-    // 全局最新正式 / 最新快照（数值最大）。
-    let latest_release = latest_of(&all_views, "release");
-    let latest_preview = latest_of(&all_views, "preview");
+    // 新→旧：先按数值版本号降序，同数值再按时间降序（同版本号重发时后者更可信）。
+    let sort_desc = |items: &mut Vec<VersionView>| {
+        items.sort_by(|a, b| {
+            b_numeric(b)
+                .cmp(&b_numeric(a))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+    };
+    sort_desc(&mut releases);
+    sort_desc(&mut previews);
 
-    // 组按 major 倒序展示；数值解析失败的大版本排最后。
-    let mut group_list: Vec<VersionGroupView> = groups
-        .into_iter()
-        .map(|(major, items)| {
-            let latest = items.iter().any(|i| i.is_latest);
-            VersionGroupView { major, latest, items }
-        })
-        .collect();
-    group_list.sort_by(|a, b| a.major.cmp(&b.major).reverse());
+    let latest_release = releases.first().cloned();
+    let latest_preview = previews.first().cloned();
 
     ManifestView {
         latest_release,
         latest_preview,
-        groups: group_list,
+        releases,
+        previews,
     }
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn b_numeric(v: &VersionView) -> (u32, u32, u32, u32) {
     parse_numeric(&v.game_version).unwrap_or((0, 0, 0, 0))
-}
-
-fn latest_of(views: &[VersionView], kind: &str) -> Option<VersionView> {
-    views
-        .iter()
-        .filter(|v| v.kind == kind)
-        .max_by_key(|v| (parse_numeric(&v.game_version).unwrap_or((0, 0, 0, 0)), v.timestamp))
-        .cloned()
-}
-
-/// 已安装版本名集合（复用开始页扫描逻辑，按 volume 目录）。
-fn installed_set(ctx: &Ctx) -> std::collections::HashSet<String> {
-    meta::scan_versions(&ctx.versions_root())
-        .into_iter()
-        .map(|m| m.name)
-        .collect()
-}
-
-/// 缓存中是否存在完整（未安装）下载包。
-fn dest_exists(ctx: &Ctx, slug: &str) -> bool {
-    ctx.dest_for(slug).is_file()
 }
 
 // ------------------------------------------------------------------ 缓存
@@ -445,13 +405,74 @@ mod tests {
     #[test]
     fn groups_ordered_and_latest_marked() {
         let v: HistoricalVersions = serde_json::from_str(SAMPLE).unwrap();
-        // 无内核上下文，仅测分组逻辑（借助空缓存路径）。
         // 这里直接调用纯派生，验证 all() 顺序与 slug 唯一性。
         let all = v.all();
         assert!(all[0].timestamp >= all[1].timestamp);
         let ids: Vec<String> = all.iter().map(|e| e.slug()).collect();
         assert!(ids.contains(&"1.21.130.20_preview".to_string()));
         assert!(ids.contains(&"1.21.100.2".to_string()));
+    }
+
+    /// 新视图：正式版与测试版各自平铺，按数值新→旧，最新卡取各自首个。
+    #[test]
+    fn view_flattens_by_kind_newest_first() {
+        let sample = r#"{
+            "fileVersion": 1,
+            "releaseVersions": [
+                { "version": "Release 1.21.100.2", "urls": [], "timestamp": 1700000000, "md5": "A" },
+                { "version": "Release 1.21.130.22", "urls": [], "timestamp": 1760000000, "md5": "B" },
+                { "version": "Release 1.21.120.5", "urls": [], "timestamp": 1740000000, "md5": "C" }
+            ],
+            "previewVersions": [
+                { "version": "Preview 1.21.140.1", "urls": [], "timestamp": 1770000000, "md5": "D" }
+            ]
+        }"#;
+        let versions: HistoricalVersions = serde_json::from_str(sample).unwrap();
+        let view = build_view(&versions, None);
+        let ids: Vec<&str> = view.releases.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["1.21.130.22", "1.21.120.5", "1.21.100.2"]);
+        assert_eq!(view.previews.len(), 1);
+        assert_eq!(
+            view.latest_release.as_ref().map(|v| v.id.as_str()),
+            Some("1.21.130.22")
+        );
+        assert_eq!(
+            view.latest_preview.as_ref().map(|v| v.id.as_str()),
+            Some("1.21.140.1_preview")
+        );
+        // 无加载器目录 → 一律不显示加载器徽标（不能凭「网络没通」说可装）。
+        assert!(view.releases.iter().all(|v| !v.has_loader));
+    }
+
+    /// 加载器徽标由目录按游戏版本严格判定。
+    #[test]
+    fn view_marks_loader_from_catalog() {
+        use crate::modules::content_download::loader_catalog::{LoaderCatalog, LoaderOption};
+        // 直接用公开构造路径：目录从一个「只有 1.21.130 可用」的条目建立。
+        let catalog = LoaderCatalog::from_entries_for_test(
+            "0.16.2",
+            Some("microsoft.minecraft.bedrock 1.21.130"),
+            "1.21.130",
+        );
+        let sample = r#"{
+            "fileVersion": 1,
+            "releaseVersions": [
+                { "version": "Release 1.21.130.22", "urls": [], "timestamp": 1, "md5": "A" },
+                { "version": "Release 1.21.120.5", "urls": [], "timestamp": 2, "md5": "B" }
+            ],
+            "previewVersions": []
+        }"#;
+        let versions: HistoricalVersions = serde_json::from_str(sample).unwrap();
+        let view = build_view(&versions, Some(&catalog));
+        let marked: Vec<(&str, bool)> = view
+            .releases
+            .iter()
+            .map(|v| (v.game_version.as_str(), v.has_loader))
+            .collect();
+        assert_eq!(marked, [("1.21.130.22", true), ("1.21.120.5", false)]);
+        // 顺带确认选项视图与目录判定一致（下拉项的 compatible 与徽标同源）。
+        let options: Vec<LoaderOption> = catalog.options_for("1.21.130.22");
+        assert!(options[0].compatible);
     }
 
     #[test]
