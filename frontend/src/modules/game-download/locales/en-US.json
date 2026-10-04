@@ -17,6 +17,7 @@
   "latest": "Latest",
   "progress_hint": "Download and install progress is shown in Downloads",
   "loader_label": "Loader",
+  "select_none": "Not selected",
   "loader_none": "No loader",
   "loader_unavailable": "No compatible LeviLamina for this version",
   "loader_requirement": "This loader requires Minecraft {requirement}",

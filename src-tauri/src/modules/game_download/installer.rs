@@ -283,7 +283,9 @@ impl LoaderProgress {
         let inner = fraction.map(|f| f.clamp(0.0, 1.0)).unwrap_or(0.5);
         let value =
             (self.completed as f64 + phase_base(PHASE_LOADER) + weight * inner) / self.total as f64;
-        let _ = self.download.report_phase(self.task_id, value, key, detail);
+        // 上报是纯观测手段：任务已消失（重启 / 被移除）时服务层只记 debug 日志，
+        // 这里没有失败需要处理，也不会因此中断安装。
+        self.download.report_phase(self.task_id, value, key, detail);
     }
 }
 
@@ -852,7 +854,7 @@ pub async fn enqueue(
             }
             Err(error) => {
                 log::warn!("[game-download] CDN 投递失败 {url}: {error}");
-                last_err = Some(KernelError::from(error));
+                last_err = Some(error);
             }
         }
     }
@@ -1250,7 +1252,10 @@ pub async fn run_batch(
     };
 
     // 整包级准备（授权 + 完整性校验），每批只做一次。
-    let content_key = match prepare_package(ctx, &pkg, &mut progress).await {
+    //
+    // 密钥以**租约**形态持有到整批结束：`ContentKeyLease` 离开作用域即清零密钥内存，
+    // 这里若把它拷成 `Vec<u8>` 再丢掉租约，等于在堆上留下一份永不清零的密钥副本。
+    let lease = match prepare_package(ctx, &pkg, &mut progress).await {
         Ok(key) => key,
         Err(error) => {
             let message = error.to_string();
@@ -1273,13 +1278,16 @@ pub async fn run_batch(
         }
     };
 
-    // 逐实例安装。单个实例失败不打断整批：一个失败就放弃其余的，用户会看到
-    // 「其余实例既没装也没说为什么」，而它们的失败原因往往就是同一个。
+    let content_key = lease.as_ref().map(|lease| lease.key());
+
+    // 逐实例安装。单个实例失败**不**中断整批：一旦失败就放弃其余实例，那些实例会
+    // 既没装上、也没留下任何原因，而它们往往只是被同一个原因（授权 / 磁盘空间）连带
+    // 影响——继续跑完，每个实例都会拿到属于它自己的结论。
     let mut first_error: Option<String> = None;
     let mut installed = 0usize;
     for (index, target) in targets.iter().enumerate() {
         progress.set_completed(index);
-        match install_instance(ctx, &pkg, target, content_key.as_deref(), &mut progress).await {
+        match install_instance(ctx, &pkg, target, content_key, &mut progress).await {
             Ok(()) => {
                 installed += 1;
                 if let Err(error) = set_instance_state(ctx, &target.instance, "installed", None) {
@@ -1322,17 +1330,18 @@ pub async fn run_batch(
     }
 }
 
-/// 整包级准备：取商店内容密钥并校验完整性，返回借用中的内容密钥。
+/// 整包级准备：取商店内容密钥并校验完整性。
+///
+/// 返回**密钥租约**而不是裸字节：租约在整批安装期间保持存活，用完即随作用域清零。
 async fn prepare_package(
     ctx: &Ctx,
     pkg: &PackageRecord,
     progress: &mut InstallProgress,
-) -> Result<Option<Vec<u8>>, KernelError> {
+) -> Result<Option<native_install::ContentKeyLease>, KernelError> {
     // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不静默回退：
     // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
     progress.enter(PHASE_AUTHORIZING, Some(pkg.version_id.clone()));
     let lease = store_content_key(ctx, &pkg.dest).await?;
-    let content_key = lease.as_ref().map(|lease| lease.key().to_vec());
 
     // md5 自验（引擎只保留 sha256，清单提供的是 md5）。GB 级包要读完全文件，
     // 因此这里按已读字节上报——否则「校验中」这一步会面无表情地卡上好几分钟。
@@ -1354,9 +1363,7 @@ async fn prepare_package(
             pkg.dest.to_string_lossy()
         )));
     }
-    // `lease` 必须活到这里之后：内容密钥借自它，提前释放会让 `content_key` 悬空。
-    drop(lease);
-    Ok(content_key)
+    Ok(lease)
 }
 
 /// 安装一个实例：解包 → 写元数据 → 装加载器。
@@ -1703,6 +1710,21 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
             continue;
         }
 
+        // 下载仍在引擎里跑着 → 保持原任务，**不重投**。
+        //
+        // 重投会为同一个目标文件再起一个任务：两个任务写同一个 `.part`，互相截断，
+        // 结果是「重启一次，下载反而永远下不完」。只有任务确实不在内存里（进程重启
+        // 后引擎为空）才需要按 `.part` 重新投递续传。
+        if has_live {
+            log::info!(
+                "[game-download] 版本 {} 的下载任务仍在队列中，保持续传",
+                pkg.version_id
+            );
+            set_package_state(ctx, &pkg.version_id, "downloading", None).ok();
+            set_package_task(ctx, &pkg.version_id, pkg.task_id).ok();
+            continue;
+        }
+
         // failed 限次重投：连续 N 次启动重试仍失败 → 标记为永久失败，不再自动重下。
         if pkg.state == "failed" {
             if pkg.attempts >= MAX_RESUME_ATTEMPTS {
@@ -1772,7 +1794,47 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
         }
     }
 
+    cleanup_orphan_instances(ctx);
     cleanup_orphan_packages(ctx);
+}
+
+/// 丢弃「没有任何整包记录在推进」的实例记录。
+///
+/// 它对应两种真实残留：用户在下载完成前取消了（`cancel` 已删记录，这里是它的兜底），
+/// 以及整包记录被丢弃（无内容残留）时实例没跟上。留着它们只会让用户永远看到一个
+/// 「排队中」却不会有任何动作的实例。
+fn cleanup_orphan_instances(ctx: &Ctx) {
+    let orphans = match ctx.db.with_conn(|conn| -> Result<Vec<InstanceRecord>, KernelError> {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {INSTANCE_COLUMNS} FROM module_game_download_instance
+              WHERE state <> 'installed'"
+        ))?;
+        let rows = stmt.query_map([], row_to_instance)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(KernelError::from)
+    }) {
+        Ok(v) => v,
+        Err(error) => {
+            log::warn!("[game-download] 读取无主实例失败: {error}");
+            return;
+        }
+    };
+    for rec in orphans {
+        match get_package(ctx, &rec.version_id) {
+            // 有整包记录 = 还有东西会推进它（上面已重投或已续装），不动。
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("[game-download] 实例 {} 查整包记录失败: {error}", rec.instance);
+                continue;
+            }
+        }
+        log::warn!(
+            "[game-download] 丢弃无整包支撑的实例记录 {}（状态 {}）",
+            rec.instance,
+            rec.state
+        );
+        delete_instance(ctx, &rec.instance).ok();
+    }
 }
 
 /// 清理 `versions_root/.download` 下无主的整包 / 断点文件。

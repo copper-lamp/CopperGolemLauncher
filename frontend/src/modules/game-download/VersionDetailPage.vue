@@ -2,15 +2,18 @@
 // 版本二级页面：选加载器 / 客户端 → 安装（弹窗命名实例）。
 //
 // 版式由需求钉死：顶部是版本图标与版本号（无边框），下面是「加载器」「客户端」两个
-// 下拉框，页面正下方居中一个安装按钮。这里**不列实例、不画进度**：一次安装产出一个
-// 实例，进度统一在下载中心看（下载引擎是任务的事实源），本页只负责发起。
+// 下拉框（自绘组件，折叠态显示「标签 + 未选择」，展开向下弹出），页面正下方居中一个
+// 安装按钮。左右只留很小的边距，内容尽量铺满。
+//
+// 这里**不列实例、不画进度**：一次安装产出一个实例，进度统一在下载中心看（下载引擎
+// 是任务的事实源），本页只负责发起。
 
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { AlertTriangle, Gamepad2, PackagePlus } from "@lucide/vue";
+import { AlertTriangle, Ban, Gamepad2, PackagePlus, Puzzle } from "@lucide/vue";
 
 import CoButton from "../../components/ui/CoButton.vue";
-import CoSelect from "../../components/ui/CoSelect.vue";
+import CoDropdown, { type DropdownOption } from "../../components/ui/CoDropdown.vue";
 import { useI18n } from "../../i18n";
 import InstanceNameDialog from "./InstanceNameDialog.vue";
 import type { GameVersionView } from "./api";
@@ -42,28 +45,27 @@ const lipAvailable = computed(() => loaders.value?.lip_available ?? true);
  *
  * 不兼容的版本在数据里仍然存在（列表页徽标要看全量），但对用户而言「选一个装不上的
  * 版本」没有意义：后端按索引声明的平台依赖严格判定，放进去只会让安装走到一半才由
- * lipd 报依赖冲突，那是最差的一种反馈。
+ * lipd 报依赖冲突，那是最差的一种反馈。声明的要求随选项一起给出，用户能看到「凭什么
+ * 是这几个」。
  */
 const compatibleLoaders = computed(() => (loaders.value?.loaders ?? []).filter((l) => l.compatible));
 
 const loader = ref("");
 const client = ref("");
 
-const loaderChoices = computed(() => [
-  { value: "", label: t(`${MB_KEY}.loader_none`) },
+/** 加载器选项：首项是「不使用加载器」，其余为可用的 LeviLamina。 */
+const loaderChoices = computed<DropdownOption[]>(() => [
+  { value: "", label: t(`${MB_KEY}.loader_none`), icon: Ban },
   ...compatibleLoaders.value.map((l) => ({
     value: l.version,
     label: `LeviLamina ${l.version}`,
+    icon: Puzzle,
+    hint: l.requirement ?? undefined,
   })),
 ]);
 
-/** 客户端下拉：当前没有收录任何客户端 dll，保持空表 + 占位项。 */
-const clientChoices = computed(() => [{ value: "", label: t(`${MB_KEY}.client_empty`) }]);
-
-/** 选中加载器声明的平台依赖（给用户一个「为什么可选的是这几个」的交代）。 */
-const requirement = computed(
-  () => compatibleLoaders.value.find((l) => l.version === loader.value)?.requirement ?? null,
-);
+/** 客户端下拉：当前没有收录任何客户端 dll，保持空表（组件显示空态提示）。 */
+const clientChoices = computed<DropdownOption[]>(() => []);
 
 const dialogOpen = ref(false);
 
@@ -105,37 +107,41 @@ function goBack() {
           <span class="gd-detail__icon" aria-hidden="true">
             <Gamepad2 :size="30" />
           </span>
-          <div class="gd-detail__hero-text">
-            <span class="gd-detail__name">{{ version.game_version }}</span>
-            <span class="gd-detail__badges">
-              <span class="gd-detail__badge" :class="`gd-detail__badge--${version.kind}`">
-                {{ t(`${MB_KEY}.kind.${version.kind}`) }}
-              </span>
-              <span v-if="version.has_loader" class="gd-detail__badge gd-detail__badge--loader">
-                LeviLamina
-              </span>
-            </span>
-          </div>
+          <span class="gd-detail__name">{{ version.game_version }}</span>
+          <span class="gd-detail__badge" :class="`gd-detail__badge--${version.kind}`">
+            {{ t(`${MB_KEY}.kind.${version.kind}`) }}
+          </span>
+          <span v-if="version.has_loader" class="gd-detail__badge gd-detail__badge--loader">
+            LeviLamina
+          </span>
         </header>
 
         <!-- 两个下拉框：加载器 / 客户端 -->
         <div class="gd-detail__form">
-          <label class="gd-detail__field">
-            <span class="gd-detail__label">{{ t(`${MB_KEY}.loader_label`) }}</span>
-            <CoSelect v-model="loader" :options="loaderChoices" />
-            <span v-if="requirement" class="gd-detail__hint">
-              {{ t(`${MB_KEY}.loader_requirement`, { requirement }) }}
-            </span>
-            <span v-else-if="compatibleLoaders.length === 0" class="gd-detail__hint">
+          <div class="gd-detail__field">
+            <CoDropdown
+              v-model="loader"
+              :label="t(`${MB_KEY}.loader_label`)"
+              :placeholder="t(`${MB_KEY}.select_none`)"
+              :options="loaderChoices"
+              :empty-text="t(`${MB_KEY}.loader_unavailable`)"
+            />
+            <span v-if="compatibleLoaders.length === 0" class="gd-detail__hint">
               {{ t(`${MB_KEY}.loader_unavailable`) }}
             </span>
-          </label>
+          </div>
 
-          <label class="gd-detail__field">
-            <span class="gd-detail__label">{{ t(`${MB_KEY}.client_label`) }}</span>
-            <CoSelect v-model="client" :options="clientChoices" disabled />
+          <div class="gd-detail__field">
+            <CoDropdown
+              v-model="client"
+              :label="t(`${MB_KEY}.client_label`)"
+              :placeholder="t(`${MB_KEY}.select_none`)"
+              :options="clientChoices"
+              :empty-text="t(`${MB_KEY}.client_empty`)"
+              disabled
+            />
             <span class="gd-detail__hint">{{ t(`${MB_KEY}.client_hint`) }}</span>
-          </label>
+          </div>
 
           <!-- lipd 缺失：装完游戏也补不上加载器，必须提前说清楚 -->
           <p v-if="loader && !lipAvailable" class="gd-detail__warn" role="alert">
@@ -162,9 +168,10 @@ function goBack() {
 </template>
 
 <style scoped>
+/* 左右只留很小的边距：需求点名不要大片留白。 */
 .gd-detail {
   height: 100%;
-  padding: var(--copper-space-5);
+  padding: var(--copper-space-4);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -189,15 +196,14 @@ function goBack() {
   flex-direction: column;
   gap: var(--copper-space-5);
   width: 100%;
-  max-width: 520px;
-  margin: 0 auto;
 }
 
-/* 无边框头部：只有图标与文字，不做卡片。 */
+/* 无边框头部：图标、版本号、徽标并排一行。 */
 .gd-detail__hero {
   display: flex;
   align-items: center;
   gap: var(--copper-space-3);
+  flex-wrap: wrap;
 }
 
 .gd-detail__icon {
@@ -212,30 +218,17 @@ function goBack() {
   color: var(--copper-accent);
 }
 
-.gd-detail__hero-text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--copper-space-1);
-  min-width: 0;
-}
-
 .gd-detail__name {
   font-size: var(--copper-font-size-xl);
   font-weight: 700;
-}
-
-.gd-detail__badges {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-1);
-  flex-wrap: wrap;
+  letter-spacing: 0.2px;
 }
 
 .gd-detail__badge {
   padding: 1px 8px;
   border-radius: var(--copper-radius-full);
   font-size: var(--copper-font-size-xs);
-  line-height: 1.5;
+  line-height: 1.6;
   border: 1px solid transparent;
 }
 
@@ -267,12 +260,7 @@ function goBack() {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-1);
-  align-items: flex-start;
-}
-
-.gd-detail__label {
-  font-size: var(--copper-font-size-sm);
-  color: var(--copper-text-secondary);
+  width: 100%;
 }
 
 .gd-detail__hint {

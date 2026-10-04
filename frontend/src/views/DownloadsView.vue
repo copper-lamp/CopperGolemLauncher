@@ -51,7 +51,7 @@ import {
   type ContentDownloadRecord,
   type ContentInstallProgress,
 } from "../modules/content-download/api";
-import { gameInstall, gameTaskBindings } from "../modules/game-download/api";
+import { gameRetryVersion, gameTaskBindings } from "../modules/game-download/api";
 import CoSelect from "../components/ui/CoSelect.vue";
 import CoButton from "../components/ui/CoButton.vue";
 
@@ -255,14 +255,15 @@ async function handleRemove(id: number) {
 /**
  * 手动触发安装（只重装，不重下）。
  *
- * 失败原因原样呈现给用户：安装链的失败原因（商店授权、设备注册、解包）才是
- * 用户下一步要依据的信息，替换成统一文案等于把排查线索丢掉。
+ * 该版本下所有未装好的实例会被重新排进安装。失败原因原样呈现给用户：安装链的失败
+ * 原因（商店授权、设备注册、解包、加载器）才是用户下一步要依据的信息，替换成统一
+ * 文案等于把排查线索丢掉。
  */
 async function handleInstall(task: DownloadTask) {
   const versionId = installableVersion(task);
   if (!versionId) return;
   try {
-    await gameInstall(versionId);
+    await gameRetryVersion(versionId);
   } catch (e) {
     showToast(String(e), "error");
   }

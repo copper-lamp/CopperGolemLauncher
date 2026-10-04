@@ -52,10 +52,10 @@ const importing = ref(false);
 
 const searching = computed(() => keyword.value.trim().length > 0);
 
-/** 按关键字过滤（版本号子串，大小写不敏感）。 */
-function filter(list: GameVersionView[]): GameVersionView[] {
+/** 按关键字过滤（版本号子串，大小写不敏感）。只读入参：清单是只读状态。 */
+function filter(list: readonly GameVersionView[]): GameVersionView[] {
   const needle = keyword.value.trim().toLowerCase();
-  if (!needle) return list;
+  if (!needle) return [...list];
   return list.filter((v) => v.game_version.toLowerCase().includes(needle));
 }
 
@@ -285,7 +285,7 @@ async function importApk() {
           <div v-if="releases.length === 0" class="gd-group__none">
             {{ searching ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
           </div>
-          <div v-else class="gd-grid">
+          <div v-else class="gd-list">
             <VersionCard v-for="version in releases" :key="version.id" :version="version" />
           </div>
         </div>
@@ -309,7 +309,7 @@ async function importApk() {
           <div v-if="previews.length === 0" class="gd-group__none">
             {{ searching ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
           </div>
-          <div v-else class="gd-grid">
+          <div v-else class="gd-list">
             <VersionCard v-for="version in previews" :key="version.id" :version="version" />
           </div>
         </div>
@@ -411,9 +411,6 @@ async function importApk() {
 }
 
 .gd-page__match {
-  display: flex;
-  align-items: center;
-  gap: 5px;
   margin: 0;
   font-size: var(--copper-font-size-xs);
   color: var(--copper-text-disabled);
@@ -421,13 +418,19 @@ async function importApk() {
 
 /* ---------------------------------------------------------------- 顶部卡片 */
 
+/*
+ * 顶部卡片刻意**不填底色**：里面的版本卡片悬停时要「变浅」（与下载中心一致），
+ * 一旦容器本身就是 `--copper-surface`，悬停到同色就等于没有反馈。质感交给描边与
+ * 圆角，反馈留给卡片自己。
+ */
 .gd-top {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-3);
   padding: var(--copper-space-4);
-  background: var(--copper-surface);
+  border: 1px solid var(--copper-border);
   border-radius: var(--copper-radius-lg);
+  background: transparent;
 }
 
 .gd-top__label {
@@ -446,7 +449,7 @@ async function importApk() {
 
 .gd-top__empty {
   margin: 0;
-  padding: var(--copper-space-2) var(--copper-space-3);
+  padding: var(--copper-space-2) var(--copper-space-4);
   font-size: var(--copper-font-size-sm);
   color: var(--copper-text-secondary);
 }
@@ -465,13 +468,14 @@ async function importApk() {
   pointer-events: none;
 }
 
+/* 顶满左右：搜索框宽度即容器宽度。 */
 .gd-search__input {
   width: 100%;
   height: var(--copper-control-h);
   padding: 0 var(--copper-space-6) 0 calc(var(--copper-space-3) + 22px);
   border: 1px solid var(--copper-border);
   border-radius: var(--copper-radius-md);
-  background: var(--copper-surface-2);
+  background: var(--copper-surface);
   color: var(--copper-text);
   font-size: var(--copper-font-size-md);
   font-family: inherit;
@@ -515,12 +519,11 @@ async function importApk() {
   color: var(--copper-text);
 }
 
-/* ---------------------------------------------------------------- 大卡片 */
+/* ---------------------------------------------------------------- 全部版本 */
 
+/* 大卡片同样不填底色：里面每一张版本卡片都要能在悬停时变浅。 */
 .gd-group {
-  background: var(--copper-surface);
-  border-radius: var(--copper-radius-lg);
-  overflow: hidden;
+  background: transparent;
 }
 
 .gd-group__head {
@@ -528,8 +531,9 @@ async function importApk() {
   align-items: center;
   gap: var(--copper-space-2);
   width: 100%;
-  padding: var(--copper-space-3);
+  padding: var(--copper-space-2) var(--copper-space-4);
   border: none;
+  border-bottom: 1px solid var(--copper-border);
   background: transparent;
   color: var(--copper-text);
   font-size: var(--copper-font-size-lg);
@@ -539,7 +543,7 @@ async function importApk() {
 }
 
 .gd-group__head:hover {
-  background: var(--copper-surface-2);
+  background: var(--copper-hover);
 }
 
 .gd-group__title {
@@ -562,23 +566,27 @@ async function importApk() {
 }
 
 .gd-group__body {
-  padding: 0 var(--copper-space-3) var(--copper-space-3);
+  padding: var(--copper-space-2) 0 0;
 }
 
 .gd-group__none {
-  padding: var(--copper-space-3);
+  padding: var(--copper-space-3) var(--copper-space-4);
   font-size: var(--copper-font-size-sm);
   color: var(--copper-text-secondary);
 }
 
-/* 平铺：卡内不再分小卡片，全部版本直接铺开。 */
-.gd-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+/* 顶满 + 上下排列：每张版本卡片独占一行。 */
+.gd-list {
+  display: flex;
+  flex-direction: column;
   gap: var(--copper-space-1);
 }
 
 /* ---------------------------------------------------------------- 骨架 */
+
+.gd-top--skeleton {
+  border-color: transparent;
+}
 
 .gd-top--skeleton .gd-skeleton-line {
   height: 14px;

@@ -17,6 +17,7 @@
   "latest": "最新",
   "progress_hint": "下载与安装进度可在下载中心查看",
   "loader_label": "加载器",
+  "select_none": "未选择",
   "loader_none": "不使用加载器",
   "loader_unavailable": "该版本暂无兼容的 LeviLamina",
   "loader_requirement": "该加载器要求 Minecraft {requirement}",
