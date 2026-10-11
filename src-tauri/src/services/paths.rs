@@ -402,6 +402,7 @@ mod tests {
     /// `os error 5` 失败。这里确保它在 `ensure_versions_root` 阶段就被建好。
     #[test]
     fn ensure_versions_root_creates_custom_root() {
+        let _guard = env_lock();
         let root = temp_root("custom-root");
         std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
         let paths = Paths::with_root(root.clone());
@@ -421,6 +422,7 @@ mod tests {
     /// 回归：自定义根不可用时，错误必须带路径与设置项线索，而不是裸 `os error 5`。
     #[test]
     fn ensure_versions_root_error_names_path_and_setting() {
+        let _guard = env_lock();
         let root = temp_root("custom-root-blocked");
         std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
         // 用一个**文件**占住自定义根的位置，使其无法被创建为目录。
@@ -450,6 +452,7 @@ mod tests {
     /// 默认根已在 `prepare()` 探测过，`ensure_versions_root` 不应重复建目录语义。
     #[test]
     fn ensure_versions_root_returns_default_when_unset() {
+        let _guard = env_lock();
         let root = temp_root("default-root");
         std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
         let paths = Paths::with_root(root.clone());

@@ -429,19 +429,26 @@ mod tests {
     fn ascii_reader_rejects_non_ascii_and_overlong() {
         // 缓冲区必须真的够 `read_ascii` 扫完，否则测试本身就是越界读。
         let mut buffer = vec![0u8; MAX_NAME + 8];
-        buffer[..3].copy_from_slice(b"abc");
+        // 名称放在非零 rva 上：`rva == 0` 是 NULL 指针，`read_ascii` 按设计直接拒绝，
+        // 用它当「基址」测会得到一个与本用例无关的 None。
+        const NAME_RVA: u32 = 8;
+        buffer[NAME_RVA as usize..NAME_RVA as usize + 3].copy_from_slice(b"abc");
         let base = buffer.as_mut_ptr();
         unsafe {
-            assert_eq!(read_ascii(base, 0).as_deref(), Some("abc"));
-            assert!(read_ascii(base, 3).is_none(), "空串必须拒绝");
-            assert!(read_ascii(base, 1).is_none(), "非 NUL 结尾应拒绝");
+            assert!(read_ascii(base, 0).is_none(), "NULL 指针必须直接拒绝");
+            assert_eq!(
+                read_ascii(base, NAME_RVA).as_deref(),
+                Some("abc"),
+                "合法名称必须读出来"
+            );
+            assert!(read_ascii(base, NAME_RVA + 3).is_none(), "空串必须拒绝");
             // 0x80 不可打印 → 拒绝
-            buffer[2] = 0x80;
-            assert!(read_ascii(base, 0).is_none());
+            buffer[NAME_RVA as usize + 2] = 0x80;
+            assert!(read_ascii(base, NAME_RVA).is_none());
             // 超长（无 NUL）必须拒绝，而不是读穿缓冲区
-            buffer[2] = b'x';
-            buffer[0..MAX_NAME].fill(b'x');
-            assert!(read_ascii(base, 0).is_none());
+            buffer[NAME_RVA as usize + 2] = b'x';
+            buffer[NAME_RVA as usize..NAME_RVA as usize + MAX_NAME].fill(b'x');
+            assert!(read_ascii(base, NAME_RVA).is_none());
         }
     }
 }

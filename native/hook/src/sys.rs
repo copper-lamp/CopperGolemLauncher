@@ -145,6 +145,30 @@ extern "system" {
 
 /// `CP_ACP`（`GetTempPathA` 的语义：ANSI 版按系统代码页转换）。
 pub const CP_ACP: u32 = 0;
+/// 判断「ANSI 转换是否发生了字符替换」的依据。
+///
+/// `WideCharToMultiByte` 遇到代码页无法表示的字符时会静默替换成 `'?'` 并返回成功。
+/// 文档里说的 `WC_NOERROR` 不能用来关掉这个行为：**它必须与 `WC_COMPOSITECHECK` 成对使用**，
+/// 单独传会让 API 直接以 `ERROR_INVALID_FLAGS` 失败（连 ASCII 都转不了）。
+///
+/// 因此这里改用往返校验：把转出的 ANSI 再用 `MultiByteToWideChar` 转回 UTF-16，
+/// 与原始输入逐码元比较；不一致即说明发生了替换，返回 `None`。
+///
+/// 对我们为什么必须是「失败」而不是「替换」：`GetTempPathA` 会拿到一个指向不存在目录的
+/// 替换路径，游戏照着它写文件，而日志里什么异常都没有。
+const ROUND_TRIP_REQUIRED: () = ();
+
+/// `int MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int)`
+extern "system" {
+    pub fn MultiByteToWideChar(
+        code_page: u32,
+        dw_flags: u32,
+        lp_multi_byte_str: *const u8,
+        cb_multi_byte: i32,
+        lp_wide_char_str: *mut u16,
+        cch_wide_char: i32,
+    ) -> i32;
+}
 
 /// `ERROR_NO_UNICODE_TRANSLATION`（`winerror.h` 1113）。
 ///
@@ -164,6 +188,12 @@ pub const ERROR_INVALID_PARAMETER: u32 = 87;
 /// 会写到一个不存在的位置，症状是「实例目录里少了日志/临时文件」，极难归因。
 /// 直接失败让调用方走它自己的回退分支。
 pub fn to_ansi(text: &str) -> Option<Vec<u8>> {
+    // 空串是**可无损表示**的，不能和「不可表示」混为一谈：
+    // `WideCharToMultiByte` 对长度 0 直接返回 0（不是错误），照直往下走会
+    // 把「空路径」误报成「无法转换」。
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
     let wide: Vec<u16> = text.encode_utf16().collect();
     let needed = unsafe {
         WideCharToMultiByte(
@@ -193,12 +223,26 @@ pub fn to_ansi(text: &str) -> Option<Vec<u8>> {
             std::ptr::null_mut(),
         )
     };
-    if written <= 0 {
-        None
-    } else {
-        buffer.truncate(written as usize);
-        Some(buffer)
+if written <= 0 {
+        return None;
     }
+    buffer.truncate(written as usize);
+    // 往返校验：ANSI 里若出现过替换字符，转回来的码元就与原始输入对不上。
+    let mut back: Vec<u16> = vec![0u16; wide.len()];
+    let back_len = unsafe {
+        MultiByteToWideChar(
+            CP_ACP,
+            0,
+            buffer.as_ptr(),
+            buffer.len() as i32,
+            back.as_mut_ptr(),
+            back.len() as i32,
+        )
+    };
+    if back_len != wide.len() as i32 || back[..back_len as usize] != wide[..] {
+        return None;
+    }
+    Some(buffer)
 }
 
 /// `GET_MODULE_HANDLE_EX_FLAG_PIN` —— 让模块在进程运行期不被卸载。
@@ -279,11 +323,15 @@ mod tests {
         assert_eq!(from_wide_nul(&[0x61, 0x62]), "ab");
     }
 
-    #[test]
+#[test]
     fn ansi_conversion_keeps_ascii_and_refuses_unrepresentable() {
+        // 契约只有一条：**不丢信息**。能无损转就转，损了就失败。
         assert_eq!(to_ansi("D:/mc/temp"), Some(b"D:/mc/temp".to_vec()));
-        // 本机代码页是 GBK，中文路径可表示；用控制字符这类任何代码页都拒绝的
-        // 输入验证「不替换成 ?」的行为。
-        assert!(to_ansi("\u{1}").is_none());
+        // 用来验证「拒绝」的字符必须选**任何** ANSI 代码页都表示不了的（补充平面字符）。
+        // 早先用的 U+0001 在 CP936 下其实可表示，测不出替换行为 —— 这是个假用例。
+        assert!(to_ansi("\u{1F600}").is_none(), "不可表示字符必须失败");
+        // 同一路径上的空串与纯 ASCII 路径必须照常通过（空串也要被当成合法输入）
+        assert_eq!(to_ansi(""), Some(Vec::new()));
+        assert_eq!(to_ansi("D:/a b/t"), Some(b"D:/a b/t".to_vec()));
     }
 }
