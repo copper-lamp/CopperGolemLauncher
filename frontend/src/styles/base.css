@@ -23,6 +23,9 @@ html {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   user-select: none;
+  /* 关掉安卓 WebView 点按元素时叠的系统蓝色高亮：它无视主题、只在触屏出现，
+   * 与本项目的铜色视觉完全割裂。关掉后由下面的 :active 叠雾替代（可继承，一处生效）。 */
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -122,9 +125,35 @@ textarea {
   gap: var(--copper-space-4);
 }
 
-/* 按钮 / 控件基础按压反馈 */
+/* 按钮 / 控件基础：字体继承 */
 button {
   font-family: inherit;
+}
+
+/* ---------------------------------------------------------------- 触控按压反馈
+ *
+ * 移动端没有 hover，点按必须给出即时反馈，否则用户会怀疑「点没点上」。
+ * 这里统一一套：在控件**自身底色之上**叠一层中性薄雾（`--copper-press`）。
+ *
+ * 为什么用 `background-image` 而不是 `background-color`：
+ * 后者会把控件原有的底色（如主按钮的铜色）整块换掉，按压瞬间读起来是「变了个控件」
+ * 而不是「被按下去」。叠加一层半透明色则是「原来那层上面压了一层手印」，语义正确。
+ *
+ * 为什么选择器前缀 `html`：
+ * 组件样式经 scoped 后是 `.xxx[data-v-*]`（特异度 0,2,0），普遍带 `background`
+ * 简写。加一个 `html` 类型选择器把本条抬到 0,2,1，刚好**只压过**这些静态规则；
+ * 而组件自己写的 `:active`（0,3,0）仍然优先——于是「组件有自己的按压态就用组件的，
+ * 没有才用这条兜底」，不必动任何既有样式，也不用 `!important`。
+ */
+html :is(button, a, [role="button"], [role="tab"], [role="option"], summary):active {
+  background-image: linear-gradient(var(--copper-press), var(--copper-press));
+}
+
+/* 键盘聚焦环：浏览器默认环是蓝色，与主题无关，统一收敛到强调色。
+ * 触屏点按不会触发 `:focus-visible`，所以它只在键盘 / 辅助设备下出现。 */
+:focus-visible {
+  outline: 2px solid var(--copper-accent);
+  outline-offset: 2px;
 }
 
 /* 视图切换过渡 */

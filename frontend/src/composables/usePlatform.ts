@@ -19,8 +19,12 @@ export type PlatformId =
 /** 平台形态：桌面（窗口 + 左导航）/ 移动（全屏 + 底部标签栏）。 */
 export type FormFactor = "desktop" | "mobile";
 
+/** 屏幕取向：决定移动端采用左导航（横屏）还是底部标签栏（竖屏）。 */
+export type Orientation = "portrait" | "landscape";
+
 const platform = ref<PlatformId>("windows-x86_64");
 const formFactor = ref<FormFactor>("desktop");
+const orientation = ref<Orientation>("landscape");
 
 /**
  * 内核未就绪时的兜底探测。
@@ -49,6 +53,40 @@ function applyFormFactor(value: FormFactor): void {
 }
 
 /**
+ * 探测屏幕取向。
+ *
+ * 优先用 `matchMedia("(orientation: landscape)")`（与 CSS 媒体特性同源，避免读写
+ * 宽高的时序差异）；无 `matchMedia` 时退回宽高比较。移动端横屏要换成左导航，
+ * 所以取向必须与 CSS 判定一致，不能各算各的。
+ */
+function detectOrientation(): Orientation {
+  if (typeof window === "undefined") return "landscape";
+  if (typeof window.matchMedia === "function") {
+    return window.matchMedia("(orientation: landscape)").matches ? "landscape" : "portrait";
+  }
+  return window.innerWidth >= window.innerHeight ? "landscape" : "portrait";
+}
+
+/** 把取向写到 `<html data-orientation>`，供 CSS 选择器使用。 */
+function applyOrientation(value: Orientation): void {
+  if (typeof document === "undefined") return;
+  document.documentElement.dataset.orientation = value;
+}
+
+/** 注册取向变化监听：旋转屏幕时 `orientation` 需实时跟随。 */
+function watchOrientation(): void {
+  if (typeof window === "undefined") return;
+  const update = () => {
+    const next = detectOrientation();
+    if (next === orientation.value) return;
+    orientation.value = next;
+    applyOrientation(next);
+  };
+  window.addEventListener("resize", update);
+  window.addEventListener("orientationchange", update);
+}
+
+/**
  * 同步读取当前平台枚举值。
  *
  * 供非响应式场景使用（如模块注册表的兼容性判定）。启动时
@@ -64,6 +102,9 @@ export function usePlatform() {
     platform: computed(() => platform.value),
     formFactor: computed(() => formFactor.value),
     isMobile: computed(() => formFactor.value === "mobile"),
+    /** 屏幕取向（响应式）：横屏移动端改用左导航，与桌面一致。 */
+    orientation: computed(() => orientation.value),
+    isLandscape: computed(() => orientation.value === "landscape"),
     /**
      * 是否 Android。与 `isMobile` 分开：移动形态还包含将来的 iOS，
      * 而「LL 模组走 `.so` 直装」是 Android 专属能力（见
@@ -80,6 +121,12 @@ export function usePlatform() {
  * 拿不到就退回 UA 兜底，绝不因此阻断首屏渲染。
  */
 export async function initPlatform(): Promise<void> {
+  // 取向必须在任何 await 之前就定下来并挂上监听：横屏移动端要用左导航，
+  // 若等 IPC 超时后才判定，首帧会先按竖屏布局闪一下。
+  orientation.value = detectOrientation();
+  applyOrientation(orientation.value);
+  watchOrientation();
+
   let id = detectPlatformFallback();
   let form = formFactorOf(id);
   try {

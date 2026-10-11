@@ -313,6 +313,7 @@ button.titlebar__crumb:hover {
   padding: 0 var(--copper-space-2);
 }
 
+/* 窄竖屏：操作区浮动到底部胶囊里，避免与标题挤在一行。 */
 @media (max-width: 700px) and (orientation: portrait) {
   .titlebar__actions {
     position: fixed;
@@ -332,25 +333,8 @@ button.titlebar__crumb:hover {
   }
 }
 
-@media (max-width: 900px) and (orientation: landscape) {
-  .titlebar__actions {
-    position: fixed;
-    z-index: 20;
-    top: calc(var(--copper-safe-top) + var(--copper-space-3));
-    bottom: var(--copper-safe-bottom);
-    left: calc(var(--copper-safe-left) + var(--copper-space-2));
-    flex-direction: column;
-    justify-content: center;
-    width: 64px;
-    height: auto;
-    padding: var(--copper-space-2) 0;
-    border: 1px solid var(--copper-border);
-    border-radius: var(--copper-radius-lg);
-    background: color-mix(in srgb, var(--copper-surface) 94%, transparent);
-    box-shadow: 8px 0 24px color-mix(in srgb, #000 18%, transparent);
-    backdrop-filter: blur(12px);
-  }
-}
+/* 横屏移动端沿用与桌面一致的左导航 + 行内操作区（见 App.vue 外壳说明），
+ * 因此这里不再把操作区浮动成左侧竖列——那会压在左导航上。 */
 
 .titlebar__right {
   display: flex;
