@@ -21,6 +21,12 @@ pub mod content;
 pub mod controls;
 /// 注入编排：hook DLL 落位 + 导入表改写 + 原始文件备份与还原。
 pub mod inject;
+/// 挂起启动 + 远程线程注入：游戏 exe 不改一个字节。
+///
+/// 纯 Windows（`WriteProcessMemory` / `CreateRemoteThread`），非 Windows 目标
+/// 不编译。
+#[cfg(windows)]
+pub mod injector;
 /// 实例隔离与版本硬规则的唯一事实源（数据目录布局、编辑器门槛）。
 pub mod isolate;
 pub mod launch;

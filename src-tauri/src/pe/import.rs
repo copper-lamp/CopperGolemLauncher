@@ -98,33 +98,97 @@ impl Image {
             return Err(PeError::NoSectionRoom);
         }
 
-        // ---- 新节 RVA：接在所有节的内存末尾之后
+        // ---- 前置校验（与 LeviLauncher `internal/peeditor/rebuild.go` 同源）
+        //
+        // 这些检查的价值不在「本 exe 过不过得去」，而在于：追加节要同时动节表、
+        // 文件头、多个文件偏移字段，任何一处布局不自洽都会产出**能解析但加载器
+        // 拒绝**的镜像。宁可如实拒绝，也不要写出半成品。
+        let align = self.file_alignment;
+        if align == 0
+            || !align.is_power_of_two()
+            || !self.section_alignment.is_power_of_two()
+            || self.section_alignment < align
+        {
+            return Err(PeError::Malformed("节/文件对齐参数非法"));
+        }
+
+        // ---- 新节 RVA：接在所有节的内存末尾**与 SizeOfImage 两者之后**
+        //
+        // `SizeOfImage` 必须参与取大：它是加载器分配镜像的依据，有些镜像的节
+        // 虚拟末尾到不了那里（节之间留了空洞）。只看节的 `rva_end()` 会把新节
+        // 放进「节没占满、`SizeOfImage` 留了余量」的那段里。
         let rva_end = self
             .sections
             .iter()
             .map(|section| section.rva_end())
+            .chain(std::iter::once(self.size_of_image))
             .max()
             .unwrap_or(self.size_of_headers);
         let new_section_rva = super::parse::align_up(rva_end, self.section_alignment);
 
         // ---- 文件头要长出一个节表项，可能需要扩张
         let section_table_end = self.section_table + self.number_of_sections as usize * 40;
-        let new_headers =
-            super::parse::align_up((section_table_end + 40) as u32, self.file_alignment)
-                .max(self.size_of_headers);
-        // 镜像自洽性检查：节数据必须落在文件头之后。头部扩张时所有节的原始数据
-        // 会整体右移同一个 delta（见 `rebuild`），因此**扩张本身不会压到节数据**，
-        // 无需也不能在这里拿「新头部 vs 旧首节偏移」去比大小 ——
-        // LeviLauncher 在 MC 1.21.124.02 上的事故正出在这类比较上。
-        let first_raw = self
+        // 注意取整顺序：**先与现有 SizeOfHeaders 取大，再按文件对齐**。
+        // 反过来（先对齐再取大）会在头部本已对齐的镜像上多扩张一档。
+        let new_headers = super::parse::align_up(
+            (section_table_end + 40).max(self.size_of_headers as usize) as u32,
+            self.file_alignment,
+        );
+
+        // 新节表项的落点必须在现有文件头之内，且那段必须是空的 —— 否则会盖掉
+        // 真实的头部数据。
+        let slot_end = section_table_end + 40;
+        let slot_check_end = slot_end.min(self.size_of_headers as usize);
+        if self.data()[section_table_end..slot_check_end]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(PeError::Malformed("新节表项落点不是空区"));
+        }
+        // 新节表项不得与任何数据目录重叠（证书表用文件偏移，不参与）。
+        for index in 0..self.num_rva_and_sizes as usize {
+            if index == SECURITY_DIR {
+                continue;
+            }
+            if let Some((rva, size)) = self.data_dir(index) {
+                if size != 0
+                    && rva < slot_end as u32
+                    && rva as u64 + size as u64 > section_table_end as u64
+                {
+                    return Err(PeError::Malformed("新节表项与数据目录重叠"));
+                }
+            }
+        }
+        // 扩张后的文件头不得压到任何节的 RVA。
+        if let Some(first) = self
             .sections
             .iter()
-            .filter(|section| section.size_of_raw_data != 0)
-            .map(|section| section.pointer_to_raw_data)
+            .map(|section| section.virtual_address)
             .min()
-            .unwrap_or(self.size_of_headers);
-        if first_raw < self.size_of_headers {
-            return Err(PeError::Malformed("节数据起始早于文件头，镜像不自洽"));
+        {
+            if new_headers > first {
+                return Err(PeError::Malformed("扩张后的文件头压到节 RVA"));
+            }
+        }
+        // 节的原始数据必须完整落在文件体内，且彼此不重叠：重排要按「旧偏移 +
+        // delta」整体搬动，源区间一旦越界或互相压盖，搬出来就是乱的。
+        let mut occupied: Vec<(u32, u32)> = Vec::new();
+        for section in &self.sections {
+            if section.size_of_raw_data == 0 {
+                continue;
+            }
+            let start = section.pointer_to_raw_data;
+            let end = start.saturating_add(section.size_of_raw_data);
+            if start < self.size_of_headers || end as usize > self.len() {
+                return Err(PeError::Malformed("节的原始数据越出文件体"));
+            }
+            if occupied
+                .iter()
+                .any(|(other_start, other_end)| start < *other_end && end > *other_start)
+            {
+                return Err(PeError::Malformed("多个节的原始数据互相重叠"));
+            }
+            occupied.push((start, end));
         }
 
         // ---- 节内布局
@@ -215,3 +279,6 @@ fn write_wide_at(buf: &mut [u8], offset: usize, value: &str) {
 pub(crate) const BOUND_IMPORT_DIR: usize = DIR_BOUND_IMPORT;
 /// 供 `rebuild` 使用：导入表目录索引。
 pub(crate) const IMPORT_DIR: usize = DIR_IMPORT;
+/// 供 `rebuild` 使用：证书表目录索引。这一项的 `VirtualAddress` 存的是
+/// **文件偏移**而不是 RVA，是唯一会指向「最后一个节之后」的目录项。
+pub(crate) const SECURITY_DIR: usize = 4;

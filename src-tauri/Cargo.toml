@@ -63,6 +63,8 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
+    # WriteProcessMemory：挂起启动后把 DLL 路径写进目标进程地址空间
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",

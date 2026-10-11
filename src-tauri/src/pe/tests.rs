@@ -272,8 +272,10 @@ fn shifts_every_file_offset_field_uniformly() {
         .copy_from_slice(&0x100u32.to_le_bytes());
     patched_source[data_dirs + 4 * 8 + 4..data_dirs + 4 * 8 + 8]
         .copy_from_slice(&8u32.to_le_bytes());
-    // COFF 符号表指针 0x30
-    patched_source[coff + 12..coff + 16].copy_from_slice(&0x30u32.to_le_bytes());
+    // COFF 符号表指针。字段是 `coff+8` 的 `PointerToSymbolTable`；
+    // `coff+12` 是 `NumberOfSymbols`——改错字段不报错，只会让符号表指错地方。
+    patched_source[coff + 8..coff + 12].copy_from_slice(&0x30u32.to_le_bytes());
+    patched_source[coff + 12..coff + 16].copy_from_slice(&0x99u32.to_le_bytes());
 
     let image = Image::parse(patched_source.clone()).unwrap();
     let plan = image.plan_add_import("CopperCoreHook.dll", "E").unwrap();
@@ -294,9 +296,11 @@ fn shifts_every_file_offset_field_uniformly() {
         patched[data_dirs + 4 * 8..data_dirs + 4 * 8 + 4].try_into().unwrap(),
     );
     assert_eq!(cert, 0x100 + delta);
-    // COFF 符号表指针
-    let sym = u32::from_le_bytes(patched[coff + 12..coff + 16].try_into().unwrap());
+    // COFF 符号表指针随头部扩张右移；符号个数不���位移影响。
+    let sym = u32::from_le_bytes(patched[coff + 8..coff + 12].try_into().unwrap());
     assert_eq!(sym, 0x30 + delta);
+    let count = u32::from_le_bytes(patched[coff + 12..coff + 16].try_into().unwrap());
+    assert_eq!(count, 0x99, "NumberOfSymbols 不是文件偏移，不能被改写");
     assert_eq!(size, 56);
 }
 
@@ -355,5 +359,102 @@ fn rejects_foreign_injected_section() {
     assert_eq!(
         image.plan_add_import("CopperCoreHook.dll", "E").unwrap_err(),
         PeError::ForeignPatch
+    );
+}
+
+// ── 真实 PE 验证 ────────────────────────────────────────────────────────
+//
+// 合成夹具能覆盖我**设计出来**的边界，但覆盖不了真实 exe 的那些特征：
+// 十几节、`.bss` 节、调试目录（CodeView/PDB）、Authenticode 证书表、
+// 低 slack 的文件头。用真实镜像跑一遍才有说服力。
+//
+// 夹具路径来自环境变量 `COPPER_PE_FIXTURE`，不设置就跳过（CI 上没有游戏 exe）。
+
+/// 跳过时的统一提示，避免「没跑」被误读成「通过了」。
+fn real_fixture() -> Option<Vec<u8>> {
+    match std::env::var("COPPER_PE_FIXTURE") {
+        Ok(path) => match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => panic!("COPPER_PE_FIXTURE 指向的文件读不到：{path}（{error}）"),
+        },
+        Err(_) => {
+            eprintln!("跳过真实 PE 用例：未设置 COPPER_PE_FIXTURE");
+            None
+        }
+    }
+}
+
+#[test]
+fn real_executable_survives_injection_and_still_loads() {
+    let Some(original) = real_fixture() else {
+        return;
+    };
+    let image = Image::parse(original.clone()).expect("真实 exe 应可解析");
+    assert!(image.is_x64(), "真实 exe 应为 x64");
+    assert!(!image.has_hook_section(), "夹具不应已被注入过");
+
+    let plan = image
+        .plan_add_import("CopperCoreHook.dll", "CopperCoreHookEntry")
+        .expect("真实 exe 应能计划注入");
+    let patched = plan.apply(&image).expect("真实 exe 应能应用");
+
+    // 1) 结构仍然合法
+    let after = Image::parse(patched.clone()).expect("注入后仍可解析");
+    assert_eq!(after.number_of_sections, image.number_of_sections + 1);
+    assert!(after.has_hook_section());
+    assert!(
+        after.dll_is_imported("CopperCoreHook.dll").unwrap(),
+        "注入的导入必须能被读回"
+    );
+    // 原有导入一个不少
+    let before_dlls = image.imported_dlls().unwrap();
+    let after_dlls = after.imported_dlls().unwrap();
+    for dll in &before_dlls {
+        assert!(
+            after_dlls.iter().any(|name| name.eq_ignore_ascii_case(dll)),
+            "原有导入 {dll} 丢失"
+        );
+    }
+    // 头部与 SizeOfImage 自洽
+    assert!(after.size_of_headers as usize <= patched.len());
+    assert!(after.size_of_image >= after.sections.last().unwrap().rva_end());
+
+    // 2) **Windows 自己认不认**：以「只当数据文件打开」的方式加载。
+    //    头文件、节表、导入目录任一处算错，LoadLibraryEx 都会失败 ——
+    //    这是对重排结果最强的验证，比任何字段断言都硬。
+    let temp = std::env::temp_dir().join(format!("copper_pe_real_{}.exe", std::process::id()));
+    std::fs::write(&temp, &patched).expect("写入临时 exe");
+    let loaded = unsafe {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HINSTANCE;
+        use windows::Win32::System::LibraryLoader::{
+            LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE,
+        };
+        // `LOAD_LIBRARY_AS_DATAFILE`：只把镜像当数据映射，**不解析导入、
+        // 不执行入口点** —— 正是我们要的：验证 Windows 自己的 PE 解析器
+        // 认不认我们重排的结果，而不是让 notepad.exe 真的跑起来。
+        let wide: Vec<u16> = temp
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = LoadLibraryExW(
+            PCWSTR(wide.as_ptr()),
+            None,
+            LOAD_LIBRARY_AS_DATAFILE,
+        );
+        let ok = handle.is_ok();
+        if let Ok(module) = handle {
+            let _ = windows::Win32::Foundation::FreeLibrary(HINSTANCE(module.0));
+        }
+        ok
+    };
+    let _ = std::fs::remove_file(&temp);
+    assert!(loaded, "Windows 加载器拒绝了我们改写后的镜像");
+
+    // 3) 幂等：第二次注入不产生任何字节变化
+    assert_eq!(
+        after.plan_add_import("CopperCoreHook.dll", "CopperCoreHookEntry").unwrap_err(),
+        PeError::AlreadyImported("CopperCoreHook.dll".into())
     );
 }

@@ -23,7 +23,10 @@ use copper_core_hook::contract as contract;
 
 use crate::error::KernelError;
 use crate::modules::home::meta::VersionMeta;
-use crate::pe::{self, PeError};
+use crate::pe::PeError;
+// `pe` 只在注入实现（Windows）里被调用，非 Windows 目标上这个别名是空的。
+#[cfg(windows)]
+use crate::pe;
 
 /// 内核内嵌的 hook DLL 字节（由 `build.rs` 定位产物）。
 #[cfg(windows)]
@@ -107,6 +110,7 @@ pub fn launch_file_state(version_dir: &Path, exe: &Path, meta: &VersionMeta) -> 
 }
 
 /// 确保实例目录里有最新版本的 hook DLL，按 SHA256 比对决定是否重写。
+#[cfg(windows)]
 fn ensure_hook_dll(version_dir: &Path) -> Result<bool, KernelError> {
     let target = hook_dll_path(version_dir);
     if let Ok(existing) = std::fs::read(&target) {
@@ -122,6 +126,7 @@ fn ensure_hook_dll(version_dir: &Path) -> Result<bool, KernelError> {
 }
 
 /// 确保 exe 导入表里有 hook；已导入时零写入。
+#[cfg(windows)]
 fn ensure_import(exe: &Path) -> Result<bool, KernelError> {
     let bytes = std::fs::read(exe).map_err(|e| {
         KernelError::InvalidArgument(format!("读取游戏启动文件失败：{e}"))
@@ -144,6 +149,7 @@ fn ensure_import(exe: &Path) -> Result<bool, KernelError> {
 }
 
 /// 写文件（临时文件 + rename），失败时不留半成品。
+#[cfg(windows)]
 fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), KernelError> {
     let tmp = target.with_extension("copper-tmp");
     std::fs::write(&tmp, bytes)?;
@@ -161,6 +167,7 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), KernelError> {
 /// 为什么不用「直接写」：直接写在中途失败 / 断电 / 被占用时会留下**半张 PE**，
 /// 用户的实例就此报废。`ReplaceFileW` 是单次原子替换，且顺带满足
 /// 「随时可还原」。
+#[cfg(windows)]
 fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -241,6 +248,7 @@ pub fn ensure_backup(exe: &Path) -> Result<(), KernelError> {
 }
 
 /// 还原为未注入的原始启动文件。
+#[cfg(windows)]
 pub fn restore_original(exe: &Path) -> Result<(), KernelError> {
     let backup = backup_path(exe);
     if !backup.is_file() {
@@ -248,6 +256,14 @@ pub fn restore_original(exe: &Path) -> Result<(), KernelError> {
     }
     let bytes = std::fs::read(&backup)?;
     replace_exe(exe, &bytes)
+}
+
+/// 非 Windows 平台没有注入，也就没有「还原」这一步。
+#[cfg(not(windows))]
+pub fn restore_original(_exe: &Path) -> Result<(), KernelError> {
+    Err(KernelError::InvalidArgument(
+        "当前平台不支持启动注入".into(),
+    ))
 }
 
 /// 删除备份文件（释放磁盘）。
@@ -318,6 +334,7 @@ pub fn apply_console(_exe: &Path, _console: bool) -> Result<(), KernelError> {
 }
 
 /// SHA-256（只为比对 DLL 是否已是最新，避免每次启动都重写文件）。
+#[cfg(windows)]
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

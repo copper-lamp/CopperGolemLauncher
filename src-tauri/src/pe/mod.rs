@@ -28,6 +28,8 @@ mod import;
 mod parse;
 mod rebuild;
 #[cfg(test)]
+mod launch_probe;
+#[cfg(test)]
 mod tests;
 
 use std::fmt;

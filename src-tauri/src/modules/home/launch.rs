@@ -60,8 +60,15 @@ impl LaunchCtx {
 ///
 /// 监控要用 pid 判定「窗口是否真的上了屏」；协议唤起拿不到启动 pid，只能
 /// 这样反查。
+#[cfg(windows)]
 pub fn find_pid_at_path(exe_path: &std::path::Path) -> Option<u32> {
     pids_at_path(exe_path).first().copied()
+}
+
+/// 非 Windows 平台没有进程枚举，恒为「查不到」。
+#[cfg(not(windows))]
+pub fn find_pid_at_path(_exe_path: &std::path::Path) -> Option<u32> {
+    None
 }
 
 /// 启动结果（供前端反馈）。
@@ -386,7 +393,8 @@ fn launch_args(meta: &VersionMeta, name: &str) -> Vec<String> {
 fn prepare_instance(
     name: &str,
     dir: &std::path::Path,
-    exe: &std::path::Path,
+    // 只在 Windows 的控制台子系统分支用到（见下方 `#[cfg(windows)]`）。
+    #[cfg_attr(not(windows), allow(unused_variables))] exe: &std::path::Path,
     meta: &mut VersionMeta,
 ) -> Result<(), KernelError> {
     // 隔离强制：无论元数据写的是什么，本次启动都按隔离实例处理。
