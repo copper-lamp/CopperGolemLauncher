@@ -94,6 +94,10 @@ fn init_logging() {
         started: std::time::Instant::now(),
     });
     let _ = log::set_logger(logger).map(|()| log::set_max_level(log::LevelFilter::Info));
+    // Android：立刻写一条自检日志，把「后端没接上」与「后端接上了但后续无日志」分开。
+    // 真机排查时若连这条都看不到，说明问题在 logcat 过滤条件，而不是内核没输出。
+    #[cfg(target_os = "android")]
+    platform::logging::probe();
     // panic 必须在任何业务代码之前被接管：真机上 `setup()` 未跑完且无任何输出的
     // 现场，就是靠这条钩子才能定位（见 install_panic_hook 的说明）。
     install_panic_hook();
