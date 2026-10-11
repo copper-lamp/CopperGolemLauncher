@@ -6,10 +6,9 @@
 //!
 //! 启动成功后由后台任务监控进程状态，确认游戏运行时广播 `game.launched`。
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 
 #[cfg(target_os = "android")]
 use crate::modules::home::meta::AndroidVersionMeta;
@@ -271,7 +270,7 @@ pub fn launch_game(
     let mut meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
     #[cfg(target_os = "android")]
-    if let let android) = meta.android.as_ref() {
+    if let Some(android) = meta.android.as_ref() {
         return launch_android(ctx, name, &dir, android);
     }
     let exe = game_exe_path(&dir);
@@ -285,7 +284,7 @@ pub fn launch_game(
     }
 
     // 0) prepare：骨架目录 + 预加载清单 + 控制台子系统
-    prepare_instance(ctx, name, &dir, &exe, &mut meta)?;
+    prepare_instance(name, &dir, &exe, &mut meta)?;
 
     // 1) inject：hook DLL 落位 + 导入表改写
     #[cfg(windows)]
@@ -385,7 +384,6 @@ fn launch_args(meta: &VersionMeta, name: &str) -> Vec<String> {
 
 /// 启动前的实例准备：骨架目录、预加载清单、控制台子系统。
 fn prepare_instance(
-    ctx: &LaunchCtx,
     name: &str,
     dir: &std::path::Path,
     exe: &std::path::Path,
@@ -401,7 +399,7 @@ fn prepare_instance(
     super::isolate::ensure_skeleton(dir, meta)?;
 
     // 预加载清单：探测原生模块 → 写清单 → 注入侧按清单加载。
-    match super::preload::write_manifest_by_dir(ctx, name, dir) {
+    match super::preload::write_manifest_at(dir) {
         Ok(summary) => {
             if summary.entry_count > 0 {
                 log::info!(
@@ -450,24 +448,20 @@ fn apply_hook_env(cmd: &mut Command, dir: &std::path::Path, meta: &VersionMeta) 
 fn monitor_after_launch(ctx: &LaunchCtx, name: &str, dir: PathBuf, launch_pid: u32) {
     let settings = ctx.settings.clone();
     let hwnd = ctx.hwnd;
+    let after_launch_raw = settings.get_or::<String>("launch.after_launch", "keep".to_string());
+    let after_game_exit_raw =
+        settings.get_or::<String>("launch.after_game_exit", "keep".to_string());
     let on_launched: Option<Box<dyn FnOnce() + Send>> = {
-        let settings = settings.clone();
-        let action = window::AfterLaunch::parse(
-            &settings
-                .get_or::<String>("launch.after_launch".to_string(), "keep".to_string()),
-        );
+        let action = super::window::AfterLaunch::parse(&after_launch_raw);
         Some(Box::new(move || {
-            if let Err(error) = window::apply_launcher_action(hwnd, action) {
+            if let Err(error) = super::window::apply_launcher_action(hwnd, action) {
                 log::warn!("[home/launch] 应用启动后窗口行为失败: {error}");
             }
         }))
     };
-    let on_finished: Box<dyn FnOnce(monitor::ExitReason) + Send> = Box::new(move |reason| {
-        let action = window::AfterGameExit::parse(
-            &settings
-                .get_or::<String>("launch.after_game_exit".to_string(), "keep".to_string()),
-        );
-        if let Err(error) = window::apply_exit_action(hwnd, action) {
+    let on_finished: Box<dyn FnOnce(super::monitor::ExitReason) + Send> = Box::new(move |reason| {
+        let action = super::window::AfterGameExit::parse(&after_game_exit_raw);
+        if let Err(error) = super::window::apply_exit_action(hwnd, action) {
             log::warn!("[home/launch] 应用游戏退出后窗口行为失败: {error}");
         }
         log::info!("[home/monitor] 会话结束：{reason:?}");
@@ -654,27 +648,6 @@ mod tests {
         demote_registered(&dir);
         assert!(!VersionMeta::read(&dir).unwrap().registered);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 同一实例的监控任务必须去重：否则一次启动会广播多对
-    /// `game.launched` / `game.exited`，前端按钮在一次启动里被复位两次。
-    #[test]
-    fn monitor_registration_dedupes_per_instance() {
-        let a = std::path::PathBuf::from("D:/v/A");
-        let b = std::path::PathBuf::from("D:/v/B");
-        assert!(register_monitor(&a));
-        // 同实例重复登记被拒；不同实例互不影响
-        assert!(!register_monitor(&a));
-        assert!(register_monitor(&b));
-
-        unregister_monitor(&a);
-        assert!(register_monitor(&a));
-
-        // 清理，避免影响其它测试
-        unregister_monitor(&a);
-        unregister_monitor(&b);
-        assert!(register_monitor(&a));
-        unregister_monitor(&a);
     }
 
     /// 编辑器门槛以下的实例不得硬塞 `-Editor`（那只会让游戏启动失败）。

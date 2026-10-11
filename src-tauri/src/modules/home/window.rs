@@ -63,8 +63,8 @@ impl AfterGameExit {
 /// 游戏进程是否已有「已呈现」的窗口。
 #[cfg(windows)]
 pub fn game_window_presented(pid: u32) -> bool {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId};
+    use windows::Win32::Foundation::{HWND, LPARAM, TRUE};
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
 
     /// 枚举上下文：目标 pid + 是否已找到。
     struct Ctx {
@@ -73,13 +73,14 @@ pub fn game_window_presented(pid: u32) -> bool {
     }
 
     /// 回调返回 FALSE 时停止枚举。
-    unsafe extern "system" fn visit(hwnd: HWND, param: LPARAM) -> BOOL {
+    unsafe extern "system" fn visit(hwnd: HWND, param: LPARAM) -> windows::Win32::Foundation::BOOL {
+        use windows::Win32::Foundation::FALSE;
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
         let ctx = &mut *(param.0 as *mut Ctx);
-        let mut owner = 0u32;
-        if GetWindowThreadProcessId(hwnd, &mut owner) != 0
-            && owner == ctx.pid
-            && presented(hwnd)
-        {
+        let mut owner: u32 = 0;
+        let ok = GetWindowThreadProcessId(hwnd, Some(&mut owner));
+        if ok != 0 && owner == ctx.pid && presented(hwnd) {
             ctx.found = true;
             return FALSE;
         }
@@ -142,19 +143,25 @@ pub fn game_window_presented(_pid: u32) -> bool {
 /// `hwnd` 由内核自己持有（前端无法注入窗口句柄）。
 #[cfg(windows)]
 pub fn apply_launcher_action(hwnd: isize, action: AfterLaunch) -> Result<(), KernelError> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        ShowWindow, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_MINIMIZE, SW_SHOW};
     if hwnd == 0 {
         return Ok(());
     }
-    let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void);
+    let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut core::ffi::c_void);
+    // ShowWindow 的返回值只表示「之前是否可见」，对这里毫无意义；但它是
+    // `must_use`，必须显式丢弃，否则会留下误导性的「返回值很重要」印象。
     unsafe {
         match action {
-            AfterLaunch::Keep => ShowWindow(hwnd, SW_SHOW),
-            AfterLaunch::Minimize => ShowWindow(hwnd, SW_MINIMIZE),
-            AfterLaunch::Hide => ShowWindow(hwnd, SW_HIDE),
-        };
+            AfterLaunch::Keep => {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+            }
+            AfterLaunch::Minimize => {
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            AfterLaunch::Hide => {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
     }
     Ok(())
 }
@@ -165,13 +172,18 @@ pub fn apply_exit_action(hwnd: isize, action: AfterGameExit) -> Result<(), Kerne
     if hwnd == 0 {
         return Ok(());
     }
-    let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut std::ffi::c_void);
+    let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut core::ffi::c_void);
     unsafe {
         match action {
-            AfterGameExit::Keep => ShowWindow(hwnd, SW_SHOW),
-            AfterGameExit::Reopen => ShowWindow(hwnd, SW_RESTORE),
+            AfterGameExit::Keep => {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+            }
+            AfterGameExit::Reopen => {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            // 关闭交给调用方（内核不自杀：事件与前端状态还要继续跑）。
             AfterGameExit::Close => {}
-        };
+        }
     }
     Ok(())
 }

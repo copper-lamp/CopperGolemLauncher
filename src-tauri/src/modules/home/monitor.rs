@@ -142,7 +142,7 @@ pub fn spawn_after_launch(
             on_finished(reason);
             return;
         }
-        watch_until_exit(&events, &name, &exe).await;
+        watch_until_exit(&exe).await;
         publish_exited(&events, &name, ExitReason::Closed);
         unregister_monitor(&dir);
         on_finished(ExitReason::Closed);
@@ -204,7 +204,7 @@ async fn confirm_loop(
 }
 
 /// 生命周期观察：直到进程消失。
-async fn watch_until_exit(events: &EventBus, name: &str, exe: &Path) {
+async fn watch_until_exit(exe: &Path) {
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(WATCH_INTERVAL_MS)).await;
         if !super::launch::is_process_running_at_path(exe) {

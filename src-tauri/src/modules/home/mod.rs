@@ -274,7 +274,8 @@ impl HomeModule {
 
     /// 预加载清单探测摘要（版本设置页展示「将要加载什么」）。
     pub fn preload_summary(kernel: &KernelContext, name: &str) -> Result<preload::PreloadSummary, KernelError> {
-        preload::detect(kernel, name)
+        let dir = meta::resolve_version_dir(&kernel.versions_root(), name)?;
+        Ok(preload::detect_at(&dir))
     }
 }
 

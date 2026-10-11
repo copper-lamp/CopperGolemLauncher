@@ -21,3 +21,4 @@ docs
 .devdata/
 # 本仓库内的 cargo home（安卓出包需要可写的 registry，见 scripts/build-android-apk.cmd）
 .cargohome/
+target-embed

@@ -107,15 +107,24 @@ fn embed_app_manifest() {
     println!("cargo:rustc-link-arg={}", object.display());
 }
 
-/// 定位 hook DLL（`copper-core-hook` 的 cdylib 产物）并把绝对路径交给编译期。
+/// 定位（或就地构建）hook DLL，并把绝对路径交给编译期。
 ///
 /// 内核启动游戏前要把这个 DLL 写进实例目录，所以字节必须**编进二进制**：
 /// 运行时去 target 目录找产物，在发布安装包里不存在。
 ///
-/// DLL 缺失即构建失败：没有 DLL = 没有隔离、没有加载器注入，功能等于
-/// 悄悄关掉。那种「构建过了但用户发现资源装了不起」的失败比构建失败难查得多。
+/// 三级查找：
+/// 1. `COPPER_HOOK_DLL_DIR` 显式覆盖（CI / 特殊布局）；
+/// 2. 本次 profile 对应的 workspace 产物（`CopperCore/target/<triple>/<profile>/`）——
+///    `cargo build -p copper-core-hook` 已经产出过就直接用；
+/// 3. 都没有就**自己编一份**到 `native/hook/target-embed/<triple>/`。
 ///
-/// 目标平台非 Windows 时不产出路径（隔离与原生预加载是 Windows GDK 专属）。
+/// 第 3 步必须用**独立的 target 目录**：父 cargo 正持有 workspace target 的
+/// 文件锁，嵌套构建指向同一目录会死锁。多编一次 `serde` 的代价，换来
+/// `cargo check` / `cargo test` 在任何机器上开箱可用 —— 否则每个新克隆都得
+/// 先手工编 DLL。
+///
+/// DLL 最终仍拿不到时构建失败：没有 DLL = 没有隔离、没有加载器注入。
+/// 「构建过了但用户发现资源装不起来」比构建失败难查得多。
 fn export_hook_dll_path() {
     if !target_is_windows() {
         return;
@@ -123,40 +132,86 @@ fn export_hook_dll_path() {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("cargo 必须提供 CARGO_MANIFEST_DIR"),
     );
-    // 允许用环境变量覆盖，便于 IDE / CI 指向自定义产物目录。
-    let dir = match std::env::var("COPPER_HOOK_DLL_DIR") {
-        Ok(custom) => std::path::PathBuf::from(custom),
+    let hook_dir = manifest_dir.join("..").join("native").join("hook");
+    let triple = std::env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_string());
+    // 跟随本次构建的 profile，而不是写死 release：`cargo check` / `cargo test` 走 debug。
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+    const DLL_NAME: &str = "copper_core_hook.dll";
+
+    let dll = match std::env::var("COPPER_HOOK_DLL_DIR") {
+        Ok(custom) => {
+            let candidate = std::path::PathBuf::from(custom).join(DLL_NAME);
+            if candidate.is_file() {
+                candidate
+            } else {
+                build_hook_dll(&hook_dir, &profile, &triple)
+            }
+        }
         Err(_) => {
-            let target_triple = std::env::var("TARGET").unwrap_or_else(|_| {
-                // 交叉编译时 TARGET 一定存在；这里只是给出可读的失败信息。
-                "unknown-target".to_string()
-            });
-            // 用本次构建的 profile，而不是写死 release：`cargo check` / `cargo test`
-            // 走 debug，产物也在 debug 目录。写死 release 会让最常用的开发命令
-            // 直接失败。
-            let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-            manifest_dir
+            let workspace_dll = manifest_dir
                 .join("..")
-                .join("native")
-                .join("hook")
                 .join("target")
-                .join(target_triple)
-                .join(profile)
+                .join(&triple)
+                .join(&profile)
+                .join(DLL_NAME);
+            if workspace_dll.is_file() {
+                workspace_dll
+            } else {
+                build_hook_dll(&hook_dir, &profile, &triple)
+            }
         }
     };
-    let dll = dir.join("copper_core_hook.dll");
-    if !dll.is_file() {
-        panic!(
-            "找不到 hook DLL：{}\n\
-             该 DLL 由 `native/hook` 产出，内核在启动游戏前需要把它写进实例目录。\n\
-             请先构建：cargo build -p copper-core-hook --release",
-            dll.display()
-        );
-    }
+
     println!("cargo:rustc-env=COPPER_HOOK_DLL={}", dll.display());
-    // 变更 DLL 产物本身也要触发重新编译（include_bytes! 的依赖追踪对绝对路径有效，
-    // 这里显式声明一次以防目录调整后失效）。
     println!("cargo:rerun-if-changed={}", dll.display());
+}
+
+/// 在独立 target 目录里编出 hook DLL，返回产物路径。
+fn build_hook_dll(
+    hook_dir: &std::path::Path,
+    profile: &str,
+    triple: &str,
+) -> std::path::PathBuf {
+    let target_dir = hook_dir.join("target-embed").join(triple);
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let mut command = std::process::Command::new(cargo);
+    command
+        .current_dir(hook_dir)
+        .arg("build")
+        .arg("-p")
+        .arg("copper-core-hook")
+        .env("CARGO_TARGET_DIR", &target_dir);
+    if profile == "release" {
+        command.arg("--release");
+    }
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => panic!(
+            "构建 hook DLL 失败（退出码 {status}）。请手动执行：\
+             cargo build -p copper-core-hook{}",
+            if profile == "release" { " --release" } else { "" }
+        ),
+        Err(error) => panic!(
+            "无法启动 cargo 构建 hook DLL：{error}。\
+             请手动执行 cargo build -p copper-core-hook，\
+             或用 COPPER_HOOK_DLL_DIR 指向已构建好的产物。"
+        ),
+    }
+    // 带 --target 时产物在 <target>/<triple>/<profile>/；这里没传 --target，
+    // 因此落在 <target>/<profile>/。两处都查一遍，避免 cargo 版本差异导致找不到。
+    for candidate in [
+        target_dir.join(profile).join("copper_core_hook.dll"),
+        target_dir.join(triple).join(profile).join("copper_core_hook.dll"),
+    ] {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    panic!(
+        "hook DLL 构建成功但产物不在预期位置（已查 {} 与 {}）",
+        target_dir.join(profile).display(),
+        target_dir.join(triple).join(profile).display()
+    );
 }
 
 fn main() {

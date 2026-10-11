@@ -141,6 +141,10 @@ fn shift_coff_symbol_table(out: &mut [u8], image: &Image, delta: u32) {
 }
 
 /// 调试目录：条目本身在节内（RVA，不动），但它指向的调试数据用文件偏移。
+///
+/// 关键点：**条目自己也在被右移的那段数据里**，所以写 `PointerToRawData` 时
+/// 必须用「旧偏移 + delta」，拿旧偏移直接写会写到节前面的空隙里 —— 表象是
+/// 「校验通过、但调试目录指向垃圾」，最难查的一类。
 fn shift_debug_entries(out: &mut [u8], image: &Image, delta: u32) -> Result<(), PeError> {
     let Some((rva, size)) = image.data_dir(6) else {
         return Ok(());
@@ -148,10 +152,14 @@ fn shift_debug_entries(out: &mut [u8], image: &Image, delta: u32) -> Result<(), 
     if rva == 0 || size == 0 {
         return Ok(());
     }
-    let Some(base) = image.rva_to_offset(rva) else {
+    let Some(old_base) = image.rva_to_offset(rva) else {
         // 调试目录映射不到：不影响加载，跳过（不改比改错好）。
         return Ok(());
     };
+    let base = old_base.saturating_add(delta as usize);
+    if base >= out.len() {
+        return Ok(());
+    }
     let count = (size as usize) / DEBUG_ENTRY_SIZE;
     for index in 0..count {
         let entry = base + index * DEBUG_ENTRY_SIZE;

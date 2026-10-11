@@ -163,16 +163,13 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), KernelError> {
 /// 「随时可还原」。
 fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    use windows::Win32::System::Threading::{
-        CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH,
+        CreateFileW, MoveFileExW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_WRITE_THROUGH,
+        FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, OPEN_EXISTING,
     };
 
     let tmp = exe.with_extension("copper-inject-tmp");
-    let backup = backup_path(exe);
     if let Some(parent) = tmp.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -198,21 +195,24 @@ fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
             .collect()
     };
     unsafe {
-        let handle = CreateFileW(
+        // 先探一次可写性：游戏运行中时 exe 是独占的，此时直接报明确的错，
+        // 好过让 MoveFileExW 失败后给出含糊的「替换失败」。
+        let opened = CreateFileW(
             PCWSTR(wide(exe).as_ptr()),
-            FILE_FLAG_WRITE_THROUGH.0,
-            Default::default(),
+            FILE_READ_DATA.0 | FILE_WRITE_DATA.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
-            CREATE_ALWAYS,
+            OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
-            HANDLE(std::ptr::null_mut()),
+            None,
         );
-        if handle == INVALID_HANDLE_VALUE {
+        if opened.is_err() {
             let _ = std::fs::remove_file(&tmp);
             return Err(KernelError::InvalidArgument(
                 "无法写入游戏启动文件（游戏运行中或文件被占用）".into(),
             ));
         }
+        let handle = opened.expect("已确认可打开");
         let _ = windows::Win32::Foundation::CloseHandle(handle);
         // REPLACE_EXISTING + WRITE_THROUGH：替换是原子的，且不靠系统缓存侥幸落盘。
         let moved = MoveFileExW(
@@ -227,7 +227,6 @@ fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
             ));
         }
     }
-    let _ = &backup;
     Ok(())
 }
 

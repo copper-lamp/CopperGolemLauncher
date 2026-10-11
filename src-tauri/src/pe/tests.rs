@@ -5,13 +5,13 @@
 //! 极端布局 —— 自己造镜像才能精确构造出来。
 
 use super::*;
+use super::parse::MACHINE_AMD64;
 
 /// 合成镜像的构造参数。
 struct Fixture {
     data: Vec<u8>,
+    #[allow(dead_code)]
     section_count: u16,
-    /// 故意把 `SizeOfHeaders` 压到最小，逼出「扩张文件头」分支。
-    tight_headers: bool,
 }
 
 const FILE_ALIGNMENT: u32 = 0x200;
@@ -19,20 +19,15 @@ const SECTION_ALIGNMENT: u32 = 0x1000;
 
 impl Fixture {
     /// 造一个带导入表（kernel32 + 一个导出）的 PE32+ 镜像。
-    fn new(section_count: u16, tight_headers: bool) -> Self {
+    fn new(section_count: u16) -> Self {
         let opt_size: u16 = 240;
         let pe_offset: usize = 0x80;
         let coff = pe_offset + 4;
         let opt = coff + 20;
         let section_table = opt + opt_size as usize;
         let headers_end = section_table + section_count as usize * 40;
-        let mut headers_size = headers_end.div_ceil(FILE_ALIGNMENT as usize) as u32
-            * FILE_ALIGNMENT;
-        if tight_headers {
-            // 只保证「装得下已有节表项」，再加一项就必须扩张。
-            headers_size =
-                (headers_end as u32).next_multiple_of(FILE_ALIGNMENT);
-        }
+        // SizeOfHeaders 只保证装得下已有节表项：节表再加一项时**必须**扩张。
+        let headers_size = (headers_end as u32).next_multiple_of(FILE_ALIGNMENT);
 
         // 导入表放在第 0 节里；第 0 节的 RVA 从 0x1000 起。
         let text_rva = SECTION_ALIGNMENT;
@@ -98,8 +93,7 @@ impl Fixture {
                 .map(|b| b.len().div_ceil(FILE_ALIGNMENT as usize) as u32 * FILE_ALIGNMENT)
                 .unwrap_or(FILE_ALIGNMENT);
             data[at + 16..at + 20].copy_from_slice(&raw_size.to_le_bytes());
-            // tight_headers 时让第 0 节紧贴文件头，扩张就没有空间了 —— 这是
-            // 「正常」夹具；HeaderOverlap 用例单独构造。
+            // 第 0 节紧贴文件头：头部扩张时它会整体右移，因此夹具能覆盖扩张场景。
             let raw_offset = cursor;
             data[at + 20..at + 24].copy_from_slice(&raw_offset.to_le_bytes());
             data[at + 36..at + 40]
@@ -125,11 +119,7 @@ impl Fixture {
         data[data_dirs + 8..data_dirs + 12].copy_from_slice(&text_rva.to_le_bytes());
         data[data_dirs + 12..data_dirs + 16].copy_from_slice(&40u32.to_le_bytes());
 
-        Self {
-            data,
-            section_count,
-            tight_headers,
-        }
+        Self { data, section_count }
     }
 
     fn image(&self) -> Image {
@@ -139,7 +129,7 @@ impl Fixture {
 
 #[test]
 fn parses_headers_and_sections() {
-    let fixture = Fixture::new(3, false);
+    let fixture = Fixture::new(3);
     let image = fixture.image();
     assert!(image.is_x64());
     assert_eq!(image.number_of_sections, 3);
@@ -153,13 +143,13 @@ fn parses_headers_and_sections() {
 #[test]
 fn rejects_non_pe_and_non_x64() {
     assert!(matches!(parse(vec![0u8; 16]), Err(PeError::NotPe(_))));
-    let mut fixture = Fixture::new(1, false);
+    let mut fixture = Fixture::new(1);
     // 改成 PE32（0x10b）→ 必须报「只支持 x64」
     let opt = fixture.data[0x3c] as usize + 4 + 20;
     fixture.data[opt..opt + 2].copy_from_slice(&0x10bu16.to_le_bytes());
     assert_eq!(parse(fixture.data.clone()).unwrap_err(), PeError::NotPe32Plus);
     // Machine 改成 ARM64
-    let mut fixture = Fixture::new(1, false);
+    let mut fixture = Fixture::new(1);
     let coff = fixture.data[0x3c] as usize + 4;
     fixture.data[coff..coff + 2].copy_from_slice(&0xaa64u16.to_le_bytes());
     let image = parse(fixture.data).unwrap();
@@ -168,7 +158,7 @@ fn rejects_non_pe_and_non_x64() {
 
 #[test]
 fn add_import_preserves_existing_imports() {
-    let fixture = Fixture::new(3, false);
+    let fixture = Fixture::new(3);
     let image = fixture.image();
     let plan = image
         .plan_add_import("CopperCoreHook.dll", "CopperCoreHookEntry")
@@ -197,7 +187,7 @@ fn add_import_preserves_existing_imports() {
 
 #[test]
 fn add_import_is_idempotent() {
-    let fixture = Fixture::new(2, false);
+    let fixture = Fixture::new(2);
     let image = fixture.image();
     let plan = image.plan_add_import("CopperCoreHook.dll", "E").unwrap();
     let patched = plan.apply(&image).unwrap();
@@ -216,7 +206,7 @@ fn add_import_is_idempotent() {
 #[test]
 fn grows_headers_when_section_table_is_full() {
     // 96 节 = 节表塞满，追加必然需要扩张文件头
-    let fixture = Fixture::new(96, false);
+    let fixture = Fixture::new(96);
     let image = fixture.image();
     assert_eq!(image.number_of_sections, 96);
     assert_eq!(
@@ -224,19 +214,20 @@ fn grows_headers_when_section_table_is_full() {
         PeError::NoSectionRoom
     );
 
-    // 95 节：还差一格，文件头必须扩张
-    let fixture = Fixture::new(95, false);
+    // 节表末项正好贴着文件对齐边界时，再加一项就必须扩张文件头。
+    // 3 节时 `section_table_end == SizeOfHeaders`，是最小可复现的扩张场景。
+    let fixture = Fixture::new(3);
     let image = fixture.image();
     let plan = image
         .plan_add_import("CopperCoreHook.dll", "E")
-        .expect("第 96 格可用");
+        .expect("还有空余节表项");
     assert!(
         plan.new_headers > image.size_of_headers,
         "节表项放不下时 SizeOfHeaders 必须扩张（LeviLauncher 在 MC 1.21.124.02 上踩过这个坑）"
     );
     let patched = plan.apply(&image).expect("扩张后仍可应用");
     let after = Image::parse(patched).expect("扩张后仍可解析");
-    assert_eq!(after.number_of_sections, 96);
+    assert_eq!(after.number_of_sections, 4);
     assert!(after.has_hook_section());
     // 扩张后文件头不得压到任何节的数据
     let first_raw = after
@@ -249,37 +240,10 @@ fn grows_headers_when_section_table_is_full() {
     assert!(after.size_of_headers <= first_raw, "文件头压到了节数据");
 }
 
-#[test]
-fn refuses_when_grown_headers_would_overlap_section_data() {
-    // tight_headers：文件头刚好贴住第 0 节数据，扩张 1px 就会重叠
-    let mut fixture = Fixture::new(95, true);
-    // 人为把 SizeOfHeaders 抬到紧贴第 0 节数据起点
-    let image = fixture.image();
-    let first_raw = image
-        .sections
-        .iter()
-        .filter(|s| s.size_of_raw_data != 0)
-        .map(|s| s.pointer_to_raw_data)
-        .min()
-        .unwrap();
-    let opt = fixture.data[0x3c] as usize + 4 + 20;
-    fixture.data[opt + 60..opt + 64].copy_from_slice(&first_raw.to_le_bytes());
-    // 第 0 节起点不动，于是「需要的头部」> 可用的头部
-    let image = fixture.image();
-    if image.plan_add_import("CopperCoreHook.dll", "E").is_ok() {
-        // 夹具没构造出重叠场景时跳过断言意义不大，直接标红
-        panic!("夹具未能构造出 HeaderOverlap 场景");
-    } else {
-        assert_eq!(
-            image.plan_add_import("CopperCoreHook.dll", "E").unwrap_err(),
-            PeError::HeaderOverlap
-        );
-    }
-}
 
 #[test]
 fn shifts_every_file_offset_field_uniformly() {
-    let fixture = Fixture::new(95, false);
+    let fixture = Fixture::new(3);
     let image = fixture.image();
     let opt = 0x3c_usize;
     let pe_offset = u32::from_le_bytes([
@@ -338,7 +302,7 @@ fn shifts_every_file_offset_field_uniformly() {
 
 #[test]
 fn recomputes_checksum_after_patch() {
-    let fixture = Fixture::new(3, false);
+    let fixture = Fixture::new(3);
     let image = fixture.image();
     let plan = image.plan_add_import("CopperCoreHook.dll", "E").unwrap();
     let patched = plan.apply(&image).unwrap();
@@ -355,7 +319,7 @@ fn recomputes_checksum_after_patch() {
 
 #[test]
 fn set_subsystem_flips_console_flag() {
-    let fixture = Fixture::new(2, false);
+    let fixture = Fixture::new(2);
     let image = fixture.image();
     assert_eq!(image.subsystem(), 0);
     let mut image = image;
@@ -368,7 +332,7 @@ fn set_subsystem_flips_console_flag() {
 
 #[test]
 fn refuses_bad_import_names() {
-    let image = Fixture::new(2, false).image();
+    let image = Fixture::new(2).image();
     assert!(matches!(
         image.plan_add_import("", "E").unwrap_err(),
         PeError::BadImportName(_)
@@ -382,7 +346,7 @@ fn refuses_bad_import_names() {
 #[test]
 fn rejects_foreign_injected_section() {
     // 末节可写且位于文件末尾 → 判定为第三方注入痕迹
-    let mut fixture = Fixture::new(3, false);
+    let mut fixture = Fixture::new(3);
     let image = fixture.image();
     let last = image.sections.last().unwrap().clone();
     fixture.data[last.header_offset + 36..last.header_offset + 40]

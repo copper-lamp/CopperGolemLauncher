@@ -82,6 +82,11 @@ pub struct ModListResult {
 /// 解析版本的模组目录；`create` 为真时不存在则创建。
 ///
 /// 目录落在 `<versions_root>/<版本名>/mods`，与版本隔离无关，也不依赖 AppX 包。
+/// 实例内的模组目录（`<版本目录>/mods`）。
+pub(crate) fn mods_dir_at(version_dir: &Path) -> PathBuf {
+    version_dir.join(MODS_DIR)
+}
+
 pub fn mods_dir(kernel: &KernelContext, name: &str, create: bool) -> Result<PathBuf, KernelError> {
     let version_dir = resolve_version_dir(&kernel.versions_root(), name)?;
     if !version_dir.is_dir() {
@@ -185,7 +190,7 @@ fn publish_changed(kernel: &KernelContext, name: &str) {
 // ---------------------------------------------------------------- 纯文件层
 
 /// 列出模组目录下的模组（无清单目录跳过并计数）。
-fn list_mods_at(root: &Path) -> Result<ModListResult, KernelError> {
+pub(crate) fn list_mods_at(root: &Path) -> Result<ModListResult, KernelError> {
     let mut mods = Vec::new();
     let mut skipped = 0usize;
     if root.is_dir() {

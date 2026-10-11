@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 mod commands;
+pub mod pe;
 pub mod error;
 mod modules;
 pub mod platform;

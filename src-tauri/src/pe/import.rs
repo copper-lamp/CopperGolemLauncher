@@ -109,12 +109,13 @@ impl Image {
 
         // ---- 文件头要长出一个节表项，可能需要扩张
         let section_table_end = self.section_table + self.number_of_sections as usize * 40;
-        let wanted_headers = super::parse::align_up(
-            (section_table_end + 40) as u32,
-            self.file_alignment,
-        );
-        let new_headers = wanted_headers.max(self.size_of_headers);
-        // 扩张后的文件头不能压到第一个有数据的节。
+        let new_headers =
+            super::parse::align_up((section_table_end + 40) as u32, self.file_alignment)
+                .max(self.size_of_headers);
+        // 镜像自洽性检查：节数据必须落在文件头之后。头部扩张时所有节的原始数据
+        // 会整体右移同一个 delta（见 `rebuild`），因此**扩张本身不会压到节数据**，
+        // 无需也不能在这里拿「新头部 vs 旧首节偏移」去比大小 ——
+        // LeviLauncher 在 MC 1.21.124.02 上的事故正出在这类比较上。
         let first_raw = self
             .sections
             .iter()
@@ -122,8 +123,8 @@ impl Image {
             .map(|section| section.pointer_to_raw_data)
             .min()
             .unwrap_or(self.size_of_headers);
-        if new_headers > first_raw {
-            return Err(PeError::HeaderOverlap);
+        if first_raw < self.size_of_headers {
+            return Err(PeError::Malformed("节数据起始早于文件头，镜像不自洽"));
         }
 
         // ---- 节内布局

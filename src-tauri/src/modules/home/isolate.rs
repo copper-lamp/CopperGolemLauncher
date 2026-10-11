@@ -47,7 +47,7 @@ const ANDROID_FILES_DIR: &str = "files";
 /// 编辑器模式最低版本：正式渠道。
 const EDITOR_RELEASE_MIN: [u64; 4] = [1, 21, 50, 0];
 /// 编辑器模式最低版本：预览渠道（预览版比正式版早很多）。
-const EDITOR_PREVIEW_MIN: [u64; 4] = [1, 19, 80, 0];
+const EDITOR_PREVIEW_MIN: [u64; 4] = [1, 19, 80, 20];
 
 /// 内容根目录视图。
 #[derive(Debug, Clone)]

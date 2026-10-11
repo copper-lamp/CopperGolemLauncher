@@ -75,35 +75,31 @@ pub struct Image {
     pub subsystem_offset: usize,
 }
 
-fn align_up(value: u32, alignment: u32) -> u32 {
+pub(crate) fn align_up(value: u32, alignment: u32) -> u32 {
     if alignment == 0 {
         return value;
     }
     value.div_ceil(alignment) * alignment
 }
 
-fn read_u16(data: &[u8], offset: usize) -> Result<u16, PeError> {
+pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16, PeError> {
     data.get(offset..offset + 2)
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
         .ok_or(PeError::NotPe("文件被截断"))
 }
 
-fn read_u32(data: &[u8], offset: usize) -> Result<u32, PeError> {
+pub(crate) fn read_u32(data: &[u8], offset: usize) -> Result<u32, PeError> {
     data.get(offset..offset + 4)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .ok_or(PeError::NotPe("文件被截断"))
 }
 
-fn write_u16(data: &mut [u8], offset: usize, value: u16) {
+pub(crate) fn write_u16(data: &mut [u8], offset: usize, value: u16) {
     data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn write_u32(data: &mut [u8], offset: usize, value: u32) {
+pub(crate) fn write_u32(data: &mut [u8], offset: usize, value: u32) {
     data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-pub(crate) fn align_up_pub(value: u32, alignment: u32) -> u32 {
-    align_up(value, alignment)
 }
 
 impl Image {
@@ -356,4 +352,3 @@ pub(crate) struct ImportDescriptor {
     pub descriptor_offset: usize,
 }
 
-pub(crate) use {align_up_pub as align_up, read_u16, read_u32, write_u16, write_u32};

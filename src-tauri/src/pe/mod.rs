@@ -46,8 +46,6 @@ pub enum PeError {
     Malformed(&'static str),
     /// 节表已满，无法追加新节。
     NoSectionRoom,
-    /// 扩张后的文件头会与已有数据重叠。
-    HeaderOverlap,
     /// 目标 DLL 已在导入表中（幂等命中，不是错误）。
     AlreadyImported(String),
     /// 镜像已被第三方改写（本方追加节缺失但存在其它异常），拒绝注入。
@@ -63,7 +61,6 @@ impl fmt::Display for PeError {
             Self::NotPe32Plus => write!(f, "只支持 x64（PE32+）可执行文件"),
             Self::Malformed(why) => write!(f, "PE 结构异常：{why}"),
             Self::NoSectionRoom => write!(f, "节表已满，无法追加节"),
-            Self::HeaderOverlap => write!(f, "扩张后的文件头与已有数据重叠"),
             Self::AlreadyImported(name) => write!(f, "{name} 已在导入表中"),
             Self::ForeignPatch => write!(
                 f,

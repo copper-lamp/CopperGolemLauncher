@@ -14,7 +14,7 @@ pub fn pe_checksum_with(data: &[u8], checksum_offset: usize) -> u32 {
     let mut index = 0usize;
     while index + 1 < data.len() {
         // 校验和字段覆盖 4 字节 = 2 个字，两字都跳过。
-        if index == checksum_offset || index == checksum_offset + 2 {
+        if index == checksum_offset || index == checksum_offset.saturating_add(2) {
             index += 2;
             continue;
         }
@@ -73,9 +73,24 @@ mod tests {
     }
 
     #[test]
-    fn checksum_is_deterministic_and_order_sensitive() {
+    fn checksum_reacts_to_content_but_not_to_order() {
         let a = [1u8, 0, 2, 0, 3, 0];
-        let b = [3u8, 0, 2, 0, 1, 0];
-        assert_ne!(pe_checksum_with(&a, usize::MAX), pe_checksum_with(&b, usize::MAX));
+        let same = pe_checksum_with(&a, usize::MAX);
+        // 折叠求和对字的顺序不敏感（这是 16 位折叠和的性质），但对**内容**敏感。
+        // 正确性只要求后者：内容不同 → 校验和不同。
+        let reordered = [3u8, 0, 2, 0, 1, 0];
+        assert_eq!(pe_checksum_with(&reordered, usize::MAX), same);
+        let mut changed = a;
+        changed[0] = 9;
+        assert_ne!(pe_checksum_with(&changed, usize::MAX), same);
+    }
+
+    /// `usize::MAX`（调用方传「没有校验和字段」）不得触发溢出。
+    #[test]
+    fn checksum_tolerates_absent_field_offset() {
+        assert_eq!(
+            pe_checksum_with(&[1u8, 0, 2, 0], usize::MAX),
+            pe_checksum_with(&[1u8, 0, 2, 0], 1000)
+        );
     }
 }

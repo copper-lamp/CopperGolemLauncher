@@ -18,7 +18,6 @@ use copper_core_hook::contract as contract;
 use copper_core_hook::manifest::{PreloadEntry, PreloadManifest};
 
 use crate::error::KernelError;
-use crate::state::KernelContext;
 
 /// 生成原因：自动探测到条目。
 const REASON_AUTO: &str = "auto-detected";
@@ -26,8 +25,10 @@ const REASON_AUTO: &str = "auto-detected";
 const REASON_EXTERNAL: &str = "external-preloader";
 /// 生成原因：没有可预加载的原生模块。
 const REASON_NO_LOADER: &str = "no-loader";
-/// 加载器名（大小写不敏感匹配）。
+/// 加载器名（小写比较）。
 const LEVI_LAMINA: &str = "levilamina";
+/// 加载器落地产物的兜底候选（lipd 未按预期落成 `mods/` 结构时）。
+const FALLBACK_DLLS: [&str; 2] = ["LeviLamina.dll", "ScriptEngine.dll"];
 
 /// 探测结果（供 UI 展示与排障）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -48,25 +49,9 @@ struct Probe {
     entries: Vec<PreloadEntry>,
 }
 
-/// 探测实例目录里可预加载的原生 DLL。
-pub fn detect(kernel: &KernelContext, name: &str) -> Result<PreloadSummary, KernelError> {
-    let dir = crate::modules::home::meta::resolve_version_dir(&kernel.versions_root(), name)?;
-    Ok(probe(kernel, name, &dir)?.summary)
-}
-
 /// 写入清单（原子），返回摘要。
-pub fn write_manifest(kernel: &KernelContext, name: &str) -> Result<PreloadSummary, KernelError> {
-    let dir = crate::modules::home::meta::resolve_version_dir(&kernel.versions_root(), name)?;
-    write_manifest_by_dir(kernel, name, &dir)
-}
-
-/// 写入清单（目录已知时用；启动链路已经在 prepare 阶段解析过目录）。
-pub fn write_manifest_by_dir(
-    kernel: &KernelContext,
-    name: &str,
-    dir: &Path,
-) -> Result<PreloadSummary, KernelError> {
-    let probed = probe(kernel, name, dir)?;
+pub fn write_manifest_at(dir: &Path) -> Result<PreloadSummary, KernelError> {
+    let probed = probe(dir);
     let manifest = PreloadManifest::new(probed.reason, probed.entries);
     let target = super::inject::manifest_path(dir);
     let tmp = target.with_extension("json.tmp");
@@ -75,21 +60,29 @@ pub fn write_manifest_by_dir(
     Ok(probed.summary)
 }
 
-/// 探测实现（[`detect`] 与 [`write_manifest_by_dir`] 共用，避免两套规则）。
-fn probe(
-    kernel: &KernelContext,
-    name: &str,
-    dir: &Path,
-) -> Result<Probe, KernelError> {
-    // 外部预加载器接管：让位，不加载任何自有条目
-    // （与 LeviLauncher `native/levilauncher/src/config/mod_loader.cpp:42` 的约定一致）。
+/// 探测（不改任何文件）。
+pub fn detect_at(dir: &Path) -> PreloadSummary {
+    probe(dir).summary
+}
+
+/// 探测实例目录里可预加载的原生 DLL。
+///
+/// 三条来源：
+/// 1. `mods/<mod>/manifest.json` 中 `type == "preload-native"` 的 `entry`；
+/// 2. 出现名为 `LeviLamina` 的模组时，额外兜底探测实例根目录下的
+///    `LeviLamina.dll` / `ScriptEngine.dll`（lipd 若未按预期落成 `mods/`
+///    结构，仍要能生效）；
+/// 3. `preloader.dll` 存在 → **放弃全部自有加载**，让外部预加载器接管
+///    （与 LeviLauncher `native/levilauncher/src/config/mod_loader.cpp:42`
+///    的约定一致）。
+fn probe(dir: &Path) -> Probe {
     if dir.join(contract::PRELOADER_MARKER).is_file() {
         log::warn!(
             "[home/preload] 实例 `{}` 存在 {}，原生模组加载交给外部预加载器",
-            name,
+            dir.display(),
             contract::PRELOADER_MARKER
         );
-        return Ok(Probe {
+        return Probe {
             summary: PreloadSummary {
                 entry_count: 0,
                 loader_name: None,
@@ -97,41 +90,45 @@ fn probe(
             },
             reason: REASON_EXTERNAL,
             entries: Vec::new(),
-        });
+        };
     }
+
+    let mods_dir = super::mods::mods_dir_at(dir);
+    // 模组清单读不出来不是致命问题：只影响预加载，不该让游戏启动不了。
+    let listed = match super::mods::list_mods_at(&mods_dir) {
+        Ok(result) => result,
+        Err(error) => {
+            log::warn!("[home/preload] 读取模组清单失败（不影响启动）: {error}");
+            super::mods::ModListResult {
+                mods: Vec::new(),
+                skipped: 0,
+            }
+        }
+    };
 
     let mut entries: Vec<PreloadEntry> = Vec::new();
     let mut loader_name: Option<String> = None;
-    // 模组清单读不出来不是致命问题：只影响预加载，不该让游戏启动不了。
-    match super::mods::list_mods(kernel, name) {
-        Ok(list) => {
-            for item in list.mods.iter().filter(|item| item.enabled) {
-                if item.mod_type.eq_ignore_ascii_case("preload-native") && !item.entry.is_empty()
-                {
-                    match relative_entry(&dir, &item.entry, &item.folder) {
-                        Some(relative) => entries.push(PreloadEntry {
-                            path: relative,
-                            source: format!("mods/{}", item.name),
-                        }),
-                        None => log::warn!(
-                            "[home/preload] 模组 `{}` 的 entry `{}` 逃逸出实例目录，已忽略",
-                            item.name,
-                            item.entry
-                        ),
-                    }
-                }
-                if item.name.to_ascii_lowercase() == LEVI_LAMINA {
-                    loader_name = Some(item.name.clone());
-                }
+    for item in listed.mods.iter().filter(|item| item.enabled) {
+        if item.mod_type.eq_ignore_ascii_case("preload-native") && !item.entry.is_empty() {
+            match relative_entry(&mods_dir, dir, &item.entry, &item.folder) {
+                Some(relative) => entries.push(PreloadEntry {
+                    path: relative,
+                    source: format!("mods/{}", item.name),
+                }),
+                None => log::warn!(
+                    "[home/preload] 模组 `{}` 的 entry `{}` 逃逸出实例目录，已忽略",
+                    item.name,
+                    item.entry
+                ),
             }
         }
-        Err(error) => log::warn!("[home/preload] 读取模组清单失败（不影响启动）: {error}"),
+        if item.name.to_ascii_lowercase() == LEVI_LAMINA {
+            loader_name = Some(item.name.clone());
+        }
     }
 
-    // 兜底：lipd 未按预期把加载器落成 `mods/` 结构时，实例根目录下的本体 dll
-    // 仍然要能被加载，否则用户看到的是「装了加载器却没反应」。
     if loader_name.is_some() {
-        for candidate in ["LeviLamina.dll", "ScriptEngine.dll"] {
+        for candidate in FALLBACK_DLLS {
             if dir.join(candidate).is_file()
                 && !entries.iter().any(|entry| entry.path == candidate)
             {
@@ -142,7 +139,10 @@ fn probe(
             }
         }
         if entries.is_empty() {
-            log::warn!("[home/preload] 实例 `{name}` 标记了加载器，但没找到可加载的原生 DLL");
+            log::warn!(
+                "[home/preload] 实例 `{}` 标记了加载器，但没找到可加载的原生 DLL",
+                dir.display()
+            );
         }
     }
 
@@ -151,7 +151,7 @@ fn probe(
     } else {
         REASON_AUTO
     };
-    Ok(Probe {
+    Probe {
         summary: PreloadSummary {
             entry_count: entries.len(),
             loader_name,
@@ -159,19 +159,33 @@ fn probe(
         },
         reason,
         entries,
-    })
+    }
 }
 
 /// 把模组 `entry` 规整成相对实例目录、用 `/` 分隔的路径。
 ///
 /// 绝对路径、`..`、以及解析后落到实例目录之外的路径一律拒绝：注入侧虽然也会
 /// 再校验一次，但**生成侧就拒掉**能让「清单里为什么少了条目」有明确答案。
-fn relative_entry(version_dir: &Path, entry: &str, folder: &str) -> Option<String> {
+fn relative_entry(
+    mods_dir: &Path,
+    version_dir: &Path,
+    entry: &str,
+    folder: &str,
+) -> Option<String> {
     let candidate = Path::new(entry);
     if candidate.is_absolute() {
         return None;
     }
-    let joined = version_dir.join(folder).join(candidate);
+    // 任何 `..` 一律拒绝，而不是「归一化后还在实例目录内就放行」。
+    // 带 `..` 的 entry 是可疑数据（多半是清单被手改过），而它能指向的地方
+    // 必然也能用绝对路径直接写出来 —— 放行的唯一好处是让排障变难。
+    if candidate
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let joined = mods_dir.join(folder).join(candidate);
     let normalized = normalize(&joined);
     let root = normalize(version_dir);
     let relative = normalized.strip_prefix(&root).ok()?;
@@ -203,23 +217,55 @@ mod tests {
 
     #[test]
     fn escaping_entries_are_dropped() {
-        assert!(relative_entry(Path::new("D:/v"), "../../evil.dll", "m").is_none());
-        assert!(relative_entry(Path::new("D:/v"), "D:/other/x.dll", "m").is_none());
+        let mods_dir = Path::new("D:/v/mods");
+        let dir = Path::new("D:/v");
+        assert!(relative_entry(mods_dir, dir, "../../evil.dll", "m").is_none());
+        assert!(relative_entry(mods_dir, dir, "D:/other/x.dll", "m").is_none());
         assert_eq!(
-            relative_entry(Path::new("D:/v"), "a.dll", "m").as_deref(),
-            Some("m/a.dll")
+            relative_entry(mods_dir, dir, "a.dll", "m").as_deref(),
+            Some("mods/m/a.dll")
         );
         assert_eq!(
-            relative_entry(Path::new("D:/v"), "sub/a.dll", "m").as_deref(),
-            Some("m/sub/a.dll")
+            relative_entry(mods_dir, dir, "sub/a.dll", "m").as_deref(),
+            Some("mods/m/sub/a.dll")
         );
     }
 
     #[test]
     fn normalize_collapses_parent_segments() {
         assert_eq!(
-            normalize(Path::new("D:/v/m/../m/a.dll")),
-            PathBuf::from("D:/v/m/a.dll")
+            normalize(Path::new("D:/v/mods/../mods/a.dll")),
+            PathBuf::from("D:/v/mods/a.dll")
         );
+    }
+
+    #[test]
+    fn external_preloader_marker_wins() {
+        let dir = std::env::temp_dir().join(format!("copper_preload_ext_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(contract::PRELOADER_MARKER), b"x").unwrap();
+        let summary = detect_at(&dir);
+        assert!(summary.external_preloader);
+        assert_eq!(summary.entry_count, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_instance_yields_no_entries() {
+        let dir = std::env::temp_dir().join(format!("copper_preload_none_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let summary = detect_at(&dir);
+        assert_eq!(summary.entry_count, 0);
+        assert!(!summary.external_preloader);
+        // 清单仍会写出来（空 + reason），注入侧读到空清单就知道不用加载任何东西
+        let written = write_manifest_at(&dir).unwrap();
+        assert_eq!(written.entry_count, 0);
+        let bytes = std::fs::read(super::super::inject::manifest_path(&dir)).unwrap();
+        let parsed = PreloadManifest::parse(&bytes).expect("注入侧能解析");
+        assert!(parsed.entries.is_empty());
+        assert_eq!(parsed.reason, REASON_NO_LOADER);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -53,6 +53,14 @@ pub const FOLDERID_LOCAL_APP_DATA: GUID = GUID {
 // 不用记忆里的值 —— 这两个常量一旦写错，隔离会「看起来生效但写错地方」：
 // Roaming 认成 Local 的话游戏数据会落到实例外的用户目录，且没有任何报错。
 
+// 链接库按符号所属的 DLL 声明：`shell32`（SHGetKnownFolderPath）、
+// `ole32`（CoTaskMemAlloc / CoTaskMemFree）、`kernel32`（其余 Win32）。
+//
+// 本 crate 刻意不用 `windows` crate，因此没有任何自动链接；缺一个就是
+// LNK2019（未解析外部符号），而且只在链接 DLL 产物时才暴露。
+#[link(name = "shell32")]
+#[link(name = "ole32")]
+#[link(name = "kernel32")]
 extern "system" {
     /// `HRESULT SHGetKnownFolderPath(REFKNOWNFOLDERID, DWORD, HANDLE, PWSTR*)`
     pub fn SHGetKnownFolderPath(
