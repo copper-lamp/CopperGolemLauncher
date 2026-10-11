@@ -1,43 +1,42 @@
 <script setup lang="ts">
 // 标签条原语（内核通用组件）：只渲染标签条，不含面板。
 //
-// 视觉母题取自浏览器标签页 —— 选中项与相邻面板同色、被咬合那一侧的边框断开，
-// 形成一条无缝接缝；接缝两端是**向外张开的倒角**（外弧，即"反向圆角"），
-// 让选中项沿着面板边缘平滑地铺开。
+// 视觉母题取自浏览器标签页：选中项与相邻面板**同色**、无描边、直接连接，接缝处是
+// 方角；接缝两端各切出一个**等边直角三角形**，直角顶点就落在接缝顶点上，斜边朝
+// 标签条内侧张开 —— 于是选中项沿着面板边缘「外翻」出去。
 //
-// 实现方式：
-// 1. 调用方把条带朝面板方向负偏移 1px（纵向 `margin-right`、横向 `margin-bottom`），
-//    选中项自身那条边框（取面板同色）正好压住面板的 1px 边框；
-// 2. 选中项被咬合那一侧的两个端角取直角，并在其**外侧**各贴一个方块的
-//    「外侧对角线区域」（`--co-tabs-corner` 见方）。方块内用硬停径向渐变一次画出
-//    两件事：沿四分之一圆走的一条 1px 描边弧带（取 `--copper-border`，与面板边框
-//    同色，保证轮廓在倒角处不断开），以及弧线以外的实体填充（取 `--copper-surface`，
-//    与面板同色）。硬停让浏览器只做抗锯齿，不会经过半透明灰而留灰边。
-// 3. 倒角方块要压在相邻标签之上，故选中项自身抬升一层。
+// 为什么不画描边、不加底色差（试过，都不对）：
+// - **描边必须去掉**。选中项与面板同色，接缝那一侧若留 1px 线，线上会有两条互相
+//   咬合的边，读起来是「贴上去」而不是「长出来」。
+// - **底色差是伪解**。让选中项比面板略深一点确实能画出 Chrome 的圆角，但那就变成
+//   「标签浮在面板上」的卡片语言了，与本页「三部分是一整块」的版面约束冲突。
+//   去掉描边后，白色块在页面底色上的分界本身就是轮廓线，斜边无需再描一次。
 //
-// 几何：补块见方，贴在选中项**外侧**（跨过咬合侧边缘，并与面板边框同列 / 同行），
-// 圆心取**与目标凹角呈对角**的那个角，保留圆外区域；弧线两端分别与「选中项咬合侧
-// 边缘」和「面板轮廓线」相切，于是接缝向外张开。
-// 纵向接缝（面板在右，咬合边为其右边缘）：
-//   上倒角圆心取补块右下（`circle at 100% 100%`），下倒角圆心取补块右上（`circle at 0 100%`）；
-// 横向接缝（面板在下，咬合边为其下边缘）：
-//   左倒角圆心取补块右下（`circle at 100% 100%`），右倒角圆心取补块左下（`circle at 0 100%`）。
+// 三角形的形状与动画：
+// - 每个标签都带两个三角形伪元素（接缝的两个端点各一个），默认 `clip-path` 收拢成
+//   端点上的一个点（不可见）；选中项的三角形才展开成直角三角形。
+// - `clip-path: polygon()` 的顶点是可插值的，所以切换标签时两个三角形**各自在原地
+//   张开 / 收回**，中间态自然衔接 —— 不需要任何位移或位移补间，也就不会出现「白色块
+//   飞过去」的廉价感。选中项 `z-index` 抬升，张开的三角形压在相邻标签之上。
+// - 填充色也一起过渡（`transparent` → 面板同色），张开过程是「长出来」而不是
+//   「闪出来」。
 //
-// 定位：`absolute` 的包含块是**内边距盒**，受自身 1px 边框影响，故所有偏移都要
-// `calc(100% + 1px)` 校正，补块才能正好落在边框盒外沿。
-//
-// 方向：
-// - `vertical`：纵向条带，咬合右边（面板在右侧），倒角落在右上 / 右下；
-// - `horizontal`：横向条带，咬合下边（面板在下方），倒角落在左下 / 右下。
+// 定位：`absolute` 的包含块是**内边距盒**，四边都受标签自身尺寸影响。
+// - 横向（面板在下，咬合下边）：三角形贴在标签左下 / 右下角**外侧**，沿左边（或右边）
+//   向左 / 右伸出、沿下边向下伸出。直角顶点在标签角上，斜边连接「标签侧边上距底
+//   一个角半径处」与「面板上边框上距该角一个角半径处」，两端分别落在标签边界与
+//   面板边界上，接缝因此连续。
+// - 纵向（面板在右，咬合右边）：上 / 下端三角形同理，贴在标签右上 / 右下角外侧。
 //
 // 调用方契约（重要）：
 // 1. 面板 `background` 必须是 `var(--copper-surface)`，被咬合的那条边为
 //    `1px solid var(--copper-border)`；
-// 2. 条带须朝面板方向负偏移 1px，且与被咬合的面板之间不能有其它间隙；
-// 3. 补块会越出条带边界，故条带自身不要设置滚动，外层滚动容器需为倒角留出
-//    `--co-tabs-corner` 的内边距，否则首末项的倒角会被裁掉。
+// 2. 条带须朝面板方向负偏移 1px，与被咬合的面板之间不能有其它间隙；
+// 3. 三角形会越出条带边界，而**条带的祖先若带 `overflow`，三角形的斜边就会被裁掉**。
+//    纵向条带常见于可滚动的侧栏里，此时必须给滚动容器在**所有会外伸的方向**上
+//    补足一个 `--copper-radius-md` 的内边距。
 //
-// 选中态只靠「同色 + 边框断开」表达，不另加指示条；
+// 选中态只靠「同色块 + 斜切三角」表达，不另加指示条；
 // 复杂标签内容（图片、多行）用 `#item` 插槽替换默认的 图标 + 文本。
 
 import type { Component } from "vue";
@@ -82,28 +81,11 @@ function select(value: string) {
 
 <style scoped>
 .co-tabs {
+  /* 外扩量 = 斜边在标签边 / 面板边各让出的一条直角边长度，
+     也决定三角形补块见方。 */
   --co-tabs-corner: var(--copper-radius-md);
-  /* 倒角补块的三种朝向。补块贴在选中项外侧，圆心取**与目标凹角呈对角**的那个角，
-     保留圆外区域：弧线两端分别与「选中项咬合侧边缘」「面板轮廓线」相切，
-     于是接缝向外张开。硬停边界上用 `--copper-border` 画 1px 弧带（描边贴合轮廓），
-     其余填面板同色 `--copper-surface`。 */
-  --co-tabs-fillet-at-bottom-left: radial-gradient(
-    circle at 100% 100%,
-    transparent calc(var(--co-tabs-corner) - 1px),
-    var(--copper-border) calc(var(--co-tabs-corner) - 1px),
-    var(--copper-border) var(--co-tabs-corner),
-    var(--copper-surface) var(--co-tabs-corner)
-  );
-  --co-tabs-fillet-at-bottom-right: radial-gradient(
-    circle at 0 100%,
-    transparent calc(var(--co-tabs-corner) - 1px),
-    var(--copper-border) calc(var(--co-tabs-corner) - 1px),
-    var(--copper-border) var(--co-tabs-corner),
-    var(--copper-surface) var(--co-tabs-corner)
-  );
   position: relative;
   z-index: 1; /* 抬升条带，使选中项能压住相邻面板的边框 */
-  border: none;
 }
 
 .co-tabs--vertical {
@@ -123,7 +105,9 @@ function select(value: string) {
   display: flex;
   align-items: center;
   gap: var(--copper-space-2);
-  border: 1px solid transparent;
+  /* 无描边：轮廓线由「白色块 vs 页面底色」的分界自然形成，
+     再画一圈线只会让选中项看起来是个可以点的按钮。 */
+  border: none;
   border-radius: var(--copper-radius-md);
   background: transparent;
   color: var(--copper-text-secondary);
@@ -133,7 +117,6 @@ function select(value: string) {
   cursor: pointer;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
-    border-color var(--copper-duration-fast) var(--copper-easing),
     color var(--copper-duration-fast) var(--copper-easing);
 }
 
@@ -151,73 +134,116 @@ function select(value: string) {
   color: var(--copper-text);
 }
 
+/*
+ * 选中项：与面板同色、无描边、咬合侧取直角 —— 接缝就是一个方角。
+ * z-index 抬升，让下面两个张开的三角形压在相邻标签之上（浏览器标签页同款：
+ * 活动标签会「咬」掉相邻标签的角）。
+ */
 .co-tabs__tab--active {
-  z-index: 1; /* 倒角方块需压住左右相邻标签 */
+  z-index: 1;
   background: var(--copper-surface);
   color: var(--copper-text);
   font-weight: 500;
 }
 
-/* 纵向：咬合右边 —— 条带 `margin-right: -1px` 后，选中项那 1px 右边框与面板的
-   1px 左边框同处一列，取面板同色即可抹掉接缝；左侧两角仍圆角，右侧两角取直角
-   以便外接倒角方块。 */
+/* 纵向：面板在右，咬合右边 —— 上端直角、左下直；下端直角、右上直。 */
 .co-tabs--vertical .co-tabs__tab--active {
-  border-color: var(--copper-border);
-  border-right-color: var(--copper-surface);
   border-radius: var(--co-tabs-corner) 0 0 var(--co-tabs-corner);
 }
 
-/* 横向：咬合下边 —— 同理，条带 `margin-bottom: -1px` 后选中项的底边框压住
-   面板的上边框，取面板同色即抹掉接缝；上侧两角圆角，下侧两角取直角。 */
+/* 横向：面板在下，咬合下边 —— 上侧两角圆角，下侧两角取直角。 */
 .co-tabs--horizontal .co-tabs__tab--active {
-  border-color: var(--copper-border);
-  border-bottom-color: var(--copper-surface);
   border-radius: var(--co-tabs-corner) var(--co-tabs-corner) 0 0;
 }
 
-/* 外弧倒角：补块贴在标签外侧，内部径向渐变已含 1px 描边弧带与同色填充，
-   弧线朝面板方向张开，接缝两端由此延续面板轮廓。 */
-.co-tabs__tab--active::before,
-.co-tabs__tab--active::after {
+/*
+ * 外翻三角形：见方补块，直角顶点落在选中项咬合端的角顶点上。
+ *
+ * `clip-path` 的三个顶点用百分比写，右下角 = 直角顶点，另外两点各在补块的对角，
+ * 斜边即连接它们。收拢态把三点全压在直角顶点上 —— 退化成零面积但**仍然是同一个
+ * 形状**，所以 clip-path 的顶点插值在两个状态之间是连续的，动画不会出现「三角形
+ * 从无到有」的跳变。
+ *
+ * 展开态的斜边两端分别落在：标签侧边上距该角一个 `--co-tabs-corner` 处，
+ * 与面板边界上距该角一个 `--co-tabs-corner` 处。两条边界都是现成的轮廓线，
+ * 斜边接上去，接缝因此连续。
+ */
+.co-tabs__tab::before,
+.co-tabs__tab::after {
   content: "";
   position: absolute;
+  z-index: -1; /* 贴在标签背景之下，避免压住标签文字 */
   width: var(--co-tabs-corner);
   height: var(--co-tabs-corner);
+  background: transparent;
   pointer-events: none;
+  /* 收拢态：退化成端点上的一个点 */
+  clip-path: polygon(100% 100%, 100% 100%, 100% 100%);
+  transition:
+    clip-path var(--copper-duration) var(--copper-easing),
+    background-color var(--copper-duration) var(--copper-easing);
 }
 
-/* 纵向：补块贴在选中项右缘之外（其中 1px 压在面板边框同列上），上端圆心取
-   补块右下角、下端圆心取右上角，弧线朝面板方向张开。
-   `right: calc(100% + 1px)` 从内边距盒右缘再外移 1px，落在边框盒外沿；
-   反向的 `bottom/top: calc(100% + 1px)` 同理补偿自身边框。 */
-.co-tabs--vertical .co-tabs__tab--active::before {
-  right: calc(100% + 1px);
-  bottom: calc(100% + 1px);
-  background: var(--co-tabs-fillet-at-bottom-left);
+/*
+ * 横向：贴在下缘之外 —— 左端补块跨过标签左边与下边，直角顶点 = 标签左下角；
+   右端补块跨过标签右边与下边，直角顶点 = 标签右下角。
+   元素正好落在「角顶点向左/右一个 r、向上一个 r」的那一格里，斜边即对角线。 */
+.co-tabs--horizontal .co-tabs__tab::before {
+  left: calc(0px - var(--co-tabs-corner) - 1px);
+  bottom: -1px;
 }
 
-.co-tabs--vertical .co-tabs__tab--active::after {
-  right: calc(100% + 1px);
-  top: calc(100% + 1px);
-  background: var(--co-tabs-fillet-at-bottom-right);
+.co-tabs--horizontal .co-tabs__tab::after {
+  right: calc(0px - var(--co-tabs-corner));
+  bottom: -1px;
 }
 
-/* 横向：补块贴在选中项下缘之外，左端圆心取补块右下角、右端圆心取左下角。 */
 .co-tabs--horizontal .co-tabs__tab--active::before {
-  right: calc(100% + 1px);
-  bottom: calc(100% + 1px);
-  background: var(--co-tabs-fillet-at-bottom-left);
+  /* 直角顶点 = 元素左下（= 标签左下角），斜边从右上连到左上。 */
+  clip-path: polygon(0% 100%, 100% 100%, 0% 0%);
+  background: var(--copper-surface);
 }
 
 .co-tabs--horizontal .co-tabs__tab--active::after {
-  left: calc(100% + 1px);
-  bottom: calc(100% + 1px);
-  background: var(--co-tabs-fillet-at-bottom-right);
+  /* 直角顶点 = 元素右下（= 标签右下角），斜边从左下连到右上。 */
+  clip-path: polygon(100% 100%, 0% 100%, 100% 0%);
+  background: var(--copper-surface);
+}
+
+/* 纵向：贴在右缘之外 —— 上端补块跨过标签上边与右边，直角顶点 = 标签右上角；
+   下端补块跨过标签下边与右边，直角顶点 = 标签右下角。 */
+.co-tabs--vertical .co-tabs__tab::before {
+  right: calc(0px - var(--co-tabs-corner));
+  top: calc(0px - var(--co-tabs-corner));
+}
+
+.co-tabs--vertical .co-tabs__tab::after {
+  right: calc(0px - var(--co-tabs-corner));
+  bottom: calc(0px - var(--co-tabs-corner));
+}
+
+.co-tabs--vertical .co-tabs__tab--active::before {
+  /* 直角顶点 = 元素左下（= 标签右上角），斜边从左上连到右下。 */
+  clip-path: polygon(0% 100%, 0% 0%, 100% 100%);
+  background: var(--copper-surface);
+}
+
+.co-tabs--vertical .co-tabs__tab--active::after {
+  /* 直角顶点 = 元素右下（= 标签右下角），斜边从右上连到左下。 */
+  clip-path: polygon(100% 100%, 100% 0%, 0% 100%);
+  background: var(--copper-surface);
 }
 
 .co-tabs__label {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 窄屏标签页更矮，三角形按比例收一档，否则斜边显得笨重。 */
+@media (max-width: 720px) {
+  .co-tabs {
+    --co-tabs-corner: 7px;
+  }
 }
 </style>

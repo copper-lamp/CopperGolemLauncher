@@ -13,8 +13,6 @@ import {
   Download,
   User,
   Tag,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   LoaderCircle,
   SlidersHorizontal,
@@ -22,11 +20,12 @@ import {
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
+import CoBadge from "../../components/ui/CoBadge.vue";
+import CoPagination from "../../components/ui/CoPagination.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
 import TipsRotator from "../../components/TipsRotator.vue";
 import { usePlatform } from "../../composables/usePlatform";
 import { useSettings } from "../../composables/useSettings";
-import ContentBadge from "./ContentBadge.vue";
 import {
   sourceBadgeLabel,
   sourceBadgeTone,
@@ -42,15 +41,16 @@ import {
   type ContentType,
 } from "./api";
 import {
+  advanceKnownPages,
   contentType,
   error,
   gameVersion,
   hasLoadedVersions,
   hasMore,
   items,
+  knownPages,
   loading,
   markVersionsLoaded,
-  PAGE_SIZE,
   page,
   scrollTop,
   searchInput,
@@ -121,8 +121,18 @@ const filterOpen = ref(false);
 const filterRoot = ref<HTMLElement | null>(null);
 const scrollerEl = ref<HTMLElement | null>(null);
 
-/** 总页数（total 缺失或不确定时可退化为仅按 hasMore 累计）。 */
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
+/**
+ * 分页文案：由本模块的 i18n 命名空间注入，CoPagination 本身不认识「内容下载」。
+ * 做成 computed 是因为语言切换 / 动态命名空间加载后必须跟着变。
+ */
+const pagerLabels = computed(() => ({
+  summary: (current: number, all: number) =>
+    t(`${MB_KEY}.pageInfo`, { current, total: all }),
+  prev: t(`${MB_KEY}.prev`),
+  next: t(`${MB_KEY}.next`),
+  nav: t(`${MB_KEY}.pageNav`),
+  goto: (n: number) => t(`${MB_KEY}.pageGoto`, { page: n }),
+}));
 
 const sourceOptions = computed(() =>
   SOURCES.map((o) => ({ value: o.value, label: t(o.label) })),
@@ -188,6 +198,9 @@ async function fetchPage() {
     items.value = result.items;
     hasMore.value = result.hasMore;
     total.value = result.total;
+    // 已探索页数只能从 `hasMore` 推（内核三条路径的 `total` 语义各不相同，
+    // 默认的 mixed 路径给的是累加假值，拿它算页数会恒为 1 而让分页整条消失）。
+    advanceKnownPages(page.value, result.hasMore);
   } catch (e) {
     if (seq !== loadSeq) return;
     error.value = String(e);
@@ -201,11 +214,19 @@ function search() {
   void fetchPage();
 }
 
-function changePage(delta: number) {
-  const next = page.value + delta;
-  if (next < 0) return;
-  if (delta > 0 && !hasMore.value) return;
-  page.value = next;
+/**
+ * 跳到指定页（0 基）。
+ *
+ * 分页组件已经吃掉了越界、重复点击与 loading 期间点击，这里只负责落地状态并拉取。
+ * 用 `page.value = target` 而不是相对增减：面包屑页码是**绝对跳转**，相对增减要再算一遍
+ * 边界，两处都算就迟早会对不上。
+ */
+function jumpPage(target: number) {
+  if (target < 0 || target >= knownPages.value || target === page.value) return;
+  page.value = target;
+  // 翻页后滚回顶部，否则用户停在新页面的半截位置，还以为没换页。
+  const scroller = scrollerEl.value;
+  if (scroller) scroller.scrollTop = 0;
   void fetchPage();
 }
 
@@ -439,11 +460,11 @@ onBeforeUnmount(() => {
         <div class="content-card__main">
           <div class="content-card__title-row">
             <span class="content-card__name" :title="item.name">{{ item.name }}</span>
-            <ContentBadge
+            <CoBadge
               :tone="typeBadgeTone(item.contentType)"
               :label="typeBadgeLabel(item.contentType, item.source)"
             />
-            <ContentBadge
+            <CoBadge
               :tone="sourceBadgeTone(item.source)"
               :label="sourceBadgeLabel(item.source)"
             />
@@ -468,32 +489,15 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- 分页 -->
-    <footer v-if="items.length > 0" class="content-list__pager">
-      <button
-        class="content-list__pager-btn"
-        :disabled="page === 0 || loading"
-        @click="changePage(-1)"
-      >
-        <ChevronLeft :size="15" />
-        {{ t(`${MB_KEY}.prev`) }}
-      </button>
-      <span class="content-list__pager-state">
-        <LoaderCircle v-if="loading" :size="14" class="spin" />
-        <template v-else>
-          <span class="content-list__page-no">{{ t(`${MB_KEY}.pageInfo`, { current: page + 1, total: totalPages }) }}</span>
-          <span class="content-list__pager-status">{{ hasMore ? t(`${MB_KEY}.hasMore`) : t(`${MB_KEY}.noMore`) }}</span>
-        </template>
-      </span>
-      <button
-        class="content-list__pager-btn"
-        :disabled="!hasMore || loading"
-        @click="changePage(1)"
-      >
-        {{ t(`${MB_KEY}.next`) }}
-        <ChevronRight :size="15" />
-      </button>
-    </footer>
+    <!-- 分页：仅在真的有内容、且能翻页时出现 -->
+    <CoPagination
+      v-if="items.length > 0"
+      :page="page"
+      :total-pages="knownPages"
+      :loading="loading"
+      :labels="pagerLabels"
+      @change="jumpPage"
+    />
   </div>
 </template>
 
@@ -745,11 +749,10 @@ onBeforeUnmount(() => {
   color: var(--copper-text-secondary);
 }
 
-.content-list__retry,
-.content-list__pager-btn {
+.content-list__retry {
   display: inline-flex;
   align-items: center;
-  gap: var(--copper-space-1);
+  gap: 6px;
   height: var(--copper-control-h-sm);
   padding: 0 var(--copper-space-3);
   border: 1px solid var(--copper-border);
@@ -761,14 +764,8 @@ onBeforeUnmount(() => {
   transition: background-color var(--copper-duration-fast) var(--copper-easing);
 }
 
-.content-list__retry:hover,
-.content-list__pager-btn:hover:not(:disabled) {
+.content-list__retry:hover {
   background: var(--copper-surface-2);
-}
-
-.content-list__pager-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .content-card {
@@ -904,29 +901,7 @@ onBeforeUnmount(() => {
 }
 
 /* ---------------------------------------------------------------- 分页 */
-.content-list__pager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--copper-space-3);
-  padding-top: var(--copper-space-4);
-}
-
-.content-list__pager-state {
-  display: flex;
-  align-items: center;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-xs);
-  min-width: 130px;
-  justify-content: center;
-}
-
-.content-list__page-no {
-  font-weight: 600;
-  color: var(--copper-text);
-}
+/* 翻页 UI 已抽到 components/ui/CoPagination.vue，本模块不再自带分页样式。 */
 
 .spin {
   animation: spin 1.2s linear infinite;

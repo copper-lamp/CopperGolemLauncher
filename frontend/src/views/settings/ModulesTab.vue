@@ -307,12 +307,9 @@ const availableEmptyText = computed(() =>
                 :key="badge.kind"
                 size="sm"
                 :tone="badge.tone"
-              >
-                {{ badge.label }}
-              </CoBadge>
-              <CoBadge v-if="row.builtin" size="sm" tone="neutral">
-                {{ t(`${M}.builtin`) }}
-              </CoBadge>
+                :label="badge.label"
+              />
+              <CoBadge v-if="row.builtin" size="sm" tone="neutral" :label="t(`${M}.builtin`)" />
             </div>
 
             <div v-if="row.summary" class="modules-tab__summary">{{ row.summary }}</div>
@@ -422,9 +419,8 @@ const availableEmptyText = computed(() =>
                 :key="badge.kind"
                 size="sm"
                 :tone="badge.tone"
-              >
-                {{ badge.label }}
-              </CoBadge>
+                :label="badge.label"
+              />
             </div>
 
             <div v-if="row.summary" class="modules-tab__summary">{{ row.summary }}</div>

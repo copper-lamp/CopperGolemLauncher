@@ -32,6 +32,10 @@
   --copper-text-disabled: #484f58;
   --copper-hover: rgba(255, 255, 255, 0.06);
   --copper-active: rgba(255, 255, 255, 0.1);
+  /* 触控按压遮罩：叠加在控件自身底色之上的一层中性薄雾（见 base.css 的按压反馈）。
+   * 刻意用中性色而非主题强调色：按压是「手指按下去」的物理反馈，不该借用品牌色，
+   * 否则一排按钮同时被按下时会泛起一片铜色，读起来像「全部被选中」。 */
+  --copper-press: rgba(255, 255, 255, 0.09);
   --copper-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
   /* 轻微阴影：给「白底无描边」的卡片用。它与 --copper-shadow 的差别只有浓度，
    * 不改变阴影的方向与扩散，保证同一屏卡片之间的投影语言一致。 */
@@ -86,43 +90,76 @@
 
   /* 徽标配色（全站唯一一组，两个主题共用）。
    *
-   * 方案已定稿：**低纯度实色底 + 纯白文字 + 扁平无描边无阴影**。
-   * - 低纯度：色相保留、饱和度压到中低，一屏十几枚徽标同时出现时不会互相抢眼；
-   *   高纯度红/绿/蓝密集排列会让人眼花，读起来像一堆告警。
-   * - 纯白文字：语义全部由底色承担，文字不再与底色抢对比度（小字号下这是可读性
-   *   的第一瓶颈）。
-   * - 扁平：无描边、无内高光/内阴影。徽标是配角，任何厚度感都会让它看起来像按钮。
-   * - 两个主题共用同一组值：实心色块不是表面色，若随主题变浅变深，深色主题下就会
-   *   变成一块发灰的补丁。选值标准是对白色文字 ≥ 4.5:1。
-   * 业务组件统一走 `--copper-badge-<tone>`，禁止写颜色字面量。 */
-  --copper-badge-release: #3f7355;
-  --copper-badge-beta: #8a6a24;
-  --copper-badge-alpha: #a3453f;
+   * 方案：**高饱和深底 + 同色相淡亮字**，胶囊形、扁平无描边无阴影。
+   *
+   * 为什么不是纯白字：纯白字 + 对比度 ≥ 4.5:1 会把底色明度锁死在 L≈0.18，
+   * 12 个色调只能落进一整片暗绿/暗蓝/土黄之间，鲜艳度无从谈起（这正是上一版
+   * 「低纯度实色底」方案的实际观感）。改为「同色相淡亮字」后，字有富余的明度
+   * 空间去保留色相（不再是死白），省下的对比度预算全部让给底色，鲜艳度由此而来。
+   *
+   * 选值由脚本逐组求解并校验，标准：
+   * - 底色 HSL 饱和度 0.78（高纯度，鲜艳）；明度取**仍能满足 4.5:1 的最大值**；
+   * - 文字 HSL 饱和度 0.55 / 明度 0.89（淡色相亮字）；
+   * - 12 组实测对比度 4.50 ~ 6.51，全部 ≥ 4.5:1（WCAG AA）。改色请重跑校验，
+   *   不要凭肉眼估。
+   *
+   * 色相在 H 环上**跨维度错开**是关键约束：一条内容会同时显示「类型 + 来源」两枚
+   * 徽标，一个版本会同时显示「发布类型 + LeviLamina + 已下载」三枚，撞色即失去
+   * 区分意义。三个维度的色相区间分别是：发布 352~162、类型 190~296、来源 88~338。
+   *
+   * 两个主题共用同一组值：实心色块不是表面色，跟着主题变浅变深只会在深色主题下
+   * 变成一块发灰的补丁。
+   *
+   * 业务组件统一走 `--copper-badge-<tone>`（底）与 `--copper-badge-<tone>-fg`（字），
+   * 禁止写颜色字面量。 */
+  --copper-badge-release: #0f7959;
+  --copper-badge-release-fg: #d4f2e9;
+  --copper-badge-beta: #896a0b;
+  --copper-badge-beta-fg: #f6f2e4;
+  --copper-badge-alpha: #bd172e;
+  --copper-badge-alpha-fg: #f2d4d8;
   /* 游戏清单里的「测试版」与内容侧的 alpha 同色：两者语义一致（都不是稳定版）。 */
-  --copper-badge-preview: #a3453f;
-  --copper-badge-ll-mod: #8a5526;
-  --copper-badge-downloaded: #2f5f96;
+  --copper-badge-preview: #bd172e;
+  --copper-badge-preview-fg: #f2d4d8;
+
+  --copper-badge-ll-mod: #a64a15;
+  --copper-badge-ll-mod-fg: #f2dfd4;
+  --copper-badge-downloaded: #1861c1;
+  --copper-badge-downloaded-fg: #d4e1f2;
 
   /* 内容类型（内容下载模块）。刻意与发布渠道错开色相：同一条内容会同时显示
    * 「行为包 + LIP + 正式版」三枚徽标，三个维度撞成同一个颜色就失去区分意义。 */
-  --copper-badge-behavior-pack: #4a7068;
-  --copper-badge-texture-pack: #3f6f96;
-  --copper-badge-shader: #6f5a96;
+  --copper-badge-behavior-pack: #107285;
+  --copper-badge-behavior-pack-fg: #d4edf2;
+  --copper-badge-texture-pack: #1931cc;
+  --copper-badge-texture-pack-fg: #d4d8f2;
+  --copper-badge-shader: #a816b2;
+  --copper-badge-shader-fg: #f0d4f2;
 
-  /* 来源：CurseForge 中性灰、LIP 品牌铜、安卓原生模组青。 */
-  --copper-badge-source-curseforge: #5b6470;
-  --copper-badge-source-lip: #8a5526;
-  --copper-badge-source-lla: #3f7a80;
+  /* 来源。CurseForge 刻意给柠檬绿而非中性灰：灰色徽标在一屏彩色标签里就是一块
+   * 脏斑，而且「不用灰色」是明确要求。 */
+  --copper-badge-source-curseforge: #47780f;
+  --copper-badge-source-curseforge-fg: #e4f2d4;
+  --copper-badge-source-lip: #bc1754;
+  --copper-badge-source-lip-fg: #f2d4df;
+  --copper-badge-source-lla: #0f7b25;
+  --copper-badge-source-lla-fg: #d4f2da;
 
-  /* 通用状态（模块管理、设置等）。 */
-  --copper-badge-success: #2f6f63;
-  --copper-badge-warning: #94662a;
-  --copper-badge-danger: #a3453f;
-  --copper-badge-accent: #6f5335;
-  --copper-badge-neutral: #5b6470;
+  /* 通用状态（模块管理、设置等）。neutral 也不再是灰：靛紫、低饱和，
+   * 既不抢眼又不读成一块脏斑。 */
+  --copper-badge-success: #0f7959;
+  --copper-badge-success-fg: #d4f2e9;
+  --copper-badge-warning: #896a0b;
+  --copper-badge-warning-fg: #f6f2e4;
+  --copper-badge-danger: #bd172e;
+  --copper-badge-danger-fg: #f2d4d8;
+  --copper-badge-accent: #a64a15;
+  --copper-badge-accent-fg: #f2dfd4;
+  --copper-badge-neutral: #6837be;
+  --copper-badge-neutral-fg: #e5def2;
 
-  /* 实心色块上的前景色：恒为纯白，不跟随强调色（强调色变了而底色没变，对比度就
-   * 不可控了）。 */
+  /* 实心色块上的通用前景色。仅供没有专属 `-fg` 令牌的场景回退；
+   * 徽标一律走自己的 `-fg`，否则同色相淡色字的质感就丢了。 */
   --copper-on-solid: #ffffff;
 }
 
@@ -137,6 +174,7 @@ html[data-theme="light"] {
   --copper-text-disabled: #8c959f;
   --copper-hover: rgba(0, 0, 0, 0.05);
   --copper-active: rgba(0, 0, 0, 0.09);
+  --copper-press: rgba(0, 0, 0, 0.06);
   --copper-shadow: 0 4px 16px rgba(31, 35, 40, 0.12);
   /* 浅色下的「轻微阴影」必须更淡：白底上同样的浓度看起来会发灰、显脏。 */
   --copper-shadow-subtle: 0 1px 2px rgba(31, 35, 40, 0.06);

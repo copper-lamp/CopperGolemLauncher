@@ -55,8 +55,8 @@
   "prev": "Previous",
   "next": "Next",
   "pageInfo": "Page {current} / {total}",
-  "hasMore": "More",
-  "noMore": "No more",
+  "pageNav": "Content list pagination",
+  "pageGoto": "Page {page}",
   "detail": {
     "back": "Back to list",
     "author": "Author",

@@ -382,11 +382,13 @@ async function importApk() {
         </button>
         <div class="gd-group__body" :class="{ 'gd-group__body--open': releaseOpen }">
           <div class="gd-group__body-inner">
-            <div v-if="releases.length === 0" class="gd-group__none">
-              {{ narrowed ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
-            </div>
-            <div v-else class="gd-list">
-              <VersionCard v-for="version in releases" :key="version.id" :version="version" />
+            <div class="gd-group__body-pad">
+              <div v-if="releases.length === 0" class="gd-group__none">
+                {{ narrowed ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
+              </div>
+              <div v-else class="gd-list">
+                <VersionCard v-for="version in releases" :key="version.id" :version="version" />
+              </div>
             </div>
           </div>
         </div>
@@ -408,11 +410,13 @@ async function importApk() {
         </button>
         <div class="gd-group__body" :class="{ 'gd-group__body--open': previewExpanded }">
           <div class="gd-group__body-inner">
-            <div v-if="previews.length === 0" class="gd-group__none">
-              {{ narrowed ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
-            </div>
-            <div v-else class="gd-list">
-              <VersionCard v-for="version in previews" :key="version.id" :version="version" />
+            <div class="gd-group__body-pad">
+              <div v-if="previews.length === 0" class="gd-group__none">
+                {{ narrowed ? t(`${MB_KEY}.no_match`) : t(`${MB_KEY}.empty`) }}
+              </div>
+              <div v-else class="gd-list">
+                <VersionCard v-for="version in previews" :key="version.id" :version="version" />
+              </div>
             </div>
           </div>
         </div>
@@ -816,9 +820,27 @@ async function importApk() {
   grid-template-rows: 1fr;
 }
 
+/*
+ * 收缩层**必须零内边距**：这一层直接挂在 0fr 轨道上，内边距属于它的 min-content，
+ * 折叠时轨道压到 0 也会留下「一条内边距高」的残影（卡片看起来永远收不拢）。
+ * 因此本层只负责 min-height:0 + overflow:hidden，内边距全部下放到 __body-pad。
+ * 与 .gd-filter__panel 是同一套手法。
+ */
 .gd-group__body-inner {
   min-height: 0;
   overflow: hidden;
+}
+
+/*
+ * 保险：折叠态再显式抹掉下层的内边距并隐藏可见性。
+ * 即便以后有人把 __body-pad 改成带 min-height 的元素，也不会再露出残影。
+ */
+.gd-group__body:not(.gd-group__body--open) .gd-group__body-pad {
+  padding: 0;
+  visibility: hidden;
+}
+
+.gd-group__body-pad {
   padding: 0 var(--copper-space-3) var(--copper-space-3);
 }
 

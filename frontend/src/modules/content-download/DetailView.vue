@@ -30,7 +30,7 @@ import { useSettings } from "../../composables/useSettings";
 import { onContentDownloadLocation, type ContentDownloadLocation } from "../../events";
 import { homeVersionsList, type VersionView } from "../../api/home";
 import TipsRotator from "../../components/TipsRotator.vue";
-import ContentBadge from "./ContentBadge.vue";
+import CoBadge from "../../components/ui/CoBadge.vue";
 import {
   sourceBadgeLabel,
   sourceBadgeTone,
@@ -503,11 +503,11 @@ let unlistenLocation: () => void = () => {};
 
           <div class="cd-info__main">
             <div class="cd-info__badges">
-              <ContentBadge
+              <CoBadge
                 :tone="typeBadgeTone(detail.item.contentType)"
                 :label="typeBadgeLabel(detail.item.contentType, detail.item.source)"
               />
-              <ContentBadge
+              <CoBadge
                 :tone="sourceBadgeTone(detail.item.source)"
                 :label="sourceBadgeLabel(detail.item.source)"
               />
@@ -607,7 +607,7 @@ let unlistenLocation: () => void = () => {};
               <div class="cd-file__main">
                 <div class="cd-file__row">
                   <span class="cd-file__version">{{ file.version }}</span>
-                  <ContentBadge
+                  <CoBadge
                     :tone="releaseBadgeTone(file.releaseType)"
                     :label="releaseBadgeLabel(file.releaseType)"
                   />

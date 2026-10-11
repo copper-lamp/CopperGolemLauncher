@@ -10,7 +10,7 @@
 
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { AlertTriangle, BadgeCheck, Ban, Blocks, FlaskConical, Gamepad2, HardDriveDownload, PackagePlus, Puzzle } from "@lucide/vue";
+import { AlertTriangle, Ban, Gamepad2, PackagePlus, Puzzle } from "@lucide/vue";
 
 import CoBadge from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
@@ -59,11 +59,6 @@ const loaderChoices = computed<DropdownOption[]>(() => [
 /** 客户端下拉：当前没有收录任何客户端 dll，展开后由组件给出空态说明。 */
 const clientChoices = computed<DropdownOption[]>(() => []);
 
-/** 类型徽标图标（与列表页同一套：正式版已认证、测试版实验品）。 */
-const kindIcon = computed(() =>
-  version.value?.kind === "preview" ? FlaskConical : BadgeCheck,
-);
-
 const dialogOpen = ref(false);
 
 function openDialog() {
@@ -106,13 +101,9 @@ function goBack() {
           </span>
           <span class="gd-detail__name">{{ version.game_version }}</span>
           <!-- 徽标与列表页同源（CoBadge）：两处各写一份 CSS 迟早漂移。 -->
-          <CoBadge :tone="version.kind" :icon="kindIcon">
-            {{ t(`${MB_KEY}.kind.${version.kind}`) }}
-          </CoBadge>
-          <CoBadge v-if="version.has_loader" tone="ll-mod" :icon="Blocks">LeviLamina</CoBadge>
-          <CoBadge v-if="version.downloaded" tone="downloaded" :icon="HardDriveDownload">
-            {{ t(`${MB_KEY}.downloaded`) }}
-          </CoBadge>
+          <CoBadge :tone="version.kind" :label="t(`${MB_KEY}.kind.${version.kind}`)" />
+          <CoBadge v-if="version.has_loader" tone="ll-mod" label="LeviLamina" />
+          <CoBadge v-if="version.downloaded" tone="downloaded" :label="t(`${MB_KEY}.downloaded`)" />
         </header>
 
         <!-- 两个下拉框：加载器 / 客户端。整块放进滚动容器：

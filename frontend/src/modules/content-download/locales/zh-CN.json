@@ -55,8 +55,8 @@
   "prev": "上一页",
   "next": "下一页",
   "pageInfo": "第 {current} / {total} 页",
-  "hasMore": "还有更多",
-  "noMore": "没有更多了",
+  "pageNav": "内容列表分页",
+  "pageGoto": "第 {page} 页",
   "detail": {
     "back": "返回列表",
     "author": "作者",

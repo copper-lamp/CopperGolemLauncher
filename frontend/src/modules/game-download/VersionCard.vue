@@ -10,9 +10,8 @@
 // - 无描边，悬停**只浮起阴影**（不改底色——卡片底色已经和外层白底卡片同色，
 //   再叠一层底色变化在浅色主题下会读成「变灰」而不是「高亮」），点击进入二级页面。
 
-import { computed } from "vue";
 import { useRouter } from "vue-router";
-import { BadgeCheck, Blocks, FlaskConical, Gamepad2, HardDriveDownload } from "@lucide/vue";
+import { Gamepad2 } from "@lucide/vue";
 
 import CoBadge from "../../components/ui/CoBadge.vue";
 import { useI18n } from "../../i18n";
@@ -25,13 +24,6 @@ const router = useRouter();
 
 const MB_KEY = "module.game-download";
 
-/**
- * 类型徽标的图标：正式版 = 已认证的正式发布，测试版 = 实验品。
- * 图标给了形状记忆点，一排版本号扫过去不必逐字读徽标文字。
- */
-const KIND_ICON = { release: BadgeCheck, preview: FlaskConical } as const;
-const kindIcon = computed(() => KIND_ICON[props.version.kind]);
-
 function open() {
   void router.push(`/game-download/${encodeURIComponent(props.version.id)}`);
 }
@@ -43,15 +35,14 @@ function open() {
       <Gamepad2 :size="20" />
     </span>
     <span class="version-card__name">{{ version.game_version }}</span>
-    <CoBadge size="sm" :tone="version.kind" :icon="kindIcon">
-      {{ t(`${MB_KEY}.kind.${version.kind}`) }}
-    </CoBadge>
-    <CoBadge v-if="version.has_loader" size="sm" tone="ll-mod" :icon="Blocks">
-      LeviLamina
-    </CoBadge>
-    <CoBadge v-if="version.downloaded" size="sm" tone="downloaded" :icon="HardDriveDownload">
-      {{ t(`${MB_KEY}.downloaded`) }}
-    </CoBadge>
+    <CoBadge size="sm" :tone="version.kind" :label="t(`${MB_KEY}.kind.${version.kind}`)" />
+    <CoBadge v-if="version.has_loader" size="sm" tone="ll-mod" label="LeviLamina" />
+    <CoBadge
+      v-if="version.downloaded"
+      size="sm"
+      tone="downloaded"
+      :label="t(`${MB_KEY}.downloaded`)"
+    />
   </button>
 </template>
 

@@ -297,15 +297,22 @@ async function deleteVersion() {
 }
 
 /* 版本 rail：无卡片、可滚动（滚动条隐藏以免占位破坏 1px 咬合对齐）。
-   `margin-right: -1px` 让选中态的 1px 右边框正好压住面板的 1px 左边框。 */
+   `margin-right: -1px` 让选中态的 1px 右边框正好压住面板的 1px 左边框。
+   `overflow-y: auto` 在 CSS 里会把 `overflow-x` 从 visible 降级为 auto，
+   于是 CoTabs 的外翻倒角补块（画在 rail 右缘之外）会被裁掉半截 ——
+   朝面板这一侧必须补足一个圆角半径的内边距把它放出来。 */
 .version-settings__rail {
   grid-column: 1;
   grid-row: 2;
-  width: 236px;
+  /* 236px 是**内容区**宽度；倒角留位是额外加出来的，视觉宽度多出的一截本就没有
+     背景（rail 不画卡片），所以列宽变化对观感无影响，只是版本名不会因此提前换行。 */
+  width: calc(236px + var(--copper-radius-md) + 1px);
   min-height: 0;
   overflow-y: auto;
-  /* 纵向内边距为选中项的外弧倒角留位，否则首末项的倒角会被本容器裁掉。 */
+  /* 纵向内边距为选中项上/下两端的倒角留位。 */
   padding-block: var(--copper-radius-md);
+  /* 朝面板一侧的倒角留位：补块跨过 rail 右缘一个半径。 */
+  padding-right: calc(var(--copper-radius-md) + 1px);
   margin-right: -1px;
   position: relative;
   z-index: 1;
