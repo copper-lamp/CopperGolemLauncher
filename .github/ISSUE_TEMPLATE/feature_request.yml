@@ -1,4 +1,4 @@
-name: 功能请求（Feature Request）
+name: Feature Request
 description: 提出新功能或改进建议
 title: "[feat]: "
 labels: [feature]
@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        建议先阅读 docs/ 下的架构与模块设计，确认与整体架构一致。
+        告诉我们不满意的地方，或者可以改进的地方。
   - type: textarea
     id: motivation
     attributes:

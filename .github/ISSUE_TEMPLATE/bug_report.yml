@@ -1,4 +1,4 @@
-name: 缺陷报告（Bug Report）
+name: Bug Report
 description: 报告缺陷，帮助我们改进铜傀儡启动器
 title: "[bug]: "
 labels: [bug]
