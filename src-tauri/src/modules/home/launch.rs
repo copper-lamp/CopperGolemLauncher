@@ -1,4 +1,4 @@
-﻿//! 启动游戏：进程启动 + 目录重定向注入 + 运行检测 + 启动后监控。
+//! 启动游戏：进程启动 + 目录重定向注入 + 运行检测 + 启动后监控。
 //!
 //! 一条启动路径：始终由启动器自己拉起 `Minecraft.Windows.exe`，并在主线程执行
 //! 第一条指令之前把 hook DLL 远程注入进去（见 [`super::injector`]）。协议唤起
@@ -300,6 +300,10 @@ pub fn launch_game(
 
     // 0) prepare：骨架目录 + 预加载清单 + 控制台子系统
     prepare_instance(name, &dir, &exe, &mut meta)?;
+    // 登录态：空 profile 上游戏自身的交互式登录走不通（实测零网络请求、永远
+    // 「登录中」），所以启动前先把本机已登录的帐户痕迹写进去。幂等——目标已有
+    // 登录态时什么都不做，不覆盖用户自己登录的帐户。
+    ensure_login_state(ctx, name, &dir, &meta);
     // 自愈：协议唤起这条路已经移除，`registered` 对用户只剩误导意义。
     demote_registered(&dir);
 
@@ -428,6 +432,34 @@ fn prepare_instance(
         log::warn!("[home/launch] 应用控制台设置失败（不影响启动）: {error}");
     }
     Ok(())
+}
+
+/// 启动前确保实例带登录态。
+///
+/// 空 profile 上游戏自身的交互式登录在当前环境走不通：点「立即登录」后界面切到
+/// 「登录中」，但全程零 TCP 连接、一次网络请求都没有（见 `login_state` 模块文档）。
+/// 所以新建实例必须是「第一次启动就已登录」。
+///
+/// 幂等：目标已有登录态直接返回；找不到来源（用户从未在这台机器上登录过）也
+/// 只是跳过——那种情况下只能让用户自己想办法登录，不能报错挡住启动。
+fn ensure_login_state(
+    ctx: &LaunchCtx,
+    name: &str,
+    dir: &std::path::Path,
+    meta: &VersionMeta,
+) {
+    let data_dir = super::isolate::data_dir(dir, meta);
+    let root = ctx.paths.versions_root(&ctx.settings);
+    match super::login_state::import_for_instance(&root, &data_dir) {
+        Ok(Some(outcome)) => log::info!(
+            "[home/launch] 版本 `{name}` 已导入登录态：来源 `{}`，xuid {}，写盘={}",
+            outcome.source.display(),
+            outcome.xuid,
+            outcome.changed
+        ),
+        Ok(None) => log::debug!("[home/launch] 版本 `{name}` 无待导入的登录态"),
+        Err(error) => log::warn!("[home/launch] 登录态导入失败（不影响启动）: {error}"),
+    }
 }
 
 /// 交接给注入侧的环境变量。

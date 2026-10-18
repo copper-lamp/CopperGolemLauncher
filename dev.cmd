@@ -13,7 +13,7 @@ REM      writes to %APPDATA% / %LOCALAPPDATA% / %TEMP%. It shows up as:
 REM        - setup panic: data dir ... unusable: access denied (os error 5)
 REM        - WebView2 creation failure: 0x800700AA / 0x8000FFFF
 REM      Pointing the data root and the WebView2 profile into the repo side steps
-REM      it, and keeps dev data fully isolated from real user data.
+REM      it, and keeps dev data fully isolated from real user data..
 REM
 REM The game versions root (settings `game.directory`) IS redirected here, to
 REM %DEVROOT%\versions, and the Chinese rationale lives in docs.

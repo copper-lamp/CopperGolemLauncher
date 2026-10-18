@@ -27,6 +27,16 @@ const RELEASE_DATA_DIR: &str = "Minecraft Bedrock";
 /// 预览渠道的数据目录名。
 const PREVIEW_DATA_DIR: &str = "Minecraft Bedrock Preview";
 
+/// 正式渠道数据目录名（供「找官方安装当登录态来源」这类需要按名字拼路径的地方复用）。
+pub fn release_data_dir_name() -> &'static str {
+    RELEASE_DATA_DIR
+}
+
+/// 预览渠道数据目录名。
+pub fn preview_data_dir_name() -> &'static str {
+    PREVIEW_DATA_DIR
+}
+
 /// 共享内容根相对数据根的路径（资源包 / 行为包 / 世界都在这下面）。
 pub const SHARED_GAME_DIR: &str = "games/com.mojang";
 /// 世界目录名。

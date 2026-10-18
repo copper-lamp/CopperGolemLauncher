@@ -29,6 +29,11 @@ pub mod inject;
 pub mod injector;
 /// 实例隔离与版本硬规则的唯一事实源（数据目录布局、编辑器门槛）。
 pub mod isolate;
+/// 登录态导入：把本机已登录的 Microsoft 帐户痕迹写进新实例 profile。
+///
+/// 空 profile 上游戏自身的交互式登录在当前环境走不通（零网络请求、永远
+/// 「登录中」），所以新建实例必须是「第一次启动就已登录」。
+pub mod login_state;
 pub mod launch;
 pub mod meta;
 pub mod mods;
