@@ -43,7 +43,7 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::contract::{
     HOST_EXE_NAMES, HOOK_ABI_VERSION, HOOK_LOG_FILE_NAME, HOOK_DLL_FILE_NAME,
@@ -79,6 +79,58 @@ static SELF_MODULE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static HOOK_MODULES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static HOOK_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static HOOK_REPLACED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// 已写进日志的命中项条数（重扫时只打印增量）。
+static HOOK_REPORTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// 已替换的导入项名（`dll!function`），日志补写时逐条打印。
+static HOOKED_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// 扫到的全部导入模块名；只在「一个槽都没命中」时打进日志，供下次改 `REQUESTS` 用。
+static HOOK_SCAN_MODULES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// 每个重定向函数是否已记录过「首次被游戏调用」。
+///
+/// 有了它才能回答那个唯一有意义的问题：**游戏进程自己真的走了我们给的路径吗**。
+/// 「导入槽替换成功」只证明指针换掉了，「游戏调用被改写」才证明隔离真的在生效 ——
+/// 而这两件事在纯 IAT 视角下长得一模一样。
+static FIRST_CALL_SEEN: [AtomicBool; 3] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+
+/// `SHGetKnownFolderPath` 是否被游戏调用过（无论 FOLDERID）。
+static SH_CALLS_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// 下标约定：与 [`REQUESTS`] 中按函数名归并后的顺序一致。
+const IDX_SH_GET_KNOWN_FOLDER_PATH: usize = 0;
+const IDX_GET_TEMP_PATH_A: usize = 1;
+const IDX_GET_TEMP_PATH_W: usize = 2;
+
+/// 启动窗口高频补丁的持续时长（毫秒）。
+///
+/// 覆盖「主线程恢复 → 加载器解析导入表 → 游戏首次查询目录」这段窗口。这个循环
+/// 平时只读几个指针（见 [`main_slot_was_overwritten`]），真正的扫描只在检测到
+/// 覆写时发生一次，所以窗口相对长一些也不耗 CPU。
+const HOT_PATCH_WINDOW_MS: u64 = 30_000;
+/// 高频补丁的轮询节拍（毫秒）。
+const HOT_PATCH_INTERVAL_MS: u32 = 1;
+
+/// 主映像里我们关心的导入槽及其应有的值：`(槽地址, 我们自己的函数地址)`。
+///
+/// 挂起启动时 `DllMain` 先写了补丁，随后加载器解析导入表会把槽写回真实地址。
+/// 轮询这几个指针就能**廉价地**判定「加载器已经动过手了」，从而在下一毫秒内
+/// 夺回，而不是等 10 秒一轮的重扫。
+static MAIN_SLOTS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+/// 记录「游戏首次调用经由本 DLL 重定向的函数」，只记一次。
+fn note_first_call(index: usize, api: &str, handed_out: &str) {
+    if FIRST_CALL_SEEN[index].swap(true, Ordering::AcqRel) {
+        return;
+    }
+    log::line(
+        "INFO",
+        &format!("游戏首次调用 {api}，已重定向为：{handed_out}"),
+    );
+}
 
 // 原函数地址（装载前从 IAT 槽里取得）
 static REAL_SH_GET_KNOWN_FOLDER_PATH: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
@@ -217,11 +269,63 @@ extern "system" fn worker_main() -> u32 {
         ),
     );
 
-    // 4) hook 若还没装（回退路径），此刻补装。晚于目录查询的风险由日志暴露。
+    // 4) hook：主映像已在 `DllMain` 装好；此刻把进程内**其余已加载模块**也扫一遍。
+    //    实机验证表明游戏的真实调用点在依赖模块里，只改主映像会静默失效。
     install_hooks();
+    let modules = install_hooks_all_modules();
+    HOOK_MODULES.fetch_add(modules, Ordering::AcqRel);
+    log::line("INFO", &format!("首轮模块扫描：{modules} 个模块（含主映像）"));
     // 补写安装结论：`install_hooks` 多半是在 `DllMain` 里跑的，那时日志文件
     // 还不存在，那几行只会进 OutputDebugString。
     flush_hook_report();
+
+    // 4.5) 启动窗口高频补丁 —— 这一段是隔离成不成立的关键。
+    //
+    // 挂起启动时我们在 `DllMain` 里改的是**尚未被解析**的导入槽：加载器的
+    // `LdrpInitialize` 要等主线程第一次被调度才运行，它会把真实函数地址写进
+    // IAT，把我们刚写的指针全部覆盖掉。主线程恢复后，游戏在**毫秒级**就会去查
+    // 目录（`%APPDATA%` 是它最先要的路径之一），而 10 秒一轮的重扫根本来不及。
+    //
+    // 实机现象正是如此：日志里「替换 51 个导入槽」一路正常，`copper-hook.log`
+    // 里却一条「游戏首次调用」都没有 —— 补丁在生效之前就被加载器冲掉了。
+    //
+    // 本线程在主线程恢复**之前**就已经跑起来，所以用 1ms 的节拍反复补主映像，
+    // 能把「加载器覆盖 → 游戏首次查询」这段窗口盖住。只扫主映像，代价可以忽略。
+    let hot_started = std::time::Instant::now();
+    let hot_window = std::time::Duration::from_millis(HOT_PATCH_WINDOW_MS);
+    let mut hot_rounds = 0u32;
+    let mut reclaims = 0u32;
+    while hot_started.elapsed() < hot_window {
+        hot_rounds += 1;
+        if main_slot_was_overwritten() {
+            repatch_main_image();
+            reclaims += 1;
+        }
+        // 一次夺回之后加载器不会再碰导入表，剩下的交给 10 秒节拍即可。
+        // 但游戏首次调用一旦被捕获，说明重定向已经真正生效，也就可以收工了。
+        if reclaims > 0 && FIRST_CALL_SEEN.iter().any(|flag| flag.load(Ordering::Acquire)) {
+            break;
+        }
+        if reclaims > 8 {
+            break;
+        }
+        unsafe { sys::Sleep(HOT_PATCH_INTERVAL_MS) };
+    }
+    let first_call_seen = FIRST_CALL_SEEN.iter().any(|flag| flag.load(Ordering::Acquire));
+    log::line(
+        "INFO",
+        &format!(
+            "启动窗口高频补丁结束：轮询 {hot_rounds} 轮 / 夺回 {reclaims} 次，{}捕获到游戏调用",
+            if first_call_seen { "已" } else { "未" }
+        ),
+    );
+
+    // 5) 懒加载的模块也要覆盖：XAML / PlayFab 之类依赖是后面才起来的，
+    //    目录 API 的真实调用点很可能住在里面。线程本来就常驻，多跑一个节拍循环
+    //    不额外占资源。
+    let _ = std::thread::Builder::new()
+        .name("copper-hook-rescan".into())
+        .spawn(rescan_loop);
 
     // 5) 目录骨架：temp 必须真实存在，否则游戏会退到系统 temp
     for dir in plan.directories() {
@@ -311,8 +415,17 @@ fn self_dir() -> PathBuf {
 
 /// 需要 hook 的导入项。顺序即 [`dispatch_slots`] 的下标约定。
 ///
-/// `GetTempPath*` 同时列出 kernel32 与 kernelbase：同一导出可能被任一模块
-/// 转发，主映像导入哪个就 patch 哪个，两个都列上才不会漏。
+/// `GetTempPath*` 必须同时列出 **kernel32 / kernelbase 与游戏自己写的 api-set 名**：
+/// 真实 GDK 游戏（1.26.52.03）的导入表里这两个函数是
+/// `api-ms-win-core-file-l1-2-2.dll!GetTempPathA` 与
+/// `api-ms-win-core-file-l1-2-0.dll!GetTempPathW`，**并没有**从 kernel32 导入。
+/// 只按 `kernel32.dll` / `kernelbase.dll` 匹配的话，三项里只会命中一项，
+/// 表现为「`%APPDATA%` 隔离生效、`%TEMP%` 漏到系统目录」——
+/// 后者恰恰是让用户觉得「隔离没完全生效」的那一半。
+///
+/// api-set 名由**游戏的导入表**决定，不随 Windows 版本变化，因此可以写死；
+/// 万一将来换了名字，`[flush_hook_report]` 在一个槽都没命中时会把扫到的全部
+/// 模块名打进日志，那一行就是下一次的答案。
 const REQUESTS: &[ImportRequest<'static>] = &[
     ImportRequest {
         module: "shell32.dll",
@@ -334,6 +447,14 @@ const REQUESTS: &[ImportRequest<'static>] = &[
         module: "kernelbase.dll",
         function: "GetTempPathW",
     },
+    ImportRequest {
+        module: "api-ms-win-core-file-l1-2-2.dll",
+        function: "GetTempPathA",
+    },
+    ImportRequest {
+        module: "api-ms-win-core-file-l1-2-0.dll",
+        function: "GetTempPathW",
+    },
 ];
 
 /// [`REQUESTS`] 下标对应的 hook 实现。
@@ -347,6 +468,10 @@ fn hook_for(request: usize) -> *mut c_void {
 }
 
 /// 安装 IAT hook（幂等）。
+///
+/// `DllMain` 里只装**主映像**：那是最早的时机，且此时只有一次「游戏可能已经查过
+/// 目录」的窗口。依赖模块的扫描放在工作线程（[`install_hooks_all_modules`]），
+/// 因为 `CreateToolhelp32Snapshot` 要枚举模块列表，不该在加载器锁内做。
 fn install_hooks() {
     if HOOKS_INSTALLED.swap(true, Ordering::AcqRel) {
         return;
@@ -358,11 +483,154 @@ fn install_hooks() {
     }
     // SAFETY: `base` 是当前进程主映像基址，导入表在进程内可读。
     let scan = unsafe { iat::scan_main_imports(base as *mut u8, REQUESTS) };
+    apply_scan(&scan);
+    HOOK_MODULES.store(scan.modules.len(), Ordering::Release);
+    HOOK_HITS.store(scan.hits.len(), Ordering::Release);
+}
 
+/// 只重扫主映像并补丁（启动窗口高频调用用）。
+///
+/// 为什么单拎出来：`install_hooks` 有 `HOOKS_INSTALLED` 一次性闸门，而启动窗口
+/// 里需要反复补 —— 加载器解析导入表后会把槽写回真实地址。这里只解析主映像的
+/// 导入目录（几个描述符），1ms 一轮的代价可以忽略。
+fn repatch_main_image() {
+    let base = unsafe { sys::GetModuleHandleW(ptr::null()) };
+    if base.is_null() {
+        return;
+    }
+    // SAFETY: `base` 是当前进程主映像基址，导入表在进程内可读。
+    let scan = unsafe { iat::scan_main_imports(base as *mut u8, REQUESTS) };
+    remember_main_slots(&scan);
+    apply_scan(&scan);
+}
+
+/// 记下主映像上需要盯住的槽（只增不减，去重）。
+fn remember_main_slots(scan: &iat::ScanResult) {
+    let Ok(mut slots) = MAIN_SLOTS.lock() else {
+        return;
+    };
+    for hit in &scan.hits {
+        let slot = hit.slot.slot as usize;
+        if slot == 0 || slots.iter().any(|(known, _)| *known == slot) {
+            continue;
+        }
+        let hook = hook_for(hit.request) as usize;
+        if hook != 0 {
+            slots.push((slot, hook));
+        }
+    }
+}
+
+/// 主映像的槽里是否已经不是我们的函数（加载器解析导入表、或别家 DLL 覆写）。
+fn main_slot_was_overwritten() -> bool {
+    let Ok(slots) = MAIN_SLOTS.lock() else {
+        return false;
+    };
+    if slots.is_empty() {
+        return true; // 还没记到槽，交给一轮扫描去补
+    }
+    for (slot, hook) in slots.iter() {
+        // SAFETY: `slot` 来自本进程主映像的导入表扫描，指向一个 IAT 项。
+        let current = unsafe { *(*slot as *mut *mut c_void) } as usize;
+        if current != *hook {
+            return true;
+        }
+    }
+    false
+}
+
+/// 把进程内**所有已加载模块**的导入表都扫一遍并替换。
+///
+/// 主映像之外必须一起覆盖：实机验证显示游戏真正调用目录 API 的位置在依赖模块里，
+/// 只改主映像会「替换 3 个槽但一次也不生效」。
+///
+/// # 为什么放在工作线程
+///
+/// `DllMain` 里持有加载器锁，而模块枚举要读 PEB 的加载器链表 —— 那种「锁内回头看
+/// 自己的链表」的用法没有必要冒险。工作线程里做，慢的那几毫秒只影响依赖模块上的
+/// 重定向，主映像上的重定向早已在 `DllMain` 装好。
+fn install_hooks_all_modules() -> usize {
+    let self_module = SELF_MODULE.load(Ordering::Acquire) as usize;
+    let snapshot = unsafe { sys::CreateToolhelp32Snapshot(sys::TH32CS_SNAPMODULE, 0) };
+    if snapshot == sys::INVALID_HANDLE_VALUE || snapshot.is_null() {
+        log::line("WARN", "枚举已加载模块失败：依赖模块上的重定向未生效");
+        return 0;
+    }
+    let mut entry = sys::MODULEENTRY32W {
+        dw_size: std::mem::size_of::<sys::MODULEENTRY32W>() as u32,
+        th32_module_id: 0,
+        th32_process_id: 0,
+        glblcnt_usage: 0,
+        proccnt_usage: 0,
+        mod_base_addr: ptr::null_mut(),
+        mod_base_size: 0,
+        h_module: ptr::null_mut(),
+        sz_module: [0; 256],
+        sz_exe_path: [0; 260],
+    };
+    let mut modules = 0usize;
+    let mut ok = unsafe { sys::Module32FirstW(snapshot, &mut entry) } != 0;
+    while ok {
+        let base = entry.mod_base_addr;
+        modules += 1;
+        // 跳过自己：本 DLL 若也改自己的 IAT，`log` / `std::fs` 内部的
+        // `GetTempPath*` 会被绕进重定向函数，属于自己打自己。
+        if !base.is_null() && base as usize != self_module {
+            // SAFETY: `base` 来自 ToolHelp 快照，是本进程已加载映像的基址；
+            // `mod_base_size` 是同一快照给出的映像字节数，作为读穿护栏。
+            let scan = unsafe {
+                iat::scan_module_imports(base, entry.mod_base_size as usize, REQUESTS)
+            };
+            apply_scan(&scan);
+        }
+        ok = unsafe { sys::Module32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { sys::CloseHandle(snapshot) };
+    modules
+}
+
+/// 周期性重扫：把**之后**才加载的模块也覆盖上。
+///
+/// 一次全量扫描只解决「此刻已加载」的模块，而游戏的 XAML / PlayFab 之类依赖
+/// 是懒加载的 —— 目录 API 的真实调用点很可能就住在后面才起来的模块里。
+/// 重扫靠 [`mark_slot_once`] 去重，已经换过的槽不会再写一次，所以可以放心地
+/// 按固定节拍跑；代价只是每 10 秒一次 `CreateToolhelp32Snapshot`。
+fn rescan_loop() {
+    const RESCAN_INTERVAL_MS: u32 = 10_000;
+    loop {
+        // `Sleep` 在工作线程里等，不占 CPU；本 DLL 已 pin，线程活到进程结束。
+        unsafe { sys::Sleep(RESCAN_INTERVAL_MS) };
+        let modules = install_hooks_all_modules();
+        if modules == 0 {
+            // 枚举失败通常意味着快照被抢占了；重试即可，不必退出循环。
+            continue;
+        }
+        HOOK_MODULES.fetch_add(modules, Ordering::AcqRel);
+        flush_hook_report();
+    }
+}
+
+/// 替换一批导入槽。
+///
+/// # 为什么按「槽当前值」判断，而不是一次性去重
+///
+/// 早先按槽地址做一次性去重，埋了一个静默失效的真故障：`DllMain` 阶段装好的
+/// **主映像**槽，会被**后加载的 DLL** 覆写回去 —— exe 静态导入的别家注入 DLL
+/// 就是在他自己的 `DllMain` 里改同一批槽，而那发生在我们之后。去重之后重扫再也
+/// 不会夺回，日志里「替换 N 个槽」一切正常，游戏却一次都没走进我们的函数。
+///
+/// 现在只看槽里是不是我们的函数：不是就写回。代价是每轮重扫多几次
+/// `VirtualProtect`，收益是「被覆写后自愈」。
+fn apply_scan(scan: &iat::ScanResult) {
     let mut replaced = 0usize;
     for hit in &scan.hits {
         let hook = hook_for(hit.request);
         if hook.is_null() {
+            continue;
+        }
+        // SAFETY: 槽来自本次扫描，指向本进程某个模块的 IAT 项，可读。
+        let current = unsafe { *hit.slot.slot };
+        if current == hook {
             continue;
         }
         // 保存槽原值：hook 内部靠它透传未重定向的调用（绕开已打补丁的 IAT，
@@ -371,42 +639,81 @@ fn install_hooks() {
         // SAFETY: 槽来自本次扫描，进程有写权限。
         if unsafe { iat::install(hit.slot, hook) } {
             replaced += 1;
-            log::line(
-                "INFO",
-                &format!(
-                    "已重定向 {}!{}",
-                    REQUESTS[hit.request].module,
-                    REQUESTS[hit.request].function
-                ),
-            );
+            // 日志只报一次：重扫每 10 秒跑一轮，每次都报会把日志刷成噪声。
+            if announce_slot(hit.slot.slot as usize) {
+                if let Ok(mut names) = HOOKED_NAMES.lock() {
+                    names.push(format!(
+                        "{}!{}",
+                        REQUESTS[hit.request].module, REQUESTS[hit.request].function
+                    ));
+                }
+            }
         } else {
             log::line("WARN", "替换导入槽失败（VirtualProtect 被拒）");
         }
     }
+    if replaced > 0 {
+        HOOK_REPLACED.fetch_add(replaced, Ordering::AcqRel);
+        HOOK_HITS.fetch_add(scan.hits.len(), Ordering::AcqRel);
+        if let Ok(mut slot) = HOOK_SCAN_MODULES.lock() {
+            for module in &scan.modules {
+                slot.push(module.clone());
+            }
+        }
+    }
+}
 
-    HOOK_MODULES.store(scan.modules.len(), Ordering::Release);
-    HOOK_HITS.store(scan.hits.len(), Ordering::Release);
-    HOOK_REPLACED.store(replaced, Ordering::Release);
+/// 该槽是否首次成功替换；只用于**日志**去重，不参与替换决策。
+fn announce_slot(address: usize) -> bool {
+    static ANNOUNCED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    match ANNOUNCED.lock() {
+        Ok(mut seen) if !seen.contains(&address) => {
+            seen.push(address);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// 把 hook 安装结果补写进日志文件（在 `log::init` 之后调用）。
 ///
-/// 幂等：重复调用只会多写一行，代价可忽略，换来的是「无论 hook 是在 `DllMain`
-/// 还是工作线程里装的，用户都能在 `copper-hook.log` 里看到结论」。
+/// 幂等且**只追加增量**：重扫循环每 10 秒调一次，若每次都把全部命中项重打一遍，
+/// 一次游戏会话就能写掉几 MB 日志，把排障材料本身变成噪声。所以已打印过的条目
+/// 记在 `REPORTED` 里，后续只报新增。
 fn flush_hook_report() {
     let modules = HOOK_MODULES.load(Ordering::Acquire);
     let hits = HOOK_HITS.load(Ordering::Acquire);
     let replaced = HOOK_REPLACED.load(Ordering::Acquire);
-    log::line(
-        if replaced == 0 { "ERROR" } else { "INFO" },
-        &format!(
-            "目录重定向 hook：替换 {replaced} 个导入槽（命中 {hits}）；主映像导入模块数 {modules}"
-        ),
-    );
+    let hooked: Vec<String> = HOOKED_NAMES
+        .lock()
+        .map(|names| names.clone())
+        .unwrap_or_default();
+    let printed = HOOK_REPORTED.load(Ordering::Acquire);
+    if hooked.len() > printed {
+        for name in &hooked[printed..] {
+            log::line("INFO", &format!("已重定向 {name}"));
+        }
+        HOOK_REPORTED.store(hooked.len(), Ordering::Release);
+        log::line(
+            if replaced == 0 { "ERROR" } else { "INFO" },
+            &format!(
+                "目录重定向 hook：替换 {replaced} 个导入槽（命中 {hits}）；累计扫描模块数 {modules}"
+            ),
+        );
+    }
     if replaced == 0 {
+        // 一个槽都没命中时，把扫到的模块名全打出来：下一次改 `REQUESTS`
+        // 需要的答案就在这一行里，不必再手工 dump 一次导入表。
+        let scanned: Vec<String> = HOOK_SCAN_MODULES
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default();
         log::line(
             "WARN",
-            "未命中任何目标导入槽：本次运行不隔离（游戏若经 GetProcAddress 动态解析则抓不到）",
+            &format!(
+                "未命中任何目标导入槽：本次运行不隔离。主映像导入模块：{}",
+                scanned.join(", ")
+            ),
         );
     }
 }
@@ -456,12 +763,37 @@ unsafe extern "system" fn hook_sh_get_known_folder_path(
     output: *mut *mut u16,
 ) -> sys::HRESULT {
     if let Some(plan) = PLAN.get().and_then(|slot| slot.clone()) {
-        if plan.local_empty && guid_eq(rfid, &sys::FOLDERID_LOCAL_APP_DATA) {
-            return allocate_path("", output);
+        if guid_eq(rfid, &sys::FOLDERID_LOCAL_APP_DATA) {
+            // 给真实目录而不是空串：登录态（Xbox / MSA token、WebView2 用户目录）
+            // 与储存空间检查都要从 LocalAppData 取路径。置空会让游戏弹
+            // 「无储存空间」，登录界面则一直转圈（详见 `RedirectPlan::local`）。
+            let local = plan.local.to_string_lossy().into_owned();
+            note_first_call(
+                IDX_SH_GET_KNOWN_FOLDER_PATH,
+                "SHGetKnownFolderPath(LocalAppData)",
+                &local,
+            );
+            return allocate_path(&local, output);
         }
         if guid_eq(rfid, &sys::FOLDERID_ROAMING_APP_DATA) {
             let roaming = plan.root.to_string_lossy().into_owned();
+            note_first_call(
+                IDX_SH_GET_KNOWN_FOLDER_PATH,
+                "SHGetKnownFolderPath(RoamingAppData)",
+                &roaming,
+            );
             return allocate_path(&roaming, output);
+        }
+        // 只查我们不关心的 FOLDERID 也记一笔：用来区分「游戏根本没调这个 API」
+        // 与「调了、但用的不是 Roaming/Local」——这两者在纯 IAT 视角下不可分辨。
+        if !SH_CALLS_SEEN.swap(true, Ordering::AcqRel) {
+            let id = unsafe { rfid.as_ref() }
+                .map(|guid| format!("{:08X}-{:04X}-{:04X}", guid.data1, guid.data2, guid.data3))
+                .unwrap_or_else(|| "<null>".to_string());
+            log::line(
+                "INFO",
+                &format!("游戏调用了 SHGetKnownFolderPath(FOLDERID {{{id}}})，未重定向"),
+            );
         }
     }
     // 透传原函数：用装载前保存的槽原值，绕开已打补丁的 IAT。
@@ -481,6 +813,7 @@ unsafe extern "system" fn hook_sh_get_known_folder_path(
 unsafe extern "system" fn hook_get_temp_path_w(capacity: u32, buffer: *mut u16) -> u32 {
     if let Some(plan) = PLAN.get().cloned().flatten() {
         let value = temp_with_separator(&plan);
+        note_first_call(IDX_GET_TEMP_PATH_W, "GetTempPathW", &value);
         // Win32 语义：容量不足（含 0）时返回所需长度（含结尾 NUL）。
         let needed = value.len() as u32;
         if capacity == 0 || buffer.is_null() {
@@ -517,6 +850,7 @@ unsafe extern "system" fn hook_get_temp_path_w(capacity: u32, buffer: *mut u16) 
 unsafe extern "system" fn hook_get_temp_path_a(capacity: u32, buffer: *mut u8) -> u32 {
     if let Some(plan) = PLAN.get().cloned().flatten() {
         let value = temp_with_separator(&plan);
+        note_first_call(IDX_GET_TEMP_PATH_A, "GetTempPathA", &value);
         // 绝不退回系统 temp 或做 `'?'` 替换：宁可失败，让调用方走它自己的
         // 回退分支（LeviLauncher 同款取舍，`folder_redirect.cpp:159`）。
         let Some(ansi) = sys::to_ansi(&value) else {

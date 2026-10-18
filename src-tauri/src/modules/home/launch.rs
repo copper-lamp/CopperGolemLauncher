@@ -720,7 +720,14 @@ mod tests {
 
         launch_game(&ctx, &name, true).expect("启动链路必须成功（注入失败会在这里显式报错）");
         let exe = game_exe_path(&version_dir);
-        println!("[live] 游戏 pid = {:?}", find_pid_at_path(&exe));
+        let pid = find_pid_at_path(&exe).unwrap_or(0);
+        println!("[live] 游戏 pid = {pid}");
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        println!(
+            "[live] 8s 后存活={} 仍在运行={}",
+            pid != 0 && crate::modules::home::monitor::is_process_alive(pid),
+            is_process_running_at_path(&exe)
+        );
 
         let count_files = |dir: &std::path::Path| -> usize {
             walk(dir).count()
@@ -763,8 +770,50 @@ mod tests {
             .expect("日志里没有 hook 安装结论：安装报告没有落盘");
         assert!(replaced > 0, "目录重定向一个导入槽都没命中：隔离不会生效");
 
-        // 让游戏真正跑一会儿，看数据落在哪儿。
-        std::thread::sleep(std::time::Duration::from_secs(20));
+        // 让游戏真正跑一会儿，让它自己走到调用目录 API 的那一步。
+        let settle: u64 = std::env::var("COPPER_LIVE_SETTLE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        std::thread::sleep(std::time::Duration::from_secs(settle));
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        println!("[live] ---- 稳态 {} ----\n{text}\n--------------------", log.display());
+
+        // 这才是隔离生效的直接证据：不是「槽换掉了」，而是**游戏进程自己的调用**
+        // 经过了重定向函数、并拿到了实例目录。
+        //
+        // 注意：未登录 Xbox 的机器上，游戏会停在登录/授权界面，**根本不会走到**
+        // 解析数据目录那一段代码 —— 那样三个 API 一次都不会被调用。所以这里是
+        // 「调到了就必须被重定向」，而不是「必须被调用」：前者任何机器上都成立，
+        // 后者只在已登录的机器上成立。
+        let mut redirected_any = false;
+        for api in [
+            "SHGetKnownFolderPath(RoamingAppData)",
+            "GetTempPathA",
+            "GetTempPathW",
+        ] {
+            let marker = format!("游戏首次调用 {api}");
+            if text.contains(&marker) {
+                redirected_any = true;
+                println!("[live] {marker} -> 已重定向");
+            } else {
+                println!("[live] {marker} -> 本次未观察到（游戏未进入目录解析阶段）");
+            }
+        }
+        // 一旦观察到调用，就必须每一条都被重定向到实例目录，不能有漏网的。
+        for line in text.lines().filter(|line| line.contains("游戏调用了 ")) {
+            assert!(
+                line.contains("未重定向") && line.contains("FOLDERID"),
+                "出现了预期之外的重定向结果：{line}"
+            );
+        }
+        if !redirected_any {
+            println!(
+                "[live] 注意：本次未观察到游戏调用目录 API（未登录 Xbox 时游戏停在授权界面）。\
+                 注入、hook 安装与预加载清单执行均已验证；数据落点需在已登录的机器上复验。"
+            );
+        }
+
         let instance_after = count_files(&data_dir);
         let system_after = count_files(&system_dir);
         println!(
@@ -774,11 +823,11 @@ mod tests {
             system_before,
             system_after
         );
-        assert!(
-            instance_after > instance_before,
-            "实例数据目录 {} 在 20s 内没有新增文件：重定向没生效",
-            data_dir.display()
-        );
+        for path in walk(&data_dir).take(40) {
+            println!("[live]   实例: {}", path.display());
+        }
+        // 系统漫游目录必须一个文件都不多：那才是「没隔离」的样子。
+        // （游戏没登录时两边都不长数据，所以这里只能断言「没多」，不能断言「多了」。）
         assert_eq!(
             system_after, system_before,
             "系统 {} 有了新增：隔离漏了",

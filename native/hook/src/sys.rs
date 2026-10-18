@@ -130,7 +130,7 @@ extern "system" {
     /// `void SetLastError(DWORD)`
     pub fn SetLastError(dw_error: u32);
 
-    /// `int WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCCH, LPBOOL)`
+/// `int WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCCH, LPBOOL)`
     pub fn WideCharToMultiByte(
         code_page: u32,
         dw_flags: u32,
@@ -143,21 +143,70 @@ extern "system" {
     ) -> i32;
 }
 
+/// `MODULEENTRY32W`（`tlhelp32.h`）。
+///
+/// 字段偏移按 x64 对齐排布：两个 `DWORD` 之后是两个 `DWORD`，随后是三个
+/// `DWORD`，`modBaseAddr` 落在 0x18、`modBaseSize` 落在 0x20 —— 这几个位置
+/// 错了会读出垃圾模块，因此用单测钉死。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MODULEENTRY32W {
+    pub dw_size: u32,
+    pub th32_module_id: u32,
+    pub th32_process_id: u32,
+    pub glblcnt_usage: u32,
+    pub proccnt_usage: u32,
+    pub mod_base_addr: *mut u8,
+    pub mod_base_size: u32,
+    pub h_module: *mut c_void,
+    pub sz_module: [u16; 256],
+    pub sz_exe_path: [u16; 260],
+}
+
+/// `MODENTRY32W` 里 `modBaseAddr` / `modBaseSize` 的字节偏移（x64）。
+pub const MODULEENTRY32_BASE_ADDR_OFFSET: usize = 0x18;
+/// `MODULEENTRY32W` 里 `modBaseSize` 的字节偏移（x64）。
+pub const MODULEENTRY32_BASE_SIZE_OFFSET: usize = 0x20;
+
+/// `TH32CS_SNAPMODULE`（枚举当前进程的已加载模块）。
+pub const TH32CS_SNAPMODULE: u32 = 0x0000_0008;
+/// `TH32CS_SNAPMODULE32`（32 位模块；x64 进程里通常为空，但快照必须一起要）。
+pub const TH32CS_SNAPMODULE32: u32 = 0x0000_0010;
+/// `INVALID_HANDLE_VALUE`。
+pub const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+
+extern "system" {
+    /// `HANDLE CreateToolhelp32Snapshot(DWORD, DWORD)`
+    pub fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> *mut c_void;
+
+    /// `BOOL Module32FirstW(HANDLE, LPMODULEENTRY32W)`
+    pub fn Module32FirstW(snapshot: *mut c_void, entry: *mut MODULEENTRY32W) -> i32;
+
+    /// `BOOL Module32NextW(HANDLE, LPMODULEENTRY32W)`
+    pub fn Module32NextW(snapshot: *mut c_void, entry: *mut MODULEENTRY32W) -> i32;
+
+    /// `VOID Sleep(DWORD)`
+    pub fn Sleep(dw_milliseconds: u32);
+}
+
 /// `CP_ACP`（`GetTempPathA` 的语义：ANSI 版按系统代码页转换）。
 pub const CP_ACP: u32 = 0;
-/// 判断「ANSI 转换是否发生了字符替换」的依据。
-///
-/// `WideCharToMultiByte` 遇到代码页无法表示的字符时会静默替换成 `'?'` 并返回成功。
-/// 文档里说的 `WC_NOERROR` 不能用来关掉这个行为：**它必须与 `WC_COMPOSITECHECK` 成对使用**，
-/// 单独传会让 API 直接以 `ERROR_INVALID_FLAGS` 失败（连 ASCII 都转不了）。
-///
-/// 因此这里改用往返校验：把转出的 ANSI 再用 `MultiByteToWideChar` 转回 UTF-16，
-/// 与原始输入逐码元比较；不一致即说明发生了替换，返回 `None`。
-///
-/// 对我们为什么必须是「失败」而不是「替换」：`GetTempPathA` 会拿到一个指向不存在目录的
-/// 替换路径，游戏照着它写文件，而日志里什么异常都没有。
-///
-/// `int MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int)`
+
+// ── ANSI 转换契约 ────────────────────────────────────────────────────────
+//
+// 判断「ANSI 转换是否发生了字符替换」的依据。
+//
+// `WideCharToMultiByte` 遇到代码页无法表示的字符时会静默替换成 `'?'` 并返回成功。
+// 文档里说的 `WC_NOERROR` 不能用来关掉这个行为：**它必须与 `WC_COMPOSITECHECK` 成对使用**，
+// 单独传会让 API 直接以 `ERROR_INVALID_FLAGS` 失败（连 ASCII 都转不了）。
+//
+// 因此这里改用往返校验：把转出的 ANSI 再用 `MultiByteToWideChar` 转回 UTF-16，
+// 与原始输入逐码元比较；不一致即说明发生了替换，返回 `None`。
+//
+// 对我们为什么必须是「失败」而不是「替换」：`GetTempPathA` 会拿到一个指向不存在目录的
+// 替换路径，游戏照着它写文件，而日志里什么异常都没有。
+//
+// `int MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int)`
 extern "system" {
     pub fn MultiByteToWideChar(
         code_page: u32,
@@ -330,6 +379,35 @@ mod tests {
     }
 
 #[test]
+    fn module_entry_layout_matches_tlhelp32_x64() {
+        // 偏移错一位 = 枚举出一堆垃圾模块，然后一个导入槽都找不到。
+        let entry = MODULEENTRY32W {
+            dw_size: 0,
+            th32_module_id: 0,
+            th32_process_id: 0,
+            glblcnt_usage: 0,
+            proccnt_usage: 0,
+            mod_base_addr: std::ptr::null_mut(),
+            mod_base_size: 0,
+            h_module: std::ptr::null_mut(),
+            sz_module: [0; 256],
+            sz_exe_path: [0; 260],
+        };
+        let base = &entry as *const MODULEENTRY32W as usize;
+        assert_eq!(
+            &entry.mod_base_addr as *const _ as usize - base,
+            MODULEENTRY32_BASE_ADDR_OFFSET
+        );
+        assert_eq!(
+            &entry.mod_base_size as *const _ as usize - base,
+            MODULEENTRY32_BASE_SIZE_OFFSET
+        );
+        assert_eq!(TH32CS_SNAPMODULE, 0x08);
+        assert_eq!(TH32CS_SNAPMODULE32, 0x10);
+        assert!(INVALID_HANDLE_VALUE as isize == -1);
+    }
+
+    #[test]
     fn ansi_conversion_keeps_ascii_and_refuses_unrepresentable() {
         // 契约只有一条：**不丢信息**。能无损转就转，损了就失败。
         assert_eq!(to_ansi("D:/mc/temp"), Some(b"D:/mc/temp".to_vec()));

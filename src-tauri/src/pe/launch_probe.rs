@@ -451,16 +451,14 @@ fn dump_import(label: &str, image: &Image) {
         return;
     };
     let data = image.data();
-    let mut index = 0usize;
-    // 记下最后读到的描述符原始字节：终止符到底写没写、字段是什么，看字节最直接。
-    let mut last_raw: Vec<u8> = Vec::new();
+let mut index = 0usize;
+    // 逐项打印原始字节，遇到坏字段直接退出，不做解释性输出。
     loop {
         if offset + DESCRIPTOR_LEN > data.len() {
-            eprintln!("  [{index}] <越界：描述符越过文件末尾>");
+            eprintln!("  [{index}] <损坏：描述符读不满文件末尾>");
             return;
         }
         let raw = &data[offset..offset + DESCRIPTOR_LEN];
-        last_raw = raw.to_vec();
         let fields: Vec<u32> = raw
             .chunks(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -489,7 +487,6 @@ fn dump_import(label: &str, image: &Image) {
     if index + 1 != declared {
         eprintln!("  !! 终止符位置与数据目录 Size 不一致");
     }
-    eprintln!("  末描述符原始字节：{}", hex(&last_raw));
 }
 
 /// 十六进制转储。

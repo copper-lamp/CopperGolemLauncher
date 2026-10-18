@@ -287,6 +287,13 @@ pub fn inject(version_dir: &Path, exe: &Path) -> Result<InjectOutcome, KernelErr
     } else {
         false
     };
+    // 没有待还原的注入时，`.copperorig` 就是纯粹的死重量（一个完整 exe 副本，
+    // 300MB 量级）。远程注入不再改写 exe，留着它没有任何用途。
+    if !legacy_import_removed {
+        if let Err(error) = delete_backup(exe) {
+            log::warn!("[home/inject] 清理历史备份失败（可忽略）: {error}");
+        }
+    }
     Ok(InjectOutcome {
         dll_written,
         legacy_import_removed,
@@ -364,6 +371,26 @@ mod tests {
         let state = launch_file_state(&dir, &exe, &VersionMeta::default());
         assert!(state.injected);
         assert!(state.hook_dll_present);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 没有待还原的历史注入时，`.copperorig` 必须被自动清掉（300MB 死重量）。
+    #[test]
+    fn stale_backup_is_reclaimed() {
+        let dir = std::env::temp_dir().join(format!("copper_inject_bak_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("Minecraft.Windows.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        std::fs::write(backup_path(&exe), b"backup").unwrap();
+        assert!(launch_file_state(&dir, &exe, &VersionMeta::default()).backup_exists);
+
+        // exe 不是合法 PE（非 Windows 的桩 / 损坏镜像），探测不到注入，
+        // 因此走「清理备份」分支而不是「还原」分支。
+        let outcome = inject(&dir, &exe).expect("注入准备不应失败");
+        assert!(!outcome.legacy_import_removed);
+        assert!(!backup_path(&exe).exists(), "死备份必须被回收");
+        assert!(hook_dll_path(&dir).is_file(), "hook DLL 必须落位");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

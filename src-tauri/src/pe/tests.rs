@@ -34,7 +34,6 @@ impl Fixture {
         // 布局：[描述符][空描述符][ILT][IAT][hint+name][dll 名][func 名]
         let mut import_blob: Vec<u8> = Vec::new();
         let desc_count_off = 0usize;
-        let null_off = 20usize;
         let ilt_off = 40usize;
         let iat_off = 56usize;
         let hint_off = 72usize;
@@ -98,7 +97,6 @@ impl Fixture {
             data[at + 20..at + 24].copy_from_slice(&raw_offset.to_le_bytes());
             data[at + 36..at + 40]
                 .copy_from_slice(&0x4000_0040u32.to_le_bytes()); // CODE|EXECUTE|READ|INITIALIZED
-            cursor = raw_offset + raw_size;
             if index == 0 {
                 data.resize(raw_offset as usize + blob_len, 0);
                 data[raw_offset as usize..raw_offset as usize + blob_len]

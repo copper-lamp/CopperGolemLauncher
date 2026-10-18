@@ -49,6 +49,8 @@ const OPT_SUBSYSTEM: usize = 0x44;
 const OPT_NUMBER_OF_RVA: usize = 0x6C;
 /// `OptionalHeader.DataDirectory[0]`。
 const OPT_DATA_DIRECTORY: usize = 0x70;
+/// `OptionalHeader.SizeOfImage`。
+const OPT_SIZE_OF_IMAGE: usize = 0x38;
 /// `DataDirectory` 每项字节数。
 const DATA_DIRECTORY_SIZE: usize = 8;
 /// `IMAGE_DIRECTORY_ENTRY_IMPORT` 的下标。
@@ -126,9 +128,11 @@ unsafe fn nt_offset(base: *mut u8) -> Option<usize> {
         return None;
     }
     let lfanew = ptr::read_unaligned((base as *const u8).add(DOS_E_LFANEW) as *const i32);
-    if !(0..=0x1000).contains(&lfanew) {
-        // 合法 PE 的 `e_lfanew` 不会超过 4KB；越界说明这不是 PE 或已损坏，
-        // 继续算地址只会读到不可映射的页。
+    // 合法 PE 的 `e_lfanew` 不会超过 4KB；越界说明这不是 PE 或已损坏，
+    // 继续算地址只会读到不可映射的页。
+    // 这里取更紧的 0xE00：NT 头 + OptionalHeader 共约 0x1D8 字节，必须整块
+    // 落在第一页内，后面对这些字段的无保护读取才有依据。
+    if !(0..=0xE00).contains(&lfanew) {
         return None;
     }
     let nt = (base as usize).wrapping_add(lfanew as usize);
@@ -181,7 +185,40 @@ pub unsafe fn subsystem(base: *mut u8) -> Option<u16> {
 /// # SAFETY
 /// `base` 必须是已加载主映像的基址。
 pub unsafe fn scan_main_imports(base: *mut u8, requests: &[ImportRequest<'_>]) -> ScanResult {
+    scan_module_imports(base, 0, requests)
+}
+
+/// 遍历**任意已加载模块**的导入表，收集匹配的槽。
+///
+/// # 为什么要参数化到「任意模块」
+///
+/// 真实 GDK 游戏（1.26.52.03）在主映像里确实静态导入了这三个 API
+/// （`shell32!SHGetKnownFolderPath`、`api-ms-win-core-file-l1-2-2!GetTempPathA`、
+/// `api-ms-win-core-file-l1-2-0!GetTempPathW`），但实机跑 5 分钟也**一次都没有**
+/// 经主映像调用过它们 —— 真正的调用点在 `Microsoft.UI.Xaml.dll` 这类依赖模块里。
+/// 只改主映像的 IAT 在这种情况下等于「替换成功但从不生效」，而这恰恰是静默失效
+/// 最难被发现的一种形态。
+///
+/// # 为什么每个指针读都要过一遍 `in_image`
+///
+/// 依赖模块不像主映像那样「311MB、随便读」。某个 DLL 的 `hint+name` RVA 落���节尾时，
+/// 直接按 512 字节扫下去就会跨进未映射页 —— 访问违例发生在**注入侧的工作线程**上，
+/// 表现是整个游戏在启动瞬间崩掉，而日志里连一行都来不及写。
+/// `module_limit`（`SizeOfImage` 与调用方给的 `size_hint` 取小）就是这一层的护栏：
+/// 宁可漏掉一个模块，也不允许读穿。
+///
+/// # SAFETY
+/// `base` 必须是某个已加载映像的基址；`size_hint` 是调用方知道的映像字节数
+/// （0 表示完全信任映像自报的 `SizeOfImage`）。
+pub unsafe fn scan_module_imports(
+    base: *mut u8,
+    size_hint: usize,
+    requests: &[ImportRequest<'_>],
+) -> ScanResult {
     let mut result = ScanResult::default();
+    if base.is_null() {
+        return result;
+    }
     let Some(nt) = nt_offset(base) else {
         return result;
     };
@@ -198,6 +235,17 @@ pub unsafe fn scan_main_imports(base: *mut u8, requests: &[ImportRequest<'_>]) -
         return result;
     }
     let header = (base as *const u8).add(nt + NT_OPTIONAL64);
+    let size_of_image =
+        ptr::read_unaligned(header.add(OPT_SIZE_OF_IMAGE) as *const u32) as usize;
+    // 映像自报的 `SizeOfImage` 是主依据，调用方的快照值是交叉校验的上界。
+    let limit_size = if size_hint == 0 {
+        size_of_image
+    } else {
+        size_of_image.min(size_hint)
+    };
+    if limit_size == 0 || size_of_optional as usize + NT_OPTIONAL64 > limit_size {
+        return result;
+    }
     let number_of_rva =
         ptr::read_unaligned(header.add(OPT_NUMBER_OF_RVA) as *const u32) as usize;
     if number_of_rva <= DIRECTORY_ENTRY_IMPORT {
@@ -209,12 +257,20 @@ pub unsafe fn scan_main_imports(base: *mut u8, requests: &[ImportRequest<'_>]) -
     if virtual_address == 0 || size < IMPORT_DESCRIPTOR_SIZE {
         return result;
     }
+    // 描述符表整体必须在映像内：`size` 是加载器给的，可能大于实际映射范围。
+    if !in_image(base, limit_size, virtual_address as usize, size.min(limit_size)) {
+        return result;
+    }
 
     let mut cursor = (base as *const u8).add(virtual_address as usize);
+    let mut descriptor_rva = virtual_address as usize;
     // 描述符表以「全零项」结尾；`size` 只是上界。两层边界都要：损坏镜像里
     // `size` 可能谎报，只靠 size 会读穿。
     let limit = size / IMPORT_DESCRIPTOR_SIZE;
     for _ in 0..limit.max(1) {
+        if !in_image(base, limit_size, descriptor_rva, IMPORT_DESCRIPTOR_SIZE) {
+            break;
+        }
         let descriptor = cursor;
         let oft = ptr::read_unaligned(descriptor.add(IMPORT_OFT) as *const u32);
         let name_rva = ptr::read_unaligned(descriptor.add(IMPORT_NAME) as *const u32);
@@ -222,48 +278,70 @@ pub unsafe fn scan_main_imports(base: *mut u8, requests: &[ImportRequest<'_>]) -
         if oft == 0 && name_rva == 0 && first_thunk == 0 {
             break;
         }
-        if let Some(module) = read_ascii(base, name_rva) {
+        if let Some(module) = read_ascii(base, limit_size, name_rva) {
             let lowered = module.to_ascii_lowercase();
             result.modules.push(lowered.clone());
-            let iat = (base as usize).wrapping_add(first_thunk as usize) as *mut *mut c_void;
             for (index, request) in requests.iter().enumerate() {
                 if request.module != lowered {
                     continue;
                 }
-                if let Some(slot) = find_thunk_slot(base, oft, iat, &lowered, request.function) {
+                if let Some(slot) =
+                    find_thunk_slot(base, limit_size, oft, first_thunk, &lowered, request.function)
+                {
                     result.hits.push(IatHit { request: index, slot });
                 }
             }
         }
         cursor = cursor.add(IMPORT_DESCRIPTOR_SIZE);
+        descriptor_rva = descriptor_rva.wrapping_add(IMPORT_DESCRIPTOR_SIZE);
     }
     result
+}
+
+/// `rva .. rva + need` 是否整段落在映像内（`rva` 是**相对基址**的偏移）。
+///
+/// # SAFETY
+/// `base` 必须是已加载映像基址；`size` 是该映像的字节数。
+unsafe fn in_image(_base: *mut u8, size: usize, rva: usize, need: usize) -> bool {
+    if need == 0 || rva >= size {
+        return false;
+    }
+    match rva.checked_add(need) {
+        Some(end) => end <= size,
+        None => false,
+    }
 }
 
 /// 在一个导入描述符内定位函数名对应的 IAT 槽。
 ///
 /// # SAFETY
-/// `base` 必须是合法主映像基址；`oft` / `iat` 必须来自 [`scan_main_imports`]。
+/// `base` 必须是合法映像基址；`oft` / `first_thunk` 必须来自 [`scan_module_imports`]。
 unsafe fn find_thunk_slot(
     base: *mut u8,
+    size: usize,
     oft: u32,
-    iat: *mut *mut c_void,
+    first_thunk: u32,
     module: &str,
     function: &str,
 ) -> Option<IatSlot> {
+    let iat_rva = first_thunk as usize;
     if oft != 0 {
         // 首选导入名表：它保存 hint+name，与加载器解析无关，永远可读。
-        let names = (base as usize).wrapping_add(oft as usize) as *const u64;
+        let names_rva = oft as usize;
         let mut index = 0usize;
-        loop {
-            let thunk = ptr::read_unaligned(names.add(index));
+        while in_image(base, size, names_rva, (index + 1) * THUNK64_SIZE) {
+            let thunk = ptr::read_unaligned((base as *const u8).add(names_rva + index * THUNK64_SIZE) as *const u64);
             if thunk == 0 {
                 return None;
             }
             if thunk & ORDINAL64_FLAG == 0 {
-                let hint_name_rva = (thunk as u32) + 2; // 跳过 2 字节 hint
-                if read_ascii(base, hint_name_rva).as_deref() == Some(function) {
-                    let slot = iat.add(index);
+                let hint_name_rva = (thunk as u32) as usize + 2; // 跳过 2 字节 hint
+                if read_ascii(base, size, hint_name_rva as u32).as_deref() == Some(function) {
+                    // 槽本身也必须在映像内才可读写。
+                    if !in_image(base, size, iat_rva, (index + 1) * THUNK64_SIZE) {
+                        return None;
+                    }
+                    let slot = (base as *const u8).add(iat_rva + index * THUNK64_SIZE) as *mut *mut c_void;
                     let original = ptr::read_unaligned(slot);
                     if original.is_null() {
                         return None;
@@ -276,6 +354,7 @@ unsafe fn find_thunk_slot(
                 return None;
             }
         }
+        return None;
     }
 
     // 没有导入名表（bound import 风格）：改为「槽原值是否等于运行时解析出的
@@ -290,14 +369,16 @@ unsafe fn find_thunk_slot(
         return None;
     }
     let mut index = 0usize;
-    loop {
-        let value = ptr::read_unaligned(iat.add(index));
+    while in_image(base, size, iat_rva, (index + 1) * THUNK64_SIZE) {
+        let value = ptr::read_unaligned(
+            (base as *const u8).add(iat_rva + index * THUNK64_SIZE) as *const *mut c_void,
+        );
         if value.is_null() {
             return None;
         }
         if value == target {
             return Some(IatSlot {
-                slot: iat.add(index),
+                slot: (base as *const u8).add(iat_rva + index * THUNK64_SIZE) as *mut *mut c_void,
                 original: value,
             });
         }
@@ -306,19 +387,24 @@ unsafe fn find_thunk_slot(
             return None;
         }
     }
+    None
 }
-
 /// 读一个以 NUL 结尾的 ASCII 字符串（RVA → 进程内地址）。
 ///
+/// 扫描长度按「到映像末尾还剩多少」收敛：`MAX_NAME` 只是防畸形读穿的最后一道，
+/// 真正防读穿的是 `size`。依赖模块的节尾往往紧贴映射边界，按固定长度读会跨页。
+///
 /// # SAFETY
-/// `base` 必须是合法主映像基址，`rva` 必须落在已映射区域内。
-unsafe fn read_ascii(base: *mut u8, rva: u32) -> Option<String> {
-    if rva == 0 {
+/// `base` 必须是合法映像基址；`rva` 必须落在该映像内。
+unsafe fn read_ascii(base: *mut u8, size: usize, rva: u32) -> Option<String> {
+    if rva == 0 || (rva as usize) >= size {
         return None;
     }
+    let remaining = size - rva as usize;
+    let cap = remaining.min(MAX_NAME);
     let start = (base as *const u8).add(rva as usize);
     let mut length = 0usize;
-    while length < MAX_NAME {
+    while length < cap {
         let byte = *start.add(length);
         if byte == 0 {
             break;
@@ -362,7 +448,7 @@ unsafe fn ordinal_of(thunk: u64) -> u16 {
 /// # SAFETY
 /// `slot` 必须来自 [`scan_main_imports`]，且进程仍有写权限。
 pub unsafe fn install(slot: IatSlot, replacement: *mut c_void) -> bool {
-    if slot.original == replacement {
+    if slot.original == replacement || slot.slot.is_null() {
         return false;
     }
     let address = slot.slot as *mut c_void;
@@ -371,7 +457,17 @@ pub unsafe fn install(slot: IatSlot, replacement: *mut c_void) -> bool {
     if sys::VirtualProtect(address, size, sys::PAGE_READWRITE, &mut previous) == 0 {
         return false;
     }
-    AtomicPtr::new(slot.original).swap(replacement, Ordering::AcqRel);
+    // 必须把槽**本身**当成 `AtomicPtr` 来交换。
+    //
+    // 曾经这里写的是 `AtomicPtr::new(slot.original).swap(replacement, ..)` ——
+    // 那是把原值装进一个**栈上的临时变量**再交换，槽里的字节一个都没动，而函数
+    // 依然返回 true。症状极其隐蔽：日志里「替换 N 个导入槽」全部正常，游戏却
+    // 一次都没走进我们的函数。改成对槽地址重新借用之后才真正生效。
+    //
+    // SAFETY: 槽是一个指针宽度的进程内可写位置（上面已经把它改成 PAGE_READWRITE）；
+    // `AtomicPtr` 只是借用它的对齐原子交换能力，不拥有那块内存。
+    let target = &*(slot.slot as *const AtomicPtr<c_void>);
+    target.swap(replacement, Ordering::AcqRel);
     let mut ignored = 0u32;
     sys::VirtualProtect(address, size, previous, &mut ignored);
     true
@@ -380,6 +476,36 @@ pub unsafe fn install(slot: IatSlot, replacement: *mut c_void) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `install` 必须真的改写槽内存 —— 这一条曾经是假绿灯的直接证据。
+    ///
+    /// 老实现 `AtomicPtr::new(slot.original).swap(...)` 只交换了一个栈上临时量，
+    /// 槽一个字节都没变，函数却返回 true。没有这条测试，整条隔离链路就是
+    /// 「日志全绿、功能全无」。
+    #[test]
+    fn install_really_writes_the_slot() {
+        let mut slot_value: *mut c_void = 0x1000usize as *mut c_void;
+        let slot = IatSlot {
+            slot: &mut slot_value as *mut *mut c_void,
+            original: slot_value,
+        };
+        let replacement = 0x2000usize as *mut c_void;
+        // SAFETY: 槽指向本函数栈上的一个指针，`install` 只做对齐原子交换。
+        let installed = unsafe { install(slot, replacement) };
+        assert!(installed, "install 应报告成功");
+        assert_eq!(
+            slot_value, replacement,
+            "install 必须把新函数地址真正写进槽里"
+        );
+
+        // 已经是新实现时不重复安装。
+        let again = IatSlot {
+            slot: &mut slot_value as *mut *mut c_void,
+            original: slot_value,
+        };
+        // SAFETY: 同上。
+        assert!(!unsafe { install(again, replacement) });
+    }
 
     #[test]
     fn offsets_match_winnt() {
@@ -434,22 +560,45 @@ mod tests {
         // 用它当「基址」测会得到一个与本用例无关的 None。
         const NAME_RVA: u32 = 8;
         buffer[NAME_RVA as usize..NAME_RVA as usize + 3].copy_from_slice(b"abc");
+        let size = buffer.len();
         let base = buffer.as_mut_ptr();
         unsafe {
-            assert!(read_ascii(base, 0).is_none(), "NULL 指针必须直接拒绝");
+            assert!(read_ascii(base, size, 0).is_none(), "NULL 指针必须直接拒绝");
+            // rva 落在映像之外：直接拒绝，不去碰内存
+            assert!(read_ascii(base, size, size as u32).is_none());
             assert_eq!(
-                read_ascii(base, NAME_RVA).as_deref(),
+                read_ascii(base, size, NAME_RVA).as_deref(),
                 Some("abc"),
                 "合法名称必须读出来"
             );
-            assert!(read_ascii(base, NAME_RVA + 3).is_none(), "空串必须拒绝");
+            assert!(read_ascii(base, size, NAME_RVA + 3).is_none(), "空串必须拒绝");
             // 0x80 不可打印 → 拒绝
             buffer[NAME_RVA as usize + 2] = 0x80;
-            assert!(read_ascii(base, NAME_RVA).is_none());
+            assert!(read_ascii(base, size, NAME_RVA).is_none());
             // 超长（无 NUL）必须拒绝，而不是读穿缓冲区
             buffer[NAME_RVA as usize + 2] = b'x';
             buffer[NAME_RVA as usize..NAME_RVA as usize + MAX_NAME].fill(b'x');
-            assert!(read_ascii(base, NAME_RVA).is_none());
+            assert!(read_ascii(base, size, NAME_RVA).is_none());
+        }
+    }
+
+    /// 边界检查本身也必须有测试：扫描任意模块时一次读穿就是整个游戏崩掉。
+    #[test]
+    fn bounds_check_rejects_out_of_image_rvas() {
+        let mut buffer = vec![0u8; 0x400];
+        let base = buffer.as_mut_ptr();
+        let size = buffer.len();
+        unsafe {
+            assert!(in_image(base, size, 0, 1));
+            assert!(in_image(base, size, size - 1, 1));
+            assert!(!in_image(base, size, size, 1));
+            assert!(!in_image(base, size, size - 1, 2));
+            assert!(!in_image(base, size, 0, 0), "空区间不算在内");
+            assert!(!in_image(base, size, usize::MAX, 1), "不得溢出回绕");
+            // 冒充映像的垃圾缓冲区不能被当成可扫描的 PE
+            let scan = scan_module_imports(base, size, &[]);
+            assert!(scan.hits.is_empty());
+            assert!(scan.modules.is_empty());
         }
     }
 }

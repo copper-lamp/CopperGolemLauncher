@@ -10,9 +10,13 @@
 //!
 //! 本模块必须保持平台中立（可在 Linux CI 上编译与测试）。
 
-/// 交接变量：实例数据根目录（`%APPDATA%` 的重定向目标，**绝对路径**）。
+/// 交接变量：实例数据根目录（`%TEMP%` 的基准，**绝对路径**）。
+///
+/// 注意：它**不是** `%APPDATA%` 的重定向目标（那个是 [`ENV_ROOT`]）。曾经这里的
+/// 注释写反过一次，导致两侧对同一组变量的理解分叉；改代码前请以 [`crate::paths`]
+/// 的 `plan_from_env` 为准。
 pub const ENV_DATA_DIR: &str = "COPPER_HOOK_DATA_DIR";
-/// 交接变量：版本目录（扫 `mods/`、写日志的根，**绝对路径**）。
+/// 交接变量：版本目录（`%APPDATA%` 的重定向目标、扫 `mods/`、写日志的根，**绝对路径**）。
 pub const ENV_ROOT: &str = "COPPER_HOOK_ROOT";
 /// 交接变量：渠道（`release` / `preview`），供 DLL 自检与日志。
 pub const ENV_CHANNEL: &str = "COPPER_HOOK_CHANNEL";

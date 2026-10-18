@@ -28,7 +28,7 @@ use crate::contract::{
 /// |---|---|---|
 /// | `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` | **版本目录** | 游戏自己会在 `%APPDATA%` 后拼渠道目录。指向版本目录后，1.26 之前得到 `<版本目录>/Minecraft Bedrock`，1.26+（少拼一层）自然得到 `<版本目录>`。**布局由游戏自己决定，注入侧不必再实现一遍规则** —— 两侧各算一遍正是 F7 分叉的根因 |
 /// | `GetTempPathA/W` | `<数据目录>/temp` | 临时文件属于实例数据，必须跟着实例走 |
-/// | `SHGetKnownFolderPath(FOLDERID_LocalAppData)` | 空字符串 | 见 [`local_empty`](Self::local_empty) |
+/// | `SHGetKnownFolderPath(FOLDERID_LocalAppData)` | `<数据目录>/LocalAppData` | 见 [`RedirectPlan::local`](RedirectPlan::local) |
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedirectPlan {
     /// 版本目录（实例根），同时是 `%APPDATA%` 的重定向目标。
@@ -37,13 +37,23 @@ pub struct RedirectPlan {
     pub data: PathBuf,
     /// `GetTempPathA/W` 的返回值（`<数据目录>/temp`）。
     pub temp: PathBuf,
-    /// `FOLDERID_LocalAppData` 是否重定向为空字符串。
+    /// `FOLDERID_LocalAppData` 的重定向目标（`<数据目录>/LocalAppData`）。
     ///
-    /// 置空而非指向某个目录：游戏的 LocalAppData 用途是崩溃 dump、遥测缓存
-    /// 一类「往用户目录里扔东西」的地方，给一个真实可写路径只会让实例目录被
-    /// 垃圾文件填满；空路径让游戏无处可写，退化行为与官方一致。做法取自
-    /// LeviLauncher `native/levilauncher/src/hook/folder_redirect.cpp:145`。
-    pub local_empty: bool,
+    /// # 为什么给真实目录，而不是置空
+    ///
+    /// 早期实现照 LeviLauncher `folder_redirect.cpp:145` 把 LocalAppData 置空，
+    /// 理由是「游戏的 LocalAppData 只用来扔崩溃 dump 和遥测缓存」。**实机证明这个
+    /// 前提是错的**：登录态（Xbox / MSA token、WebView2 用户目录）与储存空间检查
+    /// 都要从 LocalAppData 取路径。路径为空时 `GetDiskFreeSpaceExW("")` 失败，
+    /// 游戏直接弹「无储存空间」；登录窗口也没有可写目录，界面一直转圈。
+    ///
+    /// LeviLauncher 同样置空，但它另有 WinRT `IApplicationData` 的三个 vtable hook
+    /// 兜底给了真实目录（`install_local_folder_hook`），且它的实例早已存有登录态，
+    /// 不会走到「首次登录」这条路。我们两者都没有，所以必须自己做对。
+    ///
+    /// 指向实例内目录而不是系统目录，隔离才完整：登录缓存、崩溃 dump、遥测一律
+    /// 落在实例里，换实例等于换一套干净环境。
+    pub local: PathBuf,
 }
 
 impl RedirectPlan {
@@ -52,9 +62,12 @@ impl RedirectPlan {
     /// `%TEMP%` 指向一个不存在的目录时，游戏会退化到系统 temp —— 表现为
     /// 「隔离看起来生效，实际临时文件还在系统目录」。
     pub fn directories(&self) -> Vec<&Path> {
-        vec![self.data.as_path(), self.temp.as_path()]
+        vec![self.data.as_path(), self.temp.as_path(), self.local.as_path()]
     }
 }
+
+/// LocalAppData 在数据目录下的子目录名。
+pub const LOCAL_APP_DATA_DIR: &str = "LocalAppData";
 
 /// 渠道取值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,9 +135,9 @@ pub fn plan_for(root: &Path, channel: Channel, game_version: &str) -> RedirectPl
     let data = data_dir(root, channel, game_version);
     RedirectPlan {
         temp: data.join("temp"),
+        local: data.join(LOCAL_APP_DATA_DIR),
         root: root.to_path_buf(),
         data,
-        local_empty: true,
     }
 }
 
@@ -148,9 +161,9 @@ pub fn plan_from_env(root_hint: Option<&Path>, env: &EnvReader<'_>) -> Option<Re
     let data = PathBuf::from(env(ENV_DATA_DIR)?);
     Some(RedirectPlan {
         temp: data.join("temp"),
+        local: data.join(LOCAL_APP_DATA_DIR),
         root,
         data,
-        local_empty: true,
     })
 }
 
@@ -260,9 +273,21 @@ mod tests {
             plan.directories(),
             vec![
                 Path::new("/v/demo/Minecraft Bedrock"),
-                Path::new("/v/demo/Minecraft Bedrock/temp")
+                Path::new("/v/demo/Minecraft Bedrock/temp"),
+                Path::new("/v/demo/Minecraft Bedrock/LocalAppData")
             ]
         );
+    }
+
+    #[test]
+    fn local_app_data_is_a_real_directory_inside_the_instance() {
+        // 置空会导致「无储存空间」与登录卡死：登录态与储存空间检查都要真实路径。
+        for version in ["1.21.130.20", "1.26.52.3"] {
+            let plan = plan_for(Path::new("/v/demo"), Channel::Release, version);
+            assert_ne!(plan.local.as_os_str(), "");
+            assert!(plan.local.starts_with(&plan.data));
+            assert!(plan.directories().contains(&plan.local.as_path()));
+        }
     }
 
     #[test]
