@@ -81,6 +81,6 @@ export async function initGameSession(): Promise<void> {
   // 安卓没有进程可轮询，退出经 Java 宿主的文件信箱回传（`lastAndroidGameExit`
   // 由 `observeAndroidGameExit` 排空后写入）。按实例名匹配，避免旧记录清掉新会话。
   watch(lastAndroidGameExit, (record) => {
-    if (record && record.instance_name === gameSessionName.value) endSession();
+    if (record && record.instanceName === gameSessionName.value) endSession();
   });
 }

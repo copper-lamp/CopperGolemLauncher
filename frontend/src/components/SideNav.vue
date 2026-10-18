@@ -50,6 +50,7 @@ const moduleNav = getModuleNav();
 
 <style scoped>
 .side-nav {
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -58,6 +59,22 @@ const moduleNav = getModuleNav();
   padding: var(--copper-space-2) 0;
   background: var(--copper-surface);
   border-right: 1px solid var(--copper-border);
+}
+
+/*
+ * 移动端（安卓锁定横屏）左侧安全区就是刘海 / 挖孔所在。
+ *
+ * 外壳在移动端不再为左侧预留 padding（见 base.css），所以导航的边框盒本来就从
+ * 屏幕物理边缘开始。这里只需「加宽 + 等量内边距」：内容盒宽度仍是原来的导航
+ * 宽度，图标位置不变，而**导航自身的 `--copper-surface` 背景一路铺进刘海区**——
+ * 否则那一段会露出外壳的页面底色，看起来就是「标签页左边的刘海区域没有覆盖」。
+ *
+ * 不能用负外边距把导航往左推：`.app-shell` 带 `overflow: hidden`，越界部分会被裁掉。
+ * 桌面端 inset 恒为 0，本规则等价于无操作。
+ */
+html[data-form-factor="mobile"] .side-nav {
+  padding-left: var(--copper-safe-left);
+  width: calc(var(--copper-nav-w) + var(--copper-safe-left));
 }
 
 .side-nav__top {

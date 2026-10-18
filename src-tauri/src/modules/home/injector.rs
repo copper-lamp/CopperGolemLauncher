@@ -16,9 +16,9 @@
 //! # 与导入注入的差异
 //!
 //! - 游戏 exe 保持原样：签名有效、没有新增节、备份与还原逻辑不再需要参与
-//!   启动路径（仍保留给用户手动维护）。
-//! - 交接变量仍通过 [`crate::modules::home::launch`] 构造的环境块下发，hook
-//!   侧读取方式不变（`COPPER_HOOK_*`）。
+//!   启动路径（仍保留给用户手动维护，以及清理历史遗留注入）。
+//! - 交接变量通过本模块构造的**环境块**下发，hook 侧读取方式不变
+//!   （`COPPER_HOOK_*`）。
 //! - 注入结果可验证：远程线程的退出码就是 `LoadLibraryW` 的返回值——非 0 即
 //!   模块基址，注入成功；为 0 则 DLL 没加载上。旧方案没有任何这种回执。
 //!
@@ -28,11 +28,12 @@
 //!   所有进程共享同一份系统 DLL 基址（Windows 的 ASLR 以「每次启动」为粒度），
 //!   所以该地址在目标进程里同样有效；这是这类注入的通行做法。
 //! - 需要目标进程与启动器同权限级别。跨权限级别会被 `OpenProcess` 拒绝。
+//! - 走不了「协议唤起」：那条路拿不到我们自己的进程句柄。
 
 use std::path::Path;
 
 use windows::core::{PCSTR, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Memory::{
@@ -45,6 +46,17 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::error::KernelError;
+
+/// 远程线程最长等待（毫秒）。
+///
+/// `LoadLibraryW` 加载一个纯 Rust cdylib 通常在个位数毫秒内返回；60 秒的预算
+/// 只用来把「卡死」与「慢」分开，超时后按失败处理并回滚挂起的进程。
+const INJECT_TIMEOUT_MS: u32 = 60_000;
+
+/// `STILL_ACTIVE`（`winbase.h` 259）：`GetExitCodeThread` 在线程仍在运行时返回它。
+///
+/// `windows` crate 没有导出这个常量，但它是个 ABI 约定值，就地定义即可。
+const STILL_ACTIVE: u32 = 259;
 
 /// 注入失败时回滚：还没恢复的主线程不能就这么留着。
 ///
@@ -210,9 +222,11 @@ fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
                     KernelError::Module(format!("[home/injector] 取 kernel32 基址失败: {error}"))
                 },
             )?;
-            let mut symbol: Vec<u8> = b"LoadLibraryW\0".to_vec();
-            let load_library = GetProcAddress(kernel, PCSTR(symbol.as_ptr()));
-            let Some(entry) = load_library.0.map(|raw| {
+            let symbol: Vec<u8> = b"LoadLibraryW\0".to_vec();
+            // `FARPROC`（`fn() -> isize`）与 `LPTHREAD_START_ROUTINE`
+            // （`fn(LPVOID) -> u32`）只差调用约定上的参数与返回宽度，
+            // 目标进程按后者调用它 —— 传过去的就是 `LoadLibraryW` 本体。
+            let Some(entry) = GetProcAddress(kernel, PCSTR(symbol.as_ptr())).map(|raw| {
                 std::mem::transmute::<
                     unsafe extern "system" fn() -> isize,
                     unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
@@ -226,7 +240,7 @@ fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
                 target.process,
                 None,
                 0,
-                entry,
+                Some(entry),
                 Some(remote as *const _),
                 0,
                 None,
@@ -236,17 +250,34 @@ fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
             })
         })();
 
-        // 路径缓冲区用完即弃：即便 LoadLibraryW 仍在读，加载器也会把它拷走。
-        let _ = VirtualFreeEx(target.process, remote, 0, MEM_RELEASE);
-
+        // 路径缓冲区必须活到远程线程**结束**：加载器要先用这个字符串去打开文件，
+        // 才会把内容拷走。在 `CreateRemoteThread` 之后立刻 `MEM_RELEASE` 会让
+        // 线程读到已解除映射的页 —— 表现为 `LoadLibraryW` 返回 0，而 DLL 本身
+        // 完��好（单独 `LoadLibrary` 能成功）。
         let thread = result?;
-        let _ = WaitForSingleObject(thread, 10_000);
-        let mut code = 0u32;
-        let _ = GetExitCodeThread(thread, &mut code);
-        let _ = CloseHandle(thread);
-
         // 线程退出码就是 `LoadLibraryW` 的返回值：0 表示没加载上。
-        if code == 0 {
+        //
+        // 超时要单独判：`GetExitCodeThread` 在线程仍在跑时返回 `STILL_ACTIVE`
+        // （259），那是个非零值，直接当成功会把「加载卡死」报成「注入成功」，
+        // 而游戏此刻还是挂起状态 —— 表现为「点开始游戏后什么也不发生」。
+        let waited = WaitForSingleObject(thread, INJECT_TIMEOUT_MS);
+        let mut code = 0u32;
+        let read = GetExitCodeThread(thread, &mut code).is_ok();
+        let _ = CloseHandle(thread);
+        let _ = VirtualFreeEx(target.process, remote, 0, MEM_RELEASE);
+        if waited != WAIT_OBJECT_0 {
+            return Err(KernelError::Module(format!(
+                "[home/injector] 远程线程在 {}ms 内未返回：{} 可能缺少依赖、被杀软拦截，或 DllMain 卡在加载器锁上",
+                INJECT_TIMEOUT_MS,
+                dll.display()
+            )));
+        }
+        if !read {
+            return Err(KernelError::Module(
+                "[home/injector] 读取远程线程退出码失败".to_string(),
+            ));
+        }
+        if code == 0 || code == STILL_ACTIVE {
             return Err(KernelError::Module(format!(
                 "[home/injector] 远程线程未能加载 {}：LoadLibraryW 返回 0（依赖缺失或文件被拦截）",
                 dll.display()
@@ -269,7 +300,7 @@ mod tests {
     fn symbol_of(name: &[u8]) -> Option<unsafe extern "system" fn() -> isize> {
         let kernel =
             unsafe { GetModuleHandleW(PCWSTR(super::wide("kernel32.dll").as_ptr())) }.ok()?;
-        unsafe { GetProcAddress(kernel, PCSTR(name.as_ptr())).0 }
+        unsafe { GetProcAddress(kernel, PCSTR(name.as_ptr())) }
     }
 
     /// 远程线程里调用的是**本进程**的 `kernel32!LoadLibraryW` 地址。这一项通过，
@@ -291,11 +322,19 @@ mod tests {
         let text = String::from_utf16_lossy(&block);
         assert!(text.contains("COPPER_HOOK_ROOT=D:\\a\0"));
         assert!(text.contains("copper_hook_channel=release\0"));
-        let hooked: Vec<&str> = text
+        // 只断言「我们下发的这两个键各出现一次」：环境块本就包含继承自父进程的全部变量，
+    // 而 `build.rs` 通过 `cargo:rustc-env=COPPER_HOOK_DLL` 注入的那条同名族变量
+    // 也会出现在里面（那正是我们想要的行为：覆盖而不是并存）。
+    for key in ["COPPER_HOOK_ROOT", "copper_hook_channel"] {
+        let count = text
             .split('\0')
-            .filter(|entry| entry.to_ascii_lowercase().starts_with("copper_hook"))
-            .collect();
-        assert_eq!(hooked.len(), 2, "两个交接变量都必须在环境块里，且不能重复");
+            .filter(|entry| {
+                let (name, _) = entry.split_once('=').unwrap_or((entry, ""));
+                name.eq_ignore_ascii_case(key)
+            })
+            .count();
+        assert_eq!(count, 1, "{key} 必须恰好出现一次");
+    }
     }
 
     #[test]

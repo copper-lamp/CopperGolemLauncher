@@ -25,7 +25,7 @@ export async function drainAndroidGameExit(): Promise<void> {
     const record = await androidGameTakeExit();
     if (!record) return;
     lastAndroidGameExit.value = record;
-    forward(`Android game exited: ${record.instance_name} (${record.reason})`);
+    forward(`Android game exited: ${record.instanceName} (${record.reason})`);
   } catch (error) {
     forward(`读取安卓游戏退出记录失败: ${String(error)}`, "error");
   }

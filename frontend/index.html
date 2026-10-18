@@ -5,7 +5,14 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="icon" type="image/png" href="/app-192.png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/app-180.png" sizes="180x180" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      viewport-fit=cover 是安全区（刘海 / 圆角 / 手势条）的前提：没有它，
+      WebView 认为页面被系统栏与刘海区「遮住」了，env(safe-area-inset-*) 恒为 0，
+      前端既拿不到 inset 也不会被绘制进刘海区（见 styles/tokens.css 的
+      --copper-safe-*）。安卓端配合 themes.xml 的
+      android:windowLayoutInDisplayCutoutMode=shortEdges 生效。
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>铜傀儡启动器</title>
 
     <!--

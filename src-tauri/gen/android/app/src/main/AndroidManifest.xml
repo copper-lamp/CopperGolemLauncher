@@ -63,9 +63,14 @@
         </activity>
 
         <!-- SAF 收件箱：把系统选择器返回的 content:// 流落盘到 cache/inbox。 -->
+        <!--
+            configChanges 必须带上：复制 200MB 级包时若因旋转 / 字体缩放重建界面，
+            复制线程会被连带销毁，收件箱里只剩半截文件，用户侧表现为「导入超时」。
+        -->
         <activity
             android:name=".game.CopperApkPickerActivity"
             android:exported="false"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|density|fontScale"
             android:theme="@style/Theme.copper_core" />
 
         <!-- 启动准备：解压原生库、镜像重写、加载 so，全部有进度与错误日志。 -->

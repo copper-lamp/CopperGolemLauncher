@@ -153,26 +153,33 @@ export function gameTaskBindings(): Promise<GameTaskBinding[]> {
   return call<GameTaskBinding[]>("game_download_task_bindings");
 }
 
-/** APK 导入记录（与后端 `apk::ApkPackageInfo` 同构）。 */
+/**
+ * APK 导入记录（与后端 `apk::ApkPackageInfo` 同构）。
+ *
+ * 字段名为 **camelCase**：内核 DTO 一律 `#[serde(rename_all = "camelCase")]`
+ * （与 Java 宿主写下的文件信箱键名一致），前端必须按序列化后的键名读，
+ * 写 snake_case 会静默拿到 `undefined`，随后在字符串处理处炸成
+ * 「导入失败」这种看不出原因的错误。
+ */
 export interface ApkPackageInfo {
-  package_name: string;
-  version_code: number;
-  version_name: string;
+  packageName: string;
+  versionCode: number;
+  versionName: string;
   abi: string;
   sha256: string;
-  has_splits: boolean;
+  hasSplits: boolean;
 }
 
 /**
  * APK 导入结果（与后端 `apk::ApkImportResult` 同构）。
  *
- * `instance_name` 是内核规整后的**权威实例名**，也就是版本目录名。调用方必须
+ * `instanceName` 是内核规整后的**权威实例名**，也就是版本目录名。调用方必须
  * 用它（而不是自己提交的名字）去启动 / 引用实例：安卓宿主按同一个名字定位
  * `data/versions/<name>`，两边各推导一次就会分叉。
  */
 export interface ApkImportResult {
-  instance_name: string;
-  package_info: ApkPackageInfo;
+  instanceName: string;
+  packageInfo: ApkPackageInfo;
 }
 
 /**
@@ -193,9 +200,9 @@ export function gameImportApk(sourcePath: string, name: string): Promise<ApkImpo
 
 /** 安卓游戏退出记录（与后端 `platform::android::ExitRecord` 同构）。 */
 export interface AndroidGameExit {
-  instance_name: string;
+  instanceName: string;
   reason: string;
-  exited_at: number;
+  exitedAt: number;
 }
 
 /**
@@ -207,12 +214,17 @@ export function androidGameTakeExit(): Promise<AndroidGameExit | null> {
   return call<AndroidGameExit | null>("android_game_take_exit");
 }
 
-/** SAF 选择结果（与后端 `platform::android::ApkPickResult` 同构）。 */
+/**
+ * SAF 选择结果（与后端 `platform::android::ApkPickResult` 同构）。
+ *
+ * 同样按 camelCase 读：结果文件由 Java 宿主以 `requestId` / `displayName`
+ * 写入，内核按同一套键名反序列化后再序列化给前端。
+ */
 export interface AndroidApkPickResult {
-  request_id: string;
+  requestId: string;
   /** 应用私有目录内的绝对路径；失败时为空。 */
   path: string;
-  display_name: string;
+  displayName: string;
   error: string;
 }
 

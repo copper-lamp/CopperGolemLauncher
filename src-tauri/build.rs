@@ -118,6 +118,13 @@ fn embed_app_manifest() {
 ///    `cargo build -p copper-core-hook` 已经产出过就直接用；
 /// 3. 都没有就**自己编一份**到 `native/hook/target-embed/<triple>/`。
 ///
+/// # 产物新鲜度
+///
+/// 光「文件存在」不够：改完 `native/hook/src/**` 后那份产物就旧了，而
+/// `include_bytes!` 编进去的仍是旧字节 —— 表现为「改了注入侧代码，实机行为一点没变」，
+/// 是最难自查的一类假象。因此这里额外比一次时间戳：产物比任何 hook 源文件旧就重编，
+/// 并对 `native/hook` 声明 `rerun-if-changed`，保证改源码后本脚本一定重跑。
+///
 /// 第 3 步必须用**独立的 target 目录**：父 cargo 正持有 workspace target 的
 /// 文件锁，嵌套构建指向同一目录会死锁。多编一次 `serde` 的代价，换来
 /// `cargo check` / `cargo test` 在任何机器上开箱可用 —— 否则每个新克隆都得
@@ -133,28 +140,32 @@ fn export_hook_dll_path() {
         std::env::var("CARGO_MANIFEST_DIR").expect("cargo 必须提供 CARGO_MANIFEST_DIR"),
     );
     let hook_dir = manifest_dir.join("..").join("native").join("hook");
+    // 改了 hook 源码必须让本脚本重跑，否则内嵌的仍是上一版 DLL。
+    println!("cargo:rerun-if-changed={}", hook_dir.join("src").display());
+    println!("cargo:rerun-if-changed={}", hook_dir.join("Cargo.toml").display());
     let triple = std::env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_string());
     // 跟随本次构建的 profile，而不是写死 release：`cargo check` / `cargo test` 走 debug。
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     const DLL_NAME: &str = "copper_core_hook.dll";
 
+    let workspace_dll = manifest_dir
+        .join("..")
+        .join("target")
+        .join(&triple)
+        .join(&profile)
+        .join(DLL_NAME);
+
     let dll = match std::env::var("COPPER_HOOK_DLL_DIR") {
         Ok(custom) => {
             let candidate = std::path::PathBuf::from(custom).join(DLL_NAME);
-            if candidate.is_file() {
+            if is_fresh(&candidate, &hook_dir) {
                 candidate
             } else {
                 build_hook_dll(&hook_dir, &profile, &triple)
             }
         }
         Err(_) => {
-            let workspace_dll = manifest_dir
-                .join("..")
-                .join("target")
-                .join(&triple)
-                .join(&profile)
-                .join(DLL_NAME);
-            if workspace_dll.is_file() {
+            if is_fresh(&workspace_dll, &hook_dir) {
                 workspace_dll
             } else {
                 build_hook_dll(&hook_dir, &profile, &triple)
@@ -164,6 +175,43 @@ fn export_hook_dll_path() {
 
     println!("cargo:rustc-env=COPPER_HOOK_DLL={}", dll.display());
     println!("cargo:rerun-if-changed={}", dll.display());
+}
+
+/// DLL 产物是否比 `hook_dir` 下的所有源码都新。
+///
+/// 缺产物（`None`）一律判为不新鲜。比较的是修改时间：Rust 侧的增量构建保证
+/// 「产物 mtime 晚于源文件」即等价于「产物由这批源码产出」，这与 cargo 自己的
+/// 判定口径一致，不需要再引一套指纹机制。
+fn is_fresh(dll: &std::path::Path, hook_dir: &std::path::Path) -> bool {
+    let Ok(dll_time) = std::fs::metadata(dll).and_then(|m| m.modified()) else {
+        return false;
+    };
+    let mut newest = dll_time;
+    let mut stack = vec![hook_dir.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(time) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if time > newest {
+                newest = time;
+            }
+        }
+    }
+    if let Ok(time) = std::fs::metadata(hook_dir.join("Cargo.toml")).and_then(|m| m.modified()) {
+        if time > newest {
+            newest = time;
+        }
+    }
+    dll_time >= newest
 }
 
 /// 在独立 target 目录里编出 hook DLL，返回产物路径。

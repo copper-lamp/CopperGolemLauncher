@@ -10,6 +10,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.Executors
 
 /**
  * SAF 收件箱：把系统文件选择器返回的 `content://` 流落盘到应用私有目录。
@@ -22,10 +23,24 @@ import java.io.IOException
  *
  * 结果文件即文件信箱（与退出记录同构）：
  * `<filesDir>/data/apk_pick_result.json` = `{ requestId, path, displayName, error }`。
+ * 键名与 Rust 侧 `platform::android::ApkPickResult` 的 camelCase 序列化一一对应，
+ * 改键名必须两侧同步。
+ *
+ * 收件箱里的副本由内核在导入时读走，导入成功后本界面不负责删除（内核不暴露
+ * 删除命令，多加一个命令只为清一个临时文件不划算）。残留副本在下次进入本
+ * 界面时按保留时长清理（见 [pruneInbox]），避免反复失败把私有目录撑满。
  */
 class CopperApkPickerActivity : Activity() {
     private var requestId: String = ""
     private var resolved = false
+
+    /** 复制中的门闩：`compareAndSet(false, true)` 返回 true 表示已有一次在途，丢弃重复投递。 */
+    private val copying = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 单线程执行器：复制串行，且不占主线程。 */
+    private val executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "copper-apk-inbox").apply { isDaemon = true }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +59,7 @@ class CopperApkPickerActivity : Activity() {
             )
         }
         try {
+            pruneInbox()
             startActivityForResult(picker, REQUEST_PICK)
         } catch (error: Throwable) {
             publishError("无法打开系统文件选择器: ${error.message ?: error.javaClass.simpleName}")
@@ -64,13 +80,57 @@ class CopperApkPickerActivity : Activity() {
             publishError("未选择文件")
             return
         }
-        try {
-            val displayName = queryDisplayName(uri)
-            val target = copyToInbox(uri, displayName)
-            publishResult(target.absolutePath, displayName)
-        } catch (error: Throwable) {
-            Log.e(TAG, "复制所选文件失败: ${error.message}", error)
-            publishError("复制所选文件失败: ${error.message ?: error.javaClass.simpleName}")
+        copyOffMainThread(uri)
+    }
+
+    /**
+     * 把所选文件复制到收件箱，完成后再收尾本界面。
+     *
+     * 复制必须离开主线程：MCBE 官方包 200MB 起步，在主线程上做这件事会直接
+     * ANR——系统先弹「应用无响应」，用户关掉它，复制被腰斩，收件箱里只剩半个
+     * 文件，前端轮询到超时也拿不到任何结果文件，只留下一句莫名其妙的「导入超时」。
+     * 这里用单线程执行器串行处理：同一时刻只可能有一次导入在途。
+     */
+    private fun copyOffMainThread(uri: Uri) {
+        if (copying.compareAndSet(false, true)) return
+        val displayName = queryDisplayName(uri)
+        executor.execute {
+            val outcome = runCatching { copyToInbox(uri, displayName) }
+            runOnUiThread {
+                outcome
+                    .onSuccess { target -> publishResult(target.absolutePath, displayName) }
+                    .onFailure { error ->
+                        Log.e(TAG, "复制所选文件失败: ${error.message}", error)
+                        publishError("复制所选文件失败: ${error.message ?: error.javaClass.simpleName}")
+                    }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        // `shutdown()` 而不是 `shutdownNow()`：中断正在进行的复制只会换来收件箱里
+        // 一个半截文件（比多留几秒更难排查），让复制自然收尾并照常写回结果。
+        executor.shutdown()
+        super.onDestroy()
+    }
+
+    /** 收件箱目录 `<filesDir>/cache/inbox`。 */
+    private fun inboxDir(): File = File(filesDir, "cache/inbox")
+
+    /**
+     * 清掉过期残留。
+     *
+     * 导入失败、进程被杀、或用户选了包又在后续步骤反悔，都会留下 200MB 级的
+     * 孤儿副本。这里按「修改时间早于 [INBOX_RETENTION_MS]」清理，既不会误删正在
+     * 导入的副本（一次导入最多几分钟，远短于保留窗口），又能保证反复失败不会把
+     * 应用私有目录撑满。
+     */
+    private fun pruneInbox() {
+        val files = inboxDir().listFiles() ?: return
+        val deadline = System.currentTimeMillis() - INBOX_RETENTION_MS
+        for (file in files) {
+            if (!file.isFile || file.lastModified() > deadline) continue
+            if (!file.delete()) Log.w(TAG, "清理过期收件箱文件失败: ${file.name}")
         }
     }
 
@@ -92,9 +152,11 @@ class CopperApkPickerActivity : Activity() {
      *
      * MCBE 包动辄 200MB 以上，必须按块复制而不是 `readBytes()`：
      * 一次性读入会直接 OOM，且大文件路径上系统临时目录也可能不可写。
+     *
+     * 只允许从 [copyOffMainThread] 的后台线程调用：在主线程上执行会 ANR。
      */
     private fun copyToInbox(uri: Uri, displayName: String): File {
-        val inbox = File(filesDir, "cache/inbox")
+        val inbox = inboxDir()
         if (!inbox.exists() && !inbox.mkdirs()) {
             throw IOException("无法创建收件箱目录: $inbox")
         }
@@ -162,6 +224,9 @@ class CopperApkPickerActivity : Activity() {
     companion object {
         private const val TAG = "CopperApkPicker"
         private const val REQUEST_PICK = 0x4150
+
+        /** 收件箱残留保留时长（6 小时）：远大于一次导入耗时，远小于用户再次尝试的间隔。 */
+        private const val INBOX_RETENTION_MS = 6L * 60 * 60 * 1000
         const val EXTRA_REQUEST_ID = "com.copperlamp.coppergolem.extra.PICK_REQUEST_ID"
         const val RESULT_FILE = "apk_pick_result.json"
         const val CANCELLED = "用户取消了选择"

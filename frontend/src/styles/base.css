@@ -45,12 +45,28 @@ body {
   overflow: hidden;
 }
 
-/* 移动端：全屏无圆角（无边框窗口的圆角由系统负责），并让出安全区。 */
+/*
+ * 移动端：全屏无圆角（无边框窗口的圆角由系统负责），并让出安全区。
+ *
+ * 左侧安全区**故意不在这里留白**：安卓锁定横屏（见 AndroidManifest.xml 的
+ * sensorLandscape），左侧安全区就是刘海/挖孔所在。留白的话这一条会露出
+ * .app-shell 的页面底色，看起来就是「标签页左边的刘海区域没被覆盖」。
+ * 由 SideNav 把自身背景延伸进这段区域（见 SideNav.vue 的移动端安全区规则），
+ * 底色与标签页保持一致。
+ */
 html[data-form-factor="mobile"] .app-shell {
   border-radius: 0;
   padding-top: var(--copper-safe-top);
-  padding-left: var(--copper-safe-left);
   padding-right: var(--copper-safe-right);
+}
+
+/*
+ * 竖屏（底部标签栏形态）没有左导航来吸收左侧安全区，仍由外壳让出。
+ * 圆角屏 / 挖孔屏在竖屏下把刘海放在顶部，左右 inset 通常为 0，但保留这条
+ * 以免换设备后内容被侧边系统区压住。
+ */
+html[data-form-factor="mobile"][data-orientation="portrait"] .app-shell {
+  padding-left: var(--copper-safe-left);
 }
 
 html[data-form-factor="mobile"] .tips-rotator {

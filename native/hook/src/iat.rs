@@ -62,6 +62,7 @@ const IMPORT_NAME: usize = 12;
 /// `IMAGE_IMPORT_DATA_DESCRIPTOR` 中 `FirstThunk` 的偏移。
 const IMPORT_FIRST_THUNK: usize = 16;
 /// x64 thunk 大小。
+#[allow(dead_code)] // 仅单测钉死；遍历用的是 `*const u64` 的步长
 const THUNK64_SIZE: usize = 8;
 /// 序号导入标记（`IMAGE_SNAP_BY_ORDINAL64`）。
 const ORDINAL64_FLAG: u64 = 1 << 63;

@@ -279,7 +279,6 @@ mod tests {
         let env = |key: &str| match key {
             ENV_ROOT => Some("/v/demo".to_string()),
             ENV_DATA_DIR => Some("/v/demo/flat".to_string()),
-            _ => Some("preview".to_string()),
             _ => None,
         };
         let plan = plan_from_env(None, &env).unwrap();

@@ -156,8 +156,7 @@ pub const CP_ACP: u32 = 0;
 ///
 /// 对我们为什么必须是「失败」而不是「替换」：`GetTempPathA` 会拿到一个指向不存在目录的
 /// 替换路径，游戏照着它写文件，而日志里什么异常都没有。
-const ROUND_TRIP_REQUIRED: () = ();
-
+///
 /// `int MultiByteToWideChar(UINT, DWORD, LPCCH, int, LPWSTR, int)`
 extern "system" {
     pub fn MultiByteToWideChar(
@@ -250,6 +249,13 @@ if written <= 0 {
 /// 必须 pin：游戏运行期任何一次 `FreeLibrary`（例如加载失败的回滚路径）都会让
 /// 我们替换进去的重定向函数指针变悬空，后续调用直接跳进野地址。
 pub const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x00000001;
+
+/// `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS` —— `lpModuleName` 视为**函数地址**，
+/// 返回该地址所属模块的句柄。
+///
+/// 不带这个标志且 `lpModuleName` 为 NULL 时，`GetModuleHandleExW` 解析的是**主映像**
+/// （宿主 exe），pin 到的因此是游戏本体而不是 hook DLL 自己 —— 表面成功、实际没 pin。
+pub const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x00000004;
 
 /// `LOAD_WITH_ALTERED_SEARCH_PATH` —— 按传入的**绝对路径**解析依赖，
 /// 不用 DLL 所在目录参与搜索。

@@ -64,6 +64,22 @@ static HOOKS_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// 工作线程已启动标记。
 static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 
+/// 本 DLL 的模块基址（`DllMain` 的 `hinst`）。
+///
+/// 必须记下来：**`GetModuleFileNameW(NULL)` 返回的是宿主 exe 的路径，不是本 DLL 的**。
+/// 回退读 `version.json` 时要按「本 DLL 所在目录」找，那才是实例目录。
+static SELF_MODULE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+/// 目录重定向 hook 的安装结果（供 worker 在日志就绪后补写）。
+///
+/// 为什么要有这批计数器：`install_hooks` 在 `DllMain` 里同步执行，那时日志文件
+/// **还没打开**，那一段「替换了几个槽 / 一个都没命中」是整个隔离最关键的诊断信息，
+/// 却只会进 `OutputDebugString` —— 也就是等于没有。计数记在这里，由 worker 在
+/// `log::init` 之后原样补写一遍，保证用户能查。
+static HOOK_MODULES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOOK_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOOK_REPLACED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 // 原函数地址（装载前从 IAT 槽里取得）
 static REAL_SH_GET_KNOWN_FOLDER_PATH: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 static REAL_GET_TEMP_PATH_A: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
@@ -93,6 +109,7 @@ pub unsafe extern "system" fn DllMain(
     match reason {
         // DLL_PROCESS_ATTACH
         1 => {
+            SELF_MODULE.store(instance as *mut c_void, Ordering::Release);
             // 不需要线程 attach/detach 通知：省掉每个游戏线程的两次回调。
             sys::DisableThreadLibraryCalls(instance);
             if !host_is_game() {
@@ -149,12 +166,14 @@ fn env_reader() -> impl Fn(&str) -> Option<String> + 'static {
 extern "system" fn worker_main() -> u32 {
     // 1) 模块 pin：不 pin 的话游戏运行期任何一次 FreeLibrary 都会让重定向
     //    指针悬空。加载器锁此刻已释放，pin 是安全的。
+    //
+    //    必须带 `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`：只传 PIN 而 lpModuleName
+    //    为 NULL 时，`GetModuleHandleExW` 解析的是**宿主 exe**（主映像），
+    //    被 pin 的是游戏本体而不是我们 —— hook 依然是「没 pin」。
     let mut self_module = ptr::null_mut();
-    if unsafe { sys::GetModuleHandleExW(
-        sys::GET_MODULE_HANDLE_EX_FLAG_PIN,
-        ptr::null(),
-        &mut self_module,
-    ) } != 0
+    let flags = sys::GET_MODULE_HANDLE_EX_FLAG_PIN | sys::GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
+    let anchor = worker_main as *const () as *const u16;
+    if unsafe { sys::GetModuleHandleExW(flags, anchor, &mut self_module) } != 0
     {
         log::line("INFO", "模块已 pin");
     } else {
@@ -200,6 +219,9 @@ extern "system" fn worker_main() -> u32 {
 
     // 4) hook 若还没装（回退路径），此刻补装。晚于目录查询的风险由日志暴露。
     install_hooks();
+    // 补写安装结论：`install_hooks` 多半是在 `DllMain` 里跑的，那时日志文件
+    // 还不存在，那几行只会进 OutputDebugString。
+    flush_hook_report();
 
     // 5) 目录骨架：temp 必须真实存在，否则游戏会退到系统 temp
     for dir in plan.directories() {
@@ -264,11 +286,18 @@ fn start_worker() {
     unsafe { sys::CloseHandle(handle) };
 }
 
-/// 本 DLL 所在目录（`GetModuleHandleExW(NULL)` 得到自身模块，再取路径）。
+/// 本 DLL 所在目录（按本 DLL 自己的模块句柄取路径）。
+///
+/// 传 `NULL` 给 `GetModuleFileNameW` 拿到的是**宿主 exe** 的路径 —— 两者碰巧同目录
+/// 时看不出差别，但回退逻辑必须锚在「DLL 实际被加载的位置」上：一旦启动器把
+/// hook DLL 放到别处（例如放进 `mods/` 由加载器再拉起），读 `version.json` 就会
+/// 去错目录找，静默退化成「不隔离」。
 fn self_dir() -> PathBuf {
     let mut buffer = [0u16; 260];
-    // SAFETY: 传 NULL 取当前 exe 路径（游戏 exe 目录 = 实例目录，与注入位置一致）。
-    let length = unsafe { sys::GetModuleFileNameW(ptr::null_mut(), buffer.as_mut_ptr(), buffer.len() as u32) };
+    let module = SELF_MODULE.load(Ordering::Acquire);
+    // SAFETY: `module` 是 `DllMain` 记下的本 DLL 句柄（进程未卸载前一直有效）；
+    // `buffer` 长度与 `n_size` 一致。
+    let length = unsafe { sys::GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) };
     if length == 0 || length as usize >= buffer.len() {
         return PathBuf::from(".");
     }
@@ -355,11 +384,23 @@ fn install_hooks() {
         }
     }
 
+    HOOK_MODULES.store(scan.modules.len(), Ordering::Release);
+    HOOK_HITS.store(scan.hits.len(), Ordering::Release);
+    HOOK_REPLACED.store(replaced, Ordering::Release);
+}
+
+/// 把 hook 安装结果补写进日志文件（在 `log::init` 之后调用）。
+///
+/// 幂等：重复调用只会多写一行，代价可忽略，换来的是「无论 hook 是在 `DllMain`
+/// 还是工作线程里装的，用户都能在 `copper-hook.log` 里看到结论」。
+fn flush_hook_report() {
+    let modules = HOOK_MODULES.load(Ordering::Acquire);
+    let hits = HOOK_HITS.load(Ordering::Acquire);
+    let replaced = HOOK_REPLACED.load(Ordering::Acquire);
     log::line(
         if replaced == 0 { "ERROR" } else { "INFO" },
         &format!(
-            "目录重定向 hook：替换 {replaced} 个导入槽；主映像导入模块数 {}",
-            scan.modules.len()
+            "目录重定向 hook：替换 {replaced} 个导入槽（命中 {hits}）；主映像导入模块数 {modules}"
         ),
     );
     if replaced == 0 {

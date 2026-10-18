@@ -1,21 +1,27 @@
-//! 注入编排：把 hook DLL 落进实例目录，并改写游戏 exe 的导入表。
+//! hook DLL 的落位与启动文件维护。
 //!
-//! # 为什么必须注入
+//! # 注入方式：远程线程，不是改导入表
 //!
-//! 游戏的目录 API（`SHGetKnownFolderPath`）不读环境变量，注册 AppX 也不产生
-//! 任何路径重定向（LeviLauncher 的注册清单只把虚拟化关掉）。因此「让游戏把
-//! 数据写进实例目录」唯一可行的办法是：**改写 exe 的导入表，让我们的 DLL
-//! 在进程启动时被加载，并在进程内替换那三个 API**。同一个 DLL 顺带承担
-//! 原生模组预加载（加载器就是这样生效的）。
+//! 早先的实现走的是「给游戏 exe 的导入表追加一条我们自己的 DLL」——也就是
+//! [`crate::pe`] 的 `plan_add_import`。这条路在本机的真实 GDK 游戏
+//! （1.26.52.03）上会被加载器以 `0xC0000135` 无声拒绝，且**不产生任何
+//! Application Error 事件、也没有「缺少 DLL」对话框**：镜像结构、节表、
+//! 数据目录、节内容逐字节校验全部自洽，`dumpbin` 却读不出导入表。
+//! 在没有调试器逐条比对加载器内部行为之前，这条路不值得继续投入。
 //!
-//! 细节与取舍见 `docs/启动链路与实例隔离.md`。
+//! 现在改为**不改游戏 exe 一个字节**：以 `CREATE_SUSPENDED` 启动游戏，
+//! 在主线程尚未执行任何指令时向其地址空间写入 hook DLL 的绝对路径，再起远程线程
+//! 调用 `LoadLibraryW`，加载完成后恢复主线程。实现在 [`super::injector`]。
 //!
-//! # 写文件的纪律
+//! 因此本模块的职责收缩为：
 //!
-//! 改写的是**用户的游戏本体**，写坏了用户就玩不了这个实例。所以：
-//!! 布局计算在 [`crate::pe`] 内完成（纯内存，可单测），本模块只负责
-//! 「临时文件 → `ReplaceFileW` 原子替换 → 回读校验 → 失败回滚」，
-//!! 并且**永远保留一份原始副本**（`.copperorig`），提供还原入口。
+//! - 把最新版的 hook DLL 写进实例目录（远程注入需要一个稳定的绝对路径）；
+//! - 控制台子系统开关（仍要改 exe 的一个字段，改完立刻可逆）；
+//! - 清理**历史遗留**的导入表注入（老版本写过、现在不该再写）。
+//!
+//! 交接变量仍通过 [`crate::modules::home::launch`] 构造的环境块下发，
+//! hook 侧读取方式不变（`COPPER_HOOK_*`）。细节与取舍见
+//! `docs/启动链路与实例隔离.md`。
 
 use std::path::{Path, PathBuf};
 
@@ -23,10 +29,9 @@ use copper_core_hook::contract as contract;
 
 use crate::error::KernelError;
 use crate::modules::home::meta::VersionMeta;
-use crate::pe::PeError;
-// `pe` 只在注入实现（Windows）里被调用，非 Windows 目标上这个别名是空的。
+// `pe` 只在 Windows 分支被调用，非 Windows 目标上这两个别名都不存在。
 #[cfg(windows)]
-use crate::pe;
+use crate::pe::{self, PeError};
 
 /// 内核内嵌的 hook DLL 字节（由 `build.rs` 定位产物）。
 #[cfg(windows)]
@@ -38,10 +43,8 @@ const HOOK_DLL_BYTES: &[u8] = include_bytes!(env!("COPPER_HOOK_DLL"));
 pub struct InjectOutcome {
     /// 是否新写入了 hook DLL。
     pub dll_written: bool,
-    /// 是否改写了 exe 导入表。
-    pub exe_patched: bool,
-    /// 是否已存在注入（幂等命中）。
-    pub already_injected: bool,
+    /// 是否清理掉了历史遗留的导入表注入。
+    pub legacy_import_removed: bool,
 }
 
 /// 启动文件状态（版本设置页展示用）。
@@ -49,14 +52,16 @@ pub struct InjectOutcome {
 #[serde(rename_all = "snake_case")]
 pub struct LaunchFileState {
     pub hook_dll_present: bool,
-    /// exe 是否已导入 hook（true = 注入在生效）。
+    /// 注入是否可用：hook DLL 已就位，且启动文件上**没有**遗留的导入表注入。
     pub injected: bool,
+    /// 历史备份文件是否存在（导入表注入时期的遗留物，可删除）。
     pub backup_exists: bool,
     /// 备份文件字节数（0 = 无备份）。
     pub backup_bytes: u64,
     pub console: bool,
 }
 
+#[cfg(windows)]
 fn pe_err(context: &str, error: PeError) -> KernelError {
     KernelError::InvalidArgument(format!("{context}：{error}"))
 }
@@ -66,7 +71,7 @@ pub fn hook_dll_path(version_dir: &Path) -> PathBuf {
     version_dir.join(contract::HOOK_DLL_FILE_NAME)
 }
 
-/// 原始启动文件备份路径。
+/// 历史遗留的原始启动文件备份路径（导入表注入时期产生）。
 pub fn backup_path(exe: &Path) -> PathBuf {
     let mut name = exe.as_os_str().to_os_string();
     name.push(contract::BACKUP_SUFFIX);
@@ -78,33 +83,38 @@ pub fn manifest_path(version_dir: &Path) -> PathBuf {
     version_dir.join(contract::MANIFEST_FILE_NAME)
 }
 
-/// 查询启动文件状态（不修改任何文件）。
+/// 游戏启动文件是否仍带着我们写入的导入表注入（历史遗留）。
 #[cfg(windows)]
-pub fn launch_file_state(version_dir: &Path, exe: &Path, meta: &VersionMeta) -> LaunchFileState {
-    let backup = backup_path(exe);
-    let injected = std::fs::read(exe)
+pub fn has_legacy_import(exe: &Path) -> bool {
+    std::fs::read(exe)
         .ok()
         .and_then(|bytes| pe::parse(bytes).ok())
-        .map(|image| image.dll_is_imported(contract::HOOK_DLL_FILE_NAME).unwrap_or(false))
-        .unwrap_or(false);
-    LaunchFileState {
-        hook_dll_present: hook_dll_path(version_dir).is_file(),
-        injected,
-        backup_exists: backup.is_file(),
-        backup_bytes: std::fs::metadata(&backup).map(|m| m.len()).unwrap_or(0),
-        console: meta.enable_console,
-    }
+        .map(|image| {
+            image
+                .dll_is_imported(contract::HOOK_DLL_FILE_NAME)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
-/// 非 Windows 平台没有注入概念（隔离与预加载是 Windows GDK 专属）。
+/// 非 Windows 没有导入表注入概念，恒为 false。
 #[cfg(not(windows))]
+fn has_legacy_import(_exe: &Path) -> bool {
+    false
+}
+
+/// 查询启动文件状态（不修改任何文件）。
 pub fn launch_file_state(version_dir: &Path, exe: &Path, meta: &VersionMeta) -> LaunchFileState {
-    let _ = (version_dir, exe);
+    let backup = backup_path(exe);
+    let hook_dll_present = hook_dll_path(version_dir).is_file();
+    // 残留着导入表注入时报「不可用」：那份 exe 正是加载器拒绝启动的产物，
+    // 用户在这里看到的必须是「有东西要清」，而不是「一切正常」。
+    let legacy = has_legacy_import(exe);
     LaunchFileState {
-        hook_dll_present: hook_dll_path(version_dir).is_file(),
-        injected: false,
-        backup_exists: backup_path(exe).is_file(),
-        backup_bytes: 0,
+        injected: hook_dll_present && !legacy,
+        hook_dll_present,
+        backup_exists: backup.is_file(),
+        backup_bytes: std::fs::metadata(&backup).map(|m| m.len()).unwrap_or(0),
         console: meta.enable_console,
     }
 }
@@ -125,27 +135,10 @@ fn ensure_hook_dll(version_dir: &Path) -> Result<bool, KernelError> {
     Ok(true)
 }
 
-/// 确保 exe 导入表里有 hook；已导入时零写入。
-#[cfg(windows)]
-fn ensure_import(exe: &Path) -> Result<bool, KernelError> {
-    let bytes = std::fs::read(exe).map_err(|e| {
-        KernelError::InvalidArgument(format!("读取游戏启动文件失败：{e}"))
-    })?;
-    let image = pe::parse(bytes).map_err(|e| pe_err("解析游戏启动文件失败", e))?;
-    if !image.is_x64() {
-        return Err(KernelError::InvalidArgument(
-            "该实例不是 64 位游戏，无法注入".into(),
-        ));
-    }
-    let plan = match image.plan_add_import(contract::HOOK_DLL_FILE_NAME, contract::ANCHOR_EXPORT) {
-        Ok(plan) => plan,
-        // 幂等命中：已经注入过，不写文件。
-        Err(PeError::AlreadyImported(_)) => return Ok(false),
-        Err(error) => return Err(pe_err("注入准备失败", error)),
-    };
-    let patched = plan.apply(&image).map_err(|e| pe_err("注入失败", e))?;
-    replace_exe(exe, &patched)?;
-    Ok(true)
+/// 非 Windows 没有 hook DLL 落位这一步。
+#[cfg(not(windows))]
+fn ensure_hook_dll(_version_dir: &Path) -> Result<bool, KernelError> {
+    Ok(false)
 }
 
 /// 写文件（临时文件 + rename），失败时不留半成品。
@@ -162,11 +155,11 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> Result<(), KernelError> {
     }
 }
 
-/// 用 `ReplaceFileW` 替换 exe：保留原文件 ACL，并留下原始副本。
+/// 用 `MoveFileExW` 原子替换 exe（保留原文件 ACL）。
 ///
-/// 为什么不用「直接写」：直接写在中途失败 / 断电 / 被占用时会留下**半张 PE**，
-/// 用户的实例就此报废。`ReplaceFileW` 是单次原子替换，且顺带满足
-/// 「随时可还原」。
+/// 为什么仍然需要它：控制台子系统开关改的是 exe 本身的一个字段。
+/// 中途失败 / 断电 / 被占用时直接写会留下**半张 PE**，用户的实例就此报废；
+/// `MoveFileExW + MOVEFILE_WRITE_THROUGH` 是单次原子替换。
 #[cfg(windows)]
 fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
     use windows::core::PCWSTR;
@@ -187,7 +180,7 @@ fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
         options.custom_flags(FILE_FLAG_WRITE_THROUGH.0);
         let mut file = options.open(&tmp).map_err(|e| {
             KernelError::InvalidArgument(format!(
-                "写入注入临时文件失败：{e}（游戏运行中时无法改写启动文件，请先退出游戏）"
+                "写入启动文件临时副本失败：{e}（游戏运行中时无法改写启动文件，请先退出游戏）"
             ))
         })?;
         std::io::Write::write_all(&mut file, bytes).map_err(|e| {
@@ -221,7 +214,6 @@ fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
         }
         let handle = opened.expect("已确认可打开");
         let _ = windows::Win32::Foundation::CloseHandle(handle);
-        // REPLACE_EXISTING + WRITE_THROUGH：替换是原子的，且不靠系统缓存侥幸落盘。
         let moved = MoveFileExW(
             PCWSTR(wide(&tmp).as_ptr()),
             PCWSTR(wide(exe).as_ptr()),
@@ -237,7 +229,7 @@ fn replace_exe(exe: &Path, bytes: &[u8]) -> Result<(), KernelError> {
     Ok(())
 }
 
-/// 备份原始启动文件（仅首次），供「还原原始启动文件」使用。
+/// 备份原始启动文件（仅导入表注入时期使用；新的远程注入不再产生备份）。
 pub fn ensure_backup(exe: &Path) -> Result<(), KernelError> {
     let backup = backup_path(exe);
     if backup.is_file() {
@@ -247,12 +239,14 @@ pub fn ensure_backup(exe: &Path) -> Result<(), KernelError> {
     Ok(())
 }
 
-/// 还原为未注入的原始启动文件。
+/// 还原为未注入的原始启动文件（清理历史遗留注入用）。
 #[cfg(windows)]
 pub fn restore_original(exe: &Path) -> Result<(), KernelError> {
     let backup = backup_path(exe);
     if !backup.is_file() {
-        return Err(KernelError::InvalidArgument("没有可用的原始启动文件备份".into()));
+        return Err(KernelError::InvalidArgument(
+            "没有可用的原始启动文件备份".into(),
+        ));
     }
     let bytes = std::fs::read(&backup)?;
     replace_exe(exe, &bytes)
@@ -275,39 +269,33 @@ pub fn delete_backup(exe: &Path) -> Result<(), KernelError> {
     Ok(())
 }
 
-/// 执行注入：落 DLL + 备份 + 改写导入表。
-#[cfg(windows)]
+/// 执行启动准备：落 hook DLL + 清理历史遗留的导入表注入。
+///
+/// **不再改写 exe 的导入表。** 老的实现会在这一步给 exe 追加 `.copperh` 节，
+/// 而那份镜像被 Windows 加载器拒绝（`0xC0000135`），表现为「点了开始游戏就
+/// 悄悄没了」。现在检测到这种残留就自动从备份还原，让实例回到能启动的状态 ——
+/// 用户不该为自己的历史操作买单，也不该为此手工删文件。
 pub fn inject(version_dir: &Path, exe: &Path) -> Result<InjectOutcome, KernelError> {
     let dll_written = ensure_hook_dll(version_dir)?;
-    // 备份必须在改写**之前**做，且只在首次（否则备份会变成已注入的版本）。
-    ensure_backup(exe)?;
-    let already = std::fs::read(exe)
-        .ok()
-        .and_then(|bytes| pe::parse(bytes).ok())
-        .map(|image| image.dll_is_imported(contract::HOOK_DLL_FILE_NAME).unwrap_or(false))
-        .unwrap_or(false);
-    let exe_patched = if already {
-        false
+    let legacy_import_removed = if has_legacy_import(exe) {
+        restore_original(exe)?;
+        log::warn!(
+            "[home/inject] 实例 `{}` 的启动文件仍带导入表注入，已从备份还原（改写 exe 的注入方式已废弃）",
+            version_dir.display()
+        );
+        true
     } else {
-        ensure_import(exe)?
+        false
     };
     Ok(InjectOutcome {
         dll_written,
-        exe_patched,
-        already_injected: already,
+        legacy_import_removed,
     })
-}
-
-#[cfg(not(windows))]
-pub fn inject(_version_dir: &Path, _exe: &Path) -> Result<InjectOutcome, KernelError> {
-    Err(KernelError::InvalidArgument(
-        "当前平台不支持启动注入".into(),
-    ))
 }
 
 /// 按版本设置应用/撤销控制台子系统。
 ///
-/// 与注入走同一个 PE 解析，但**只改一个字段**，不需要重排：改完立刻生效，
+/// 与注入共用同一个 PE 解析，但**只改一个字段**，不需要重排：改完立刻生效，
 /// 撤销时把值改回即可。
 #[cfg(windows)]
 pub fn apply_console(exe: &Path, console: bool) -> Result<(), KernelError> {
@@ -359,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn dll_presence_is_detected() {
+    fn dll_presence_drives_injection_state() {
         let dir = std::env::temp_dir().join(format!("copper_inject_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -367,9 +355,15 @@ mod tests {
         let exe = dir.join("Minecraft.Windows.exe");
         std::fs::write(&exe, b"MZ").unwrap();
         let state = launch_file_state(&dir, &exe, &VersionMeta::default());
+        // DLL 未落位 → 注入不可用
         assert!(!state.injected);
         assert!(!state.backup_exists);
-        // 非 Windows 分支也返回同一形状，状态接口不会因平台而缺字段
+
+        // DLL 落位 + 启动文件没有导入注入 → 可用
+        std::fs::write(hook_dll_path(&dir), b"x").unwrap();
+        let state = launch_file_state(&dir, &exe, &VersionMeta::default());
+        assert!(state.injected);
+        assert!(state.hook_dll_present);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

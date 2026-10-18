@@ -55,7 +55,10 @@ export async function pickApkViaHost(cancelMessage: string): Promise<PickedApk> 
     if (!result.path) {
       throw new Error("文件选择未返回可用路径");
     }
-    return { path: result.path, displayName: result.display_name };
+    // `displayName` 与内核的序列化键名一致（camelCase）；读 snake_case 会得到
+    // undefined，随后在实例名规整处抛出一个与真实原因无关的 TypeError。
+    const displayName = result.displayName || result.path.split("/").pop() || "import.apk";
+    return { path: result.path, displayName };
   }
   throw new Error("文件选择超时");
 }

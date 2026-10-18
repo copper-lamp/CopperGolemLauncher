@@ -1,14 +1,16 @@
-//! 启动游戏：进程启动 + 运行检测 + 启动后监控。
+﻿//! 启动游戏：进程启动 + 目录重定向注入 + 运行检测 + 启动后监控。
 //!
-//! 两条启动路径（与 LeviLauncher 一致）：
-//! - 版本已注册到 AppX（`meta.registered`）：通过 `minecraft://` 协议唤起；
-//! - 未注册：直接启动版本目录下的 `Minecraft.Windows.exe`（可附加启动参数 / 环境变量）。
+//! 一条启动路径：始终由启动器自己拉起 `Minecraft.Windows.exe`，并在主线程执行
+//! 第一条指令之前把 hook DLL 远程注入进去（见 [`super::injector`]）。协议唤起
+//! 已移除，原因见 [`launch_game`]。
 //!
 //! 启动成功后由后台任务监控进程状态，确认游戏运行时广播 `game.launched`。
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
+
+#[cfg(not(windows))]
+use std::process::Command;
 
 #[cfg(target_os = "android")]
 use crate::modules::home::meta::AndroidVersionMeta;
@@ -265,9 +267,15 @@ fn parse_env_vars(input: &str) -> Vec<(String, String)> {
 
 /// 启动游戏。`check_running` 为 true 时，若该版本已在运行则返回错误。
 ///
-/// 顺序固定为 **prepare → inject → 分流 → 监控**（`docs/启动链路与实例隔离.md` §2.7）：
-/// 注入必须**先于**任何一种启动方式，否则协议唤起的实例里根本没有 hook DLL，
-/// 隔离与加载器静默失效 —— 而这种失效没有任何报错。
+/// 顺序固定为 **prepare → 落位 → 注入启动 → 监控**（`docs/启动链路与实例隔离.md` §2.7）。
+///
+/// # 为什么没有「协议唤起」这条路
+///
+/// 早期实现对 `registered` 的实例走 `minecraft://` 协议激活。那条路拿不到
+/// 启动器自己的进程句柄，因此既无法远程注入 hook DLL，也无法下发
+/// `COPPER_HOOK_*` 交接变量 —— 结果是隔离与加载器**静默失效**，而用户在界面上
+/// 完全看不出区别（游戏照常启动，只是数据写在启动器管不到的地方）。
+/// 「功能完整」的前提是隔离永远生效，因此统一走自己拉起进程并注入。
 pub fn launch_game(
     ctx: &LaunchCtx,
     name: &str,
@@ -292,75 +300,69 @@ pub fn launch_game(
 
     // 0) prepare：骨架目录 + 预加载清单 + 控制台子系统
     prepare_instance(name, &dir, &exe, &mut meta)?;
+    // 自愈：协议唤起这条路已经移除，`registered` 对用户只剩误导意义。
+    demote_registered(&dir);
 
-    // 1) inject：hook DLL 落位 + 导入表改写
-    #[cfg(windows)]
-    match super::inject::inject(&dir, &exe) {
-        Ok(outcome) => {
-            if outcome.dll_written || outcome.exe_patched {
-                log::info!(
-                    "[home/launch] 版本 `{name}` 已注入 hook（dll={} exe={}）",
-                    outcome.dll_written,
-                    outcome.exe_patched
-                );
-            }
-        }
-        Err(error) => {
-            // 注入失败必须显式失败：继续启动等于给用户一个「数据写在启动器
-            // 管不到的地方」的实例，比报错难收拾得多。
-            return Err(error);
-        }
+    // 1) 落位：hook DLL 写进实例目录，并清理历史遗留的导入表注入。
+    let outcome = super::inject::inject(&dir, &exe)?;
+    if outcome.dll_written || outcome.legacy_import_removed {
+        log::info!(
+            "[home/launch] 版本 `{name}` 已就绪（dll={} 清理遗留注入={}）",
+            outcome.dll_written,
+            outcome.legacy_import_removed
+        );
     }
+    let dll = super::inject::hook_dll_path(&dir);
 
-    // 2) 分流：已注册 AppX 走协议唤起，否则直接启动 exe。
-    //
-    // 协议唤起只在「该版本确实被注册进系统」时成立：`minecraft://` 的处理程序
-    // 是全局唯一的，注册别的包（或压根没注册）时唤起起来的不是这个版本目录。
-    // 协议失败一律回落到直接启动，并把 `registered` 就地纠正为 false。
-    if meta.registered {
-        if is_version_registered(&dir) {
-            let is_preview = meta.version_type.eq_ignore_ascii_case("preview");
-            let protocol = if is_preview {
-                "minecraft-preview://"
-            } else {
-                "minecraft://"
-            };
-            let editor_supported =
-                super::isolate::supports_editor_mode(&meta.game_version, &meta.version_type);
-            let url = if meta.enable_editor_mode && editor_supported {
-                format!("{protocol}creator/?Editor=true")
-            } else {
-                protocol.to_string()
-            };
-            if spawn_protocol(&url).is_ok() {
-                monitor_after_launch(ctx, name, dir, 0);
-                return Ok(LaunchOutcome::Protocol);
-            }
-            log::warn!("[home/launch] 版本 `{name}` 协议唤起失败，回落到直接启动");
-        } else {
-            log::info!("[home/launch] 版本 `{name}` 未在系统中注册，改走直接启动");
-        }
-        demote_registered(&dir);
-    }
-
-    // 3) 直启
+    // 2) 启动参数与环境：用户自定义在前，交接变量在后且覆盖同名项
+    //    （交接变量是隔离成立的前提，不能被用户的同名 env 顶掉）。
     let args = launch_args(&meta, name);
-    let mut cmd = Command::new(&exe);
-    cmd.args(&args);
-    cmd.current_dir(&dir);
-    for (k, v) in parse_env_vars(&meta.env_vars) {
-        cmd.env(k, v);
-    }
-    apply_hook_env(&mut cmd, &dir, &meta);
-    // 启动后丢弃子进程句柄：游戏进程脱离启动器独立运行，由后台监控接管。
-    // 但 pid 要留下 —— 它是唯一能区分「秒退」与「迟迟没起来」的依据。
-    let pid = cmd
-        .spawn()
-        .map_err(|e| KernelError::InvalidArgument(format!("启动游戏失败: {e}")))?
-        .id();
+    let mut env = parse_env_vars(&meta.env_vars);
+    env.extend(hook_env(&dir, &meta));
+
+    // 3) 拉起并注入
+    let pid = spawn_game(&exe, &dir, &args, &env, &dll)?;
 
     monitor_after_launch(ctx, name, dir, pid);
     Ok(LaunchOutcome::Spawned)
+}
+
+/// 拉起游戏进程并确保 hook DLL 已进入进程。
+///
+/// Windows：挂起启动 → 远程线程 `LoadLibraryW` → 恢复主线程（[`super::injector`]）。
+/// 注入失败即启动失败：给用户一个「数据写在启动器管不到的地方」的实例，
+/// 比明确报错难收拾得多。
+#[cfg(windows)]
+fn spawn_game(
+    exe: &std::path::Path,
+    dir: &std::path::Path,
+    args: &[String],
+    env: &[(String, String)],
+    dll: &std::path::Path,
+) -> Result<u32, KernelError> {
+    super::injector::launch_with_injection(exe, dir, args, env, dll)
+}
+
+/// 非 Windows 平台没有注入能力：直接 spawn，隔离由各平台自己的宿主负责。
+#[cfg(not(windows))]
+fn spawn_game(
+    exe: &std::path::Path,
+    dir: &std::path::Path,
+    args: &[String],
+    env: &[(String, String)],
+    _dll: &std::path::Path,
+) -> Result<u32, KernelError> {
+    let mut cmd = Command::new(exe);
+    cmd.args(args);
+    cmd.current_dir(dir);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    // 启动后丢弃子进程句柄：游戏进程脱离启动器独立运行，由后台监控接管。
+    // 但 pid 要留下 —— 它是唯一能区分「秒退」与「迟迟没起来」的依据。
+    cmd.spawn()
+        .map(|child| child.id())
+        .map_err(|e| KernelError::InvalidArgument(format!("启动游戏失败: {e}")))
 }
 
 /// 游戏主程序在实例目录下的路径。
@@ -433,23 +435,32 @@ fn prepare_instance(
 /// **数据根目录由启动器显式下发**（`COPPER_HOOK_DATA_DIR`）：注入侧不再自己
 /// 推导目录规则，两侧共用 `isolate` 的同一份结论，避免 LeviLauncher 那种
 /// 「Go 侧与 C++ 侧对 1.26+ 判断相反」的分叉。
-fn apply_hook_env(cmd: &mut Command, dir: &std::path::Path, meta: &VersionMeta) {
+///
+/// 返回值而非直接写进 [`Command`]：Windows 走 `CreateProcessW` 的环境块，
+/// 两条路径必须拿到**同一份**变量，否则「非 Windows 用 Command、Windows 用
+/// env block」会悄悄分叉出两套交接内容。
+fn hook_env(dir: &std::path::Path, meta: &VersionMeta) -> Vec<(String, String)> {
     use copper_core_hook::contract as contract;
     let data_dir = super::isolate::data_dir(dir, meta);
-    cmd.env(contract::ENV_DATA_DIR, &data_dir);
-    cmd.env(contract::ENV_ROOT, dir);
-    cmd.env(
-        contract::ENV_CHANNEL,
-        if super::isolate::is_preview(meta) {
-            "preview"
-        } else {
-            "release"
-        },
-    );
-    cmd.env(
-        contract::ENV_PRELOAD,
-        super::inject::manifest_path(dir),
-    );
+    vec![
+        (contract::ENV_DATA_DIR.to_string(), data_dir.to_string_lossy().into_owned()),
+        (contract::ENV_ROOT.to_string(), dir.to_string_lossy().into_owned()),
+        (
+            contract::ENV_CHANNEL.to_string(),
+            if super::isolate::is_preview(meta) {
+                "preview"
+            } else {
+                "release"
+            }
+            .to_string(),
+        ),
+        (
+            contract::ENV_PRELOAD.to_string(),
+            super::inject::manifest_path(dir)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ]
 }
 
 /// 启动后台监控（注入已完成后调用）。
@@ -505,8 +516,10 @@ fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &
 
 /// 纠正版本元数据：标记为「未注册」。
 ///
-/// 只在协议唤起失败后调用（此时已证明该版本不受系统协议接管）。
-/// 写失败只记日志 —— 启动路径不能因为元数据纠正失败而中断。
+/// 协议唤起这条路已经移除（见 [`launch_game`] 的说明），但用户的版本目录里
+/// 仍可能留着从 LeviLauncher 迁过来的 `registered: true`。留着它会让 UI 显示
+/// 「已注册」，而我们既不注册也不唤起 —— 那是一个纯骗人的字段，因此在启动时
+/// 顺手自愈。写失败只记日志：元数据纠正不该让启动失败。
 fn demote_registered(dir: &std::path::Path) {
     let Some(mut meta) = VersionMeta::read(dir) else {
         return;
@@ -518,79 +531,6 @@ fn demote_registered(dir: &std::path::Path) {
     if let Err(error) = VersionMeta::write(dir, &meta) {
         log::warn!("[home/launch] 纠正 registered 标记失败: {error}");
     }
-}
-
-/// 判断该版本目录**当前是否真的被注册进系统**（存在 `InstallLocation` 为该目录的 AppX 包）。
-///
-/// 元数据里的 `registered` 是历史事实，会骗人：本启动器自己安装的版本全部只是解包，
-/// 从未注册；但用户从 LeviLauncher 迁过来的版本目录里可能写着 `registered: true`，
-/// 而系统上注册的是另一个包。此时唤起 `minecraft://` 起来的是**别人的游戏**，
-/// 比启动失败更难排查。因此协议唤起前必须向系统核实一次。
-#[cfg(windows)]
-fn is_version_registered(dir: &std::path::Path) -> bool {
-    let path = dir.to_string_lossy().to_string();
-    // 脚本以单引号包裹字面量：出现引号 / 反引号即无法安全内联，直接判定未注册。
-    if path.contains('\'') || path.contains('`') || path.contains('"') {
-        return false;
-    }
-    let script = format!(
-        "$p = Get-AppxPackage | Where-Object {{ $_.InstallLocation -eq '{path}' }} \
-         | Select-Object -First 1 -ExpandProperty InstallLocation; \
-         if ($p) {{ 'yes' }} else {{ 'no' }}"
-    );
-    std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).trim() == "yes"
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(not(windows))]
-fn is_version_registered(_dir: &std::path::Path) -> bool {
-    false
-}
-
-/// 通过协议 URL 唤起游戏（`ShellExecuteW`，系统 URL 激活的标准入口）。
-///
-/// 此前用 `cmd /c start`：它只报告 cmd 自身启动成功，协议没有处理程序时
-/// 照样返回成功，用户看到的是 Windows 的「服务器启动失败」弹窗而后端毫不知情。
-/// `ShellExecuteW` 的返回值 ≤32 即激活失败，调用方据此回落直接启动。
-#[cfg(windows)]
-fn spawn_protocol(url: &str) -> Result<(), KernelError> {
-    use windows::core::HSTRING;
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let verb = HSTRING::from("open");
-    let wide = HSTRING::from(url);
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            windows::core::PCWSTR(verb.as_ptr()),
-            windows::core::PCWSTR(wide.as_ptr()),
-            windows::core::PCWSTR::null(),
-            windows::core::PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    // ShellExecute 的惯例：>32 成功，≤32 为错误码。
-    if result.0 as isize > 32 {
-        Ok(())
-    } else {
-        Err(KernelError::InvalidArgument(format!(
-            "协议 `{url}` 唤起失败（ShellExecute 返回 {}）",
-            result.0 as isize
-        )))
-    }
-}
-
-#[cfg(not(windows))]
-fn spawn_protocol(url: &str) -> Result<(), KernelError> {
-    let _ = url;
-    Err(KernelError::InvalidArgument("协议启动仅支持 Windows".into()))
 }
 
 #[cfg(test)]
@@ -631,7 +571,37 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn temp_dir_is_not_registered() {
-        assert!(!is_version_registered(&std::env::temp_dir()));
+        assert!(!crate::modules::home::inject::has_legacy_import(
+            &std::env::temp_dir().join("x.exe")
+        ));
+    }
+
+    /// 交接变量必须齐备且指向实例目录：少一个变量，注入侧就静默退化成不隔离。
+    #[test]
+    fn hook_env_carries_the_full_handover() {
+        use copper_core_hook::contract as contract;
+        let dir = std::path::Path::new("D:/v/demo");
+        let meta = VersionMeta {
+            version_type: "release".into(),
+            ..Default::default()
+        };
+        let env = hook_env(dir, &meta);
+        let get = |key: &str| {
+            env.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        // 路径按原样透传（Windows 上反斜杠是常态，但这里不依赖具体形态）
+        assert_eq!(get(contract::ENV_ROOT), dir.to_string_lossy());
+        assert_eq!(
+            get(contract::ENV_DATA_DIR),
+            super::super::isolate::data_dir(dir, &meta)
+                .to_string_lossy()
+        );
+        assert_eq!(get(contract::ENV_CHANNEL), "release");
+        assert!(get(contract::ENV_PRELOAD).ends_with("copper-preload.json"));
+        assert_eq!(env.len(), 4, "交接变量数量固定，多了会让交接内容漂移");
     }
 
     /// 纠正 `registered` 幂等，且只动这一个字段。
@@ -669,5 +639,172 @@ mod tests {
             "1.21.50.0",
             "release"
         ));
+    }
+
+    /// 实机验收：真的把游戏拉起来、真的注入 hook DLL。
+    ///
+    /// 隔离能不能用，最终只能这样验 —— 单测覆盖不到「加载器会不会拒绝这份 DLL」，
+    /// 覆盖不到「游戏会不会照着重定向后的目录写数据」。
+    ///
+    /// 默认 `#[ignore]`：它会真的启动游戏（本机需已安装实例、且会消耗显存）。
+    /// 跑法：
+    ///
+    /// ```powershell
+    /// $env:COPPER_LIVE_LAUNCH = "D:\...\versions\1.26.52.03"
+    /// $env:COPPER_LIVE_WATCH_SECS = "90"
+    /// cargo test -p copper-core --lib launch::tests::live_launch_isolates -- --ignored --nocapture
+    /// ```
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "会真的启动游戏；需 COPPER_LIVE_LAUNCH 指向实例目录"]
+    fn live_launch_isolates() {
+        let Ok(version_dir) = std::env::var("COPPER_LIVE_LAUNCH") else {
+            panic!("必须设置 COPPER_LIVE_LAUNCH 为实例目录");
+        };
+        let version_dir = std::path::PathBuf::from(version_dir);
+        let name = version_dir
+            .file_name()
+            .expect("实例目录必须有名字")
+            .to_string_lossy()
+            .into_owned();
+        let watch_secs: u64 = std::env::var("COPPER_LIVE_WATCH_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+
+        // 让 `Paths::versions_root` 指向这个实例的父目录：测试要跑的就是真实启动链路。
+        let root = version_dir
+            .parent()
+            .expect("实例目录必须有父目录")
+            .to_path_buf();
+        std::env::set_var("COPPER_VERSIONS_DIR", &root);
+        let scratch = std::env::temp_dir().join(format!("copper_live_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&scratch);
+        let paths = Arc::new(Paths::with_root(scratch.clone()));
+        let db = Arc::new(
+            crate::services::database::DatabaseService::open(&scratch.join("live.db"))
+                .expect("打开测试数据库"),
+        );
+        db.migrate_scope(
+            "core",
+            crate::services::database::CORE_MIGRATIONS,
+        )
+        .expect("迁移 core schema");
+        let events = Arc::new(EventBus::new());
+        let settings = Arc::new(
+            SettingsService::new(db, events.clone(), Default::default()).expect("创建设置服务"),
+        );
+        let runtime = tokio::runtime::Runtime::new().expect("创建 tokio 运行时");
+        let ctx = LaunchCtx {
+            paths,
+            settings,
+            runtime: runtime.handle().clone(),
+            events,
+            hwnd: 0,
+        };
+
+        let log = version_dir.join(copper_core_hook::contract::HOOK_LOG_FILE_NAME);
+        let _ = std::fs::remove_file(&log);
+        let meta = VersionMeta::read(&version_dir).expect("读取实例元数据");
+        let data_dir = crate::modules::home::isolate::data_dir(&version_dir, &meta);
+        let system_dir = std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .map(|root| {
+                root.join(if crate::modules::home::isolate::is_preview(&meta) {
+                    copper_core_hook::contract::PREVIEW_DATA_DIR
+                } else {
+                    copper_core_hook::contract::RELEASE_DATA_DIR
+                })
+            })
+            .unwrap_or_default();
+
+        launch_game(&ctx, &name, true).expect("启动链路必须成功（注入失败会在这里显式报错）");
+        let exe = game_exe_path(&version_dir);
+        println!("[live] 游戏 pid = {:?}", find_pid_at_path(&exe));
+
+        let count_files = |dir: &std::path::Path| -> usize {
+            walk(dir).count()
+        };
+        let instance_before = count_files(&data_dir);
+        let system_before = count_files(&system_dir);
+
+        // 等 hook 日志出现：注入侧的 worker 线程写第一行「注入侧就绪」即证明
+        // DLL 已经进了游戏进程并跑到了工作线程（这一步过不去，后面全都不成立）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(watch_secs);
+        let mut ready = false;
+        while std::time::Instant::now() < deadline {
+            if log.is_file()
+                && std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains("注入侧就绪")
+            {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        println!(
+            "[live] ---- {} ----\n{text}\n--------------------",
+            log.display()
+        );
+        assert!(ready, "注入侧没有就绪：hook DLL 未进入游戏进程，或 DllMain 未跑完");
+
+        // 隔离成不成立看这一行：替换数为 0 就等于没有 hook。
+        let replaced: usize = text
+            .lines()
+            .find(|line| line.contains("个导入槽"))
+            .and_then(|line| {
+                line.split("替换 ")
+                    .nth(1)
+                    .and_then(|rest| rest.split(' ').next())
+                    .and_then(|n| n.parse().ok())
+            })
+            .expect("日志里没有 hook 安装结论：安装报告没有落盘");
+        assert!(replaced > 0, "目录重定向一个导入槽都没命中：隔离不会生效");
+
+        // 让游戏真正跑一会儿，看数据落在哪儿。
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        let instance_after = count_files(&data_dir);
+        let system_after = count_files(&system_dir);
+        println!(
+            "[live] 实例数据文件数 {} -> {}\n[live] 系统 %APPDATA% 文件数 {} -> {}",
+            instance_before,
+            instance_after,
+            system_before,
+            system_after
+        );
+        assert!(
+            instance_after > instance_before,
+            "实例数据目录 {} 在 20s 内没有新增文件：重定向没生效",
+            data_dir.display()
+        );
+        assert_eq!(
+            system_after, system_before,
+            "系统 {} 有了新增：隔离漏了",
+            system_dir.display()
+        );
+
+        // 收尾：把游戏停掉，别把用户的机器留在「游戏还在跑」的状态。
+        terminate_process_at_path(&exe).expect("结束测试启动的游戏");
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// 递归枚举目录下的全部条目（实机测试用来数「游戏写了多少文件」）。
+    #[cfg(windows)]
+    fn walk(dir: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> + '_ {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|entry| {
+                let path = entry.path();
+                let children = if path.is_dir() {
+                    Box::new(walk(&path).collect::<Vec<_>>())
+                } else {
+                    Box::new(Vec::new())
+                };
+                std::iter::once(path).chain(children.into_iter())
+            })
     }
 }

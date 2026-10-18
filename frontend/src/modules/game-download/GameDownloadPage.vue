@@ -25,7 +25,7 @@ import { useI18n } from "../../i18n";
 import { usePlatform } from "../../composables/usePlatform";
 import TipsRotator from "../../components/TipsRotator.vue";
 import { gameImportApk } from "./api";
-import { pickApkViaHost } from "./apkImport";
+import { pickApkViaHost, reportAndroidImportFailure } from "./apkImport";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
 import type { GameVersionView } from "./api";
 import VersionCard from "./VersionCard.vue";
@@ -180,7 +180,7 @@ watch(gd.manifest, () => (loadError.value = null));
  * 收敛为一个 `_`，首尾不留下划线 / 点 / 横线。
  *
  * 这里只是**给后端一个初始值**，最终实例名以 `gameImportApk` 返回的
- * `instance_name` 为准——前端不许自己算完就当结论用（两侧算法一旦漂移，
+ * `instanceName` 为准——前端不许自己算完就当结论用（两侧算法一旦漂移，
  * 就会出现「列表里看得到、点启动却说实例不存在」）。
  */
 function instanceNameFrom(fileName: string): string {
@@ -216,7 +216,7 @@ async function importApk() {
     const info = await gameImportApk(sourcePath, instanceNameFrom(displayName));
     // 实例名以内核规整后的结果为准：这个名字同时是版本目录名与安卓宿主
     // 定位实例的键，前端不再自己推导第二遍。
-    const name = info.instance_name;
+    const name = info.instanceName;
 
     // 导入目录里现在多了这个实例，刷新清单让开始页与本页立即可见。
     await gd.loadManifest(false);
@@ -225,10 +225,13 @@ async function importApk() {
     await homeLaunch(name);
     importStatus.value = t(`${MB_KEY}.import.picked`, {
       name,
-      version: info.package_info.version_name,
+      version: info.packageInfo.versionName,
     });
   } catch (e) {
     importStatus.value = null;
+    // 失败原因只存在于这一步的栈里：安卓宿主已写 logcat，这里再补一条内核日志，
+    // 保证用户反馈 issue 时两边都有现场（见 apkImport.reportAndroidImportFailure）。
+    reportAndroidImportFailure("import", e);
     loadError.value = t(`${MB_KEY}.import.failed`) + "：" + String(e);
   } finally {
     importing.value = false;
