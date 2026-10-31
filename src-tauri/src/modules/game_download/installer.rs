@@ -1991,27 +1991,75 @@ async fn install_loader(
     });
 
     let _ = ctx;
+    // 在临时目录里跑 lipd：PeEditor 只会改 staging 里的 exe，真实实例的
+    // Minecraft.Windows.exe 一个字节都不会动。装完只把 LL 运行时文件拷回来。
+    let staging = install_dir.join(".ll-staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    let real_exe = install_dir.join("Minecraft.Windows.exe");
+    std::fs::copy(&real_exe, staging.join("Minecraft.Windows.exe"))?;
+
     let outcome = lip_install::install_resolved(
         &exe,
         loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF,
         loader,
-        install_dir,
+        &staging,
         Some(&sink),
     )
     .await;
     if outcome.success {
+        let copied = copy_levilamina_payload(&staging, install_dir);
+        let _ = std::fs::remove_dir_all(&staging);
+        copied?;
         log::info!(
-            "[game-download] 实例加载器安装完成 {} -> {}",
+            "[game-download] 实例加载器安装完成 {} -> {}（真实 exe 未被 PeEditor 修改）",
             outcome.package,
             install_dir.display()
         );
         return Ok(());
     }
+    let _ = std::fs::remove_dir_all(&staging);
     let code = outcome.error_code.unwrap_or_default();
     Err(KernelError::Module(format!(
         "加载器 LeviLamina {loader} 安装失败（{code}）：{}",
         outcome.stderr
     )))
+}
+
+/// 把 staging 里的 LeviLamina 运行时文件拷回真实实例；不碰 exe。
+fn copy_levilamina_payload(staging: &Path, target: &Path) -> Result<(), KernelError> {
+    for name in ["PreLoader.dll", "bedrock_runtime_data"] {
+        let src = staging.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = target.join(name);
+        if src.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    let mods = staging.join("mods").join("LeviLamina");
+    if mods.is_dir() {
+        copy_tree(&mods, &target.join("mods").join("LeviLamina"))?;
+    }
+    Ok(())
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> Result<(), KernelError> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 /// 广播安装失败（供下载中心 / 详情提示）。

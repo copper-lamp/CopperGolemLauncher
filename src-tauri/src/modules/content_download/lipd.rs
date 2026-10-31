@@ -24,8 +24,13 @@ use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 
-/// 单次 daemon 调用总超时（与 LeviLauncher `defaultDaemonTimeout` 一致）。
-const DAEMON_TIMEOUT: Duration = Duration::from_secs(300);
+/// 单次 daemon 调用总超时。
+///
+/// LeviLauncher 的默认值是 5 分钟，但本机实测 LeviLamina 安装会先 git clone
+///（走镜像），再由 PeEditor 加载/改写 320MB 的 Minecraft.Windows.exe；两步
+/// 叠加经常超过 300 秒，表现为 `lipd Install 超时（300 秒）`。这里放宽到
+/// 15 分钟，避免把“慢”误判成“失败”。
+const DAEMON_TIMEOUT: Duration = Duration::from_secs(900);
 /// 请求结束后等待进程退出的宽限期，超时强杀（与 LeviLauncher 一致）。
 const KILL_GRACE: Duration = Duration::from_secs(2);
 /// lipd 依赖的 .NET 运行时主版本。

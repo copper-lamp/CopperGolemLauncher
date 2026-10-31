@@ -291,10 +291,77 @@ extern "system" fn worker_main() -> u32 {
         }
     }
 
-    // 6) 预加载
+    // 6) 可选：加载 LeviLamina 客户端链的 PreLoader。
+    //
+    // PeEditor 原本把 PreLoader.dll 写进 exe 导入表来强制加载；这里改由
+    // hook 在远程注入后、游戏主线程恢复前手动 LoadLibrary，exe 保持原版。
+    load_preloader(&plan);
+
+    // 7) 预加载
     let manifest_path = paths::manifest_path(&plan, &env_reader());
     run_preload(&plan, &manifest_path);
     0
+}
+
+/// 加载实例目录下的 `PreLoader.dll`（仅 `COPPER_HOOK_LOAD_PRELOADER` 设置时）。
+fn load_preloader(plan: &RedirectPlan) {
+    if std::env::var_os("COPPER_HOOK_LOAD_PRELOADER").is_none() {
+        return;
+    }
+    use std::os::windows::ffi::OsStrExt;
+    let dll = plan.root.join("PreLoader.dll");
+    if !dll.is_file() {
+        log::line("WARN", &format!("PreLoader 不存在: {}", dll.display()));
+        return;
+    }
+    let wide: Vec<u16> = dll
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let module = unsafe {
+        sys::LoadLibraryExW(wide.as_ptr(), ptr::null_mut(), 0)
+    };
+    if module.is_null() {
+        log::line(
+            "ERROR",
+            &format!(
+                "PreLoader 加载失败: {}（Win32 {}）",
+                dll.display(),
+                std::io::Error::last_os_error()
+            ),
+        );
+    } else {
+        log::line("INFO", &format!("PreLoader 已加载: {}", dll.display()));
+    }
+
+    // PreLoader 只提供符号解析，不主动拉 LeviLamina；客户端链的入口是
+    // `mods\LeviLamina\LeviLamina.dll`。这里在 PreLoader 之后手动加载它。
+    let levilamina = plan
+        .root
+        .join("mods")
+        .join("LeviLamina")
+        .join("LeviLamina.dll");
+    if levilamina.is_file() {
+        let wide: Vec<u16> = levilamina
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let module = unsafe { sys::LoadLibraryExW(wide.as_ptr(), ptr::null_mut(), 0) };
+        if module.is_null() {
+            log::line(
+                "ERROR",
+                &format!(
+                    "LeviLamina 加载失败: {}（Win32 {}）",
+                    levilamina.display(),
+                    std::io::Error::last_os_error()
+                ),
+            );
+        } else {
+            log::line("INFO", &format!("LeviLamina 已加载: {}", levilamina.display()));
+        }
+    }
 }
 
 /// 读清单并执行预加载；任何一步失败都只记日志。

@@ -593,7 +593,7 @@ fn prepare_instance(
 fn hook_env(dir: &std::path::Path, meta: &VersionMeta) -> Vec<(String, String)> {
     use copper_core_hook::contract as contract;
     let data_dir = super::isolate::data_dir(dir, meta);
-    vec![
+    let mut env = vec![
         (contract::ENV_DATA_DIR.to_string(), data_dir.to_string_lossy().into_owned()),
         (contract::ENV_ROOT.to_string(), dir.to_string_lossy().into_owned()),
         (
@@ -618,7 +618,13 @@ fn hook_env(dir: &std::path::Path, meta: &VersionMeta) -> Vec<(String, String)> 
                 .to_string_lossy()
                 .into_owned(),
         ),
-    ]
+    ];
+    // 装了 LeviLamina 客户端文件的实例：exe 保持原版（安装后已还原），
+    // 由 hook 在远程注入后加载 PreLoader/LeviLamina。
+    if dir.join("PreLoader.dll").is_file() {
+        env.push(("COPPER_HOOK_LOAD_PRELOADER".to_string(), "1".to_string()));
+    }
+    env
 }
 
 /// 启动后台监控（注入已完成后调用）。
