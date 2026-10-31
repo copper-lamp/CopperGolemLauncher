@@ -27,7 +27,6 @@ use md5::{Digest as _Md5Digest, Md5};
 use serde_json::Value;
 
 use crate::error::KernelError;
-use crate::modules::content_download::lip_install;
 use crate::modules::content_download::lipd;
 use crate::modules::content_download::loader_catalog;
 use crate::modules::home::meta;
@@ -1955,108 +1954,240 @@ async fn install_instance(
     Ok(())
 }
 
-/// 把 LeviLamina 装进实例目录（经 lipd；依赖解析与下载都由它完成）。
+/// 直接从 GitHub Release 安装 LeviLamina 客户端运行时。
 ///
-/// 这里直接调用内容下载模块的**内核无关核心**（[`lip_install::install_resolved`]）：
-/// 游戏下载流水线跑在内核事件里，手里只有一组 Arc 服务，既拿不到也用不上整个
-/// `KernelContext`。加载器目录与安装实现都归内容下载模块，本模块只负责「什么时候装、
-/// 装到哪个目录、进度怎么报」。
+/// 不再经过 lipd，也不执行 PeEditor：
+/// - 下载 LeviLamina client zip，读取包内 `tooth.json` 的依赖版本；
+/// - 下载 PreLoader / bedrock-runtime-data 对应版本；
+/// - 只落 `PreLoader.dll`、`bedrock_runtime_data`、`mods/LeviLamina/`；
+/// - 完全不碰 `Minecraft.Windows.exe`。
 async fn install_loader(
     ctx: &Ctx,
     install_dir: &Path,
     loader: &str,
     progress: &mut InstallProgress,
 ) -> Result<(), KernelError> {
-    let Some(exe) = lipd::find_lip_executable() else {
-        return Err(KernelError::Config(
-            "未检测到 lipd，无法安装加载器（需要先安装 lip 与 .NET 10 运行时）".into(),
-        ));
-    };
-    let handle = progress.loader_handle();
-    let sink: lipd::CallbackSink = Arc::new(move |callback: lipd::DaemonCallback| {
-        let Some(handle) = handle.as_ref() else { return };
-        match callback {
-            lipd::DaemonCallback::Progress { item, percent } => {
-                // lipd 的百分比是 0~100；缺省（协议里就没有该字段）时给阶段中点，
-                // 而不是起点——报起点会让进度条看起来停死在这 28% 上。
-                handle.report(percent.map(|p| p / 100.0), Some(item));
-            }
-            lipd::DaemonCallback::Log(text) => {
-                // 步骤文本比百分比更细，但也更吵：这里只留诊断日志。
-                if !text.trim().is_empty() {
-                    log::debug!("[game-download] lipd: {text}");
+    let _ = progress;
+    let cache = install_dir.join(".ll-cache");
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&cache)?;
+
+    let ll_url = format!(
+        "https://github.com/LiteLDev/LeviLamina/releases/download/v{loader}/levilamina-v{loader}-client-release-windows-x64.zip"
+    );
+    let ll_zip = cache.join("levilamina.zip");
+    download_release(&ctx.store_http, &ll_url, &ll_zip)
+        .await
+        .map_err(|error| {
+            log::warn!("[game-download] 下载 LeviLamina 包失败: {error}");
+            error
+        })?;
+
+    let tooth = read_zip_entry(&ll_zip, "tooth.json")?;
+    let tooth: Value = serde_json::from_slice(&tooth)
+        .map_err(|e| KernelError::Config(format!("LeviLamina tooth.json 解析失败: {e}")))?;
+    let deps = tooth["variants"]
+        .as_array()
+        .and_then(|items| items.iter().find(|v| v["label"] == "client"))
+        .and_then(|v| v.get("dependencies"))
+        .ok_or_else(|| KernelError::Config("LeviLamina tooth.json 缺少 client 依赖".into()))?;
+    let preloader = deps["github.com/LiteLDev/PreLoader"]
+        .as_str()
+        .ok_or_else(|| KernelError::Config("tooth.json 缺少 PreLoader 版本".into()))?;
+    let runtime = deps["github.com/LiteLDev/bedrock-runtime-data"]
+        .as_str()
+        .ok_or_else(|| KernelError::Config("tooth.json 缺少 bedrock-runtime-data 版本".into()))?;
+
+    let pre_url = format!(
+        "https://github.com/LiteLDev/PreLoader/releases/download/v{preloader}/preloader-v{preloader}-windows-x64.zip"
+    );
+    let pre_zip = cache.join("preloader.zip");
+    download_release(&ctx.store_http, &pre_url, &pre_zip)
+        .await
+        .map_err(|error| {
+            log::warn!("[game-download] 下载 PreLoader 失败: {error}");
+            error
+        })?;
+
+    let rt_url = format!(
+        "https://github.com/LiteLDev/bedrock-runtime-data/releases/download/v{runtime}/bedrock-runtime-data-v{runtime}-windows-x64.zip"
+    );
+    let rt_zip = cache.join("bedrock-runtime-data.zip");
+    download_release(&ctx.store_http, &rt_url, &rt_zip)
+        .await
+        .map_err(|error| {
+            log::warn!("[game-download] 下载 bedrock-runtime-data 失败: {error}");
+            error
+        })?;
+
+    let payload = (|| -> Result<(), KernelError> {
+        extract_levilamina(&ll_zip, &install_dir.join("mods").join("LeviLamina"))?;
+        extract_named_file(&pre_zip, "PreLoader.dll", &install_dir.join("PreLoader.dll"))?;
+        extract_bedrock_runtime(&rt_zip, install_dir)?;
+        Ok(())
+    })();
+    if let Err(error) = &payload {
+        log::warn!("[game-download] 直接安装 LeviLamina 失败: {error}");
+        let _ = std::fs::remove_dir_all(&cache);
+        return payload;
+    }
+
+    let _ = std::fs::remove_dir_all(&cache);
+    log::info!(
+        "[game-download] 已直接安装 LeviLamina {loader}（PreLoader {preloader} / runtime {runtime}），exe 未修改"
+    );
+    Ok(())
+}
+
+/// 下载 release 资产：直连失败时走 gh-proxy，最多 3 轮。
+async fn download_release(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+) -> Result<(), KernelError> {
+    use std::io::Write as _;
+    let mirrors = [
+        url.to_string(),
+        format!("https://gh-proxy.com/{url}"),
+    ];
+    let mut last = String::new();
+    for _ in 0..3 {
+        for mirror in &mirrors {
+            let _ = std::fs::remove_file(dest);
+            match client.get(mirror).send().await {
+                Ok(mut response) if response.status().is_success() => {
+                    let expected = response.content_length().unwrap_or(0);
+                    let mut file = match std::fs::File::create(dest) {
+                        Ok(file) => file,
+                        Err(error) => {
+                            last = format!("{mirror}: 创建文件失败: {error}");
+                            continue;
+                        }
+                    };
+                    let mut written = 0u64;
+                    let mut failed = false;
+                    loop {
+                        match response.chunk().await {
+                            Ok(Some(chunk)) => {
+                                if let Err(error) = file.write_all(&chunk) {
+                                    last = format!("{mirror}: 写文件失败: {error}");
+                                    failed = true;
+                                    break;
+                                }
+                                written += chunk.len() as u64;
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                last = format!("{mirror}: 传输中断: {error}");
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    let _ = file.flush();
+                    if !failed && (expected == 0 || written == expected) {
+                        return Ok(());
+                    }
+                    if !failed {
+                        last = format!("{mirror}: 长度不完整 {written}/{expected}");
+                    }
                 }
+                Ok(response) => last = format!("{mirror}: HTTP {}", response.status()),
+                Err(error) => last = format!("{mirror}: {error}"),
             }
         }
-    });
-
-    let _ = ctx;
-    // 在临时目录里跑 lipd：PeEditor 只会改 staging 里的 exe，真实实例的
-    // Minecraft.Windows.exe 一个字节都不会动。装完只把 LL 运行时文件拷回来。
-    let staging = install_dir.join(".ll-staging");
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)?;
-    let real_exe = install_dir.join("Minecraft.Windows.exe");
-    std::fs::copy(&real_exe, staging.join("Minecraft.Windows.exe"))?;
-
-    let outcome = lip_install::install_resolved(
-        &exe,
-        loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF,
-        loader,
-        &staging,
-        Some(&sink),
-    )
-    .await;
-    if outcome.success {
-        let copied = copy_levilamina_payload(&staging, install_dir);
-        let _ = std::fs::remove_dir_all(&staging);
-        copied?;
-        log::info!(
-            "[game-download] 实例加载器安装完成 {} -> {}（真实 exe 未被 PeEditor 修改）",
-            outcome.package,
-            install_dir.display()
-        );
-        return Ok(());
     }
-    let _ = std::fs::remove_dir_all(&staging);
-    let code = outcome.error_code.unwrap_or_default();
     Err(KernelError::Module(format!(
-        "加载器 LeviLamina {loader} 安装失败（{code}）：{}",
-        outcome.stderr
+        "下载 LeviLamina 依赖失败（{last}）"
     )))
 }
 
-/// 把 staging 里的 LeviLamina 运行时文件拷回真实实例；不碰 exe。
-fn copy_levilamina_payload(staging: &Path, target: &Path) -> Result<(), KernelError> {
-    for name in ["PreLoader.dll", "bedrock_runtime_data"] {
-        let src = staging.join(name);
-        if !src.exists() {
+fn read_zip_entry(path: &Path, name: &str) -> Result<Vec<u8>, KernelError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| KernelError::Config(format!("打开 zip 失败: {e}")))?;
+    let mut entry = archive
+        .by_name(name)
+        .map_err(|e| KernelError::Config(format!("zip 缺少 {name}: {e}")))?;
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn extract_levilamina(zip_path: &Path, dest: &Path) -> Result<(), KernelError> {
+    std::fs::create_dir_all(dest)?;
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| KernelError::Config(format!("打开 LeviLamina zip 失败: {e}")))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| KernelError::Config(format!("读取 zip 条目失败: {e}")))?;
+        let Some(name) = entry.enclosed_name() else { continue };
+        let name = name.to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("LeviLamina/") else {
             continue;
-        }
-        let dst = target.join(name);
-        if src.is_dir() {
-            copy_tree(&src, &dst)?;
+        };
+        let rest = rest.to_string();
+        let out = dest.join(&rest);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out)?;
         } else {
-            std::fs::copy(&src, &dst)?;
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            std::fs::write(&out, bytes)?;
         }
-    }
-    let mods = staging.join("mods").join("LeviLamina");
-    if mods.is_dir() {
-        copy_tree(&mods, &target.join("mods").join("LeviLamina"))?;
     }
     Ok(())
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> Result<(), KernelError> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_tree(&from, &to)?;
+fn extract_named_file(zip_path: &Path, suffix: &str, dest: &Path) -> Result<(), KernelError> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| KernelError::Config(format!("打开 {suffix} zip 失败: {e}")))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| KernelError::Config(format!("读取 zip 条目失败: {e}")))?;
+        if entry.is_dir() || !entry.name().ends_with(suffix) {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(dest, bytes)?;
+        return Ok(());
+    }
+    Err(KernelError::Config(format!("zip 中找不到 {suffix}")))
+}
+
+fn extract_bedrock_runtime(zip_path: &Path, dest: &Path) -> Result<(), KernelError> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| KernelError::Config(format!("打开 bedrock-runtime-data zip 失败: {e}")))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| KernelError::Config(format!("读取 zip 条目失败: {e}")))?;
+        let Some(name) = entry.enclosed_name() else { continue };
+        let text = name.to_string_lossy().replace('\\', "/");
+        let Some(pos) = text.find("bedrock_runtime_data") else { continue };
+        let relative = text[pos..].to_string();
+        let out = dest.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out)?;
         } else {
-            std::fs::copy(&from, &to)?;
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            std::fs::write(&out, bytes)?;
         }
     }
     Ok(())
