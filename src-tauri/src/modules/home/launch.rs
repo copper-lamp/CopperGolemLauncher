@@ -369,20 +369,18 @@ pub fn launch_game(
         }
     }
 
-    // 1) 落位 + 导入表注入：hook DLL 写进实例目录，并把它的名字写进 exe 的
-    //    导入表，让加载器在**导入解析之后**加载它。远程注入会输掉这个时序：
-    //    它的 DllMain 在导入解析之前跑，补丁随后被加载器覆盖。
-    let outcome = super::inject::prepare_launch(&dir, &exe, meta.enable_console)?;
-    if outcome.dll_written || outcome.import_added || outcome.already_imported {
-        log::info!(
-            "[home/launch] 版本 `{name}` 注入就绪（dll={} 本次写入导入={} 已存在={}）",
-            outcome.dll_written,
-            outcome.import_added,
-            outcome.already_imported
-        );
+    // 1) 远程注入准备：恢复原版 exe（若有干净备份），只落 hook DLL，不改 exe。
+    //
+    //    改 exe 导入表会让 Authenticode 失效；Windows 会把这种“签名被改”的
+    //    exe 当不可信程序，降成 Low 或直接拦掉，Xbox 的本机 RPC 随之卡死。
+    //    这里保留原版签名，进程正常完整性启动，hook 由 CreateProcess 挂起后
+    //    LoadLibraryW 注入，仍在游戏主线程运行前完成目录重定向。
+    let (dll_written, restored) = super::inject::prepare_remote(&dir, &exe)?;
+    if restored {
+        log::info!("[home/launch] 版本 `{name}` 已从备份恢复原版 exe");
     }
-    if let Some(reason) = outcome.fallback_reason.as_deref() {
-        log::warn!("[home/launch] 导入表注入不可用，退回远程注入：{reason}");
+    if dll_written {
+        log::info!("[home/launch] 版本 `{name}` 已写入 hook DLL（不改 exe）");
     }
     let dll = super::inject::hook_dll_path(&dir);
 
@@ -392,33 +390,15 @@ pub fn launch_game(
     let mut env = parse_env_vars(&meta.env_vars);
     env.extend(hook_env(&dir, &meta));
 
-    // 3) 拉起：优先按**松散包身份**启动（与 LeviLauncher 一致）。
+    // 3) 挂起启动 → 远程 LoadLibraryW → 恢复主线程。
     //
-    //    注册是幂等的：包已经指向本目录时只回读校验。激活由 AppModel 完成，
-    //    游戏进程因此拿到包身份，Xbox 登录走系统账户；exe 的导入表补丁保证
-    //    hook DLL 仍然由加载器加载，不需要也不允许再走远程注入。
-    //
-    //    注册/激活失败不阻断启动：退回普通 CreateProcess，用户至少还能进游戏，
-    //    失败原因写进日志与启动结果。
-    let inject = outcome.fallback_reason.is_some();
+    //    包身份/协议激活由 AppModel 托管，拿不到进程句柄，也就无法远程注入；
+    //    这里统一走自己的 CreateProcess，exe 保持原版。
     let console = meta.enable_console;
-    // 控制台模式必须由我们直接拉起：协议/包激活由 AppModel 托管，
-    // 拿不到子进程控制台，也不会把 stdout/stderr 交回来。
-    let pid = if console {
-        log::info!("[home/launch] 版本 `{name}` 以控制台模式直接启动");
-        spawn_game(&exe, &dir, &args, &env, &dll, inject, true)?
-    } else {
-        match activate_registered(&dir) {
-            Ok(pid) => {
-                log::info!("[home/launch] 版本 `{name}` 已按松散包身份启动，pid={pid}");
-                pid
-            }
-            Err(error) => {
-                log::warn!("[home/launch] 版本 `{name}` 包身份启动不可用，退回直接启动: {error}");
-                spawn_game(&exe, &dir, &args, &env, &dll, inject, false)?
-            }
-        }
-    };
+    log::info!(
+        "[home/launch] 版本 `{name}` 以远程注入启动（console={console}）"
+    );
+    let pid = spawn_game(&exe, &dir, &args, &env, &dll, true, console)?;
 
     monitor_after_launch(ctx, name, dir, pid);
     Ok(LaunchOutcome::Spawned)

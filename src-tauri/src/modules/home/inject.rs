@@ -502,6 +502,36 @@ pub fn delete_backup(exe: &Path) -> Result<(), KernelError> {
     Ok(())
 }
 
+/// 远程注入准备：恢复原版 exe（若有干净备份），只落 hook DLL，**不改 exe**。
+///
+/// 返回 `(dll_written, restored)`。exe 保持原签名/原哈希，进程不会被
+/// SmartScreen 按“被篡改的签名文件”降成 Low；hook 由启动器挂起进程后
+/// `LoadLibraryW` 注入。
+#[cfg(windows)]
+pub fn prepare_remote(
+    version_dir: &Path,
+    exe: &Path,
+) -> Result<(bool, bool), KernelError> {
+    let restored = if backup_path(exe).is_file() {
+        restore_original(exe)?;
+        true
+    } else {
+        false
+    };
+    let dll_written = ensure_hook_dll(version_dir)?;
+    Ok((dll_written, restored))
+}
+
+/// 非 Windows 平台没有远程注入。
+#[cfg(not(windows))]
+pub fn prepare_remote(
+    version_dir: &Path,
+    _exe: &Path,
+) -> Result<(bool, bool), KernelError> {
+    let dll_written = ensure_hook_dll(version_dir)?;
+    Ok((dll_written, false))
+}
+
 /// 按版本设置应用/撤销控制台子系统（独立入口，供设置页即时生效）。
 #[cfg(windows)]
 pub fn apply_console(exe: &Path, console: bool) -> Result<(), KernelError> {

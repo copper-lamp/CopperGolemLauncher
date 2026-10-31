@@ -41,8 +41,8 @@ impl Diagnosis {
             })
             .unwrap_or_else(|| "<未登录>".to_string());
         let profile = match (&self.profile_xuid, &self.profile) {
-            (Some(xuid), Some(state)) => format!(
-                "xuid={xuid} minecraft_id={} title_id={}",
+            (Some(dir), Some(state)) => format!(
+                "dir={dir} minecraft_id={} title_id={}",
                 state.minecraft_id, state.title_account_id
             ),
             _ => "<无登录态>".to_string(),
@@ -61,17 +61,17 @@ pub fn diagnose(
     active_gamertag: Option<&str>,
 ) -> Diagnosis {
     let profile = login_state::find_signed_in_user(data_dir);
-    let profile_xuid = profile.as_ref().map(|(xuid, _)| xuid.clone());
-    let mismatch = match (active_xuid, profile_xuid.as_deref()) {
-        (Some(active), Some(profile)) => !active.eq_ignore_ascii_case(profile),
-        _ => false,
-    };
+    let profile_dir = profile.as_ref().map(|(dir, _)| dir.clone());
+    // 注意：`Users/<dir>` 是**本地用户目录名**，不是 Xbox XUID。
+    // 之前的实现拿它和 XUID 比，导致每个已登录 profile 都被误判为
+    // MISMATCH：1.26.60 的目录是 7016…，真实 XUID 是 2535…。
+    // 这里只做诊断/记录，不再用目录名判定账户归属。
     Diagnosis {
         active_gamertag: active_gamertag.map(str::to_string),
         active_xuid: active_xuid.map(str::to_string),
-        profile_xuid,
+        profile_xuid: profile_dir,
         profile: profile.map(|(_, state)| state),
-        mismatch,
+        mismatch: false,
     }
 }
 
@@ -136,16 +136,17 @@ mod tests {
     }
 
     #[test]
-    fn detects_mismatched_account() {
+    fn profile_directory_is_not_xuid() {
         let data = temp_dir("mismatch");
         write_profile(&data, "7016486954432746142");
         let diagnosis = diagnose(&data, Some("2535442394448107"), Some("magicgbs0z"));
-        assert!(diagnosis.mismatch);
+        // 目录名与 XUID 不同是正常的，不能再判成 MISMATCH。
+        assert!(!diagnosis.mismatch);
         assert_eq!(
             diagnosis.profile_xuid.as_deref(),
             Some("7016486954432746142")
         );
-        assert!(diagnosis.describe().contains("MISMATCH"));
+        assert!(diagnosis.describe().contains("dir=7016486954432746142"));
     }
 
     #[test]
