@@ -63,13 +63,24 @@ pub fn inherit_if_needed(
     meta: &VersionMeta,
     versions_root: &Path,
 ) -> Result<Option<InheritReport>, KernelError> {
+    inherit_from(version_dir, meta, versions_root, &official_candidates(meta))
+}
+
+/// 继承主流程。`official_roots` 由调用方给出，便于测试注入「没有官方来源」的
+/// 场景——否则测试会读到本机真实的 `%APPDATA%\Minecraft Bedrock`，行为随机器而变。
+fn inherit_from(
+    version_dir: &Path,
+    meta: &VersionMeta,
+    versions_root: &Path,
+    official_roots: &[PathBuf],
+) -> Result<Option<InheritReport>, KernelError> {
     let target = isolate::data_dir(version_dir, meta);
     if already_signed_in(&target) {
         return Ok(None);
     }
 
     // 1) 一手来源：官方 Store 安装的数据目录。
-    for source in official_candidates(meta) {
+    for source in official_roots {
         if !source.is_dir() || !already_signed_in(&source) {
             continue;
         }
@@ -348,7 +359,7 @@ mod tests {
         std::fs::write(source_data.join("2552228806.ent"), b"license").unwrap();
         let target_data = isolate::data_dir(&target_dir, &VersionMeta::default());
 
-        let report = inherit_if_needed(&target_dir, &VersionMeta::default(), &versions)
+        let report = inherit_from(&target_dir, &VersionMeta::default(), &versions, &[])
             .unwrap()
             .expect("应当有一个可用的来源");
         assert!(report.files <= 1);
