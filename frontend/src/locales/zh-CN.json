@@ -146,7 +146,16 @@
       "browse": "选择文件夹",
       "reset": "恢复默认",
       "resolved": "当前解析为：{path}",
-      "overridden": "当前进程由环境变量 COPPER_VERSIONS_DIR 覆盖，上面的设置不会生效。"
+      "overridden": "当前进程由环境变量 COPPER_VERSIONS_DIR 覆盖，上面的设置不会生效。",
+      "packages": "安装包",
+      "installer_retention": "自动删除安装包",
+      "installer_retention_hint": "安装完成后保留安装包的时间。检测到本地已有安装包时会直接复用，不重复下载；选择“永不”则一直保留。",
+      "retention_after_install": "安装完成后",
+      "retention_1d": "1 天",
+      "retention_3d": "3 天",
+      "retention_7d": "7 天",
+      "retention_30d": "30 天",
+      "retention_never": "永不"
     },
     "launch": {
       "default_version": "默认启动版本",
@@ -350,11 +359,13 @@
     "history_clear_body": "将删除全部已完成、失败与已取消的记录。正在下载、正在安装与已暂停（可继续）的任务不受影响；已下载的文件会保留在磁盘上，可用条目的快捷方式按钮打开所在文件夹。",
     "history_clear_confirm": "清除记录",
     "history_cleared": "下载记录已清除",
+    "actions_view_content": "查看内容",
     "actions_view": "查看详情",
     "actions_install": "安装此版本",
     "actions_install_hint": "整包已在本地，直接重跑安装（不重新下载）",
     "reveal_missing": "该条目没有可打开的文件路径",
     "stage": {
+      "install_reusing": "正在复用本地安装包",
       "install_authorizing": "正在获取商店授权",
       "install_preparing": "正在准备安装目录",
       "install_verifying": "正在校验安装包完整性",
@@ -371,6 +382,7 @@
     "detail_size": "大小",
     "detail_retry_count": "已重试次数",
     "detail_error": "错误信息",
+    "detail_progress_done": "已完成",
     "detail_progress": "进度",
     "status": {
       "queued": "排队中",

@@ -110,6 +110,14 @@ pub fn game_download_retry_version(kernel: State<'_, KernelContext>, id: String)
         .map_err(into_command_error)
 }
 
+/// 手动触发启动恢复（续传/续装）。启动时不再自动执行，避免 GB 级校验阻塞启动。
+#[tauri::command]
+pub fn game_download_resume_pending(kernel: State<'_, KernelContext>) -> CommandResult<()> {
+    let ctx = Ctx::from_kernel(&kernel);
+    installer::resume_pending(&ctx, &installer::install_lock());
+    Ok(())
+}
+
 /// 取消一次实例安装（该版本再无待装实例时连整包下载一起放弃）。
 #[tauri::command]
 pub fn game_download_cancel(kernel: State<'_, KernelContext>, instance: String) -> CommandResult<()> {

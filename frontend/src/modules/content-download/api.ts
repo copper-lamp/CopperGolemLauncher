@@ -15,7 +15,11 @@ export interface ContentDownloadRecord {
   dest: string | null;
   taskId: number | null;
   error: string | null;
+  /** 记录创建时间（Unix 秒）。历史区按它倒序。 */
+  createdAt: number;
   updatedAt: number;
+  /** 下载文件实际大小（字节）；未知时为 0。 */
+  sizeBytes: number;
   /** 阶段化进度（0~1）。仅安装类条目（lip）存在。 */
   progress?: number | null;
   /** 阶段文案的 i18n 键（`download.stage.*`）。 */

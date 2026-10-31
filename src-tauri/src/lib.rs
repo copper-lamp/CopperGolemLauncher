@@ -498,6 +498,7 @@ pub fn run() {
             commands::game_download::game_download_install,
             commands::game_download::game_download_retry,
             commands::game_download::game_download_retry_version,
+            commands::game_download::game_download_resume_pending,
             commands::game_download::game_download_cancel,
             commands::game_download::game_download_task_bindings,
             commands::game_download::game_download_import_apk,

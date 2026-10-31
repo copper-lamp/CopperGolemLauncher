@@ -179,12 +179,16 @@ fn collect_dir_items(
     }
 }
 
-/// 压缩包扩展名（MCBE 资源可打包为 zip / mcpack / mcaddon）。
+/// 压缩包扩展名（MCBE 资源可打包为 zip / mcpack / mcaddon / addon）。
+///
+/// `.addon` 是非官方但已被部分项目采用的别名，与 `.mcaddon` 同为 zip 容器；
+/// 这里一并识别，避免下载落位成功后在「已加入资源」里看不到。
 fn is_archive(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.ends_with(".zip")
         || lower.ends_with(".mcpack")
         || lower.ends_with(".mcaddon")
+        || lower.ends_with(".addon")
         || lower.ends_with(".mctemplate")
 }
 

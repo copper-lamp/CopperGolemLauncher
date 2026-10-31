@@ -26,6 +26,10 @@ export interface DownloadTask {
   status: DownloadStatus;
   error: string | null;
   retry_count: number;
+  /** 任务创建时间（Unix 毫秒）。历史区按它倒序。 */
+  created_at_ms: number;
+  /** 内容下载记录的唯一 id（`cf:` / `lip:` / `lla:`）。仅内容记录合成条目有。 */
+  content_id?: string | null;
   /** 阶段化进度（0~1）。非空时进度条忽略字节进度（安装 / 解包等）。 */
   phase_progress: number | null;
   /** 当前阶段文案的 i18n 键（`download.stage.*`）。 */

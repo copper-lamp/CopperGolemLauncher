@@ -40,11 +40,11 @@ const WORLDS_DIR: &str = "minecraftWorlds";
 const SHARED_GAME_DIR: &str = "games/com.mojang";
 const MANIFEST_FILE: &str = "manifest.json";
 
-/// 归档的单个内层根目录名（`.mcaddon` 约定）。
-const ADDON_BEHAVIOR_DIR: &str = "pack";
-const ADDON_RESOURCE_DIR: &str = "resourcepacks";
 /// 解包中间目录名（置于 `com.mojang` 下，与目标同卷；点开头使游戏扫描时忽略）。
 const EXTRACT_DIR: &str = ".copper-extract";
+/// addon 内层扫描的最大深度：真实包普遍是「顶层目录 / manifest」，少数会多套一层；
+/// 再深就可能是包内资源目录，继续递归既慢又可能把子包误当独立包。
+const ADDON_SCAN_DEPTH: usize = 4;
 
 // ---------------------------------------------------------------- 分类
 
@@ -57,7 +57,9 @@ const EXTRACT_DIR: &str = ".copper-extract";
 pub enum ExtKind {
     /// 行为 / 材质包（`.mcpack`）：解包后按 manifest 判行为还是材质。
     Pack,
-    /// 插件包（`.mcaddon`）：可能同时含行为层与材质层。
+    /// 插件包（`.mcaddon` / `.addon`）：可同时含多个行为层 / 材质层，
+    /// 且并无固定的 `pack/` + `resourcepacks/` 目录约定（真实 CurseForge
+    /// 归档普遍是任意命名的顶层目录），安装期按 manifest 逐个判定。
     Addon,
     /// 模板（`.mctemplate`）。
     Template,
@@ -84,7 +86,9 @@ fn classify_extension(filename: &str) -> Option<ExtKind> {
     let ext = Path::new(&lower).extension().and_then(|e| e.to_str())?;
     Some(match ext {
         "mcpack" => ExtKind::Pack,
-        "mcaddon" => ExtKind::Addon,
+        // 官方扩展名是 `.mcaddon`；部分项目 / 手动改名会用 `.addon`，
+        // 二者容器结构完全一致（zip），必须走同一条多包落位逻辑。
+        "mcaddon" | "addon" => ExtKind::Addon,
         "mctemplate" => ExtKind::Template,
         "mcworld" => ExtKind::World,
         "levipack" | "so" => ExtKind::Llp,
@@ -407,51 +411,78 @@ fn dispatch(
             };
             place_one(&root, &target)
         }
-        ExtKind::Addon => place_addon(&extracted, roots, dir_name_hint),
+        ExtKind::Addon => place_addon(&extracted, content_type, roots, dir_name_hint),
         ExtKind::Llp => Err(KernelError::InvalidArgument(
             "安卓模组归档不由本路径安装".into(),
         )),
     }
 }
 
-/// `.mcaddon`：可能同时含行为层与材质层，分别落位。
+/// addon 落位：按 manifest 扫描归档内**所有**包，分别落到行为 / 材质目录。
 ///
-/// 官方语义下一个 addon 就是「一个行为包 + 一个材质包」，只落其中一半会让用户
-/// 在游戏里看到能进世界却没材质（或反之）的半吊子状态。
+/// 真实 CurseForge addon 并不遵守早期假设的 `pack/` + `resourcepacks/` 布局：
+/// 顶层目录名通常是作者自拟的（`Xxx [BP]` / `Xxx RS` / `Xxx Addon`），
+/// 一个 addon 还可能含 2 个行为包（主体 + 额外内容）。因此这里改为：
+/// 1. 从解包根递归找 `manifest.json`，命中即视为一个包并停止向下（避免把包内
+///    子目录误当独立包）；
+/// 2. 用 manifest 的 `modules[].type` 判定行为（data / script）还是材质
+///    （resources / shader），缺失时用 CF 类别兜底；
+/// 3. 逐个原子落位，任一失败回滚本次已落位的包——只装一半比不装更糟。
 fn place_addon(
     extracted: &Path,
+    content_type: &str,
     roots: &content::ContentRoots,
     dir_name_hint: &str,
 ) -> Result<PathBuf, KernelError> {
-    let mut placed = Vec::new();
-    let behavior = extracted.join(ADDON_BEHAVIOR_DIR);
-    let resources = extracted.join(ADDON_RESOURCE_DIR);
-
-    if behavior.join(MANIFEST_FILE).is_file() {
-        let dir_name = read_pack_name(&behavior).unwrap_or_else(|| dir_name_hint.to_string());
-        placed.push(place_one(
-            &behavior,
-            &InstallTargetPath {
-                load_dir: roots.com_mojang.join(BEHAVIOR_PACKS),
-                dir_name,
-            },
-        )?);
+    let pack_roots = discover_addon_pack_roots(extracted);
+    if pack_roots.is_empty() {
+        // 布局对不上：宁可不装，也不猜一个目录硬塞。
+        return Err(KernelError::InvalidArgument(
+            "插件包内未找到 manifest.json，无法确定安装位置".into(),
+        ));
     }
-    // 行为层落位失败即中止：此时还没有任何东西落位，无需回滚。
-    if resources.join(MANIFEST_FILE).is_file() {
-        let dir_name = read_pack_name(&resources).unwrap_or_else(|| dir_name_hint.to_string());
-        match place_one(
-            &resources,
-            &InstallTargetPath {
-                load_dir: roots.com_mojang.join(RESOURCE_PACKS),
-                dir_name,
-            },
-        ) {
+
+    // 先确定「包根 → 目标加载目录」的完整列表，再统一落位：中途失败时才能
+    // 准确回滚已经落下的那部分。
+    let fallback = fallback_module_type(content_type);
+    // 行为包优先落位：`.mcaddon` 的主语义通常是行为层，记录里展示的主落点
+    // 也应该是它。资源包随后落位，两类各自保持扫描顺序。
+    let mut behavior_targets: Vec<(PathBuf, InstallTargetPath)> = Vec::new();
+    let mut resource_targets: Vec<(PathBuf, InstallTargetPath)> = Vec::new();
+    let mut used: std::collections::HashSet<(PathBuf, String)> = std::collections::HashSet::new();
+    for root in pack_roots {
+        let (has_behavior, has_resources) = match manifest_module_kinds(&root) {
+            Some((behavior, resources)) => (behavior, resources),
+            // manifest 里没有任何已知 module：退回 CF 类别，至少装到一侧。
+            None => (fallback == ModuleType::Data, fallback == ModuleType::Resources),
+        };
+        if !has_behavior && !has_resources {
+            // manifest 可读但没有已知 module（自定义类型）：仍按 CF 类别兜底，
+            // 避免整包被静默跳过。
+            if fallback == ModuleType::Data {
+                push_addon_target(&root, &roots.com_mojang.join(BEHAVIOR_PACKS), dir_name_hint, &mut used, &mut behavior_targets);
+            } else {
+                push_addon_target(&root, &roots.com_mojang.join(RESOURCE_PACKS), dir_name_hint, &mut used, &mut resource_targets);
+            }
+            continue;
+        }
+        if has_behavior {
+            push_addon_target(&root, &roots.com_mojang.join(BEHAVIOR_PACKS), dir_name_hint, &mut used, &mut behavior_targets);
+        }
+        if has_resources {
+            push_addon_target(&root, &roots.com_mojang.join(RESOURCE_PACKS), dir_name_hint, &mut used, &mut resource_targets);
+        }
+    }
+    behavior_targets.extend(resource_targets);
+    let targets = behavior_targets;
+
+    let mut placed: Vec<PathBuf> = Vec::new();
+    for (source, target) in targets {
+        match place_one(&source, &target) {
             Ok(path) => placed.push(path),
-            // 材质层失败 → 撤掉刚落的行为层。只装一半比不装更糟：
-            // 用户在游戏里会看到能进世界却没有材质（或反之）的半吊子状态，
-            // 还会以为是自己哪里操作错了。
             Err(e) => {
+                // 回滚本次已落位的包。place_one 成功后旧内容已删，
+                // 这里只能撤掉新内容；但至少不会留下「一半新一半旧」。
                 for path in placed.iter() {
                     let _ = std::fs::remove_dir_all(path);
                 }
@@ -460,12 +491,84 @@ fn place_addon(
         }
     }
     if placed.is_empty() {
-        // addon 布局对不上：宁可不装，也不猜一个目录硬塞。
         return Err(KernelError::InvalidArgument(
-            "插件包内未找到 pack/ 或 resourcepacks/ 目录，无法确定安装位置".into(),
+            "插件包内未找到可安装的行为包或材质包".into(),
         ));
     }
+    // 行为包优先作为主落点（`.mcaddon` 的主语义通常是行为层）。
     Ok(placed[0].clone())
+}
+
+/// 追加一个 addon 包落点；同名目标自动加序号，避免同一 addon 内的两个包互相覆盖。
+fn push_addon_target(
+    source: &Path,
+    load_dir: &Path,
+    dir_name_hint: &str,
+    used: &mut std::collections::HashSet<(PathBuf, String)>,
+    out: &mut Vec<(PathBuf, InstallTargetPath)>,
+) {
+    let base = read_pack_name(source)
+        .or_else(|| {
+            source
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .and_then(|name| sanitize_dir_name(&name))
+        })
+        .unwrap_or_else(|| dir_name_hint.to_string());
+    let mut dir_name = base.clone();
+    let mut sequence = 2;
+    while !used.insert((load_dir.to_path_buf(), dir_name.clone())) {
+        dir_name = format!("{base} ({sequence})");
+        sequence += 1;
+    }
+    out.push((
+        source.to_path_buf(),
+        InstallTargetPath {
+            load_dir: load_dir.to_path_buf(),
+            dir_name,
+        },
+    ));
+}
+
+/// 在解包目录内递归定位所有包根（含 `manifest.json` 的目录）。
+///
+/// 命中后不再向下：一个包的资源目录里也可能出现同名的 `manifest.json` 副本，
+/// 继续扫描会把同一个包当成多个。目录顺序排序后返回，保证多包同名时的序号稳定。
+fn discover_addon_pack_roots(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > ADDON_SCAN_DEPTH {
+            return;
+        }
+        if dir.join(MANIFEST_FILE).is_file() {
+            out.push(dir.to_path_buf());
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_dir() {
+                    return None;
+                }
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if name.starts_with('.') || name == "__macosx" {
+                    return None;
+                }
+                Some(path)
+            })
+            .collect();
+        dirs.sort();
+        for child in dirs {
+            walk(&child, depth + 1, out);
+        }
+    }
+
+    let mut roots = Vec::new();
+    walk(root, 0, &mut roots);
+    roots
 }
 
 /// 把 `src` 目录内容原子搬到 `target`。
@@ -645,43 +748,69 @@ fn resolve_pack_root(extracted: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 读 `manifest.json` 的 `pack_name`（MCBE 显示名）。
+/// 读 `manifest.json` 的显示名。
+///
+/// MCBE 官方字段是 `header.name`；早期实现只读 `pack_name`，导致真实包
+/// 永远拿不到名字、退化成归档文件名，一个 addon 内的多个包会互相覆盖。
 fn read_pack_name(root: &Path) -> Option<String> {
     let raw = std::fs::read(root.join(MANIFEST_FILE)).ok()?;
     let manifest: Value = serde_json::from_slice(&raw).ok()?;
-    let name = manifest.get("pack_name")?.as_str()?.trim();
+    let name = manifest
+        .get("header")
+        .and_then(|header| header.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| manifest.get("pack_name").and_then(Value::as_str))?
+        .trim();
     sanitize_dir_name(name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModuleType {
-    /// 材质 / 光影（`resources`）。
+    /// 材质 / 光影（`resources` / `shader`）。
     Resources,
-    /// 行为（`data`）。
+    /// 行为（`data` / `script`）。
     Data,
 }
 
-/// 判定行为包还是材质包。
+/// manifest 声明的包类型；返回「是否含行为 / 是否含材质」。
 ///
-/// manifest 的 `modules[].type` 是权威（`data` = 行为，`resources` = 材质）；
-/// 缺失时用 CF 类别兜底（`behavior_pack` → 行为，其余 → 材质）。这是唯一
-/// 允许 `content_type` 参与判定的地方。
-fn manifest_module_type(root: &Path, content_type: &str) -> Option<ModuleType> {
+/// 一个 manifest 可能同时声明两类 module（例如行为包带脚本），addon 也可能
+/// 含多个 manifest。这里只回答「这个包应该落到哪一侧」，不强行二选一。
+fn manifest_module_kinds(root: &Path) -> Option<(bool, bool)> {
     let raw = std::fs::read(root.join(MANIFEST_FILE)).ok()?;
     let manifest: Value = serde_json::from_slice(&raw).ok()?;
     let modules = manifest.get("modules")?.as_array()?;
-    let declared = modules
-        .iter()
-        .filter_map(|m| m.get("type").and_then(Value::as_str))
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>();
-    if declared.iter().any(|t| t == "data") {
-        return Some(ModuleType::Data);
+    let mut behavior = false;
+    let mut resources = false;
+    for module in modules {
+        match module
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("data" | "script" | "javascript") => behavior = true,
+            Some("resources" | "shader") => resources = true,
+            _ => {}
+        }
     }
-    if declared.iter().any(|t| t == "resources" || t == "shader") {
-        return Some(ModuleType::Resources);
+    Some((behavior, resources))
+}
+
+/// 判定行为包还是材质包（单落点场景：`.mcpack` / `.zip`）。
+///
+/// manifest 的 `modules[].type` 是权威；缺失时用 CF 类别兜底
+/// （`behavior_pack` → 行为，其余 → 材质）。这是唯一允许 `content_type`
+/// 参与判定的地方。
+fn manifest_module_type(root: &Path, content_type: &str) -> Option<ModuleType> {
+    match manifest_module_kinds(root) {
+        Some((true, _)) => Some(ModuleType::Data),
+        Some((_, true)) => Some(ModuleType::Resources),
+        // manifest 可读但没有已知 module：按 CF 类别兜底。
+        Some((false, false)) => Some(fallback_module_type(content_type)),
+        // manifest 不可读 / 结构异常：交给调用方决定（`.mcpack` 会报错）。
+        None => None,
     }
-    Some(fallback_module_type(content_type))
 }
 
 /// CF 类别兜底。
@@ -757,6 +886,8 @@ mod tests {
         assert_eq!(classify_extension("A.mcpack"), Some(ExtKind::Pack));
         assert_eq!(classify_extension("a.MCPACK"), Some(ExtKind::Pack));
         assert_eq!(classify_extension("a.mcaddon"), Some(ExtKind::Addon));
+        assert_eq!(classify_extension("a.addon"), Some(ExtKind::Addon));
+        assert_eq!(classify_extension("a.ADDON"), Some(ExtKind::Addon));
         assert_eq!(classify_extension("a.mctemplate"), Some(ExtKind::Template));
         assert_eq!(classify_extension("a.mcworld"), Some(ExtKind::World));
         assert_eq!(classify_extension("a.zip"), Some(ExtKind::Zip));
@@ -895,6 +1026,144 @@ mod tests {
             .filter(|n| n.starts_with('.'))
             .collect();
         assert!(leftovers.is_empty(), "残留临时目录: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+    /// 真实 addon 没有 `pack/` + `resourcepacks/` 布局：顶层目录名作者自拟，
+    /// 且可能含多个行为包。这里用三个包验证「按 manifest 全量落位 + 不互相覆盖」。
+    #[test]
+    fn addon_scans_all_manifest_roots_and_classifies_by_modules() {
+        let base = std::env::temp_dir().join("copper-addon-scan-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let extracted = base.join("extracted");
+        let behavior = extracted.join("Xxx [BP]");
+        let extra = extracted.join("Xxx Extra");
+        let resources = extracted.join("Xxx RS");
+        std::fs::create_dir_all(&behavior).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(
+            behavior.join(MANIFEST_FILE),
+            r#"{"header":{"name":"Xxx Behavior"},"modules":[{"type":"data"},{"type":"script"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            extra.join(MANIFEST_FILE),
+            r#"{"header":{"name":"Xxx Extra"},"modules":[{"type":"data"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            resources.join(MANIFEST_FILE),
+            r#"{"header":{"name":"Xxx Resources"},"modules":[{"type":"resources"}]}"#,
+        )
+        .unwrap();
+
+        let com_mojang = base.join("com.mojang");
+        std::fs::create_dir_all(&com_mojang).unwrap();
+        let roots = content::ContentRoots {
+            com_mojang: com_mojang.clone(),
+            users_root: base.join("Users"),
+            worlds: None,
+        };
+        let landed = place_addon(&extracted, TYPE_BEHAVIOR_PACK, &roots, "fallback").unwrap();
+
+        // 主落点必须是行为包之一（扫描按目录名排序，不保证具体是哪一个）。
+        assert!(landed.starts_with(com_mojang.join(BEHAVIOR_PACKS)));
+        assert!(com_mojang
+            .join(BEHAVIOR_PACKS)
+            .join("Xxx Extra")
+            .join(MANIFEST_FILE)
+            .is_file());
+        assert!(com_mojang
+            .join(RESOURCE_PACKS)
+            .join("Xxx Resources")
+            .join(MANIFEST_FILE)
+            .is_file());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 顶层 manifest（`.addon` 直接是一个包）也要能识别。
+    #[test]
+    fn addon_root_pack_uses_header_name() {
+        let base = std::env::temp_dir().join("copper-addon-root-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let extracted = base.join("extracted");
+        let roots = content::ContentRoots {
+            com_mojang: base.join("com.mojang"),
+            users_root: base.join("Users"),
+            worlds: None,
+        };
+        std::fs::create_dir_all(&roots.com_mojang).unwrap();
+        std::fs::create_dir_all(&extracted).unwrap();
+        std::fs::write(
+            extracted.join(MANIFEST_FILE),
+            r#"{"header":{"name":"Root Pack"},"modules":[{"type":"resources"}]}"#,
+        )
+        .unwrap();
+        let landed = place_addon(&extracted, TYPE_BEHAVIOR_PACK, &roots, "fallback").unwrap();
+        assert_eq!(landed, roots.com_mojang.join(RESOURCE_PACKS).join("Root Pack"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 同一个 addon 内两个包同名时自动加序号，不能互相覆盖。
+    #[test]
+    fn addon_duplicate_names_get_stable_suffix() {
+        let base = std::env::temp_dir().join("copper-addon-dup-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let extracted = base.join("extracted");
+        for dir in ["a", "b"] {
+            let pack = extracted.join(dir);
+            std::fs::create_dir_all(&pack).unwrap();
+            std::fs::write(
+                pack.join(MANIFEST_FILE),
+                r#"{"header":{"name":"Same"},"modules":[{"type":"data"}]}"#,
+            )
+            .unwrap();
+        }
+        let roots = content::ContentRoots {
+            com_mojang: base.join("com.mojang"),
+            users_root: base.join("Users"),
+            worlds: None,
+        };
+        place_addon(&extracted, TYPE_BEHAVIOR_PACK, &roots, "fallback").unwrap();
+        let load = roots.com_mojang.join(BEHAVIOR_PACKS);
+        assert!(load.join("Same").is_dir());
+        assert!(load.join("Same (2)").is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 端到端：真实 addon 结构（任意命名多包）经 `install_staged` 解包、落位，
+    /// 并删除暂存归档。
+    #[test]
+    fn install_staged_addon_places_all_packs_and_removes_archive() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join("copper-addon-e2e-test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("sample.addon");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options: zip::write::FileOptions<'_, ()> =
+                zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for (name, manifest) in [
+                ("Pack [BP]/manifest.json", r#"{"header":{"name":"Sample BP"},"modules":[{"type":"data"}]}"#),
+                ("Pack [RP]/manifest.json", r#"{"header":{"name":"Sample RP"},"modules":[{"type":"resources"}]}"#),
+            ] {
+                zip.start_file(name, options).unwrap();
+                zip.write_all(manifest.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        let roots = content::ContentRoots {
+            com_mojang: base.join("com.mojang"),
+            users_root: base.join("Users"),
+            worlds: None,
+        };
+        std::fs::create_dir_all(&roots.com_mojang).unwrap();
+        let landed = install_staged(&archive, ExtKind::Addon, "", &roots, "fallback").unwrap();
+        assert_eq!(landed, roots.com_mojang.join(BEHAVIOR_PACKS).join("Sample BP"));
+        assert!(roots.com_mojang.join(RESOURCE_PACKS).join("Sample RP").join(MANIFEST_FILE).is_file());
+        assert!(!archive.exists(), "落位成功后暂存归档必须删除");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

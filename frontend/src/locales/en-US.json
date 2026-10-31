@@ -146,7 +146,16 @@
       "browse": "Browse",
       "reset": "Reset",
       "resolved": "Resolved to: {path}",
-      "overridden": "This process overrides the directory via the COPPER_VERSIONS_DIR environment variable; the setting above has no effect."
+      "overridden": "This process overrides the directory via the COPPER_VERSIONS_DIR environment variable; the setting above has no effect.",
+      "packages": "Installers",
+      "installer_retention": "Delete installers after",
+      "installer_retention_hint": "How long to keep the downloaded installer. An existing local installer is reused instead of downloaded again; choose Never to keep it forever.",
+      "retention_after_install": "Immediately after install",
+      "retention_1d": "1 day",
+      "retention_3d": "3 days",
+      "retention_7d": "7 days",
+      "retention_30d": "30 days",
+      "retention_never": "Never"
     },
     "launch": {
       "default_version": "Default version",
@@ -350,11 +359,13 @@
     "history_clear_body": "Completed, failed and cancelled records will be deleted. Downloads in progress, installs and paused (resumable) tasks are not affected. Files already downloaded stay on disk; use an entry's shortcut button to open its folder.",
     "history_clear_confirm": "Clear records",
     "history_cleared": "Download records cleared",
+    "actions_view_content": "View content",
     "actions_view": "View details",
     "actions_install": "Install this version",
     "actions_install_hint": "The full package is already local; re-run the install without downloading again",
     "reveal_missing": "This entry has no file path to open",
     "stage": {
+      "install_reusing": "Reusing local installer",
       "install_authorizing": "Requesting Store authorization",
       "install_preparing": "Preparing the install directory",
       "install_verifying": "Verifying package integrity",
@@ -371,6 +382,7 @@
     "detail_size": "Size",
     "detail_retry_count": "Retries",
     "detail_error": "Error",
+    "detail_progress_done": "Completed",
     "detail_progress": "Progress",
     "status": {
       "queued": "Queued",

@@ -139,7 +139,7 @@ impl DownloadService {
         self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, url, dest, filename, status, total_bytes, downloaded_bytes,
-                        error, retry_count
+                        error, retry_count, created_at
                  FROM core_download_task ORDER BY created_at ASC, id ASC",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -155,6 +155,7 @@ impl DownloadService {
                     speed_bytes_per_sec: 0,
                     error: row.get(7)?,
                     retry_count: row.get::<_, i64>(8)?.max(0) as u32,
+                    created_at_ms: row.get::<_, i64>(9)?.max(0) as u64,
                     // 阶段化进度只存在于运行中的内存任务：它描述的是「此刻正在
                     // 解包到第几个文件」，重启后没有任何在跑的阶段，写死的数字
                     // 只会变成一条假的进度条。
@@ -448,6 +449,8 @@ pub struct DownloadTaskView {
     pub status: DownloadStatus,
     pub error: Option<String>,
     pub retry_count: u32,
+    /// 任务创建时间（Unix 毫秒）。历史区按它倒序，暂停 / 重试不会改变位置。
+    pub created_at_ms: u64,
     /// 阶段化进度（0.0~1.0）。`Some` 时前端进度条忽略字节进度。
     pub phase_progress: Option<f64>,
     /// 当前阶段文案的 i18n 键（`download.stage.*`）。
@@ -618,6 +621,7 @@ impl From<TaskSnapshot> for DownloadTaskView {
             status: s.status,
             error: s.error,
             retry_count: s.retry_count,
+            created_at_ms: s.created_at_ms,
             phase_progress: s.phase_progress,
             stage: s.stage,
             stage_detail: s.stage_detail,

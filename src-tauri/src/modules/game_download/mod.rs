@@ -138,8 +138,11 @@ impl Module for GameDownloadModule {
             Err(e) => log::warn!("[game-download] 版本根目录不可用: {e}"),
         }
 
-        // 续装 / 续传未完成任务。
-        installer::resume_pending(&ctx, &self.install_lock);
+        // 续装/续传不再随启动自动执行：GB 级包的校验与续传会阻塞启动，
+        // 改为用户在下载中心手动点「重试/安装」触发。
+        log::info!("[game-download] 自动续装已关闭，等待用户手动触发");
+        // 只做过期整包清理：纯目录 mtime 扫描，不做哈希，开销可忽略。
+        installer::cleanup_expired_packages(&ctx);
         Ok(())
     }
 

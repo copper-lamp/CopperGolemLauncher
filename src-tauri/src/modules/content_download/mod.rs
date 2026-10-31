@@ -53,7 +53,11 @@ pub struct ContentDownloadRecord {
     pub dest: Option<String>,
     pub task_id: Option<u64>,
     pub error: Option<String>,
+    /// 记录创建时间（Unix 秒）。历史区按它倒序，安装 / 进度更新不会把条目顶到最前。
+    pub created_at: i64,
     pub updated_at: i64,
+    /// 下载文件大小（字节，CF 接口的 `fileLength`）。下载完成后详情页展示实际大小。
+    pub size_bytes: u64,
     /// 阶段化进度（0~1）。`Some` 时前端进度条忽略字节进度（lip 安装等）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<f64>,
@@ -269,6 +273,10 @@ impl ContentDownloadModule {
 
         let task_id = kernel.download().enqueue(&file.download_url, &dest, opts)?;
         record_download(kernel, &item, &file, &dest.to_string_lossy(), &placement, task_id)?;
+        // 小文件可能在「投递 → 落库」之间就完成，done 事件早于记录存在，
+        // 订阅端找不到记录就丢弃了。落库后主动对一次快照，把错过的终态补上，
+        // 否则暂存归档永远不会被解包 / 清理，记录还会停在 downloading。
+        reconcile_after_enqueue(kernel, task_id);
         Ok(task_id)
     }
 
@@ -503,10 +511,24 @@ async fn enqueue_ll_android(
         &file.version,
         &target,
         staging.to_string_lossy().as_ref(),
+        file.size,
         file.game_versions.clone(),
         task_id,
     )?;
+    reconcile_after_enqueue(kernel, task_id);
     Ok(task_id)
+}
+
+/// 落库后补查一次任务快照，接住 enqueue 与记录插入之间错过的终态事件。
+fn reconcile_after_enqueue(kernel: &KernelContext, task_id: u64) {
+    let Some(snapshot) = kernel.download().task(task_id) else {
+        return;
+    };
+    if !snapshot.status.is_finished() {
+        return;
+    }
+    let payload = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
+    apply_download_status(kernel.db(), kernel.events(), &payload);
 }
 
 /// 安卓模组暂存路径：`cache/content/lla/<modId>-<version>.levipack`。
@@ -735,6 +757,21 @@ crate::services::database::Migration {
     // 一句「已完成」。
     sql: "ALTER TABLE module_content_download_record ADD COLUMN placement TEXT;",
 },
+crate::services::database::Migration {
+    version: 6,
+    name: "content_download_record_size",
+    // 下载详情要显示「实际大小」。旧实现从内核任务快照推导，任务被清掉后
+    // 就只剩 0；因此在投递时就按 CF 接口的 fileLength 落一份。
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;",
+},
+crate::services::database::Migration {
+    version: 7,
+    name: "content_download_record_created_at",
+    // updated_at 会在安装完成时被改写，历史区按它排序会让「刚装完的旧下载」
+    // 跳到最前。增加独立的创建时间，并对历史行回填。
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
+          UPDATE module_content_download_record SET created_at = updated_at WHERE created_at = 0;",
+},
 ];
 
 /// 安卓模组记录的附加信息（`target` 列内容；下载完成钩子据此解包落位）。
@@ -765,8 +802,8 @@ pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, Ker
     kernel.db().with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, source, content_type, name, version, state, dest, task_id, error, updated_at,
-                    progress, stage
-             FROM module_content_download_record ORDER BY updated_at DESC",
+                    progress, stage, created_at, size_bytes
+             FROM module_content_download_record ORDER BY created_at DESC, updated_at DESC",
             // `target` 是内部列（安卓模组待落位信息），不对外暴露。
         )?;
         let rows = stmt.query_map([], |row| {
@@ -783,6 +820,8 @@ pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, Ker
                 updated_at: row.get(9)?,
                 progress: row.get(10)?,
                 stage: row.get(11)?,
+                created_at: row.get(12)?,
+                size_bytes: row.get::<_, i64>(13)?.max(0) as u64,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -818,21 +857,79 @@ pub fn clear_records(kernel: &KernelContext) -> Result<u64, KernelError> {
 /// 不归一的话这条记录会永远显示「安装中」，既不会结束也无法重试。
 pub fn normalize_interrupted_records(kernel: &KernelContext) {
     let result = kernel.db().with_conn(|conn| {
-        let n = conn.execute(
+        let installing = conn.execute(
             "UPDATE module_content_download_record
                 SET state = 'failed', error = '上次运行时中断，可重新安装', updated_at = ?1
               WHERE state = 'installing'",
             rusqlite::params![chrono_now()],
         )?;
-        Ok(n)
+        let downloading = conn.execute(
+            "UPDATE module_content_download_record
+                SET state = 'failed', error = '上次运行时中断，请重新下载', updated_at = ?1
+              WHERE state = 'downloading'",
+            rusqlite::params![chrono_now()],
+        )?;
+        Ok(installing + downloading)
     });
     match result {
         Ok(n) if n > 0 => {
-            log::info!("[content-download] 归一 {n} 条被中断的安装记录为失败");
+            log::info!("[content-download] 归一 {n} 条被中断的内容下载记录为失败");
         }
         Ok(_) => {}
-        Err(e) => log::warn!("[content-download] 归一中断安装记录失败: {e}"),
+        Err(e) => log::warn!("[content-download] 归一中断内容记录失败: {e}"),
     }
+}
+
+/// 清理内容下载缓存与指向缓存的陈旧记录。
+///
+/// 背景：成功路径会在解包落位后删除暂存归档，但历史版本 / 竞态可能留下
+/// `cache/content/**` 的归档与 `.part`。这些文件没有任何入口可再次使用
+/// （内容记录的「重试」实际是重新下载），长期累积只会占盘。启动时统一清掉，
+/// 同时把「记录说已安装、真实落点却还在缓存」的假记录改成失败，避免详情页
+/// 把缓存路径当成保存位置展示。
+pub fn cleanup_content_cache(kernel: &KernelContext) -> u64 {
+    let cache = kernel.paths().cache_dir().join("content");
+    let cache_text = cache.to_string_lossy().into_owned();
+    let prefix = format!("{}{}%", cache_text, std::path::MAIN_SEPARATOR);
+    let _ = kernel.db().with_conn(|conn| {
+        // 记录声称已安装，但 dest 仍在缓存里：实际没有落位成功。
+        conn.execute(
+            "UPDATE module_content_download_record
+                SET state = 'failed', error = '上次下载未完成安装，请重新下载',
+                    dest = NULL, updated_at = ?1
+              WHERE state = 'installed' AND dest LIKE ?2",
+            rusqlite::params![chrono_now(), prefix],
+        )?;
+        // 其余指向缓存的终态记录：文件马上会被清掉，保存位置不应继续展示它。
+        conn.execute(
+            "UPDATE module_content_download_record SET dest = NULL
+              WHERE dest LIKE ?1 AND state != 'installed'",
+            rusqlite::params![prefix],
+        )?;
+        Ok(())
+    });
+    let removed = remove_cache_files(&cache);
+    if removed > 0 {
+        log::info!("[content-download] 已清理 {removed} 个内容下载缓存文件");
+    }
+    removed
+}
+
+/// 递归删除目录下的普通文件（保留目录结构），返回删除数量。
+fn remove_cache_files(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            removed += remove_cache_files(&path);
+        } else if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// 记录一次安卓模组投递（`target` 列存 JSON 化的 `PendingInstall::Llp`）。
@@ -845,6 +942,7 @@ fn record_ll_android_download(
     release_version: &str,
     target: &ll_android::InstallTarget,
     archive: &str,
+    size_bytes: u64,
     game_versions: Vec<String>,
     task_id: u64,
 ) -> Result<(), KernelError> {
@@ -864,8 +962,8 @@ fn record_ll_android_download(
         conn.execute(
             "INSERT OR REPLACE INTO module_content_download_record
               (id, source, content_type, name, version, state, dest, task_id, target, placement,
-               updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, 'install', ?9)",
+               size_bytes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, 'install', ?9, ?10, ?10)",
             rusqlite::params![
                 item.id,
                 item.source,
@@ -875,6 +973,7 @@ fn record_ll_android_download(
                 archive,
                 task_id,
                 target,
+                size_bytes,
                 now
             ],
         )?;
@@ -908,9 +1007,9 @@ fn record_lip_install(
     kernel.db().with_conn(|conn| {
         conn.execute(
             "INSERT OR REPLACE INTO module_content_download_record
-             (id, source, content_type, name, version, state, dest, task_id, error, updated_at,
-              progress, stage)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, ?7, 0.0, ?8)",
+             (id, source, content_type, name, version, state, dest, task_id, error, size_bytes,
+              created_at, updated_at, progress, stage)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, 0, ?7, ?7, 0.0, ?8)",
             rusqlite::params![
                 item.id,
                 item.source,
@@ -1070,13 +1169,23 @@ fn record_download(
         // 纯下载无落位动作；LL 模组由 `enqueue_ll_android` 自行记录。
         PlacementKind::DownloadOnly { .. } | PlacementKind::LlpMod { .. } => None,
     };
-    record_download_inner(kernel, item, &file.version, dest, placement, pending, task_id)
+    record_download_inner(
+        kernel,
+        item,
+        &file.version,
+        file.size,
+        dest,
+        placement,
+        pending,
+        task_id,
+    )
 }
 
 fn record_download_inner(
     kernel: &KernelContext,
     item: &ContentItem,
     version: &str,
+    size_bytes: u64,
     dest: &str,
     placement: &Placement,
     pending: Option<String>,
@@ -1087,8 +1196,8 @@ fn record_download_inner(
         conn.execute(
             "INSERT OR REPLACE INTO module_content_download_record
               (id, source, content_type, name, version, state, dest, task_id, target, placement,
-               updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9, ?10)",
+               size_bytes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
             rusqlite::params![
                 item.id,
                 item.source,
@@ -1099,6 +1208,7 @@ fn record_download_inner(
                 task_id,
                 pending,
                 placement.install_kind,
+                size_bytes,
                 now
             ],
         )?;
@@ -1131,6 +1241,28 @@ fn apply_download_status(
     let Some(task_id) = payload.get("id").and_then(Value::as_u64) else {
         return;
     };
+    // 任务 id 会被内核复用（删除历史后 MAX(id) 回落）。记录里只存 id 不足以
+    // 证明「这条事件就是我的任务」：必须再核对落点，否则一条游戏下载的 done
+    // 事件会把早已结束的内容记录误更新成 installed。
+    let Some(task_dest) = payload.get("dest").and_then(Value::as_str) else {
+        return;
+    };
+    if !task_belongs_to_record(db, task_id, task_dest) {
+        return;
+    }
+    // CF 的 fileLength 可能为 0；下载引擎拿到 Content-Length 后补给记录。
+    if let Some(total) = payload.get("total_bytes").and_then(Value::as_u64) {
+        if total > 0 {
+            let _ = db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE module_content_download_record SET size_bytes = ?1
+                      WHERE task_id = ?2 AND size_bytes = 0",
+                    rusqlite::params![total, task_id],
+                )?;
+                Ok(())
+            });
+        }
+    }
     match payload.get("status").and_then(Value::as_str) {
         Some("done") => {
             // 下载完成 ≠ 安装完成：需要解包落位的内容都要在落位后才置 installed。
@@ -1145,6 +1277,16 @@ fn apply_download_status(
                 }
                 None => {}
             }
+            // 没有待落位信息却仍是 install 投递、且暂存归档还在：说明落位钩子
+            // 没跑到（典型是 enqueue 与落库竞态）。此时把它标成 installed 会让
+            // 用户以为装好了，实际文件还躺在缓存里。明确失败并清缓存。
+            let placement = record_placement(db, task_id);
+            if placement.as_deref() == Some("install") && std::path::Path::new(task_dest).is_file() {
+                let _ = std::fs::remove_file(task_dest);
+                remove_part_file(task_dest);
+                mark_record_state(db, task_id, "failed", Some("下载已完成，但安装信息缺失，请重新下载"));
+                return;
+            }
             mark_record_state(db, task_id, "installed", None);
         }
         Some("failed" | "cancelled") => {
@@ -1153,12 +1295,60 @@ fn apply_download_status(
                 .and_then(Value::as_str)
                 .unwrap_or("下载失败")
                 .to_string();
-            // 失败也要清掉待落位信息，否则残留会在下次同id 事件里被误当作待装。
+            // 失败也要清掉待落位信息，否则残留会在下次同 id 事件里被误当作待装。
             let _ = take_pending_install(db, task_id);
+            // 内容下载没有「继续」入口（记录行只提供重新下载 / 移除），
+            // 终态后继续留 .part 与暂存归档只会变成无主缓存。
+            remove_part_file(task_dest);
+            if record_placement(db, task_id).as_deref() == Some("install") {
+                let _ = std::fs::remove_file(task_dest);
+            }
             mark_record_state(db, task_id, "failed", Some(&msg));
         }
         _ => {}
     }
+}
+
+/// 事件里的任务落点是否与记录一致（防任务 id 复用串行）。
+fn task_belongs_to_record(db: &DatabaseService, task_id: u64, dest: &str) -> bool {
+    db.with_conn(|conn| -> Result<bool, KernelError> {
+        let found: Option<Option<String>> = conn
+            .query_row(
+                "SELECT dest FROM module_content_download_record WHERE task_id = ?1 LIMIT 1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(match found {
+            Some(Some(record_dest)) => record_dest == dest,
+            // 没存落点的旧记录只能按 id 认。
+            Some(None) => true,
+            None => false,
+        })
+    })
+    .unwrap_or(false)
+}
+
+/// 记录的落点类别（`install` / `download_only`）。
+fn record_placement(db: &DatabaseService, task_id: u64) -> Option<String> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT placement FROM module_content_download_record WHERE task_id = ?1 LIMIT 1",
+                [task_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten())
+    })
+    .ok()
+    .flatten()
+}
+
+fn remove_part_file(dest: &str) {
+    let mut part = std::ffi::OsString::from(dest);
+    part.push(".part");
+    let _ = std::fs::remove_file(std::path::PathBuf::from(part));
 }
 
 /// 待落位信息（`target` 列内容；下载完成钩子据此解包落位）。
@@ -1285,6 +1475,10 @@ fn install_staged_content(
         Err(e) => {
             let message = e.payload().to_string();
             log::error!("[content-download] 内容安装失败（{}）：{message}", pending.item_id);
+            // 安装失败没有可用的重试入口（内容记录的「重试」会重新下载），
+            // 保留暂存归档只会变成无主缓存；这里与安卓链路一致，失败即清。
+            let _ = std::fs::remove_file(&archive);
+            remove_part_file(&pending.archive);
             mark_record_state_by_id(db, &pending.item_id, "failed", Some(&message));
             events.publish(
                 "content-download.location",
@@ -1469,6 +1663,7 @@ impl Module for ContentDownloadModule {
         // 上次运行遗留的 `installing` 记录落为失败：lip 安装是同步命令，进程
         // 被杀时 lipd 一并退出，不存在还在跑的安装，不归一就会永远显示「安装中」。
         normalize_interrupted_records(kernel);
+        cleanup_content_cache(kernel);
         // 订阅下载状态事件：完成后把本地记录状态同步为 installed / failed，并广播落点。
         let db = kernel.db().clone();
         let events = kernel.events().clone();

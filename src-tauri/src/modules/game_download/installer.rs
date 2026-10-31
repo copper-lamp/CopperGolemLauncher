@@ -27,6 +27,7 @@ use md5::{Digest as _Md5Digest, Md5};
 use serde_json::Value;
 
 use crate::error::KernelError;
+use crate::modules::content_download::lip_install;
 use crate::modules::content_download::lipd;
 use crate::modules::content_download::loader_catalog;
 use crate::modules::home::meta;
@@ -1009,8 +1010,11 @@ pub async fn enqueue(
                 return Ok(task_id);
             }
         }
-        // 整包已在本地且校验通过 → 不重新下载，直接进入安装。
-        if pkg.dest.is_file() && md5_matches(&pkg.dest, &pkg.md5).unwrap_or(false) {
+        // 整包已在本地且记录为 ready → 直接进入安装，**不在命令线程里重算 MD5**。
+        // 安装批次会带进度重新校验；这里再哈希一次 GB 级文件会让“点安装”
+        // 看起来永久卡住（这正是已下载包点安装卡死的根因）。
+        let trusted_ready = pkg.state == "ready" && pkg.dest.is_file();
+        if trusted_ready || (pkg.dest.is_file() && md5_matches(&pkg.dest, &pkg.md5).unwrap_or(false)) {
             set_package_state(ctx, &slug, "ready", None)?;
             log::info!(
                 "[game-download] 实例 {instance} 复用本地整包 {}",
@@ -1281,7 +1285,12 @@ pub fn retry_instance(
     let pkg = get_package(ctx, &rec.version_id)?.ok_or_else(|| {
         KernelError::InvalidArgument(format!("版本 `{}` 没有下载记录，无法安装", rec.version_id))
     })?;
-    require_intact_local_package(&pkg)?;
+    if !pkg.dest.is_file() {
+        return Err(KernelError::InvalidArgument(format!(
+            "本地没有版本 `{}` 的完整安装包，请重新下载",
+            rec.version_id
+        )));
+    }
     set_instance_state(ctx, instance, "queued", None)?;
     spawn_batch(ctx, lock, &rec.version_id, pkg.task_id);
     Ok(())
@@ -1291,6 +1300,9 @@ pub fn retry_instance(
 ///
 /// 失败即删包：损坏的整包会让「重试安装」每次都停在同一处，而用户看不出原因。
 /// 删除是唯一能让下一次重试真正重下的动作。
+///
+/// 重试入口不再调用它：哈希推迟到安装批次里带进度执行，避免命令线程卡死。
+#[allow(dead_code)]
 fn require_intact_local_package(pkg: &PackageRecord) -> Result<(), KernelError> {
     if !pkg.dest.is_file() {
         return Err(KernelError::InvalidArgument(format!(
@@ -1714,9 +1726,17 @@ pub async fn run_batch(
 
     match &first_error {
         None => {
-            // 整批成功：整包已消费完毕，清掉文件与记录，不留占用磁盘的残留。
-            cleanup_package(&pkg.dest);
-            let _ = delete_package(ctx, &version_id);
+            // 整批成功：默认保留整包供重装/复用；只有配置为“安装完成后删除”
+            // 才立即清理。1/3/7/30 天与“永不”由启动时的过期清理负责。
+            let retention = ctx
+                .settings
+                .get_or::<String>("game.installer_retention", "never".to_string());
+            if retention == "after_install" {
+                cleanup_package(&pkg.dest);
+                let _ = delete_package(ctx, &version_id);
+            } else {
+                let _ = set_package_state(ctx, &version_id, "ready", None);
+            }
             progress.finish(None);
         }
         Some(message) => {
@@ -1954,243 +1974,63 @@ async fn install_instance(
     Ok(())
 }
 
-/// 直接从 GitHub Release 安装 LeviLamina 客户端运行时。
+/// 把 LeviLamina 装进实例目录（经 lipd；依赖解析与下载都由它完成）。
 ///
-/// 不再经过 lipd，也不执行 PeEditor：
-/// - 下载 LeviLamina client zip，读取包内 `tooth.json` 的依赖版本；
-/// - 下载 PreLoader / bedrock-runtime-data 对应版本；
-/// - 只落 `PreLoader.dll`、`bedrock_runtime_data`、`mods/LeviLamina/`；
-/// - 完全不碰 `Minecraft.Windows.exe`。
+/// 这里直接调用内容下载模块的**内核无关核心**（[`lip_install::install_resolved`]）：
+/// 游戏下载流水线跑在内核事件里，手里只有一组 Arc 服务，既拿不到也用不上整个
+/// `KernelContext`。加载器目录与安装实现都归内容下载模块，本模块只负责「什么时候装、
+/// 装到哪个目录、进度怎么报」。
 async fn install_loader(
     ctx: &Ctx,
     install_dir: &Path,
     loader: &str,
     progress: &mut InstallProgress,
 ) -> Result<(), KernelError> {
-    let _ = progress;
-    let cache = install_dir.join(".ll-cache");
-    let _ = std::fs::remove_dir_all(&cache);
-    std::fs::create_dir_all(&cache)?;
-
-    let ll_url = format!(
-        "https://github.com/LiteLDev/LeviLamina/releases/download/v{loader}/levilamina-v{loader}-client-release-windows-x64.zip"
-    );
-    let ll_zip = cache.join("levilamina.zip");
-    download_release(&ctx.store_http, &ll_url, &ll_zip)
-        .await
-        .map_err(|error| {
-            log::warn!("[game-download] 下载 LeviLamina 包失败: {error}");
-            error
-        })?;
-
-    let tooth = read_zip_entry(&ll_zip, "tooth.json")?;
-    let tooth: Value = serde_json::from_slice(&tooth)
-        .map_err(|e| KernelError::Config(format!("LeviLamina tooth.json 解析失败: {e}")))?;
-    let deps = tooth["variants"]
-        .as_array()
-        .and_then(|items| items.iter().find(|v| v["label"] == "client"))
-        .and_then(|v| v.get("dependencies"))
-        .ok_or_else(|| KernelError::Config("LeviLamina tooth.json 缺少 client 依赖".into()))?;
-    let preloader = deps["github.com/LiteLDev/PreLoader"]
-        .as_str()
-        .ok_or_else(|| KernelError::Config("tooth.json 缺少 PreLoader 版本".into()))?;
-    let runtime = deps["github.com/LiteLDev/bedrock-runtime-data"]
-        .as_str()
-        .ok_or_else(|| KernelError::Config("tooth.json 缺少 bedrock-runtime-data 版本".into()))?;
-
-    let pre_url = format!(
-        "https://github.com/LiteLDev/PreLoader/releases/download/v{preloader}/preloader-v{preloader}-windows-x64.zip"
-    );
-    let pre_zip = cache.join("preloader.zip");
-    download_release(&ctx.store_http, &pre_url, &pre_zip)
-        .await
-        .map_err(|error| {
-            log::warn!("[game-download] 下载 PreLoader 失败: {error}");
-            error
-        })?;
-
-    let rt_url = format!(
-        "https://github.com/LiteLDev/bedrock-runtime-data/releases/download/v{runtime}/bedrock-runtime-data-v{runtime}-windows-x64.zip"
-    );
-    let rt_zip = cache.join("bedrock-runtime-data.zip");
-    download_release(&ctx.store_http, &rt_url, &rt_zip)
-        .await
-        .map_err(|error| {
-            log::warn!("[game-download] 下载 bedrock-runtime-data 失败: {error}");
-            error
-        })?;
-
-    let payload = (|| -> Result<(), KernelError> {
-        extract_levilamina(&ll_zip, &install_dir.join("mods").join("LeviLamina"))?;
-        extract_named_file(&pre_zip, "PreLoader.dll", &install_dir.join("PreLoader.dll"))?;
-        extract_bedrock_runtime(&rt_zip, install_dir)?;
-        Ok(())
-    })();
-    if let Err(error) = &payload {
-        log::warn!("[game-download] 直接安装 LeviLamina 失败: {error}");
-        let _ = std::fs::remove_dir_all(&cache);
-        return payload;
-    }
-
-    let _ = std::fs::remove_dir_all(&cache);
-    log::info!(
-        "[game-download] 已直接安装 LeviLamina {loader}（PreLoader {preloader} / runtime {runtime}），exe 未修改"
-    );
-    Ok(())
-}
-
-/// 下载 release 资产：直连失败时走 gh-proxy，最多 3 轮。
-async fn download_release(
-    client: &reqwest::Client,
-    url: &str,
-    dest: &Path,
-) -> Result<(), KernelError> {
-    use std::io::Write as _;
-    let mirrors = [
-        url.to_string(),
-        format!("https://gh-proxy.com/{url}"),
-    ];
-    let mut last = String::new();
-    for _ in 0..3 {
-        for mirror in &mirrors {
-            let _ = std::fs::remove_file(dest);
-            match client.get(mirror).send().await {
-                Ok(mut response) if response.status().is_success() => {
-                    let expected = response.content_length().unwrap_or(0);
-                    let mut file = match std::fs::File::create(dest) {
-                        Ok(file) => file,
-                        Err(error) => {
-                            last = format!("{mirror}: 创建文件失败: {error}");
-                            continue;
-                        }
-                    };
-                    let mut written = 0u64;
-                    let mut failed = false;
-                    loop {
-                        match response.chunk().await {
-                            Ok(Some(chunk)) => {
-                                if let Err(error) = file.write_all(&chunk) {
-                                    last = format!("{mirror}: 写文件失败: {error}");
-                                    failed = true;
-                                    break;
-                                }
-                                written += chunk.len() as u64;
-                            }
-                            Ok(None) => break,
-                            Err(error) => {
-                                last = format!("{mirror}: 传输中断: {error}");
-                                failed = true;
-                                break;
-                            }
-                        }
-                    }
-                    let _ = file.flush();
-                    if !failed && (expected == 0 || written == expected) {
-                        return Ok(());
-                    }
-                    if !failed {
-                        last = format!("{mirror}: 长度不完整 {written}/{expected}");
-                    }
+    let Some(exe) = lipd::find_lip_executable() else {
+        return Err(KernelError::Config(
+            "未检测到 lipd，无法安装加载器（需要先安装 lip 与 .NET 10 运行时）".into(),
+        ));
+    };
+    let handle = progress.loader_handle();
+    let sink: lipd::CallbackSink = Arc::new(move |callback: lipd::DaemonCallback| {
+        let Some(handle) = handle.as_ref() else { return };
+        match callback {
+            lipd::DaemonCallback::Progress { item, percent } => {
+                // lipd 的百分比是 0~100；缺省（协议里就没有该字段）时给阶段中点，
+                // 而不是起点——报起点会让进度条看起来停死在这 28% 上。
+                handle.report(percent.map(|p| p / 100.0), Some(item));
+            }
+            lipd::DaemonCallback::Log(text) => {
+                // 步骤文本比百分比更细，但也更吵：这里只留诊断日志。
+                if !text.trim().is_empty() {
+                    log::debug!("[game-download] lipd: {text}");
                 }
-                Ok(response) => last = format!("{mirror}: HTTP {}", response.status()),
-                Err(error) => last = format!("{mirror}: {error}"),
             }
         }
-    }
-    Err(KernelError::Module(format!(
-        "下载 LeviLamina 依赖失败（{last}）"
-    )))
-}
+    });
 
-fn read_zip_entry(path: &Path, name: &str) -> Result<Vec<u8>, KernelError> {
-    let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| KernelError::Config(format!("打开 zip 失败: {e}")))?;
-    let mut entry = archive
-        .by_name(name)
-        .map_err(|e| KernelError::Config(format!("zip 缺少 {name}: {e}")))?;
-    let mut bytes = Vec::new();
-    entry.read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-fn extract_levilamina(zip_path: &Path, dest: &Path) -> Result<(), KernelError> {
-    std::fs::create_dir_all(dest)?;
-    let file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| KernelError::Config(format!("打开 LeviLamina zip 失败: {e}")))?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| KernelError::Config(format!("读取 zip 条目失败: {e}")))?;
-        let Some(name) = entry.enclosed_name() else { continue };
-        let name = name.to_string_lossy().into_owned();
-        let Some(rest) = name.strip_prefix("LeviLamina/") else {
-            continue;
-        };
-        let rest = rest.to_string();
-        let out = dest.join(&rest);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out)?;
-        } else {
-            if let Some(parent) = out.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes)?;
-            std::fs::write(&out, bytes)?;
-        }
-    }
-    Ok(())
-}
-
-fn extract_named_file(zip_path: &Path, suffix: &str, dest: &Path) -> Result<(), KernelError> {
-    let file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| KernelError::Config(format!("打开 {suffix} zip 失败: {e}")))?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| KernelError::Config(format!("读取 zip 条目失败: {e}")))?;
-        if entry.is_dir() || !entry.name().ends_with(suffix) {
-            continue;
-        }
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes)?;
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(dest, bytes)?;
+    let _ = ctx;
+    let outcome = lip_install::install_resolved(
+        &exe,
+        loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF,
+        loader,
+        install_dir,
+        Some(&sink),
+    )
+    .await;
+    if outcome.success {
+        log::info!(
+            "[game-download] 实例加载器安装完成 {} -> {}",
+            outcome.package,
+            install_dir.display()
+        );
         return Ok(());
     }
-    Err(KernelError::Config(format!("zip 中找不到 {suffix}")))
-}
-
-fn extract_bedrock_runtime(zip_path: &Path, dest: &Path) -> Result<(), KernelError> {
-    let file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| KernelError::Config(format!("打开 bedrock-runtime-data zip 失败: {e}")))?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| KernelError::Config(format!("读取 zip 条目失败: {e}")))?;
-        let Some(name) = entry.enclosed_name() else { continue };
-        let text = name.to_string_lossy().replace('\\', "/");
-        let Some(pos) = text.find("bedrock_runtime_data") else { continue };
-        let relative = text[pos..].to_string();
-        let out = dest.join(relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out)?;
-        } else {
-            if let Some(parent) = out.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes)?;
-            std::fs::write(&out, bytes)?;
-        }
-    }
-    Ok(())
+    let code = outcome.error_code.unwrap_or_default();
+    Err(KernelError::Module(format!(
+        "加载器 LeviLamina {loader} 安装失败（{code}）：{}",
+        outcome.stderr
+    )))
 }
 
 /// 广播安装失败（供下载中心 / 详情提示）。
@@ -2327,6 +2167,61 @@ fn package_integrity_ok(pkg: &PackageRecord) -> bool {
     }
 }
 
+// ---------------------------------------------------------------- 安装包保留
+
+/// 按 `game.installer_retention` 清理过期整包。
+///
+/// 只做目录 mtime 扫描，不读包、不算哈希；`never` / `after_install` 不在这里处理
+///（后者在安装完成时立即清理）。仍在下载/安装中的包跳过。
+pub fn cleanup_expired_packages(ctx: &Ctx) {
+    let policy = ctx
+        .settings
+        .get_or::<String>("game.installer_retention", "never".to_string());
+    let days: u64 = match policy.as_str() {
+        "1d" => 1,
+        "3d" => 3,
+        "7d" => 7,
+        "30d" => 30,
+        _ => return,
+    };
+    let Ok(entries) = std::fs::read_dir(ctx.download_dir()) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(days * 86_400))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_package = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("msixvc") || ext.eq_ignore_ascii_case("appx"));
+        if !is_package {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if modified >= cutoff {
+            continue;
+        }
+        let Some(version) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if let Ok(Some(pkg)) = get_package(ctx, version) {
+            if pkg.state == "downloading" || pkg.state == "installing" {
+                continue;
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = delete_package(ctx, version);
+        log::info!(
+            "[game-download] 安装包超过保留期（{policy}），已删除 {}",
+            path.display()
+        );
+    }
+}
+
 // ---------------------------------------------------------------- 续传
 
 /// 启动恢复：对未完成的整包续传/续装，清理无主整包。
@@ -2355,6 +2250,18 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
             }
         };
         if pending.is_empty() {
+            // 保留策略生效时，已装完/无待装实例的整包不能在这里删掉；
+            // 否则手动触发一次恢复就会清空用户选择保留的安装包。
+            let policy = ctx
+                .settings
+                .get_or::<String>("game.installer_retention", "never".to_string());
+            if matches!(policy.as_str(), "never" | "1d" | "3d" | "7d" | "30d") {
+                log::info!(
+                    "[game-download] 版本 {} 无待装实例，按保留策略（{policy}）保留整包",
+                    pkg.version_id
+                );
+                continue;
+            }
             log::info!("[game-download] 版本 {} 已无待装实例，清理整包", pkg.version_id);
             cleanup_package(&pkg.dest);
             delete_package(ctx, &pkg.version_id).ok();

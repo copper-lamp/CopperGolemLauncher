@@ -18,6 +18,7 @@
 // 3. **字节进度**：普通下载按已下 / 总量计算，并显示速率。
 
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import {
   X,
   Play,
@@ -31,6 +32,7 @@ import {
   PackageCheck,
   FolderOpen,
   Trash2,
+  ExternalLink,
 } from "@lucide/vue";
 
 import { useDownloads } from "../composables/useDownloads";
@@ -46,6 +48,7 @@ import {
 } from "../api/download";
 import { showToast } from "../composables/useToast";
 import {
+  contentDownloadRecordRemove,
   contentDownloadRecords,
   contentDownloadRecordsClear,
   type ContentDownloadRecord,
@@ -56,6 +59,7 @@ import CoSelect from "../components/ui/CoSelect.vue";
 import CoButton from "../components/ui/CoButton.vue";
 
 const { t } = useI18n();
+const router = useRouter();
 const {
   tasks,
   concurrency,
@@ -86,8 +90,11 @@ const ACTIVE_STATUSES = new Set(["queued", "downloading", "installing"]);
 /** 终态成功：下载与安装都已结束，条目不再需要任何进度反馈。 */
 const COMPLETED_STATUSES = new Set(["done"]);
 
-/** 按 id 倒序（最新在前）。 */
-const sorted = computed(() => [...tasks.value].sort((a, b) => b.id - a.id));
+/** 按创建时间倒序（最新在前）；时间相同再按 id 兜底。 */
+function byTimeDesc(a: DownloadTask, b: DownloadTask): number {
+  return (b.created_at_ms ?? 0) - (a.created_at_ms ?? 0) || b.id - a.id;
+}
+const sorted = computed(() => [...tasks.value].sort(byTimeDesc));
 
 const historyLimit = computed(() => get<number>("download.history_limit", 50));
 
@@ -129,6 +136,8 @@ const contentClaimedTasks = computed(
 
 /** 该条目是否可手动触发安装：整包已落盘、且不处于下载中 / 安装中。 */
 function installableVersion(task: DownloadTask): string | null {
+  // 内容记录没有游戏版本绑定；它的 id 是前端合成值，不能拿去查安装映射。
+  if (task.content_id) return null;
   if (task.status === "installing") return null;
   if (task.status !== "done" && task.status !== "failed") return null;
   return gameBindings.value[task.id] ?? null;
@@ -141,22 +150,27 @@ function installableVersion(task: DownloadTask): string | null {
  * 的瞬时信息，重启后既没有意义也不该被当成历史展示。
  */
 function contentRecordTask(record: ContentDownloadRecord, index: number): DownloadTask {
+  const total = Math.max(0, record.sizeBytes ?? 0);
+  const status =
+    record.state === "installing"
+      ? "installing"
+      : record.state === "installed"
+        ? "done"
+        : "failed";
   return {
     id: Number.MAX_SAFE_INTEGER - index,
     filename: record.name,
     url: `${record.source}:${record.id}`,
     dest: record.dest ?? "",
-    total_bytes: 0,
-    downloaded_bytes: 0,
+    total_bytes: total,
+    // 已完成的记录：下载字节就是实际大小；未完成时保留 0，详情不编造进度。
+    downloaded_bytes: status === "done" ? total : 0,
     speed_bytes_per_sec: 0,
-    status:
-      record.state === "installing"
-        ? "installing"
-        : record.state === "installed"
-          ? "done"
-          : "failed",
+    status,
     error: record.error,
     retry_count: 0,
+    created_at_ms: (record.createdAt || record.updatedAt) * 1000,
+    content_id: record.id,
     phase_progress: record.progress ?? (record.state === "installing" ? 0 : null),
     stage: record.stage ?? null,
     stage_detail: installDetails.value[record.id] ?? null,
@@ -173,7 +187,9 @@ const historyTasks = computed(() => {
   const coreHistory = sorted.value.filter(
     (task) => !ACTIVE_STATUSES.has(task.status) && !contentClaimedTasks.value.has(task.id),
   );
-  return [...coreHistory, ...contentHistory].slice(0, limit);
+  // 两个来源各自有序还不够：内容记录与内核任务混在一起后，必须按创建时间
+  // 全局倒序，否则「今天下载的内容」会排在「上周的游戏包」下面。
+  return [...coreHistory, ...contentHistory].sort(byTimeDesc).slice(0, limit);
 });
 
 const activeTasks = computed(() => [
@@ -288,6 +304,91 @@ async function handleInstall(task: DownloadTask) {
   } catch (e) {
     showToast(String(e), "error");
   }
+}
+
+/** 打开内容详情页（内容记录行的「查看内容」）。 */
+async function viewContent(task: DownloadTask) {
+  if (!task.content_id) return;
+  try {
+    await router.push({ name: "content-detail", params: { id: task.content_id } });
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
+interface RowAction {
+  icon: unknown;
+  title: string;
+  disabled?: boolean;
+  run?: () => void;
+}
+
+/**
+ * 每条记录固定的第一枚按钮（主操作）。
+ *
+ * 四种状态各有一个真实动作：下载中 / 排队中暂停，暂停继续，失败重试，
+ * 已完成安装或查看内容。确实没有动作时（安装中暂不可暂停）保留一个禁用
+ * 图标占位——条目操作区因此始终是同样数量的按钮，不随状态忽多忽少。
+ */
+function primaryAction(task: DownloadTask): RowAction {
+  if (task.status === "installing") {
+    return { icon: LoaderCircle, title: t("download.status.installing"), disabled: true };
+  }
+  if (task.content_id) {
+    return { icon: ExternalLink, title: t("download.actions.view_content"), run: () => void viewContent(task) };
+  }
+  if (task.status === "downloading" || task.status === "queued") {
+    return { icon: Pause, title: t("download.actions.pause"), run: () => void pause(task.id) };
+  }
+  if (task.status === "paused") {
+    return { icon: Play, title: t("download.actions.resume"), run: () => void resume(task.id) };
+  }
+  if (task.status === "failed" || task.status === "cancelled") {
+    return { icon: RotateCw, title: t("download.actions.retry"), run: () => void retry(task.id) };
+  }
+  const versionId = installableVersion(task);
+  if (versionId) {
+    return {
+      icon: PackageCheck,
+      title: t("download.actions_install_hint"),
+      run: () => void handleInstall(task),
+    };
+  }
+  return { icon: CheckCircle2, title: t("download.status.done"), disabled: true };
+}
+
+/** 活跃条目底部按钮是「取消」，历史条目是「移除」。 */
+function removeActionTitle(task: DownloadTask): string {
+  return ACTIVE_STATUSES.has(task.status)
+    ? t("download.actions.cancel")
+    : t("download.actions.remove");
+}
+
+/** 安装中的任务不可取消（流水线不响应中断），按钮置灰而不是假装能点。 */
+function canCancelOrRemove(task: DownloadTask): boolean {
+  return task.status !== "installing";
+}
+
+/** 移除 / 取消：内容记录走模块自己的删除命令，内核任务走下载服务。 */
+async function handleCancelOrRemove(task: DownloadTask) {
+  if (!canCancelOrRemove(task)) return;
+  if (ACTIVE_STATUSES.has(task.status)) {
+    // 内容安装不是内核下载任务，没有可取消的 id。
+    if (task.content_id) return;
+    await cancel(task.id);
+    return;
+  }
+  if (task.content_id) {
+    try {
+      await contentDownloadRecordRemove(task.content_id);
+      await loadRecords();
+      window.dispatchEvent(new Event("content-download-records-updated"));
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+    return;
+  }
+  await handleRemove(task.id);
 }
 
 /**
@@ -457,11 +558,24 @@ onBeforeUnmount(() => {
                     :style="{ width: `${progressOf(task)}%` }"
                   />
                 </div>
-                <span v-if="metaText(task)" class="downloads__item-meta">{{ metaText(task) }}</span>
+                <span
+                  v-if="metaText(task)"
+                  class="downloads__item-meta"
+                  :title="metaText(task) ?? undefined"
+                  >{{ metaText(task) }}</span
+                >
               </div>
             </div>
           </div>
           <div class="downloads__item-actions">
+            <button
+              class="downloads__action"
+              :title="primaryAction(task).title"
+              :disabled="primaryAction(task).disabled"
+              @click="primaryAction(task).run?.()"
+            >
+              <component :is="primaryAction(task).icon" :size="15" />
+            </button>
             <button
               v-if="!isMobile"
               class="downloads__action"
@@ -471,18 +585,17 @@ onBeforeUnmount(() => {
               <FolderOpen :size="15" />
             </button>
             <button
-              v-if="task.status !== 'installing'"
               class="downloads__action"
-              :title="t('download.actions.pause')"
-              @click="pause(task.id)"
+              :title="t('download.actions_view')"
+              @click="openDetail(task)"
             >
-              <Pause :size="15" />
+              <Info :size="15" />
             </button>
             <button
-              v-if="task.status !== 'installing'"
               class="downloads__action"
-              :title="t('download.actions.cancel')"
-              @click="cancel(task.id)"
+              :title="removeActionTitle(task)"
+              :disabled="!canCancelOrRemove(task)"
+              @click="handleCancelOrRemove(task)"
             >
               <X :size="15" />
             </button>
@@ -537,34 +650,23 @@ onBeforeUnmount(() => {
                     :style="{ width: `${progressOf(task)}%` }"
                   />
                 </div>
-                <span v-if="metaText(task)" class="downloads__item-meta">{{ metaText(task) }}</span>
+                <span
+                  v-if="metaText(task)"
+                  class="downloads__item-meta"
+                  :title="metaText(task) ?? undefined"
+                  >{{ metaText(task) }}</span
+                >
               </div>
             </div>
           </div>
           <div class="downloads__item-actions">
             <button
-              v-if="installableVersion(task)"
               class="downloads__action downloads__action--accent"
-              :title="t('download.actions_install_hint')"
-              @click="handleInstall(task)"
+              :title="primaryAction(task).title"
+              :disabled="primaryAction(task).disabled"
+              @click="primaryAction(task).run?.()"
             >
-              <PackageCheck :size="15" />
-            </button>
-            <button
-              v-if="task.status === 'paused'"
-              class="downloads__action"
-              :title="t('download.actions.resume')"
-              @click="resume(task.id)"
-            >
-              <Play :size="15" />
-            </button>
-            <button
-              v-else-if="task.status === 'failed' || task.status === 'cancelled'"
-              class="downloads__action"
-              :title="t('download.actions.retry')"
-              @click="retry(task.id)"
-            >
-              <RotateCw :size="15" />
+              <component :is="primaryAction(task).icon" :size="15" />
             </button>
             <button
               v-if="!isMobile"
@@ -583,8 +685,9 @@ onBeforeUnmount(() => {
             </button>
             <button
               class="downloads__action"
-              :title="t('download.actions.remove')"
-              @click="handleRemove(task.id)"
+              :title="removeActionTitle(task)"
+              :disabled="!canCancelOrRemove(task)"
+              @click="handleCancelOrRemove(task)"
             >
               <X :size="15" />
             </button>
@@ -626,8 +729,10 @@ onBeforeUnmount(() => {
               <dd>
                 {{
                   detailTask.total_bytes > 0
-                    ? `${formatBytes(detailTask.downloaded_bytes)} / ${formatBytes(detailTask.total_bytes)}`
-                    : t("download.unknown_size")
+                    ? formatBytes(detailTask.total_bytes)
+                    : detailTask.downloaded_bytes > 0
+                      ? formatBytes(detailTask.downloaded_bytes)
+                      : t("download.unknown_size")
                 }}
               </dd>
             </div>
@@ -635,9 +740,11 @@ onBeforeUnmount(() => {
               <dt>{{ t("download.detail_progress") }}</dt>
               <dd>
                 {{
-                  progressOf(detailTask) === null
-                    ? t("download.unknown_size")
-                    : `${progressOf(detailTask)!.toFixed(1)}%`
+                  detailTask.status === "done"
+                    ? t("download.detail_progress_done")
+                    : progressOf(detailTask) === null
+                      ? t("download.unknown_size")
+                      : `${progressOf(detailTask)!.toFixed(1)}%`
                 }}
               </dd>
             </div>
@@ -864,8 +971,12 @@ onBeforeUnmount(() => {
   font-size: var(--copper-font-size-xs);
 }
 
+/* 进度条宽度只由容器决定，不随右侧文案长短伸缩——安装阶段文件名长度
+   变化很大，若用 flex:1 共享剩余空间会让进度条持续抖动。 */
 .downloads__item-progress {
-  flex: 1;
+  flex: 0 0 38%;
+  min-width: 96px;
+  max-width: 280px;
   height: 5px;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface-3);
@@ -880,7 +991,11 @@ onBeforeUnmount(() => {
 }
 
 .downloads__item-meta {
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
 }
@@ -899,9 +1014,14 @@ onBeforeUnmount(() => {
   transition: background-color var(--copper-duration-fast) var(--copper-easing);
 }
 
-.downloads__action:hover {
+.downloads__action:hover:not(:disabled) {
   background: var(--copper-hover);
   color: var(--copper-text);
+}
+
+.downloads__action:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* 安装入口是主动作，与暂停 / 重试等次级操作区分开 */

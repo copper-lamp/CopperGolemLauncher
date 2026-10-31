@@ -12,6 +12,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import SettingSection from "./SettingSection.vue";
 import SettingRow from "./SettingRow.vue";
 import CoButton from "../../components/ui/CoButton.vue";
+import CoSelect from "../../components/ui/CoSelect.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import { useSettings } from "../../composables/useSettings";
 import { useI18n } from "../../i18n";
@@ -27,6 +28,20 @@ const gameDir = computed({
   get: () => get<string>("game.directory", ""),
   set: (value: string) => void set("game.directory", value),
 });
+
+const installerRetention = computed({
+  get: () => get<string>("game.installer_retention", "never"),
+  set: (value: string) => void set("game.installer_retention", value),
+});
+
+const retentionOptions = computed(() => [
+  { value: "after_install", label: t("settings.version.retention_after_install") },
+  { value: "1d", label: t("settings.version.retention_1d") },
+  { value: "3d", label: t("settings.version.retention_3d") },
+  { value: "7d", label: t("settings.version.retention_7d") },
+  { value: "30d", label: t("settings.version.retention_30d") },
+  { value: "never", label: t("settings.version.retention_never") },
+]);
 
 // 设置项与实际生效路径不一致 = 有更高优先级的来源（进程级环境变量覆盖）在起作用。
 // 此时必须说破，否则用户会反复改一个根本不起作用的设置。
@@ -98,6 +113,19 @@ onMounted(refreshVersions);
         <AlertTriangle :size="14" />
         <span>{{ t("settings.version.overridden") }}</span>
       </p>
+    </SettingSection>
+
+    <SettingSection :title-key="'settings.version.packages'">
+      <SettingRow
+        :label-key="'settings.version.installer_retention'"
+        :hint-key="'settings.version.installer_retention_hint'"
+      >
+        <CoSelect
+          :model-value="installerRetention"
+          :options="retentionOptions"
+          @update:model-value="installerRetention = $event"
+        />
+      </SettingRow>
     </SettingSection>
   </div>
 </template>

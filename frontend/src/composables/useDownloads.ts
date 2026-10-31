@@ -2,7 +2,7 @@
 //
 // 供下载悬浮窗与下载页共用；模块投递任务后此处自动出现。
 
-import { readonly, ref } from "vue";
+import { computed, readonly, ref } from "vue";
 
 import {
   downloadTasks,
@@ -20,23 +20,90 @@ import {
 import { onDownload } from "../events";
 import { showToast } from "./useToast";
 
-const tasks = ref<DownloadTask[]>([]);
+const coreTasks = ref<DownloadTask[]>([]);
+/**
+ * 前端合成的“复用本地整包”安装条目。
+ *
+ * 复用整包时后端直接进安装、不创建下载任务，下载引擎不会发 created/progress。
+ * 这里补一条 installing 行，让下载列表仍出现该项目并播放安装动画，只是跳过下载。
+ */
+const installOverlays = ref<DownloadTask[]>([]);
+const installTimers = new Map<number, ReturnType<typeof setInterval>>();
+let overlaySeq = 1;
+
+const tasks = computed<DownloadTask[]>(() => [
+  ...coreTasks.value,
+  ...installOverlays.value,
+]);
 const concurrency = ref(3);
 const initialized = ref(false);
 
 function upsert(task: DownloadTask) {
-  const index = tasks.value.findIndex((t) => t.id === task.id);
+  const index = coreTasks.value.findIndex((t) => t.id === task.id);
   if (index >= 0) {
-    tasks.value[index] = task;
+    coreTasks.value[index] = task;
   } else {
-    tasks.value.push(task);
+    coreTasks.value.push(task);
   }
+}
+
+/** 安装任务开始（复用整包）时补一条可见条目。 */
+export function announceInstall(instance: string): void {
+  const id = -overlaySeq++;
+  const task: DownloadTask = {
+    id,
+    filename: instance,
+    url: `install://${instance}`,
+    dest: "",
+    total_bytes: 1,
+    downloaded_bytes: 1,
+    speed_bytes_per_sec: 0,
+    status: "installing",
+    error: null,
+    retry_count: 0,
+    created_at_ms: Date.now(),
+    phase_progress: 0.02,
+    stage: "download.stage.install_reusing",
+    stage_detail: instance,
+  };
+  installOverlays.value = [...installOverlays.value, task];
+  const timer = setInterval(() => {
+    const current = installOverlays.value.find((item) => item.id === id);
+    if (!current) {
+      clearInterval(timer);
+      return;
+    }
+    // 后端没有复用路径的逐帧进度；用一个缓慢逼近 95% 的动画表达“正在安装”，
+    // 真正的完成/失败由 game-download.installed / failed 事件收尾。
+    current.phase_progress = Math.min(0.95, (current.phase_progress ?? 0) + 0.02);
+    installOverlays.value = [...installOverlays.value];
+  }, 600);
+  installTimers.set(id, timer);
+}
+
+function dropInstallOverlay(id: number): void {
+  const timer = installTimers.get(id);
+  if (timer !== undefined) clearInterval(timer);
+  installTimers.delete(id);
+  installOverlays.value = installOverlays.value.filter((item) => item.id !== id);
+}
+
+/** 安装完成：移除对应实例的合成条目。 */
+export function finishInstallOverlay(instance: string): void {
+  for (const item of [...installOverlays.value]) {
+    if (item.filename === instance) dropInstallOverlay(item.id);
+  }
+}
+
+/** 安装失败/取消：清掉所有合成条目，避免永远停在“安装中”。 */
+export function clearInstallOverlays(): void {
+  for (const item of [...installOverlays.value]) dropInstallOverlay(item.id);
 }
 
 /** 拉取全量快照（控制类操作后调用）。 */
 async function refresh(): Promise<void> {
   try {
-    tasks.value = await downloadTasks();
+    coreTasks.value = await downloadTasks();
   } catch {
     // 内核未就绪时保留现有列表。
   }
@@ -47,7 +114,7 @@ export async function initDownloads(): Promise<void> {
   if (initialized.value) return;
   initialized.value = true;
   try {
-    tasks.value = await downloadTasks();
+    coreTasks.value = await downloadTasks();
   } catch {
     // 内核未就绪时为空列表。
   }
@@ -66,7 +133,10 @@ export async function initDownloads(): Promise<void> {
 /** 活跃任务数（下载中 + 排队中）。 */
 function activeCount(): number {
   return tasks.value.filter(
-    (t) => t.status === "downloading" || t.status === "queued",
+    (t) =>
+      t.status === "downloading" ||
+      t.status === "queued" ||
+      t.status === "installing",
   ).length;
 }
 

@@ -10,6 +10,11 @@ import { readonly, ref } from "vue";
 
 import { showToast } from "../../composables/useToast";
 import {
+  announceInstall,
+  clearInstallOverlays,
+  finishInstallOverlay,
+} from "../../composables/useDownloads";
+import {
   onDownload,
   onGameDownloadCancelled,
   onGameDownloadEnqueued,
@@ -48,13 +53,16 @@ export async function initGameDownload(): Promise<void> {
       void loadManifest(false);
     }),
     onGameDownloadInstalled(({ instance }) => {
+      finishInstallOverlay(instance);
       showToast(t("module.game-download.toast.installed", { name: instance }), "success");
       void loadManifest(false);
     }),
     onGameDownloadFailed(({ error }) => {
+      clearInstallOverlays();
       showToast(error || t("module.game-download.toast.failed"), "error");
     }),
     onGameDownloadCancelled(() => {
+      clearInstallOverlays();
       showToast(t("module.game-download.toast.cancelled"), "info");
     }),
     // 整包落盘 / 被删都会改变「已下载」徽标，而下载引擎只发它自己的状态事件。
@@ -148,6 +156,9 @@ export async function install(
 ): Promise<boolean> {
   try {
     const taskId = await gameInstall(id, instance, loader);
+    // 复用本地整包时后端不会创建下载任务，下载列表没有可追踪的行；
+    // 补一条 installing 条目，让用户仍能看到“进入安装、跳过下载”。
+    if (taskId === 0) announceInstall(instance);
     showToast(
       taskId > 0
         ? t("module.game-download.toast.enqueued")
