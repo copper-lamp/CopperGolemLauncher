@@ -10,6 +10,7 @@ import SettingSection from "./SettingSection.vue";
 import SettingRow from "./SettingRow.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
+import CoSelect from "../../components/ui/CoSelect.vue";
 import CoProgress from "../../components/ui/CoProgress.vue";
 import { useUpdate } from "../../composables/useUpdate";
 import { useSettings } from "../../composables/useSettings";
@@ -51,6 +52,20 @@ const autoCheck = computed({
   get: () => get<boolean>("update.auto_check", true),
   set: (value: boolean) => void set("update.auto_check", value),
 });
+
+/**
+ * 更新通道。内测阶段的发布全部标记为预发布，`stable` 通道收不到任何更新，
+ * 因此默认值取 `beta`；转为正式版后应与内核默认值一起改回 `stable`。
+ */
+const channel = computed({
+  get: () => get<string>("update.channel", "beta"),
+  set: (value: string) => void set("update.channel", value),
+});
+
+const channelOptions = computed(() => [
+  { value: "stable", label: t("settings.about.update_channel_stable") },
+  { value: "beta", label: t("settings.about.update_channel_beta") },
+]);
 
 const checking = computed(() => phase.value === "checking");
 const downloaded = computed(() => ready.value);
@@ -191,7 +206,11 @@ function failureHint(): string {
         label-key="settings.about.update_channel"
         hint-key="settings.about.update_channel_hint"
       >
-        <span class="about-tab__version">{{ get<string>("update.channel", "stable") }}</span>
+        <CoSelect
+          :model-value="channel"
+          :options="channelOptions"
+          @update:model-value="channel = $event"
+        />
       </SettingRow>
     </SettingSection>
 

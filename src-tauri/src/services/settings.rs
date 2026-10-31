@@ -173,7 +173,9 @@ pub fn defaults() -> HashMap<String, Value> {
         Value::String("copper-lamp/CopperGolemLauncher".into()),
     );
     // 更新通道：stable 只看正式版；beta / dev 额外接纳预发布。
-    m.insert("update.channel".into(), Value::String("stable".into()));
+    // 内测阶段的发布全部标记为预发布，默认值取 `beta`，否则默认静默检查永远「已是最新」。
+    // 转为正式版时与前端 `AboutTab.vue` 的默认值一起改回 `stable`。
+    m.insert("update.channel".into(), Value::String("beta".into()));
     // 启动后自动检查一次更新。检查全程在后台且失败静默（services::updater），
     // 关掉后仅保留设置页的手动入口。
     m.insert("update.auto_check".into(), Value::Bool(true));
