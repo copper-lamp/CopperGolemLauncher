@@ -292,7 +292,7 @@
       "license_text": "Copper Golem Launcher is released under the GPL-3.0 license.",
       "open_source": "Open source",
       "dev_preview": "Dev preview",
-      "dev_preview_hint": "No real release yet — click to step through every state of the update button and dialog (dev builds only)"
+      "dev_preview_hint": "Step through every state of the update button and dialog with a fake update (dev builds only; real updates are unaffected)"
     }
   },
   "update": {

@@ -42,9 +42,11 @@ jobs:
           args: --features vendored-openssl
           tagName: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
           releaseName: '铜傀儡 ${{ inputs.tag || github.ref_name }}'
-          releaseBody: '自动生成的发布。'
+          releaseBody: '自动生成的发布。完整变更见仓库 CHANGE.md。'
           releaseDraft: true
-          prerelease: false
+          # 内测阶段：自动发布一律标记为预发布（Pre-release）。
+          # 转为正式版时改回 false，并同步调整 README / CHANGE.md 的状态描述。
+          prerelease: true
 
   # Android arm64：debug APK，作为 **Release 资产** 直接给出。
   #
@@ -134,7 +136,7 @@ jobs:
         run: |
           set -e
           if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            gh release create "$TAG_NAME" --draft --title "铜傀儡 $TAG_NAME" --notes "自动生成的发布。"
+            gh release create "$TAG_NAME" --draft --prerelease --title "铜傀儡 $TAG_NAME" --notes "自动生成的发布。完整变更见仓库 CHANGE.md。"
           fi
           {
             echo "## Android APK"

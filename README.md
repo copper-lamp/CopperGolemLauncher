@@ -7,7 +7,7 @@
   <p>为 Minecraft Bedrock 打造的现代化模块化启动器：把版本、账户与游戏内容，收进一个干净、迅捷的入口。</p>
 
   <p>
-    <img src="https://img.shields.io/badge/release-0.1.0-4c8bf5?style=flat-square" alt="release v0.1.0">
+    <img src="https://img.shields.io/badge/release-0.0.1--pre-4c8bf5?style=flat-square" alt="release v0.0.1 pre-release">
     <img src="https://img.shields.io/badge/Minecraft%20Bedrock-Windows%20x64-62b47a?style=flat-square" alt="Windows x64 Minecraft Bedrock">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 许可证"></a>
   </p>
@@ -29,7 +29,7 @@
 </div>
 
 > [!WARNING]
-> 铜傀儡目前处于内测阶段，公开版本均为测试版本。当 Minecraft 或启动器自身更新后，不保证旧配置完全兼容。
+> 铜傀儡目前处于内测阶段，公开版本均为预发布（Pre-release）测试版本。使用前请备份重要的世界与存档；当 Minecraft 或启动器自身更新后，不保证旧配置与旧实例完全兼容。
 
 铜傀儡是一款面向 Minecraft Bedrock 的现代化启动器。它把**版本下载、账号登录与游戏内容**统一到一个干净、迅捷的入口——你花在「准备」上的时间更少，花在「游玩」上的时间更多。
 
@@ -64,7 +64,8 @@
 
 | 平台 | 版本 | 状态 |
 | --- | --- | --- |
-| Windows x64 · Minecraft Bedrock（基岩版） | `0.1.0` | 早期测试版 |
+| Windows x64 · Minecraft Bedrock（基岩版） | `0.0.1` | 预发布（首个内测版，NSIS 安装包） |
+| Android arm64 | `0.0.1` | 预发布（调试 APK，能力仍在补齐） |
 
 > [!NOTE]
 > 具体变更见 [更新日志](CHANGE.md)。发布自动打包生成，见仓库工作流的 `release` 说明。
@@ -93,17 +94,19 @@
 
 ## 开发状态与计划
 
-- **进行中** — 铜核心能力服务与模块化桌面接口。
-- **规划** — 下载引擎、内容中心，以及更多内置与附加模块。
+- **已具备** — 铜内核能力服务与模块化桌面骨架；游戏版本下载与安装、实例隔离与启动（含 LeviLamina 加载器）、正版账户登录、内容中心（CurseForge / LIP / addon）、统一下载中心与更新系统。
+- **进行中** — 安卓端适配、附加模块（Agent / MCP）的动态装载与隔离、下载与安装链路的持续打磨。
+- **规划** — 整合包导出与导入、更多内容源与镜像策略、Linux 端的可行性评估。
 
 > [!TIP]
 > **测试重点：** 报告问题时，请附上操作系统版本、启动器版本、复现步骤与相关日志，能极大加快定位。
 
 ## 已知限制
 
-- 项目处于早期阶段，界面与能力仍在积极开发，不代表最终形态。
-- 目前仅支持 Windows x64 平台的基岩版；其他平台支持尚不可用。
-- 部分能力（如更完整的账户与会话管理）仍在建设中。
+- 项目处于早期阶段，界面与能力仍在积极开发，不代表最终形态；预发布版本之间可能存在不兼容变更。
+- 桌面端仅支持 Windows x64 平台的基岩版；Android 仅提供调试 APK，尚未作为正式支持平台；Linux 有 CI 构建产物但启动链路尚未适配；macOS 暂无产物。
+- 附加模块尚未提供一键下载安装，动态装载仍在开发中。
+- 真实 Windows Store 账户的端到端安装验收覆盖有限，异常账户状态的问题定位仍依赖用户日志。
 - 不同的 Minecraft 或系统更新后，可能需要重新确认兼容性。
 
 如需报告可复现问题，请[创建 Issue](https://github.com/copper-lamp/CopperGolemLauncher/issues)。

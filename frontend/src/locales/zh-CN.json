@@ -292,7 +292,7 @@
       "license_text": "铜傀儡启动器遵循 GPL-3.0 开源许可证发布。",
       "open_source": "开源信息",
       "dev_preview": "开发预览",
-      "dev_preview_hint": "仓库还没有真实 Release，点一下依次预览更新按钮与弹窗的全部形态（仅开发构建可用）"
+      "dev_preview_hint": "用假的更新状态依次预览更新按钮与弹窗的全部形态（仅开发构建可用，不影响真实更新）"
     }
   },
   "update": {

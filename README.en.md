@@ -7,7 +7,7 @@
   <p>A modern, modular launcher for Minecraft Bedrock — bringing versions, accounts, and game content together in one clean, fast entry point.</p>
 
   <p>
-    <img src="https://img.shields.io/badge/release-0.1.0-4c8bf5?style=flat-square" alt="release v0.1.0">
+    <img src="https://img.shields.io/badge/release-0.0.1--pre-4c8bf5?style=flat-square" alt="release v0.0.1 pre-release">
     <img src="https://img.shields.io/badge/Minecraft%20Bedrock-Windows%20x64-62b47a?style=flat-square" alt="Windows x64 Minecraft Bedrock">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 License"></a>
   </p>
@@ -29,7 +29,7 @@
 </div>
 
 > [!WARNING]
-> CopperGolem is in early development; public releases are test versions. Back up important worlds and data before use. Compatibility with older setups is not guaranteed after Minecraft or launcher updates.
+> CopperGolem is in early development; public releases are all pre-release test builds. Back up important worlds and data before use. Compatibility with older setups and instances is not guaranteed after Minecraft or launcher updates.
 
 CopperGolem is a modern launcher built for Minecraft Bedrock. It unifies **version download, account sign-in, and game content** into one clean, fast entry point — so you spend less time getting ready and more time playing.
 
@@ -64,7 +64,8 @@ CopperGolem follows semantic versioning. Current release status:
 
 | Platform | Version | Status |
 | --- | --- | --- |
-| Windows x64 · Minecraft Bedrock | `0.1.0` | Early test |
+| Windows x64 · Minecraft Bedrock | `0.0.1` | Pre-release (first closed beta, NSIS installer) |
+| Android arm64 | `0.0.1` | Pre-release (debug APK, capabilities still being filled in) |
 
 
 > [!NOTE]
@@ -94,17 +95,19 @@ Always get builds from this repository's [Releases](https://github.com/copper-la
 
 ## Status & Roadmap
 
-- **In progress** — core capabilities and the modular desktop interface.
-- **Planned** — the download engine, a content center, and more built-in and additional modules.
+- **Available now** — core kernel services and a modular desktop shell; game version download and install, isolated instances and launching (including the LeviLamina loader), genuine account sign-in, a content center (CurseForge / LIP / addons), a unified download center, and self-update.
+- **In progress** — Android support, dynamic loading and isolation for addon modules (Agent / MCP), and ongoing hardening of the download and install pipelines.
+- **Planned** — modpack export and import, more content sources and mirror policies, and a feasibility study for Linux.
 
 > [!TIP]
 > **Testing focus:** when reporting, include your OS version, launcher version, reproduction steps, and relevant logs — it greatly speeds up diagnosis.
 
 ## Known Limitations
 
-- The project is in early development; the interface and capabilities are actively changing and do not represent the final form.
-- Currently supports Windows x64 Bedrock only; other platforms are not yet available.
-- Some capabilities (e.g. fuller account and session management) are still being built.
+- The project is in early development; the interface and capabilities are actively changing and do not represent the final form. Pre-release builds may introduce incompatible changes.
+- The desktop build supports Windows x64 Bedrock only; Android ships as a debug APK and is not a supported platform yet; Linux has CI build artifacts but its launch path is not adapted yet; no macOS builds.
+- Addon modules cannot be installed from the launcher yet; dynamic loading is still in development.
+- End-to-end install verification with real Windows Store accounts is limited, so diagnosing abnormal account states still relies on user logs.
 - Compatibility may need to be re-verified after Minecraft or system updates.
 
 To report a reproducible issue, please [create an Issue](https://github.com/copper-lamp/CopperGolemLauncher/issues).
