@@ -32,12 +32,21 @@ jobs:
       - name: 缓存 Rust 构建产物
         uses: Swatinem/rust-cache@v2
 
+      # tauri-action 只负责调用 `npm run tauri -- build`，不会自己装依赖：
+      # 少了这一步，runner 上既没有 @tauri-apps/cli，也没有 frontend 的 Vue 工具链，
+      # 会直接以「'tauri' is not recognized」失败。根与 frontend 两套都要装。
+      - name: 安装依赖
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
       - name: 安装前端依赖并构建发布
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          path: .
+          # 注意：tauri-action@v0 没有 `path` 输入（会被忽略并告警），
+          # 工程目录用 `projectPath`，默认即仓库根，因此这里不需要填。
           # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
           args: --features vendored-openssl
           tagName: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
