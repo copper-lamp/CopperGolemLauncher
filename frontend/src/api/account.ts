@@ -10,6 +10,8 @@ export interface AccountInfo {
   id: string;
   gamertag: string;
   xuid: string | null;
+  /** WAM 的 WebAccount.Id（PUID）；只用于取票，不参与 profile 比对。 */
+  wam_account_id?: string | null;
 }
 
 /** 设备码信息（前端展示授权链接与用户码）。 */

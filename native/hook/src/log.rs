@@ -64,6 +64,13 @@ fn open_log_file(path: &Path) -> Option<File> {
 /// 只是排障材料。所有 `Option` / `Result` 一律吞掉。
 pub fn line(level: &str, message: &str) {
     write_line(level, message);
+    // 控制台模式（CUI 子系统 + CREATE_NEW_CONSOLE）下把同一条日志也写到
+    // stderr；没有控制台时句柄无效，writeln! 只是失败，不影响游戏。
+    #[cfg(windows)]
+    {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "[{level}] {message}");
+    }
     #[cfg(windows)]
     if let Some(logger) = LOGGER.get() {
         // 超过体积上限就停写并留一行终止标记：日志在游戏进程里无锁写，

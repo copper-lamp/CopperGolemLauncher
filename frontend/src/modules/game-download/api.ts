@@ -14,6 +14,13 @@ export interface GameVersionView {
   /** 版本 slug，同时是整包暂存文件名。 */
   id: string;
   kind: GameVersionKind;
+  /**
+   * 包的发行渠道：`gdk` / `uwp`。
+   *
+   * 界面不区分（两个渠道的显示逻辑完全一致），保留它是为了让排障时能从接口直接
+   * 看出某个版本走哪条安装链路。
+   */
+  package_type: "gdk" | "uwp";
   /** 数值版本号（如 `1.21.130.22`）。 */
   game_version: string;
   /** 该版本是否有可装的 LeviLamina（列表页据此显示加载器徽标）。 */

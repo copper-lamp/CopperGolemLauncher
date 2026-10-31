@@ -105,21 +105,14 @@ const IDX_SH_GET_KNOWN_FOLDER_PATH: usize = 0;
 const IDX_GET_TEMP_PATH_A: usize = 1;
 const IDX_GET_TEMP_PATH_W: usize = 2;
 
-/// 启动窗口高频补丁的持续时长（毫秒）。
+/// 是否把补丁扩散到**依赖模块**的导入表。
 ///
-/// 覆盖「主线程恢复 → 加载器解析导入表 → 游戏首次查询目录」这段窗口。这个循环
-/// 平时只读几个指针（见 [`main_slot_was_overwritten`]），真正的扫描只在检测到
-/// 覆写时发生一次，所以窗口相对长一些也不耗 CPU。
-const HOT_PATCH_WINDOW_MS: u64 = 30_000;
-/// 高频补丁的轮询节拍（毫秒）。
-const HOT_PATCH_INTERVAL_MS: u32 = 1;
+/// `false` 与 LeviLauncher 一致：只改主映像。实机 A/B 显示，把 `GetTempPath*`
+/// 也改到实例目录后，游戏与 TokenBroker / Xbox 应用这类**跨进程**助手通过临时
+/// 文件握手时对不上，Xbox 登录永远拿不到 token。依赖模块上的目录调用本来也
+/// 会先经过主映像的同一个函数指针，多数情况不需要逐个模块改。
+const PATCH_DEPENDENCY_MODULES: bool = false;
 
-/// 主映像里我们关心的导入槽及其应有的值：`(槽地址, 我们自己的函数地址)`。
-///
-/// 挂起启动时 `DllMain` 先写了补丁，随后加载器解析导入表会把槽写回真实地址。
-/// 轮询这几个指针就能**廉价地**判定「加载器已经动过手了」，从而在下一毫秒内
-/// 夺回，而不是等 10 秒一轮的重扫。
-static MAIN_SLOTS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
 /// 记录「游戏首次调用经由本 DLL 重定向的函数」，只记一次。
 fn note_first_call(index: usize, api: &str, handed_out: &str) {
@@ -272,53 +265,17 @@ extern "system" fn worker_main() -> u32 {
     // 4) hook：主映像已在 `DllMain` 装好；此刻把进程内**其余已加载模块**也扫一遍。
     //    实机验证表明游戏的真实调用点在依赖模块里，只改主映像会静默失效。
     install_hooks();
-    let modules = install_hooks_all_modules();
+    let modules = if PATCH_DEPENDENCY_MODULES {
+        install_hooks_all_modules()
+    } else {
+        0
+    };
     HOOK_MODULES.fetch_add(modules, Ordering::AcqRel);
     log::line("INFO", &format!("首轮模块扫描：{modules} 个模块（含主映像）"));
     // 补写安装结论：`install_hooks` 多半是在 `DllMain` 里跑的，那时日志文件
     // 还不存在，那几行只会进 OutputDebugString。
     flush_hook_report();
 
-    // 4.5) 启动窗口高频补丁 —— 这一段是隔离成不成立的关键。
-    //
-    // 挂起启动时我们在 `DllMain` 里改的是**尚未被解析**的导入槽：加载器的
-    // `LdrpInitialize` 要等主线程第一次被调度才运行，它会把真实函数地址写进
-    // IAT，把我们刚写的指针全部覆盖掉。主线程恢复后，游戏在**毫秒级**就会去查
-    // 目录（`%APPDATA%` 是它最先要的路径之一），而 10 秒一轮的重扫根本来不及。
-    //
-    // 实机现象正是如此：日志里「替换 51 个导入槽」一路正常，`copper-hook.log`
-    // 里却一条「游戏首次调用」都没有 —— 补丁在生效之前就被加载器冲掉了。
-    //
-    // 本线程在主线程恢复**之前**就已经跑起来，所以用 1ms 的节拍反复补主映像，
-    // 能把「加载器覆盖 → 游戏首次查询」这段窗口盖住。只扫主映像，代价可以忽略。
-    let hot_started = std::time::Instant::now();
-    let hot_window = std::time::Duration::from_millis(HOT_PATCH_WINDOW_MS);
-    let mut hot_rounds = 0u32;
-    let mut reclaims = 0u32;
-    while hot_started.elapsed() < hot_window {
-        hot_rounds += 1;
-        if main_slot_was_overwritten() {
-            repatch_main_image();
-            reclaims += 1;
-        }
-        // 一次夺回之后加载器不会再碰导入表，剩下的交给 10 秒节拍即可。
-        // 但游戏首次调用一旦被捕获，说明重定向已经真正生效，也就可以收工了。
-        if reclaims > 0 && FIRST_CALL_SEEN.iter().any(|flag| flag.load(Ordering::Acquire)) {
-            break;
-        }
-        if reclaims > 8 {
-            break;
-        }
-        unsafe { sys::Sleep(HOT_PATCH_INTERVAL_MS) };
-    }
-    let first_call_seen = FIRST_CALL_SEEN.iter().any(|flag| flag.load(Ordering::Acquire));
-    log::line(
-        "INFO",
-        &format!(
-            "启动窗口高频补丁结束：轮询 {hot_rounds} 轮 / 夺回 {reclaims} 次，{}捕获到游戏调用",
-            if first_call_seen { "已" } else { "未" }
-        ),
-    );
 
     // 5) 懒加载的模块也要覆盖：XAML / PlayFab 之类依赖是后面才起来的，
     //    目录 API 的真实调用点很可能住在里面。线程本来就常驻，多跑一个节拍循环
@@ -488,56 +445,6 @@ fn install_hooks() {
     HOOK_HITS.store(scan.hits.len(), Ordering::Release);
 }
 
-/// 只重扫主映像并补丁（启动窗口高频调用用）。
-///
-/// 为什么单拎出来：`install_hooks` 有 `HOOKS_INSTALLED` 一次性闸门，而启动窗口
-/// 里需要反复补 —— 加载器解析导入表后会把槽写回真实地址。这里只解析主映像的
-/// 导入目录（几个描述符），1ms 一轮的代价可以忽略。
-fn repatch_main_image() {
-    let base = unsafe { sys::GetModuleHandleW(ptr::null()) };
-    if base.is_null() {
-        return;
-    }
-    // SAFETY: `base` 是当前进程主映像基址，导入表在进程内可读。
-    let scan = unsafe { iat::scan_main_imports(base as *mut u8, REQUESTS) };
-    remember_main_slots(&scan);
-    apply_scan(&scan);
-}
-
-/// 记下主映像上需要盯住的槽（只增不减，去重）。
-fn remember_main_slots(scan: &iat::ScanResult) {
-    let Ok(mut slots) = MAIN_SLOTS.lock() else {
-        return;
-    };
-    for hit in &scan.hits {
-        let slot = hit.slot.slot as usize;
-        if slot == 0 || slots.iter().any(|(known, _)| *known == slot) {
-            continue;
-        }
-        let hook = hook_for(hit.request) as usize;
-        if hook != 0 {
-            slots.push((slot, hook));
-        }
-    }
-}
-
-/// 主映像的槽里是否已经不是我们的函数（加载器解析导入表、或别家 DLL 覆写）。
-fn main_slot_was_overwritten() -> bool {
-    let Ok(slots) = MAIN_SLOTS.lock() else {
-        return false;
-    };
-    if slots.is_empty() {
-        return true; // 还没记到槽，交给一轮扫描去补
-    }
-    for (slot, hook) in slots.iter() {
-        // SAFETY: `slot` 来自本进程主映像的导入表扫描，指向一个 IAT 项。
-        let current = unsafe { *(*slot as *mut *mut c_void) } as usize;
-        if current != *hook {
-            return true;
-        }
-    }
-    false
-}
 
 /// 把进程内**所有已加载模块**的导入表都扫一遍并替换。
 ///
@@ -600,7 +507,11 @@ fn rescan_loop() {
     loop {
         // `Sleep` 在工作线程里等，不占 CPU；本 DLL 已 pin，线程活到进程结束。
         unsafe { sys::Sleep(RESCAN_INTERVAL_MS) };
-        let modules = install_hooks_all_modules();
+        let modules = if PATCH_DEPENDENCY_MODULES {
+            install_hooks_all_modules()
+        } else {
+            0
+        };
         if modules == 0 {
             // 枚举失败通常意味着快照被抢占了；重试即可，不必退出循环。
             continue;
@@ -763,19 +674,7 @@ unsafe extern "system" fn hook_sh_get_known_folder_path(
     output: *mut *mut u16,
 ) -> sys::HRESULT {
     if let Some(plan) = PLAN.get().and_then(|slot| slot.clone()) {
-        if guid_eq(rfid, &sys::FOLDERID_LOCAL_APP_DATA) {
-            // 给真实目录而不是空串：登录态（Xbox / MSA token、WebView2 用户目录）
-            // 与储存空间检查都要从 LocalAppData 取路径。置空会让游戏弹
-            // 「无储存空间」，登录界面则一直转圈（详见 `RedirectPlan::local`）。
-            let local = plan.local.to_string_lossy().into_owned();
-            note_first_call(
-                IDX_SH_GET_KNOWN_FOLDER_PATH,
-                "SHGetKnownFolderPath(LocalAppData)",
-                &local,
-            );
-            return allocate_path(&local, output);
-        }
-        if guid_eq(rfid, &sys::FOLDERID_ROAMING_APP_DATA) {
+        if !redirect_disabled() && guid_eq(rfid, &sys::FOLDERID_ROAMING_APP_DATA) {
             let roaming = plan.root.to_string_lossy().into_owned();
             note_first_call(
                 IDX_SH_GET_KNOWN_FOLDER_PATH,
@@ -811,6 +710,7 @@ unsafe extern "system" fn hook_sh_get_known_folder_path(
 /// # SAFETY
 /// 签名与 `GetTempPathW` 一致。
 unsafe extern "system" fn hook_get_temp_path_w(capacity: u32, buffer: *mut u16) -> u32 {
+    if !redirect_disabled() {
     if let Some(plan) = PLAN.get().cloned().flatten() {
         let value = temp_with_separator(&plan);
         note_first_call(IDX_GET_TEMP_PATH_W, "GetTempPathW", &value);
@@ -834,6 +734,7 @@ unsafe extern "system" fn hook_get_temp_path_w(capacity: u32, buffer: *mut u16) 
         );
         return needed;
     }
+    }
     let real = REAL_GET_TEMP_PATH_W.load(Ordering::Acquire);
     if real.is_null() {
         sys::SetLastError(sys::ERROR_INVALID_PARAMETER);
@@ -848,6 +749,7 @@ unsafe extern "system" fn hook_get_temp_path_w(capacity: u32, buffer: *mut u16) 
 /// # SAFETY
 /// 签名与 `GetTempPathA` 一致。
 unsafe extern "system" fn hook_get_temp_path_a(capacity: u32, buffer: *mut u8) -> u32 {
+    if !redirect_disabled() {
     if let Some(plan) = PLAN.get().cloned().flatten() {
         let value = temp_with_separator(&plan);
         note_first_call(IDX_GET_TEMP_PATH_A, "GetTempPathA", &value);
@@ -873,6 +775,7 @@ unsafe extern "system" fn hook_get_temp_path_a(capacity: u32, buffer: *mut u8) -
         *buffer.add(ansi.len()) = 0;
         return needed;
     }
+    }
     let real = REAL_GET_TEMP_PATH_A.load(Ordering::Acquire);
     if real.is_null() {
         sys::SetLastError(sys::ERROR_INVALID_PARAMETER);
@@ -886,6 +789,11 @@ unsafe extern "system" fn hook_get_temp_path_a(capacity: u32, buffer: *mut u8) -
 ///
 /// Win32 契约要求 `GetTempPath*` 返回**带结尾分隔符**的路径，否则调用方
 /// 直接拼文件名会得到 `C:\foo.tempbar`。
+fn redirect_disabled() -> bool {
+    // 仅用于二分定位：设置后 hook 仍然加载，但所有目录 API 都返回真实路径。
+    std::env::var_os("COPPER_HOOK_NO_REDIRECT").is_some()
+}
+
 fn temp_with_separator(plan: &RedirectPlan) -> String {
     let mut value = plan.temp.to_string_lossy().into_owned();
     if !value.ends_with('\\') && !value.ends_with('/') {
@@ -941,7 +849,8 @@ mod tests {
         );
         let value = temp_with_separator(&plan);
         assert!(value.ends_with('\\'), "{value} 缺少结尾分隔符");
-        assert!(value.contains("temp"));
+        // 与 LL 一致：temp 指向版本目录本身（< 1.26 才是数据目录），不再有 "temp" 子目录
+        assert_eq!(value, format!("{}\\", plan.temp.display()));
     }
 
     #[test]

@@ -65,7 +65,16 @@ pub struct ContentRoots {
     /// 共享内容根：`.../com.mojang`。
     pub com_mojang: PathBuf,
     /// 用户目录根：`.../Users`。
+    ///
+    /// UWP 实例没有 `Users/<xuid>/` 这一层（游戏把数据直接写在
+    /// `LocalState/games/com.mojang` 下），此时为**空路径**：调用方必须按空值判断，
+    /// 不能拿它去 `join` 或 `create_dir_all`。
     pub users_root: PathBuf,
+    /// 世界目录的确定落点。
+    ///
+    /// UWP 恒为 `Some(<com.mojang>/minecraftWorlds)`；GDK 为 `None`，因为那里世界在
+    /// `Users/<首个玩家>/games/com.mojang/minecraftWorlds`，要运行时探测玩家目录。
+    pub worlds: Option<PathBuf>,
 }
 
 /// 是否预览渠道。
@@ -125,6 +134,22 @@ pub fn supports_editor_mode(game_version: &str, version_type: &str) -> bool {
     version_at_least(version, min)
 }
 
+/// 扁平布局门槛：`>= 1.26.0.0` 起游戏的数据目录不再带渠道层。
+const FLAT_LAYOUT_MIN: [u64; 4] = [1, 26, 0, 0];
+
+/// `%TEMP%` 的重定向目标。
+///
+/// 与 LeviLauncher 的 `legacy_data_directory`（`version_config.cpp:97`）同义：
+/// `>= 1.26.0.0` 指向**版本目录本身**，更早的版本落在带渠道目录的数据根。
+/// 注入侧不重算这条规则 —— 它只接受启动器下发的 `COPPER_HOOK_TEMP`。
+pub fn temp_dir(version_dir: &Path, meta: &VersionMeta) -> PathBuf {
+    match parse_version(&meta.game_version) {
+        Some(version) if version_at_least(version, FLAT_LAYOUT_MIN) => version_dir.to_path_buf(),
+        // 版本号不可解析时按旧的带层级布局：它覆盖 1.26 之前所有版本。
+        _ => data_dir(version_dir, meta),
+    }
+}
+
 /// 隔离实例的数据根目录。
 ///
 /// 规则：`<版本目录>/<渠道目录>`（`Minecraft Bedrock` / `Minecraft Bedrock
@@ -153,6 +178,19 @@ pub fn content_roots(version_dir: &Path, meta: &VersionMeta) -> ContentRoots {
         return ContentRoots {
             com_mojang: files_root.join(SHARED_GAME_DIR),
             users_root: files_root,
+            worlds: None,
+        };
+    }
+    // UWP 实例：包数据根（`LocalState`）下直接就是 `games/com.mojang`，没有
+    // `Users/<xuid>/` 这一层（与 LeviLauncher 的 UWP 内容根一致）。数据目录本身
+    // 由启动链通过连接点重定向到实例目录，此处只按同一布局计算读写位置。
+    if meta.is_uwp() {
+        let data = data_dir(version_dir, meta);
+        let com_mojang = data.join(SHARED_GAME_DIR);
+        return ContentRoots {
+            worlds: Some(com_mojang.join(WORLDS_DIR)),
+            com_mojang,
+            users_root: PathBuf::new(),
         };
     }
     roots_from(data_dir(version_dir, meta))
@@ -163,6 +201,7 @@ fn roots_from(data: PathBuf) -> ContentRoots {
     ContentRoots {
         com_mojang: data.join("Users").join("Shared").join(SHARED_GAME_DIR),
         users_root: data.join("Users"),
+        worlds: None,
     }
 }
 
@@ -182,7 +221,8 @@ fn roots_from(data: PathBuf) -> ContentRoots {
 /// `copper-hook.log` 与诊断信息里暴露出来，等实机确认后再把规则固化。
 pub fn content_roots_existing(version_dir: &Path, meta: &VersionMeta) -> ContentRoots {
     let canonical = content_roots(version_dir, meta);
-    if meta.android.is_some() || canonical.com_mojang.is_dir() {
+    // UWP / 安卓的布局是确定的（包布局由系统固定），不做扁平布局探测。
+    if meta.android.is_some() || meta.is_uwp() || canonical.com_mojang.is_dir() {
         return canonical;
     }
     let flat = roots_from(data_dir_flat(version_dir));
@@ -204,12 +244,19 @@ pub fn content_roots_existing(version_dir: &Path, meta: &VersionMeta) -> Content
 /// 内容下载的落点目录也不存在。骨架先行创建让这两条链路从一开始就有确定落点。
 pub fn ensure_skeleton(version_dir: &Path, meta: &VersionMeta) -> Result<(), KernelError> {
     let roots = content_roots(version_dir, meta);
-    for dir in [
-        roots.users_root.clone(),
+    let mut dirs = vec![
         roots.com_mojang.join(RESOURCE_PACKS_DIR),
         roots.com_mojang.join(BEHAVIOR_PACKS_DIR),
         roots.com_mojang.join(TEMPLATES_DIR),
-    ] {
+    ];
+    // UWP 没有 `Users/` 层：空路径 `create_dir_all` 会直接报错，必须跳过。
+    if !roots.users_root.as_os_str().is_empty() {
+        dirs.push(roots.users_root.clone());
+    }
+    if let Some(worlds) = roots.worlds.clone() {
+        dirs.push(worlds);
+    }
+    for dir in dirs {
         std::fs::create_dir_all(&dir)?;
     }
     Ok(())

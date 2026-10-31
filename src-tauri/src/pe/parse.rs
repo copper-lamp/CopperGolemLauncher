@@ -193,8 +193,22 @@ impl Image {
     }
 
     /// 消耗镜像，取出字节（写回路径用）。
-    pub fn into_data(self) -> Vec<u8> {
+    ///
+    /// 写回前重算 PE CheckSum：`set_subsystem_in_place` 只改内存，若这里不重算，
+    /// 落盘文件会保留旧校验和。Windows 对“签名有效但校验和不匹配”的镜像会按
+    /// 篡改处理，SmartScreen 会把它拦成“未知发布者”。
+    pub fn into_data(mut self) -> Vec<u8> {
+        let offset = self.checksum_offset;
+        write_u32(&mut self.data, offset, 0);
+        let sum = super::checksum::pe_checksum_with(&self.data, offset);
+        write_u32(&mut self.data, offset, sum);
         self.data
+    }
+
+    /// 当前数据里的 CheckSum 是否与重算结果一致。
+    pub fn checksum_matches(&self) -> bool {
+        let stored = read_u32(&self.data, self.checksum_offset).unwrap_or(0);
+        stored == super::checksum::pe_checksum_with(&self.data, self.checksum_offset)
     }
 
     /// 数据目录项（返回 `(rva, size)`；越界或未声明时 `None`）。
@@ -235,6 +249,28 @@ impl Image {
             }
             usize::try_from(offset).ok()
         })
+    }
+
+    /// 读 C 窄字符串（ANSI/UTF-8 子集，NUL 结尾）。
+    ///
+    /// PE 里指向字符串的 RVA（导入 DLL 名、`hint+name` 的导出名）都是窄字节。
+    /// 只能按字节读，不能当 UTF-16：读错不会报错，只会得到一串乱码名字。
+    pub fn read_ansi_string(&self, rva: u32) -> Option<String> {
+        let start = self.rva_to_offset(rva)?;
+        let mut bytes = Vec::new();
+        let mut cursor = start;
+        while cursor < self.data.len() {
+            let byte = self.data[cursor];
+            if byte == 0 {
+                break;
+            }
+            bytes.push(byte);
+            cursor += 1;
+            if bytes.len() > 4096 {
+                break;
+            }
+        }
+        Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// 读 C 宽字符串（UTF-16，NUL 结尾）。
@@ -323,7 +359,11 @@ impl Image {
             if original_first_thunk == 0 && name_rva == 0 && first_thunk == 0 {
                 break;
             }
-            let dll = self.read_wide_string(name_rva).unwrap_or_default();
+            // 导入描述符的 `Name` 是 **ANSI 窄字符串**，不是 UTF-16。
+            // 读成宽字符会得到 "潃灰牥…" 这类乱码，`dll_is_imported` 永远不命中；
+            // 之前写入端也写 UTF-16，两边一起错才让单测「通过」，而真正的加载器
+            // 读 ASCII，于是以 0xC0000135 拒载整个镜像。
+            let dll = self.read_ansi_string(name_rva).unwrap_or_default();
             out.push(ImportDescriptor {
                 dll,
                 original_first_thunk,

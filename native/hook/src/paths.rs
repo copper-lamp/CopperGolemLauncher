@@ -16,8 +16,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::contract::{
-    ENV_DATA_DIR, ENV_PRELOAD, ENV_ROOT, FLAT_LAYOUT_MIN, PRELOADER_MARKER, PREVIEW_DATA_DIR,
-    RELEASE_DATA_DIR,
+    ENV_DATA_DIR, ENV_PRELOAD, ENV_ROOT, ENV_TEMP, FLAT_LAYOUT_MIN, PRELOADER_MARKER,
+    PREVIEW_DATA_DIR, RELEASE_DATA_DIR,
 };
 
 /// 目录重定向方案。
@@ -27,17 +27,17 @@ use crate::contract::{
 /// | API | 重定向到 | 为什么 |
 /// |---|---|---|
 /// | `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` | **版本目录** | 游戏自己会在 `%APPDATA%` 后拼渠道目录。指向版本目录后，1.26 之前得到 `<版本目录>/Minecraft Bedrock`，1.26+（少拼一层）自然得到 `<版本目录>`。**布局由游戏自己决定，注入侧不必再实现一遍规则** —— 两侧各算一遍正是 F7 分叉的根因 |
-/// | `GetTempPathA/W` | `<数据目录>/temp` | 临时文件属于实例数据，必须跟着实例走 |
-/// | `SHGetKnownFolderPath(FOLDERID_LocalAppData)` | `<数据目录>/LocalAppData` | 见 [`RedirectPlan::local`](RedirectPlan::local) |
+/// | `GetTempPathA/W` | 版本目录（`>= 1.26`）或 `<版本目录>/Minecraft Bedrock`（更早的版本） | 与 LeviLauncher 的 `legacy_data_directory` 一致：规则只有一份，两侧不各算一遍 |
+/// | `SHGetKnownFolderPath(FOLDERID_LocalAppData)` | **空字符串** | 与 LeviLauncher 一致。给真实目录会在 `%LOCALAPPDATA%` 下再造一套与系统并存的缓存，登录态反而取不到；置空后游戏退回系统自身的路径 |
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedirectPlan {
     /// 版本目录（实例根），同时是 `%APPDATA%` 的重定向目标。
     pub root: PathBuf,
     /// 实例数据目录（`<版本目录>` 或 `<版本目录>/<渠道目录>`），由启动器下发。
     pub data: PathBuf,
-    /// `GetTempPathA/W` 的返回值（`<数据目录>/temp`）。
+    /// `GetTempPathA/W` 的返回值（版本目录，或更早版本的 `<数据目录>`）。
     pub temp: PathBuf,
-    /// `FOLDERID_LocalAppData` 的重定向目标（`<数据目录>/LocalAppData`）。
+    /// `FOLDERID_LocalAppData` 的重定向目标（**空**：与 LeviLauncher 一致）。
     ///
     /// # 为什么给真实目录，而不是置空
     ///
@@ -62,7 +62,11 @@ impl RedirectPlan {
     /// `%TEMP%` 指向一个不存在的目录时，游戏会退化到系统 temp —— 表现为
     /// 「隔离看起来生效，实际临时文件还在系统目录」。
     pub fn directories(&self) -> Vec<&Path> {
-        vec![self.data.as_path(), self.temp.as_path(), self.local.as_path()]
+        // 空路径（LocalAppData 置空）不参与建目录。
+        [self.data.as_path(), self.temp.as_path(), self.local.as_path()]
+            .into_iter()
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect()
     }
 }
 
@@ -133,9 +137,16 @@ pub fn data_dir(root: &Path, channel: Channel, game_version: &str) -> PathBuf {
 /// 由重定向目标构造完整方案（回退路径与单测共用）。
 pub fn plan_for(root: &Path, channel: Channel, game_version: &str) -> RedirectPlan {
     let data = data_dir(root, channel, game_version);
+    // 与 LeviLauncher `legacy_data_directory` 同义：1.26+ 的 temp 就是版本目录，
+    // 更早的版本落在带渠道目录的数据根。
+    let temp = if uses_flat_layout(game_version) {
+        root.to_path_buf()
+    } else {
+        data.clone()
+    };
     RedirectPlan {
-        temp: data.join("temp"),
-        local: data.join(LOCAL_APP_DATA_DIR),
+        temp,
+        local: PathBuf::new(),
         root: root.to_path_buf(),
         data,
     }
@@ -159,9 +170,14 @@ pub fn plan_from_env(root_hint: Option<&Path>, env: &EnvReader<'_>) -> Option<Re
         None => root_hint.map(Path::to_path_buf)?,
     };
     let data = PathBuf::from(env(ENV_DATA_DIR)?);
+    // temp 目标由启动器算好下发；缺变量时退到版本目录（1.26+ 的正确值）。
+    let temp = match env(ENV_TEMP) {
+        Some(value) if !value.trim().is_empty() => PathBuf::from(value),
+        _ => root.clone(),
+    };
     Some(RedirectPlan {
-        temp: data.join("temp"),
-        local: data.join(LOCAL_APP_DATA_DIR),
+        temp,
+        local: PathBuf::new(),
         root,
         data,
     })
@@ -260,34 +276,26 @@ mod tests {
     }
 
     #[test]
-    fn roaming_is_version_dir_and_temp_lives_in_data_dir() {
-        let plan = plan_for(Path::new("/v/demo"), Channel::Release, "1.21.130.20");
+    fn temp_follows_levilauncher_layout_and_local_is_blank() {
         // %APPDATA% 指向版本目录，由游戏自己拼渠道目录
-        assert_eq!(plan.root, Path::new("/v/demo"));
-        assert_eq!(
-            plan.data,
-            Path::new("/v/demo/Minecraft Bedrock")
-        );
-        assert_eq!(plan.temp, Path::new("/v/demo/Minecraft Bedrock/temp"));
-        assert_eq!(
-            plan.directories(),
-            vec![
-                Path::new("/v/demo/Minecraft Bedrock"),
-                Path::new("/v/demo/Minecraft Bedrock/temp"),
-                Path::new("/v/demo/Minecraft Bedrock/LocalAppData")
-            ]
-        );
-    }
+        let legacy = plan_for(Path::new("/v/demo"), Channel::Release, "1.21.130.20");
+        assert_eq!(legacy.root, Path::new("/v/demo"));
+        assert_eq!(legacy.data, Path::new("/v/demo/Minecraft Bedrock"));
+        // < 1.26：temp 落在带渠道目录的数据根
+        assert_eq!(legacy.temp, Path::new("/v/demo/Minecraft Bedrock"));
 
-    #[test]
-    fn local_app_data_is_a_real_directory_inside_the_instance() {
-        // 置空会导致「无储存空间」与登录卡死：登录态与储存空间检查都要真实路径。
-        for version in ["1.21.130.20", "1.26.52.3"] {
-            let plan = plan_for(Path::new("/v/demo"), Channel::Release, version);
-            assert_ne!(plan.local.as_os_str(), "");
-            assert!(plan.local.starts_with(&plan.data));
-            assert!(plan.directories().contains(&plan.local.as_path()));
-        }
+        // 1.26+：temp 就是版本目录本身（与 LL 的 legacy_data_directory 一致）
+        let flat = plan_for(Path::new("/v/demo"), Channel::Release, "1.26.52.3");
+        assert_eq!(flat.temp, Path::new("/v/demo"));
+
+        // %LOCALAPPDATA% 与 LL 一致：置空
+        assert_eq!(legacy.local.as_os_str(), "");
+        assert_eq!(flat.local.as_os_str(), "");
+        // 空路径不参与建目录
+        assert!(legacy
+            .directories()
+            .iter()
+            .all(|path| !path.as_os_str().is_empty()));
     }
 
     #[test]
@@ -304,13 +312,15 @@ mod tests {
         let env = |key: &str| match key {
             ENV_ROOT => Some("/v/demo".to_string()),
             ENV_DATA_DIR => Some("/v/demo/flat".to_string()),
+            ENV_TEMP => Some("/v/demo".to_string()),
             _ => None,
         };
         let plan = plan_from_env(None, &env).unwrap();
         assert_eq!(plan.root, Path::new("/v/demo"));
         // 交接值是权威值：即便 channel=preview 也不重算目录名
         assert_eq!(plan.data, Path::new("/v/demo/flat"));
-        assert_eq!(plan.temp, Path::new("/v/demo/flat/temp"));
+        // temp 同样只认交接值
+        assert_eq!(plan.temp, Path::new("/v/demo"));
     }
 
     #[test]

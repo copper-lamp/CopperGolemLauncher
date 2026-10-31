@@ -42,13 +42,18 @@ async function handleLogout() {
 <template>
   <div class="account-menu">
     <button
-      class="account-menu__avatar"
+      class="account-menu__trigger"
       :title="account ? t('account.logged_in_as', { name: account.gamertag }) : t('account.not_logged_in')"
       @click="toggle"
     >
-      <LoaderCircle v-if="loginWaiting" :size="16" class="spin" />
-      <template v-else-if="avatarText">{{ avatarText }}</template>
-      <UserRound v-else :size="16" />
+      <span class="account-menu__avatar">
+        <LoaderCircle v-if="loginWaiting" :size="16" class="spin" />
+        <template v-else-if="avatarText">{{ avatarText }}</template>
+        <UserRound v-else :size="16" />
+      </span>
+      <span class="account-menu__label">
+        {{ account ? account.gamertag : t("account.login") }}
+      </span>
     </button>
 
     <Transition name="pop">
@@ -103,31 +108,49 @@ async function handleLogout() {
   align-items: center;
 }
 
+.account-menu__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px 0 3px;
+  border: none;
+  border-radius: var(--copper-radius-full);
+  background: transparent;
+  color: var(--copper-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.account-menu__trigger:hover {
+  background: var(--copper-surface-2);
+  color: var(--copper-text);
+}
+
 .account-menu__avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
+  width: 24px;
+  height: 24px;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-sm);
   font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color var(--copper-duration-fast) var(--copper-easing),
-    color var(--copper-duration-fast) var(--copper-easing),
-    box-shadow var(--copper-duration-fast) var(--copper-easing);
 }
 
-.account-menu__avatar:hover {
-  background: var(--copper-surface-3);
-  color: var(--copper-text);
+.account-menu__label {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--copper-font-size-sm);
 }
 
-.account-menu__avatar:has(+ .account-menu__panel) {
+.account-menu__trigger:has(+ .account-menu__panel) {
   box-shadow: 0 0 0 2px var(--copper-accent);
 }
 

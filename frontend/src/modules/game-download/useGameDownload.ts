@@ -58,11 +58,12 @@ export async function initGameDownload(): Promise<void> {
       showToast(t("module.game-download.toast.cancelled"), "info");
     }),
     // 整包落盘 / 被删都会改变「已下载」徽标，而下载引擎只发它自己的状态事件。
-    // 这里只认本模块的落盘路径（`.download/<slug>.msixvc`），避免内容下载每完成一个
-    // 任务就把游戏清单重拉一遍。
+    // 这里只认本模块的落盘路径（`.download/<slug>.msixvc` / `.download/<slug>.appx`），
+    // 避免内容下载每完成一个任务就把游戏清单重拉一遍。
     onDownload("status", (task) => {
       if (task.status !== "done" && task.status !== "failed") return;
-      if (!task.dest.includes(".msixvc") || !task.dest.includes(".download")) return;
+      if (!task.dest.includes(".download")) return;
+      if (!task.dest.includes(".msixvc") && !task.dest.includes(".appx")) return;
       void loadManifest(false);
     }),
   ]);

@@ -70,6 +70,15 @@ fn check_name(kind: &str, value: &str) -> Result<(), PeError> {
             "导出名过长或含 NUL"
         }));
     }
+    // 导入表里的名字是 ANSI 窄字符串。非 ASCII 会被截断成错误的名字，表现为
+    // 加载器找不到 DLL（0xC0000135）——前置拒绝，别把问题留到加载器。
+    if !value.is_ascii() {
+        return Err(PeError::BadImportName(if kind == "dll" {
+            "DLL 名必须是 ASCII"
+        } else {
+            "导出名必须是 ASCII"
+        }));
+    }
     Ok(())
 }
 
@@ -191,15 +200,24 @@ impl Image {
             occupied.push((start, end));
         }
 
-        // ---- 节内布局
+        // ---- 节内布局（与 `importpatch.go:244` 同构）
+        //
+        // 描述符数组之后是 ILT / IAT / hint+name / dll 名。**字符串一律按 ANSI 写**：
+        // PE 的导入描述符 `Name` 与 `hint+name` 都是窄字节。早先这里写成 UTF-16，
+        // 加载器读到的是 `C\0o\0p\0…`，DLL 名被解析成 `"C"`，于是以 `0xC0000135`
+        // 无声拒绝——那正是上一轮废弃导入表注入的真因，不是这条路不通。
         let existing_bytes = (descriptors.len() * 20) as u32;
         let new_descriptor_offset = existing_bytes;
         let null_descriptor_offset = new_descriptor_offset + 20;
-        let ilt_offset = null_descriptor_offset + 20;
+        // thunk 数组在 PE32+ 里必须 8 字节对齐；描述符 20 字节一条，不能让 ILT
+        // 落在 4 字节边界上。
+        let ilt_offset = super::parse::align_up(null_descriptor_offset + 20, 8);
         let iat_offset = ilt_offset + 16;
         let hint_offset = iat_offset + 16;
-        let dll_name_offset = hint_offset + 2 + (entry.encode_utf16().count() as u32 + 1) * 2;
-        let blob_len = dll_name_offset + (dll.encode_utf16().count() as u32 + 1) * 2;
+        let hint_len = pad_even(2 + entry.len() + 1);
+        let dll_name_offset = hint_offset + hint_len as u32;
+        let dll_len = pad_even(dll.len() + 1);
+        let blob_len = dll_name_offset + dll_len as u32;
 
         let mut blob = vec![0u8; blob_len as usize];
         // 已有描述符原样复制（它们的 thunk / 名称 RVA 不变）。
@@ -223,9 +241,9 @@ impl Image {
         // ILT / IAT：一条 hint+name RVA + 一个 0 结束项。
         write_u32_at(&mut blob, ilt_offset as usize, base + hint_offset);
         write_u32_at(&mut blob, iat_offset as usize, base + hint_offset);
-        // hint(2 字节，0) + 导出名 + NUL
-        write_wide_at(&mut blob, (hint_offset + 2) as usize, entry);
-        write_wide_at(&mut blob, dll_name_offset as usize, dll);
+        // hint(2 字节，0) + 导出名 + NUL（ANSI；尾部零字节已由 `vec![0u8]` 提供）
+        write_ascii_at(&mut blob, (hint_offset + 2) as usize, entry);
+        write_ascii_at(&mut blob, dll_name_offset as usize, dll);
 
         let new_section_raw_size =
             super::parse::align_up(blob_len, self.file_alignment);
@@ -267,12 +285,17 @@ fn write_u32_at(buf: &mut [u8], offset: usize, value: u32) {
     buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-/// 写 UTF-16 字符串 + NUL 终止符。
-fn write_wide_at(buf: &mut [u8], offset: usize, value: &str) {
-    for (index, unit) in value.encode_utf16().enumerate() {
-        let at = offset + index * 2;
-        buf[at..at + 2].copy_from_slice(&unit.to_le_bytes());
-    }
+/// 写 ANSI 字符串（不含 NUL；调用方已在后面留出零字节）。
+///
+/// 导入描述符的 `Name` 与 `hint+name` 都是**窄字节**字符串。写成 UTF-16 会让
+/// 加载器把 DLL 名解析成第一个字符，进而以 `0xC0000135` 拒绝加载整个镜像。
+fn write_ascii_at(buf: &mut [u8], offset: usize, value: &str) {
+    buf[offset..offset + value.len()].copy_from_slice(value.as_bytes());
+}
+
+/// 向上取偶：PE 里这些名字后面通常补 1 字节做对齐。
+fn pad_even(value: usize) -> usize {
+    (value + 1) & !1
 }
 
 /// 供 `rebuild` 使用：Bound Import 目录必须清零，否则加载器会用陈旧绑定地址。

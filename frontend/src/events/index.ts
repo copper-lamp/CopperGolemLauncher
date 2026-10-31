@@ -46,6 +46,22 @@ export function onAccountChanged(
   );
 }
 
+/** 账户与 profile 不一致（后端已隔离旧登录态）。 */
+export interface ProfileMismatch {
+  name: string;
+  active_xuid: string | null;
+  profile_xuid: string | null;
+  backup: string | null;
+}
+
+export function onProfileMismatch(
+  handler: (payload: ProfileMismatch) => void,
+): Promise<Unlisten> {
+  return listen<ProfileMismatch>("account-profile_mismatch", (e) =>
+    handler(e.payload),
+  );
+}
+
 /** 订阅设置变更（负载为发生变更的键值集合）。 */
 export function onSettingsChanged(
   handler: (changed: Record<string, JsonValue>) => void,

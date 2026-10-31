@@ -395,16 +395,18 @@
   "account": {
     "login": "Sign in",
     "login_microsoft": "Sign in (Microsoft)",
-    "store_sign_in": "Authorize Microsoft account (Store)",
-    "store_reauthorize": "Re-authorize Store account",
-    "store_authorized": "Store account authorized; retail packages can be downloaded",
+    "store_sign_in": "Sign in with Microsoft (Xbox)",
+    "store_reauthorize": "Sign in again with Microsoft",
+    "store_authorized": "Signed in with Microsoft (Xbox)",
     "logout": "Sign out",
     "logged_in_as": "Signed in as {name}",
     "not_logged_in": "Not signed in",
     "login_begin_hint": "Complete the Microsoft authorization in the opened browser, then come back here.",
     "login_waiting": "Waiting for authorization…",
     "login_failed": "Sign-in failed: {reason}",
-    "token_expired": "Your sign-in has expired, please sign in again"
+    "token_expired": "Your sign-in has expired, please sign in again",
+    "profile_mismatch_title": "This instance is signed in with a different Microsoft account. Please sign in again.",
+    "profile_mismatch_toast": "Account mismatch: please sign in again with the account that owns this instance."
   },
   "toast": {
     "settings_saved": "Settings saved",

@@ -95,7 +95,10 @@ pub struct PackageIdentity {
 /// Everything the licensing service needs besides the package identity.
 #[derive(Debug, Clone)]
 pub struct StoreInstallRequest {
+    /// 真实 XUID（十进制），用于设备/内容 license 绑定。
     pub xuid: String,
+    /// WAM 的 `WebAccount.Id`（PUID）。Store scope 只认 PUID，不能拿 XUID 去比。
+    pub wam_account_id: String,
     pub market: String,
     pub cache_dir: PathBuf,
     /// Own-process window that owns the system account UI, or `0` when none.
@@ -111,12 +114,21 @@ pub struct StoreInstallRequest {
 
 impl StoreInstallRequest {
     pub fn new(xuid: impl Into<String>, market: impl Into<String>, cache_dir: impl Into<PathBuf>) -> Self {
+        let xuid = xuid.into();
         Self {
-            xuid: xuid.into(),
+            // 旧调用点没有 PUID 时按 XUID 填；真实安装链会再覆盖成 PUID。
+            wam_account_id: xuid.clone(),
+            xuid,
             market: market.into(),
             cache_dir: cache_dir.into(),
             owner_window: 0,
         }
+    }
+
+    /// 设置 WAM 的 PUID（Store 取票用）。
+    pub fn with_wam_account_id(mut self, wam_account_id: impl Into<String>) -> Self {
+        self.wam_account_id = wam_account_id.into();
+        self
     }
 
     /// Sets the window that owns the system account UI for the fallback path.
@@ -558,9 +570,9 @@ pub(crate) async fn acquire_package_content_key(
     // Running it on a tokio worker would park that worker for the whole timeout,
     // so both paths go to the blocking pool, the same execution model as the
     // interactive sign-in command.
-    let xuid = request.xuid.clone();
+    let wam_account_id = request.wam_account_id.clone();
     let silent = tokio::task::spawn_blocking(move || {
-        crate::services::store_wam::acquire_store_ticket_for_xuid(&xuid)
+        crate::services::store_wam::acquire_store_ticket_for_xuid(&wam_account_id)
     })
     .await
     .map_err(|error| NativeInstallError::Auth(format!("WAM ticket task failed: {error}")))?;
@@ -584,9 +596,9 @@ pub(crate) async fn acquire_package_content_key(
                 request.owner_window
             );
             let hwnd = request.owner_window;
-            let xuid = request.xuid.clone();
+            let wam_account_id = request.wam_account_id.clone();
             tokio::task::spawn_blocking(move || {
-                crate::services::store_wam::acquire_store_ticket_for_window(hwnd, &xuid)
+                crate::services::store_wam::acquire_store_ticket_for_window(hwnd, &wam_account_id)
             })
             .await
             .map_err(|error| {

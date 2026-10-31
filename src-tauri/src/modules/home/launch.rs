@@ -41,6 +41,8 @@ pub struct LaunchCtx {
     pub settings: Arc<SettingsService>,
     pub runtime: tokio::runtime::Handle,
     pub events: Arc<EventBus>,
+    /// 启动器当前账户（用于 profile 一致性检查；测试可为 None）。
+    pub account: Option<Arc<crate::services::account::AccountService>>,
     /// 启动器主窗口句柄（窗口行为用；0 = 尚未就绪）。
     pub hwnd: isize,
 }
@@ -53,6 +55,7 @@ impl LaunchCtx {
             settings: kernel.settings().clone(),
             runtime: kernel.runtime().clone(),
             events: kernel.events().clone(),
+            account: Some(kernel.account().clone()),
             hwnd: kernel.window().get(),
         }
     }
@@ -126,7 +129,7 @@ fn pids_at_path(exe_path: &std::path::Path) -> Vec<u32> {
         while has_entry {
             let exe_name = windows::core::PWSTR(entry.szExeFile.as_ptr() as *mut u16);
             let name = exe_name.to_string().unwrap_or_default();
-            if name.eq_ignore_ascii_case(GAME_EXE) {
+            if is_game_exe_name(&name) {
                 if let Ok(handle) =
                     OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, entry.th32ProcessID)
                 {
@@ -291,30 +294,95 @@ pub fn launch_game(
     let exe = game_exe_path(&dir);
     if !exe.is_file() {
         return Err(KernelError::InvalidArgument(format!(
-            "版本 `{name}` 缺少 {GAME_EXE}"
+            "版本 `{name}` 缺少 {}",
+            exe.file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| GAME_EXE.to_string())
         )));
     }
     if check_running && is_process_running_at_path(&exe) {
         return Err(KernelError::InvalidArgument("游戏已在运行".into()));
     }
 
-    // 0) prepare：骨架目录 + 预加载清单 + 控制台子系统
-    prepare_instance(name, &dir, &exe, &mut meta)?;
-    // 登录态：空 profile 上游戏自身的交互式登录走不通（实测零网络请求、永远
-    // 「登录中」），所以启动前先把本机已登录的帐户痕迹写进去。幂等——目标已有
-    // 登录态时什么都不做，不覆盖用户自己登录的帐户。
-    ensure_login_state(ctx, name, &dir, &meta);
-    // 自愈：协议唤起这条路已经移除，`registered` 对用户只剩误导意义。
-    demote_registered(&dir);
+    // UWP 实例：注册 → 数据目录重定向 → 系统激活。这条路**不注入 hook DLL**，
+    // 也不切控制台子系统：包必须纯 AppContainer 注册（全信任清单会让游戏启动即崩），
+    // 隔离由包状态子目录的连接点承担（见 `home::uwp_launch`）。
+    if meta.is_uwp() {
+        // 隔离标记归一 + 骨架目录：与 GDK 用同一套数据目录规则，只是内容根布局不同。
+        if super::isolate::enforce_isolation(&mut meta) {
+            if let Err(error) = VersionMeta::write(&dir, &meta) {
+                log::warn!("[home/launch] 归一隔离标记失败（不影响启动）: {error}");
+            }
+        }
+        let pid = super::uwp_launch::start(name, &dir, &meta)?;
+        monitor_after_launch(ctx, name, dir, pid);
+        return Ok(LaunchOutcome::Spawned);
+    }
 
-    // 1) 落位：hook DLL 写进实例目录，并清理历史遗留的导入表注入。
-    let outcome = super::inject::inject(&dir, &exe)?;
-    if outcome.dll_written || outcome.legacy_import_removed {
-        log::info!(
-            "[home/launch] 版本 `{name}` 已就绪（dll={} 清理遗留注入={}）",
-            outcome.dll_written,
-            outcome.legacy_import_removed
+    // 0) prepare：骨架目录 + 预加载清单（控制台子系统与导入表注入合并到第 1 步）
+    prepare_instance(name, &dir, &exe, &mut meta)?;
+
+    // 0.5) 账户—profile 一致性：游戏用 profile 的三键静默恢复 Xbox 会话。
+    //      如果 profile 属于另一个账户，当前 WAM 会话里没有它，游戏会 0 TCP
+    //      停在「正在登录」。先诊断；不一致就隔离登录痕迹，并跳过继承。
+    let data_dir = super::isolate::data_dir(&dir, &meta);
+    let active = ctx.account.as_ref().and_then(|account| account.current());
+    let active_xuid = active.as_ref().and_then(|info| info.xuid.as_deref());
+    let diagnosis = super::account_check::diagnose(
+        &data_dir,
+        active_xuid,
+        active.as_ref().map(|info| info.gamertag.as_str()),
+    );
+    log::info!("[home/account] {}", diagnosis.describe());
+    if diagnosis.mismatch {
+        // 不自动删除用户数据：profile 可能是用户在游戏里刚刚登录出来的。
+        // 只跳过继承并提示；真正需要重置时由用户显式操作。
+        log::warn!(
+            "[home/launch] 版本 {} 的 profile 属于另一个账户；本次跳过继承。若游戏停在登录中，请删除该 profile 后重新登录",
+            name
         );
+        ctx.events.publish(
+            "account.profile_mismatch",
+            serde_json::json!({
+                "name": name,
+                "active_xuid": diagnosis.active_xuid,
+                "profile_xuid": diagnosis.profile_xuid,
+                "backup": null,
+            }),
+        );
+    } else {
+        // 0.6) 数据继承：目标没有完整登录态时，只从一手来源取。
+        let versions_root = dir.parent().unwrap_or(dir.as_path()).to_path_buf();
+        match super::inherit::inherit_if_needed(&dir, &meta, &versions_root) {
+            Ok(Some(report)) => log::info!(
+                "[home/launch] 版本 {} 已继承登录数据：{} 个文件 / {} 字节（来源 {}）",
+                name,
+                report.files,
+                report.bytes,
+                report.source.display()
+            ),
+            Ok(None) => log::debug!("[home/launch] 版本 {} 无需继承登录数据", name),
+            Err(error) => log::warn!(
+                "[home/launch] 版本 {} 继承登录数据失败（不阻断启动）: {error}",
+                name
+            ),
+        }
+    }
+
+    // 1) 落位 + 导入表注入：hook DLL 写进实例目录，并把它的名字写进 exe 的
+    //    导入表，让加载器在**导入解析之后**加载它。远程注入会输掉这个时序：
+    //    它的 DllMain 在导入解析之前跑，补丁随后被加载器覆盖。
+    let outcome = super::inject::prepare_launch(&dir, &exe, meta.enable_console)?;
+    if outcome.dll_written || outcome.import_added || outcome.already_imported {
+        log::info!(
+            "[home/launch] 版本 `{name}` 注入就绪（dll={} 本次写入导入={} 已存在={}）",
+            outcome.dll_written,
+            outcome.import_added,
+            outcome.already_imported
+        );
+    }
+    if let Some(reason) = outcome.fallback_reason.as_deref() {
+        log::warn!("[home/launch] 导入表注入不可用，退回远程注入：{reason}");
     }
     let dll = super::inject::hook_dll_path(&dir);
 
@@ -324,18 +392,76 @@ pub fn launch_game(
     let mut env = parse_env_vars(&meta.env_vars);
     env.extend(hook_env(&dir, &meta));
 
-    // 3) 拉起并注入
-    let pid = spawn_game(&exe, &dir, &args, &env, &dll)?;
+    // 3) 拉起：优先按**松散包身份**启动（与 LeviLauncher 一致）。
+    //
+    //    注册是幂等的：包已经指向本目录时只回读校验。激活由 AppModel 完成，
+    //    游戏进程因此拿到包身份，Xbox 登录走系统账户；exe 的导入表补丁保证
+    //    hook DLL 仍然由加载器加载，不需要也不允许再走远程注入。
+    //
+    //    注册/激活失败不阻断启动：退回普通 CreateProcess，用户至少还能进游戏，
+    //    失败原因写进日志与启动结果。
+    let inject = outcome.fallback_reason.is_some();
+    let console = meta.enable_console;
+    // 控制台模式必须由我们直接拉起：协议/包激活由 AppModel 托管，
+    // 拿不到子进程控制台，也不会把 stdout/stderr 交回来。
+    let pid = if console {
+        log::info!("[home/launch] 版本 `{name}` 以控制台模式直接启动");
+        spawn_game(&exe, &dir, &args, &env, &dll, inject, true)?
+    } else {
+        match activate_registered(&dir) {
+            Ok(pid) => {
+                log::info!("[home/launch] 版本 `{name}` 已按松散包身份启动，pid={pid}");
+                pid
+            }
+            Err(error) => {
+                log::warn!("[home/launch] 版本 `{name}` 包身份启动不可用，退回直接启动: {error}");
+                spawn_game(&exe, &dir, &args, &env, &dll, inject, false)?
+            }
+        }
+    };
 
     monitor_after_launch(ctx, name, dir, pid);
     Ok(LaunchOutcome::Spawned)
 }
 
-/// 拉起游戏进程并确保 hook DLL 已进入进程。
+/// 以松散包身份启动实例（与 LeviLauncher 一致）。
 ///
-/// Windows：挂起启动 → 远程线程 `LoadLibraryW` → 恢复主线程（[`super::injector`]）。
-/// 注入失败即启动失败：给用户一个「数据写在启动器管不到的地方」的实例，
-/// 比明确报错难收拾得多。
+/// 注册幂等：包已指向本目录时 `register` 只回读校验。激活由 AppModel 完成，
+/// 进程因此拿到包身份；hook DLL 由 exe 的导入表在加载阶段拉起，和激活方式无关。
+#[cfg(windows)]
+fn activate_registered(dir: &std::path::Path) -> Result<u32, KernelError> {
+    use crate::modules::game_download::uwp_deploy;
+
+    // 只有用户在设置里显式打开 registered 才走包身份；默认仍旧是自己拉起进程，
+    // 保证环境交接与 pid 都还在自己手里。
+    if !super::meta::VersionMeta::read(dir)
+        .map(|meta| meta.registered)
+        .unwrap_or(false)
+    {
+        return Err(KernelError::Config(
+            "实例未标记为已注册，跳过包身份启动".into(),
+        ));
+    }
+    let manifest = dir.join("appxmanifest.xml");
+    if !manifest.is_file() {
+        return Err(KernelError::Config(format!(
+            "实例目录缺少 appxmanifest.xml，无法注册包身份：{}",
+            dir.display()
+        )));
+    }
+    let registered = uwp_deploy::register(dir).map_err(|error| {
+        KernelError::Config(format!("松散包注册失败（需要开启开发者模式）: {error}"))
+    })?;
+    let aumid = format!("{}!Game", registered.family_name);
+    uwp_deploy::activate(&aumid)
+        .map_err(|error| KernelError::Config(format!("包激活失败（{aumid}）: {error}")))
+}
+
+/// 拉起游戏进程。
+///
+/// `inject = false`（正常路径）：exe 的导入表里已经有 hook DLL，加载器会自己
+/// 把它加载起来，我们只需要普通启动。`inject = true` 是导入表注入不可用时的
+/// 退路：挂起启动 → 远程线程 `LoadLibraryW` → 恢复主线程。
 #[cfg(windows)]
 fn spawn_game(
     exe: &std::path::Path,
@@ -343,8 +469,14 @@ fn spawn_game(
     args: &[String],
     env: &[(String, String)],
     dll: &std::path::Path,
+    inject: bool,
+    console: bool,
 ) -> Result<u32, KernelError> {
-    super::injector::launch_with_injection(exe, dir, args, env, dll)
+    if inject {
+        super::injector::launch_with_injection(exe, dir, args, env, dll, console)
+    } else {
+        super::injector::launch_plain(exe, dir, args, env, console)
+    }
 }
 
 /// 非 Windows 平台没有注入能力：直接 spawn，隔离由各平台自己的宿主负责。
@@ -355,6 +487,8 @@ fn spawn_game(
     args: &[String],
     env: &[(String, String)],
     _dll: &std::path::Path,
+    _inject: bool,
+    _console: bool,
 ) -> Result<u32, KernelError> {
     let mut cmd = Command::new(exe);
     cmd.args(args);
@@ -370,8 +504,43 @@ fn spawn_game(
 }
 
 /// 游戏主程序在实例目录下的路径。
+///
+/// UWP 实例以包清单里的 `Application/@Executable` 为准：0.x 时代的主程序名是
+/// `Minecraft.Win10.DX11.exe`，而 GDK 一律是 `Minecraft.Windows.exe`。清单读不出来时
+/// 退回 GDK 的默认名（此时启动会以「缺少主程序」明确失败，而不是猜一个不存在的路径）。
+///
+/// 这里自己读 `version.json` 而不是要求调用方传元数据：进程枚举（`monitor`）、
+/// 结束游戏、删除实例三处都要用同一个判定，签名统一才不会出现「某条链路按 GDK 名字
+/// 找进程，于是永远找不到」的分叉。
 pub fn game_exe_path(version_dir: &std::path::Path) -> PathBuf {
+    if let Some(meta) = VersionMeta::read(version_dir) {
+        if meta.is_uwp() {
+            if let Ok(manifest) =
+                crate::modules::game_download::uwp::PackageManifest::read_dir(version_dir)
+            {
+                if let Some(file) = manifest
+                    .executable
+                    .replace('\\', "/")
+                    .rsplit('/')
+                    .next()
+                    .map(str::to_string)
+                {
+                    if !file.is_empty() {
+                        return version_dir.join(file);
+                    }
+                }
+            }
+        }
+    }
     version_dir.join(GAME_EXE)
+}
+
+/// 游戏主程序的进程名是否属于本启动器识别的游戏。
+///
+/// 两个名字都要认：UWP 老版本用 `Minecraft.Win10.DX11.exe`，新版本与 GDK 用
+/// `Minecraft.Windows.exe`。注入侧的宿主白名单也是这两个名字。
+fn is_game_exe_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case(GAME_EXE) || name.eq_ignore_ascii_case("Minecraft.Win10.DX11.exe")
 }
 
 /// 组装启动参数。
@@ -399,8 +568,8 @@ fn launch_args(meta: &VersionMeta, name: &str) -> Vec<String> {
 fn prepare_instance(
     name: &str,
     dir: &std::path::Path,
-    // 只在 Windows 的控制台子系统分支用到（见下方 `#[cfg(windows)]`）。
-    #[cfg_attr(not(windows), allow(unused_variables))] exe: &std::path::Path,
+    // 控制台子系统与导入表注入都移到 `inject::prepare_launch`，这里不再需要 exe。
+    _exe: &std::path::Path,
     meta: &mut VersionMeta,
 ) -> Result<(), KernelError> {
     // 隔离强制：无论元数据写的是什么，本次启动都按隔离实例处理。
@@ -426,41 +595,11 @@ fn prepare_instance(
         Err(error) => log::warn!("[home/preload] 生成清单失败（不影响启动）: {error}"),
     }
 
-    // 控制台子系统（只改 PE 的一个字段，随时可逆）。
-    #[cfg(windows)]
-    if let Err(error) = super::inject::apply_console(exe, meta.enable_console) {
-        log::warn!("[home/launch] 应用控制台设置失败（不影响启动）: {error}");
-    }
+    // 控制台子系统不在这里改：它和导入表注入都要改写同一个 311MB 文件，
+    // 合并到 `inject::prepare_launch` 里一次完成，避免两次全文件重写。
     Ok(())
 }
 
-/// 启动前确保实例带登录态。
-///
-/// 空 profile 上游戏自身的交互式登录在当前环境走不通：点「立即登录」后界面切到
-/// 「登录中」，但全程零 TCP 连接、一次网络请求都没有（见 `login_state` 模块文档）。
-/// 所以新建实例必须是「第一次启动就已登录」。
-///
-/// 幂等：目标已有登录态直接返回；找不到来源（用户从未在这台机器上登录过）也
-/// 只是跳过——那种情况下只能让用户自己想办法登录，不能报错挡住启动。
-fn ensure_login_state(
-    ctx: &LaunchCtx,
-    name: &str,
-    dir: &std::path::Path,
-    meta: &VersionMeta,
-) {
-    let data_dir = super::isolate::data_dir(dir, meta);
-    let root = ctx.paths.versions_root(&ctx.settings);
-    match super::login_state::import_for_instance(&root, &data_dir) {
-        Ok(Some(outcome)) => log::info!(
-            "[home/launch] 版本 `{name}` 已导入登录态：来源 `{}`，xuid {}，写盘={}",
-            outcome.source.display(),
-            outcome.xuid,
-            outcome.changed
-        ),
-        Ok(None) => log::debug!("[home/launch] 版本 `{name}` 无待导入的登录态"),
-        Err(error) => log::warn!("[home/launch] 登录态导入失败（不影响启动）: {error}"),
-    }
-}
 
 /// 交接给注入侧的环境变量。
 ///
@@ -489,6 +628,13 @@ fn hook_env(dir: &std::path::Path, meta: &VersionMeta) -> Vec<(String, String)> 
         (
             contract::ENV_PRELOAD.to_string(),
             super::inject::manifest_path(dir)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        // %TEMP% 的目标同样由启动器算好：注入侧不再重算版本规则。
+        (
+            contract::ENV_TEMP.to_string(),
+            super::isolate::temp_dir(dir, meta)
                 .to_string_lossy()
                 .into_owned(),
         ),
@@ -603,7 +749,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn temp_dir_is_not_registered() {
-        assert!(!crate::modules::home::inject::has_legacy_import(
+        assert!(!crate::modules::home::inject::imports_hook_dll(
             &std::env::temp_dir().join("x.exe")
         ));
     }
@@ -633,7 +779,12 @@ mod tests {
         );
         assert_eq!(get(contract::ENV_CHANNEL), "release");
         assert!(get(contract::ENV_PRELOAD).ends_with("copper-preload.json"));
-        assert_eq!(env.len(), 4, "交接变量数量固定，多了会让交接内容漂移");
+        // 默认 game_version 为空 → 解析不出 1.26+ → 按旧布局落在数据目录
+        assert_eq!(
+            get(contract::ENV_TEMP),
+            super::super::isolate::data_dir(dir, &meta).to_string_lossy()
+        );
+        assert_eq!(env.len(), 5, "交接变量数量固定，多了会让交接内容漂移");
     }
 
     /// 纠正 `registered` 幂等，且只动这一个字段。
@@ -732,6 +883,7 @@ mod tests {
             settings,
             runtime: runtime.handle().clone(),
             events,
+            account: None,
             hwnd: 0,
         };
 

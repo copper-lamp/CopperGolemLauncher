@@ -129,8 +129,11 @@ pub struct InstallPlan {
 pub struct ContentRootsView {
     /// 共享内容根（`.../com.mojang`）。
     pub com_mojang: String,
-    /// 用户目录根（`.../Users`），世界包定位用。
+    /// 用户目录根（`.../Users`），世界包定位用。UWP 实例没有这一层，为空串。
     pub users_root: String,
+    /// 世界目录的确定落点（UWP 用）；GDK 为 `None`（要运行时探测玩家目录）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worlds: Option<String>,
 }
 
 impl From<&content::ContentRoots> for ContentRootsView {
@@ -138,6 +141,10 @@ impl From<&content::ContentRoots> for ContentRootsView {
         Self {
             com_mojang: roots.com_mojang.to_string_lossy().into_owned(),
             users_root: roots.users_root.to_string_lossy().into_owned(),
+            worlds: roots
+                .worlds
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
         }
     }
 }
@@ -148,6 +155,7 @@ impl ContentRootsView {
         content::ContentRoots {
             com_mojang: PathBuf::from(&self.com_mojang),
             users_root: PathBuf::from(&self.users_root),
+            worlds: self.worlds.as_ref().map(PathBuf::from),
         }
     }
 }
@@ -838,6 +846,7 @@ mod tests {
         let roots = content::ContentRoots {
             com_mojang: cm.clone(),
             users_root: base.join("Users"),
+            worlds: None,
         };
         // 没有玩家目录 → 退回 com.mojang/minecraftWorlds（不多套一层）
         assert_eq!(worlds_dir_for(&roots), cm.join(WORLDS_DIR));

@@ -49,7 +49,12 @@ fn access_service() -> String {
 pub struct AccountInfo {
     pub id: String,
     pub gamertag: String,
+    /// 真实 Xbox XUID（十进制）。
     pub xuid: Option<String>,
+    /// WAM 的 `WebAccount.Id`（PUID，可能含 A-F）。只用于向 WAM 取票，不参与
+    /// profile 比对或 license 绑定。
+    #[serde(default)]
+    pub wam_account_id: Option<String>,
 }
 
 /// 设备码信息（前端展示授权链接与用户码）。
@@ -106,13 +111,14 @@ impl AccountService {
         self.db
             .with_conn(|conn| {
                 conn.query_row(
-                    "SELECT id, gamertag, xuid FROM core_account ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT id, gamertag, xuid, wam_account_id FROM core_account ORDER BY updated_at DESC LIMIT 1",
                     [],
                     |r| {
                         Ok(AccountInfo {
                             id: r.get(0)?,
                             gamertag: r.get(1)?,
                             xuid: r.get(2)?,
+                            wam_account_id: r.get(3)?,
                         })
                     },
                 )
@@ -194,26 +200,26 @@ impl AccountService {
         Ok(info)
     }
 
-    /// Microsoft 账户授权（WAM 交互路径）：把系统账户界面归属到本进程窗口 `hwnd`，
-    /// 用户选定账户后落库 XUID 并广播。
+    /// Xbox Live 账户登录（WAM 交互路径）。
     ///
-    /// 这是**商店授权的唯一身份来源**：`native_install` 取 Store content key 所需的
-    /// WAM 票据只能由 WAM 签发，而 XUID 是授权的结果而非前提，因此无法在授权前提供。
-    /// 设备码登录（[`AccountService::begin_login`]）与之并列而非串行：前者服务商店授权，
-    /// 后者为启动游戏提供 MSA/XSTS 凭据。
+    /// 与旧实现的关键区别：
+    /// - WAM scope 用 **Xbox Live**（`service::user.auth.xboxlive.com::MBI_SSL`），
+    ///   不再用 Store scope；
+    /// - 票据换 XBL User Token + XSTS，从 XSTS 的 `DisplayClaims.xui[0].xid` 取
+    ///   **真实 XUID**；WAM 返回的 `WebAccount.Id` 只是 PUID，单独存字段。
     ///
-    /// 阻塞时长不可控（用户在系统界面上操作），因此放到阻塞线程池执行。
+    /// 这条路径同时刷新系统 Xbox Identity Provider 的 TokenBroker 账户，游戏才能
+    /// 用同一个账户静默登录。阻塞时长不可控，因此放到阻塞线程池执行。
     pub async fn begin_wam_sign_in(&self, hwnd: isize) -> Result<AccountInfo, KernelError> {
         self.publish_login_state(LoginState::Waiting, None);
         let outcome = self
             .runtime
-            .spawn_blocking(move || crate::services::store_wam::sign_in_interactive(hwnd))
+            .spawn_blocking(move || crate::services::store_wam::xbox_ticket_interactive(hwnd))
             .await
             .map_err(|e| KernelError::Account(format!("账户授权任务异常退出: {e}")))?;
 
-        let identity = match outcome {
-            Ok(identity) => identity,
-            // 用户主动关闭系统界面是正常退出，不应报成失败。
+        let ticket = match outcome {
+            Ok(ticket) => ticket,
             Err(crate::services::store_wam::WamStoreError::UserCancelled) => {
                 self.publish_login_state(LoginState::Failed, Some("已取消账户授权"));
                 return Err(KernelError::Account("已取消账户授权".into()));
@@ -225,14 +231,32 @@ impl AccountService {
             }
         };
 
-        // WAM 只签发 XUID 形态的身份；UserName 可能为空，此时以 XUID 作为展示名，
-        // 避免出现「已登录但无名可显」的半状态记录。
-        let display_name = if identity.gamertag.trim().is_empty() {
-            identity.xuid.clone()
-        } else {
-            identity.gamertag.clone()
+        // WAM 票据 → XBL User Token → XSTS。失败同样要落状态，不能停在「等待中」。
+        let result: Result<(String, String), KernelError> = async {
+            let xbl = exchange_xbox_wam(&self.client, &ticket.ticket).await?;
+            // xid / gtg 在 XSTS **响应体**的 DisplayClaims 里，不在 Token 的 JWT 里。
+            let xsts = exchange_xsts_with_identity(&self.client, &xbl).await?;
+            let xuid = xsts.xuid.ok_or_else(|| {
+                KernelError::Account("XSTS 响应里没有 xid（不是 Xbox 账户）".into())
+            })?;
+            Ok((xuid, xsts.gamertag))
+        }
+        .await;
+
+        let (xuid, gamertag) = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.publish_login_state(LoginState::Failed, Some(&error.to_string()));
+                return Err(error);
+            }
         };
-        let account = self.save_account(display_name, Some(identity.xuid))?;
+
+        let display_name = if gamertag.trim().is_empty() {
+            xuid.clone()
+        } else {
+            gamertag
+        };
+        let account = self.save_account(display_name, Some(xuid), Some(ticket.account_id))?;
         self.publish_login_state(LoginState::Done, None);
         Ok(account)
     }
@@ -294,11 +318,17 @@ impl AccountService {
     }
 
     /// 写入账户记录并广播 `account.changed`。
-    fn save_account(&self, gamertag: String, xuid: Option<String>) -> Result<AccountInfo, KernelError> {
+    fn save_account(
+        &self,
+        gamertag: String,
+        xuid: Option<String>,
+        wam_account_id: Option<String>,
+    ) -> Result<AccountInfo, KernelError> {
         let account = AccountInfo {
             id: Uuid::new_v4().to_string(),
             gamertag,
             xuid,
+            wam_account_id,
         };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -306,9 +336,15 @@ impl AccountService {
             .unwrap_or(0);
         self.db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO core_account (id, gamertag, xuid, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?4)",
-                rusqlite::params![account.id, account.gamertag, account.xuid, now_ms],
+                "INSERT INTO core_account (id, gamertag, xuid, wam_account_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                rusqlite::params![
+                    account.id,
+                    account.gamertag,
+                    account.xuid,
+                    account.wam_account_id,
+                    now_ms
+                ],
             )?;
             Ok(())
         })?;
@@ -450,9 +486,8 @@ async fn poll_login_completion(
     // Xbox Live 用户认证 + XSTS。
     let result = async {
         let xbl = exchange_xbox(&client, &ms_token.0).await?;
-        let (xuid, gamertag) = xbl_identity(&xbl);
-        let _xsts = exchange_xsts(&client, &xbl).await?;
-        Ok::<_, KernelError>((xuid, gamertag))
+        let xsts = exchange_xsts_with_identity(&client, &xbl).await?;
+        Ok::<_, KernelError>((xsts.xuid, xsts.gamertag))
     }
     .await;
 
@@ -463,6 +498,7 @@ async fn poll_login_completion(
                 id: id.clone(),
                 gamertag,
                 xuid,
+                wam_account_id: None,
             };
             // 先把凭证写进安全存储，**写失败即视为登录失败**。
             //
@@ -505,9 +541,15 @@ async fn poll_login_completion(
                 .unwrap_or(0);
             let result = db.with_conn(|conn| {
                 conn.execute(
-                    "INSERT INTO core_account (id, gamertag, xuid, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?4)",
-                    rusqlite::params![account.id, account.gamertag, account.xuid, now_ms],
+                    "INSERT INTO core_account (id, gamertag, xuid, wam_account_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    rusqlite::params![
+                        account.id,
+                        account.gamertag,
+                        account.xuid,
+                        account.wam_account_id,
+                        now_ms
+                    ],
                 )?;
                 Ok(())
             });
@@ -538,6 +580,45 @@ fn finish_login(
     events.publish("account.login.state", json!({ "state": state, "reason": reason }));
 }
 
+/// WAM 票据换 XBL User Token。
+///
+/// WAM 的 Xbox scope 票据本身就是 RPS ticket，**不能再加 `d=` 前缀**。
+/// LeviLauncher 的 `xblUserAuth` 也是原样传入。失败时把响应体带出来，避免
+/// 只看到一句「网络请求失败」。
+async fn exchange_xbox_wam(client: &Client, ticket: &str) -> Result<String, KernelError> {
+    let response = client
+        .post(XBOX_AUTH_URL)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&json!({
+            "Properties": {
+                "AuthMethod": "RPS",
+                "SiteName": "user.auth.xboxlive.com",
+                "RpsTicket": ticket,
+            },
+            "RelyingParty": "http://auth.xboxlive.com",
+            "TokenType": "JWT",
+        }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(KernelError::Account(format!(
+            "XBL 用户认证失败（{status}）：{}",
+            body.chars().take(300).collect::<String>()
+        )));
+    }
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| KernelError::Account(format!("XBL 响应不是 JSON: {e}")))?;
+    value
+        .get("Token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| KernelError::Account("XBL 响应缺少 Token".into()))
+}
+
 /// Xbox Live 用户认证。
 async fn exchange_xbox(client: &Client, ms_access: &str) -> Result<String, KernelError> {
     let resp = client
@@ -564,9 +645,23 @@ async fn exchange_xbox(client: &Client, ms_access: &str) -> Result<String, Kerne
         .ok_or_else(|| KernelError::Account("Xbox 认证响应缺少 Token".into()))
 }
 
+/// XSTS 响应：Token + 身份（xid / gtg 在响应体的 DisplayClaims 里）。
+#[derive(Debug, Clone)]
+struct XstsAuth {
+    token: String,
+    xuid: Option<String>,
+    gamertag: String,
+}
+
 /// XSTS 授权（RelyingParty `http://xboxlive.com`，MCBE 使用）。
-async fn exchange_xsts(client: &Client, xbl_token: &str) -> Result<String, KernelError> {
-    let resp = client
+///
+/// 身份必须从**响应体**的 `DisplayClaims.xui[0]` 取：`Token` 是 JWT，但
+/// `DisplayClaims` 是响应体的顶层字段，不在 JWT payload 里。
+async fn exchange_xsts_with_identity(
+    client: &Client,
+    xbl_token: &str,
+) -> Result<XstsAuth, KernelError> {
+    let response = client
         .post(XSTS_AUTH_URL)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
@@ -579,14 +674,46 @@ async fn exchange_xsts(client: &Client, xbl_token: &str) -> Result<String, Kerne
             "TokenType": "JWT",
         }))
         .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
         .await?;
-    resp.get("Token")
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(KernelError::Account(format!(
+            "XSTS 授权失败（{status}）：{}",
+            body.chars().take(300).collect::<String>()
+        )));
+    }
+    let resp: Value = serde_json::from_str(&body)
+        .map_err(|e| KernelError::Account(format!("XSTS 响应不是 JSON: {e}")))?;
+    let token = resp
+        .get("Token")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| KernelError::Account("XSTS 响应缺少 Token".into()))
+        .ok_or_else(|| KernelError::Account("XSTS 响应缺少 Token".into()))?;
+    let claim = resp
+        .get("DisplayClaims")
+        .and_then(|claims| claims.get("xui"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.first());
+    let xuid = claim
+        .and_then(|item| item.get("xid"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let gamertag = claim
+        .and_then(|item| item.get("gtg").or_else(|| item.get("gt")))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "玩家".to_string());
+    Ok(XstsAuth {
+        token,
+        xuid,
+        gamertag,
+    })
+}
+
+/// 只要 XSTS token 的调用方。
+async fn exchange_xsts(client: &Client, xbl_token: &str) -> Result<String, KernelError> {
+    Ok(exchange_xsts_with_identity(client, xbl_token).await?.token)
 }
 
 /// 从 Xbox 认证响应提取身份（xuid / gamertag）。
@@ -601,7 +728,7 @@ fn xbl_identity(xbl_token: &str) -> (Option<String>, String) {
         .and_then(|arr| arr.first());
     let xuid = xui.and_then(|u| u.get("xid")).and_then(Value::as_str).map(str::to_string);
     let gamertag = xui
-        .and_then(|u| u.get("gt"))
+        .and_then(|u| u.get("gtg").or_else(|| u.get("gt")))
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| "玩家".to_string());

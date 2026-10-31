@@ -19,6 +19,8 @@ use crate::state::KernelContext;
 pub mod content;
 /// 触控层布局（屏幕控件）的事实源：`<版本目录>/controls.json`。
 pub mod controls;
+/// 账户—profile 一致性检查（启动前诊断，防止静默恢复别人的账户）。
+pub mod account_check;
 /// 注入编排：hook DLL 落位 + 导入表改写 + 原始文件备份与还原。
 pub mod inject;
 /// 挂起启动 + 远程线程注入：游戏 exe 不改一个字节。
@@ -34,6 +36,12 @@ pub mod isolate;
 /// 空 profile 上游戏自身的交互式登录在当前环境走不通（零网络请求、永远
 /// 「登录中」），所以新建实例必须是「第一次启动就已登录」。
 pub mod login_state;
+/// 实例登录态继承：只从一手来源取，绝不搬运路径绑定文件。
+///
+/// 官方 Store 数据可以整份 options.txt 继承；同版本根的其它实例只合并三行
+/// 登录键，且带继承标记的复制品不再作为来源。`.ent`、`premium_cache`、
+/// `XblProfileCache`、`minecraftpe` 缓存一律不搬。
+pub mod inherit;
 pub mod launch;
 pub mod meta;
 pub mod mods;
@@ -43,6 +51,8 @@ pub mod monitor;
 pub mod preload;
 /// 窗口：游戏窗口呈现判定 + 启动器窗口行为。
 pub mod window;
+/// UWP 实例启动：松散注册 → 包数据目录重定向 → 系统激活。
+pub mod uwp_launch;
 
 use meta::VersionMeta;
 
@@ -213,15 +223,24 @@ impl HomeModule {
     }
 
     /// 删除版本（游戏运行中拒绝；成功后广播 `version.removed`）。
+    ///
+    /// UWP 实例在删目录**之前**必须先注销包并断开数据目录连接点：
+    /// 注册记录指向的就是这个目录，目录没了而注册还在，此后该包族的任何
+    /// 注册 / 激活都会以 0x80073CFB 一类错误收场（见 `home::uwp_launch::cleanup`）。
     pub fn delete_version(kernel: &KernelContext, name: &str) -> Result<(), KernelError> {
         let root = kernel.versions_root();
         let dir = meta::resolve_version_dir(&root, name)?;
         if !dir.exists() {
             return Err(KernelError::InvalidArgument(format!("版本 `{name}` 不存在")));
         }
-        let exe = dir.join(launch::GAME_EXE);
+        let exe = launch::game_exe_path(&dir);
         if launch::is_process_running_at_path(&exe) {
             return Err(KernelError::InvalidArgument("游戏运行中，无法删除".into()));
+        }
+        if let Some(meta) = VersionMeta::read(&dir) {
+            if meta.is_uwp() {
+                uwp_launch::cleanup(&dir, &meta);
+            }
         }
         std::fs::remove_dir_all(&dir)?;
         kernel
@@ -242,14 +261,14 @@ impl HomeModule {
     pub fn game_running(kernel: &KernelContext, name: &str) -> Result<bool, KernelError> {
         let root = kernel.versions_root();
         let dir = meta::resolve_version_dir(&root, name)?;
-        Ok(launch::is_process_running_at_path(&dir.join(launch::GAME_EXE)))
+        Ok(launch::is_process_running_at_path(&launch::game_exe_path(&dir)))
     }
 
     /// 结束该版本运行中的游戏进程，返回结束的进程数。
     pub fn kill_game(kernel: &KernelContext, name: &str) -> Result<usize, KernelError> {
         let root = kernel.versions_root();
         let dir = meta::resolve_version_dir(&root, name)?;
-        launch::terminate_process_at_path(&dir.join(launch::GAME_EXE))
+        launch::terminate_process_at_path(&launch::game_exe_path(&dir))
     }
 
     /// 启动文件状态（hook 是否落位、导入是否生效、原始备份是否存在）。

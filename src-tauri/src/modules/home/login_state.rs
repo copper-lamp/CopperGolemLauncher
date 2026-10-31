@@ -56,6 +56,8 @@ pub const KEY_EVER_LOGGED_IN: &str = "game_haseverloggedintoxbl";
 pub const KEY_MC_ID: &str = "last_minecraft_id";
 /// title 帐户 id（授权侧）。
 pub const KEY_TITLE_ID: &str = "last_title_account_id";
+/// 「已经选择不登录 XBL」开关。不清掉它，游戏不会回到欢迎页。
+pub const KEY_CHOSEN_NOT_SIGN_IN: &str = "game_haschosennottosignintoxbl";
 
 /// 需要导入/判定的三个键。
 pub const ACCOUNT_KEYS: [&str; 3] = [KEY_EVER_LOGGED_IN, KEY_MC_ID, KEY_TITLE_ID];
@@ -176,6 +178,41 @@ pub fn merge_account_into(target: &Path, source: &AccountState) -> Result<bool, 
     }
     // 先写临时文件再改名：中途崩溃不会留下半个 options.txt，而半个文件会被
     // 游戏当成"设置损坏"重置，用户会莫名丢掉全部画质设置。
+    let tmp = target.with_extension("copper-tmp");
+    let mut text = out.join("\r\n");
+    text.push_str("\r\n");
+    std::fs::write(&tmp, text.as_bytes())?;
+    std::fs::rename(&tmp, target)?;
+    Ok(true)
+}
+
+/// 清掉 profile 里的登录痕迹（含「已选择不登录」开关），保留其它设置。
+///
+/// 用于「profile 属于另一个账户」的场景：带着别人的三键启动，游戏会去静默
+/// 恢复一个当前 WAM 会话里不存在的账户，表现为 0 TCP、永远停在「正在登录」。
+/// 清掉后游戏回到欢迎页，用户可以用当前账户重新登录。
+pub fn clear_account(target: &Path) -> Result<bool, KernelError> {
+    if !target.is_file() {
+        return Ok(false);
+    }
+    let existing = std::fs::read_to_string(target)?;
+    let mut out: Vec<String> = Vec::new();
+    let mut changed = false;
+    for line in existing.lines() {
+        let bare = line.trim_end_matches('\r');
+        let key = bare.split_once(':').map(|(key, _)| key.trim()).unwrap_or("");
+        if matches!(
+            key,
+            KEY_EVER_LOGGED_IN | KEY_MC_ID | KEY_TITLE_ID | KEY_CHOSEN_NOT_SIGN_IN
+        ) {
+            changed = true;
+            continue;
+        }
+        out.push(bare.to_string());
+    }
+    if !changed {
+        return Ok(false);
+    }
     let tmp = target.with_extension("copper-tmp");
     let mut text = out.join("\r\n");
     text.push_str("\r\n");

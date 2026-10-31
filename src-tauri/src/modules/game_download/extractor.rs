@@ -194,40 +194,41 @@ pub fn verify_package(out_dir: &Path) -> Result<(), ExtractError> {
     Ok(())
 }
 
-/// 校验 PE 文件头 Machine == 0x8664（x64）。读前 4 KiB 即可。
+/// 校验 PE 文件头 Machine == 0x8664（x64）。
 fn verify_pe_x64(path: &Path) -> Result<(), ExtractError> {
-    let mut file = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; 4096];
-    let n = file.read(&mut buf)?;
-    if n < 64 {
-        return Err(ExtractError::MissingExecutable);
+    match pe_machine(path) {
+        Some(0x8664) => Ok(()),
+        _ => Err(ExtractError::MissingExecutable),
     }
-    if &buf[0..2] != b"MZ" {
-        return Err(ExtractError::MissingExecutable);
+}
+
+/// 读取 PE 的 COFF `Machine` 字段。
+///
+/// 返回 `None` 表示「不是可解析的 PE」。抽成公开函数是为了让 UWP 解包器
+/// （`uwp.rs`）复用同一份判定：两个渠道的产物校验不能各写一遍 PE 解析，
+/// 否则一边接受 x86、另一边拒绝，行为会随渠道漂移。
+pub(crate) fn pe_machine(path: &Path) -> Option<u16> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; 4096];
+    let n = file.read(&mut buf).ok()?;
+    if n < 64 || &buf[0..2] != b"MZ" {
+        return None;
     }
     let pe_off = u32::from_le_bytes([buf[60], buf[61], buf[62], buf[63]]) as usize;
     if pe_off + 6 > n {
         // PE 头在 4 KiB 之外（极罕见），再读一次覆盖。
-        let mut file2 = std::fs::File::open(path)?;
+        let mut file2 = std::fs::File::open(path).ok()?;
         let mut buf2 = vec![0u8; pe_off + 64];
-        let n2 = file2.read(&mut buf2)?;
+        let n2 = file2.read(&mut buf2).ok()?;
         if n2 < pe_off + 6 || &buf2[pe_off..pe_off + 4] != b"PE\0\0" {
-            return Err(ExtractError::MissingExecutable);
+            return None;
         }
-        let machine = u16::from_le_bytes([buf2[pe_off + 4], buf2[pe_off + 5]]);
-        if machine != 0x8664 {
-            return Err(ExtractError::MissingExecutable);
-        }
-        return Ok(());
+        return Some(u16::from_le_bytes([buf2[pe_off + 4], buf2[pe_off + 5]]));
     }
     if &buf[pe_off..pe_off + 4] != b"PE\0\0" {
-        return Err(ExtractError::MissingExecutable);
+        return None;
     }
-    let machine = u16::from_le_bytes([buf[pe_off + 4], buf[pe_off + 5]]);
-    if machine != 0x8664 {
-        return Err(ExtractError::MissingExecutable);
-    }
-    Ok(())
+    Some(u16::from_le_bytes([buf[pe_off + 4], buf[pe_off + 5]]))
 }
 
 // ---------------------------------------------------------------- 测试

@@ -14,6 +14,9 @@ name = "copper_core_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
+# 发布构建：启用 Tauri 的自定义协议，让 release 包加载内嵌前端资源，
+# 而不是 devUrl（否则装到系统里仍然去连 localhost:1420）。
+custom-protocol = ["tauri/custom-protocol"]
 # CI/发布构建用：让 openssl 从源码静态编译，构建机无需预装 OpenSSL，
 # 产物也不再依赖 libcrypto/libssl 运行库 DLL。本地开发不启用此特性，
 # 仍走 OPENSSL_DIR 指向的本机 OpenSSL（见 .cargo/env-check.ps1）。
@@ -85,6 +88,10 @@ windows = { version = "0.58", features = [
     "Security_Authentication_Web_Core",
     "Security_Credentials",
     "UI_ApplicationSettings",
+    # UWP 松散注册 / 卸载 / 查询（PackageManager）与包状态目录枚举
+    "ApplicationModel",
+    "Management_Deployment",
+    "Storage",
 ] }
 
 [target.'cfg(not(windows))'.dependencies]

@@ -13,6 +13,7 @@ import { Play, Gamepad2, Download, Square } from "@lucide/vue";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
+import { useAccount } from "../../composables/useAccount";
 import {
   beginLaunch,
   endSession,
@@ -44,6 +45,23 @@ const versions = ref<VersionView[]>([]);
 const selectedName = ref("");
 const settings = useSettings();
 const loading = ref(true);
+const {
+  account,
+  loginWaiting,
+  beginWamSignIn,
+  profileMismatch,
+  clearProfileMismatch,
+} = useAccount();
+const showAccountBanner = computed(() => !account.value || !!profileMismatch.value);
+const accountBannerText = computed(() =>
+  profileMismatch.value
+    ? t("account.profile_mismatch_title")
+    : t("account.not_logged_in"),
+);
+async function handleAccountBanner() {
+  await beginWamSignIn();
+  clearProfileMismatch();
+}
 
 const modeOptions = computed(() => [
   { value: "simple", label: t("module.home.mode.simple") },
@@ -182,6 +200,18 @@ function goDownload() {
 
 <template>
   <div class="home-page">
+    <div v-if="showAccountBanner" class="home-page__account">
+      <span>{{ accountBannerText }}</span>
+      <CoButton
+        variant="primary"
+        size="sm"
+        :disabled="loginWaiting"
+        @click="handleAccountBanner"
+      >
+        {{ t("account.store_sign_in") }}
+      </CoButton>
+    </div>
+
     <!-- 模式切换注入全局标题栏操作区 -->
     <Teleport to="#copper-titlebar-actions">
       <CoSegmented v-model="mode" :options="modeOptions" />
@@ -256,6 +286,21 @@ function goDownload() {
   align-items: center;
   justify-content: center;
   overflow-y: auto;
+}
+
+.home-page__account {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-3);
+  max-width: 640px;
+  margin: 0 var(--copper-space-4) var(--copper-space-4);
+  padding: var(--copper-space-2) var(--copper-space-3) var(--copper-space-2)
+    var(--copper-space-4);
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface-2);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-sm);
 }
 
 .home-page__simple {

@@ -90,6 +90,40 @@ pub struct AndroidVersionMeta {
     pub lib_cache_dir: String,
 }
 
+/// UWP 实例的包身份（松散注册与系统激活所需的全部信息）。
+///
+/// 这三个值全部来自实例目录里的 `AppxManifest.xml`，不是猜出来的：
+/// - `identity_name`：`Microsoft.MinecraftUWP` / `Microsoft.MinecraftWindowsBeta`；
+/// - `family_name`：`<identity>_8wekyb3d8bbwe`，包数据目录与激活 AUMID 都用它；
+/// - `application_id`：`Application/@Id`，激活时拼 `族名!Id`。
+///
+/// 冗余落盘的意义：启动时不必再解析一遍清单（清单可能被用户或别的工具改过），
+/// 而且「哪个包族属于哪个实例」必须跟实例目录走——它决定了数据隔离目录与注销目标。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UwpVersionMeta {
+    pub identity_name: String,
+    pub family_name: String,
+    pub application_id: String,
+    /// 包版本（`AppxManifest` 的 `Identity/@Version`，如 `1.21.11401.0`）。
+    #[serde(default)]
+    pub package_version: String,
+}
+
+impl UwpVersionMeta {
+    /// 激活用的 AUMID（`族名!ApplicationId`）。
+    pub fn app_user_model_id(&self) -> String {
+        format!("{0}!{1}", self.family_name, self.application_id)
+    }
+
+    /// 三个必需字段是否齐全。
+    pub fn is_complete(&self) -> bool {
+        !self.identity_name.trim().is_empty()
+            && !self.family_name.trim().is_empty()
+            && !self.application_id.trim().is_empty()
+    }
+}
+
 /// 版本元数据。
 ///
 /// 字段与 LeviLauncher `versions.VersionMeta` 对应，`created_at` 以
@@ -102,6 +136,15 @@ pub struct VersionMeta {
     /// Android runtime metadata. Omitted on desktop versions for compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android: Option<AndroidVersionMeta>,
+    /// 包类型：`gdk`（缺省）/ `uwp`。
+    ///
+    /// 缺省即 GDK，旧 `version.json` 与 LeviLauncher 目录因此不受影响：它们全都是
+    /// GDK 包（UWP 实例是本模块新装的，一定会写这个字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_type: Option<String>,
+    /// UWP 包身份；仅 `package_type = "uwp"` 时存在。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uwp: Option<UwpVersionMeta>,
     #[serde(rename = "type")]
     pub version_type: String,
     #[serde(default)]
@@ -150,6 +193,19 @@ impl VersionMeta {
     /// 目录是否存在（作为已安装版本判定）。
     pub fn dir_exists(dir: &Path) -> bool {
         dir.is_dir()
+    }
+
+    /// 是否为 UWP 实例（需要系统松散注册 + 激活启动）。
+    pub fn is_uwp(&self) -> bool {
+        self.package_type
+            .as_deref()
+            .map(|value| value.eq_ignore_ascii_case("uwp"))
+            .unwrap_or(false)
+    }
+
+    /// UWP 包身份；非 UWP 实例或身份不完整时返回 `None`。
+    pub fn uwp_identity(&self) -> Option<&UwpVersionMeta> {
+        self.uwp.as_ref().filter(|identity| identity.is_complete())
     }
 }
 

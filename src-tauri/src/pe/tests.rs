@@ -38,15 +38,17 @@ impl Fixture {
         let iat_off = 56usize;
         let hint_off = 72usize;
         let dll_name_off = 74usize;
-        let func_name_off = 74 + ("kernel32.dll".encode_utf16().count() as usize + 1) * 2;
-        let blob_len = func_name_off + ("CreateFileW".encode_utf16().count() as usize + 1) * 2;
+        // 导入表里的名字是 ANSI 窄字符串（长度 + 1 个 NUL），不是 UTF-16。
+        let func_name_off = 74 + "kernel32.dll".len() + 1;
+        let blob_len = func_name_off + "CreateFileW".len() + 1;
         import_blob.resize(blob_len, 0);
         let put_u32 = |buf: &mut Vec<u8>, at: usize, v: u32| {
             buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
         };
-        let put_wide = |buf: &mut Vec<u8>, at: usize, s: &str| {
-            for (i, unit) in s.encode_utf16().enumerate() {
-                buf[at + i * 2..at + i * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+        // 导入表里的名字只能按字节写：ANSI 一字节一字符。
+        let put_ansi = |buf: &mut Vec<u8>, at: usize, s: &str| {
+            for (i, byte) in s.bytes().enumerate() {
+                buf[at + i] = byte;
             }
         };
         put_u32(&mut import_blob, desc_count_off + 0, text_rva + ilt_off as u32);
@@ -54,8 +56,8 @@ impl Fixture {
         put_u32(&mut import_blob, desc_count_off + 16, text_rva + iat_off as u32);
         put_u32(&mut import_blob, ilt_off, text_rva + hint_off as u32);
         put_u32(&mut import_blob, iat_off, text_rva + hint_off as u32);
-        put_wide(&mut import_blob, dll_name_off, "kernel32.dll");
-        put_wide(&mut import_blob, func_name_off, "CreateFileW");
+        put_ansi(&mut import_blob, dll_name_off, "kernel32.dll");
+        put_ansi(&mut import_blob, func_name_off, "CreateFileW");
         let import_blob = import_blob;
 
         let mut data = vec![0u8; headers_size as usize];
@@ -456,3 +458,4 @@ fn real_executable_survives_injection_and_still_loads() {
         PeError::AlreadyImported("CopperCoreHook.dll".into())
     );
 }
+

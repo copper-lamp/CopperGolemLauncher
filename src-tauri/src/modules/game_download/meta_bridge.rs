@@ -53,6 +53,51 @@ pub fn write_meta(
     if let Some(loader) = loader.map(str::trim).filter(|v| !v.is_empty()) {
         meta.loader = Some(loader.to_string());
     }
+    // GDK 包没有系统包身份；显式清掉，防止「同一个实例目录先装 UWP 后又装 GDK」时
+    // 旧身份残留（启动链会据 packageType 决定走松散注册还是直接 spawn）。
+    meta.package_type = Some("gdk".to_string());
+    meta.uwp = None;
+    meta::VersionMeta::write(dir, &meta)
+}
+
+/// 写 UWP 实例的版本元数据。
+///
+/// 与 [`write_meta`] 同一套「读改写、只覆盖本模块字段」的规则，额外写两份东西：
+/// - `packageType = "uwp"`：启动链据此走「系统松散注册 + 激活」；
+/// - `uwp`：包身份三件套（身份名 / 包族名 / Application Id），缺失就无法激活。
+///
+/// `game_version` 用包清单换算出的版本号（`1.21.11401.0` → `1.21.114.1`），而不是
+/// slug 字符串：前者是权威口径（开始页、编辑器门槛、加载器匹配都用它），后者只是
+/// 目录名。
+pub fn write_uwp_meta(
+    dir: &Path,
+    instance: &str,
+    version_id: &str,
+    kind: &str,
+    manifest: &super::uwp::PackageManifest,
+) -> Result<(), KernelError> {
+    let mut meta = meta::VersionMeta::read(dir).unwrap_or_default();
+    meta.name = instance.to_string();
+    meta.game_version = manifest
+        .game_version()
+        .unwrap_or_else(|| game_version_of(version_id));
+    meta.version_type = kind.to_string();
+    meta.enable_isolation = true;
+    if meta.created_at.is_empty() {
+        meta.created_at = meta::now_rfc3339();
+    }
+    // UWP 实例不支持加载器（见 installer::enqueue_uwp）：把可能残留的旧值清掉。
+    meta.loader = None;
+    meta.package_type = Some("uwp".to_string());
+    meta.uwp = Some(meta::UwpVersionMeta {
+        identity_name: manifest.identity_name.clone(),
+        family_name: manifest.family_name().to_string(),
+        application_id: manifest.application_id.clone(),
+        package_version: manifest.package_version.clone(),
+    });
+    // UWP 包不走「注册后由系统协议唤起」这条路：注册动作在每次启动时由启动链执行，
+    // 这个字段对 UWP 没有意义，保持 false 以免开始页据此改变按钮语义。
+    meta.registered = false;
     meta::VersionMeta::write(dir, &meta)
 }
 

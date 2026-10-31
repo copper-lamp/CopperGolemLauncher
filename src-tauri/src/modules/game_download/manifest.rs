@@ -1,8 +1,14 @@
 //! 版本清单：拉取 / 缓存 / 解析 MCBE 版本元数据，并构建前端分组视图。
 //!
-//! 数据源：社区维护的 `minecraft-windows-gdk-version-db`（LiteLDev）提供的
-//! `historical_versions.json`，内含历代 GDK 正式版 / 快照版的 CDN 直链与 md5。
-//! 三镜像（github / 代理 / gitcode）按设置 `download.mirror` 排序，失败回退缓存。
+//! 两个渠道合成同一份视图：
+//! - **GDK**：社区维护的 `minecraft-windows-gdk-version-db`（LiteLDev）提供的
+//!   `historical_versions.json`，内含历代 GDK 正式版 / 快照版的 CDN 直链与 md5；
+//!   六镜像按可达性依次尝试，失败回退缓存（再失败则只显示 UWP 条目）。
+//! - **UWP**：内嵌目录 [`super::uwp_catalog`]，商店渠道的历史版本与 Windows Update
+//!   UpdateID，不依赖网络。
+//!
+//! 两个目录实测零版本重叠，因此视图不需要区分来源即可共用同一对平表；`package_type`
+//! 只用于排障与后续分流，不参与显示。
 
 use std::time::Duration;
 
@@ -191,8 +197,16 @@ pub struct ManifestView {
 pub struct VersionView {
     /// 唯一键（= 版本 slug，同时是整包暂存文件名）。
     pub id: String,
-    /// 版本类型 `release` / `preview`。
+    /// 版本类型 `release` / `preview`（清单页的两个分组）。
+    ///
+    /// **不是** `version.json` 里的 `type`：UWP 的 Beta 渠道在页面上归入「测试版」，
+    /// 但落盘 `type` 仍是 `beta`（它用正式包身份，隔离目录与包族都按正式包处理）。
     pub kind: String,
+    /// 包的发行渠道：`gdk` / `uwp`。
+    ///
+    /// 前端不消费它（显示逻辑不变），但排障时必须能从接口直接看出某个版本走哪条
+    /// 安装链路。
+    pub package_type: String,
     /// 数值版本号（如 `1.21.120.21`）。
     pub game_version: String,
     /// 该版本是否有可装的 LeviLamina（列表页据此显示加载器徽标）。
@@ -201,7 +215,7 @@ pub struct VersionView {
     ///
     /// 由 `installer::local_package_slugs` **扫目录**得出，不查数据库记录：记录
     /// 会与磁盘分叉（用户手动删包 / 手动放包），而「本地有没有这个包」只有一个
-    /// 事实源，就是那个文件。这里只判断「存在且非空」，MD5 仍由安装流水线在
+    /// 事实源，就是那个文件。这里只判断「存在且非空」，MD5 / 摘要仍由安装流水线在
     /// 解包前强制校验。
     pub downloaded: bool,
 }
@@ -282,13 +296,18 @@ pub async fn fetch_manifest(ctx: &Ctx) -> Result<HistoricalVersions, KernelError
 
 /// 构建前端视图（纯计算，可测）。
 ///
+/// 两个渠道的版本**并进同一对平表**：GDK 来自社区清单（`versions`），UWP 来自内嵌
+/// 目录（`uwp_catalog`）。前端因此不需要任何改动——它只认「版本号 + 类型徽标 + 是否
+/// 可装加载器 + 是否已下载」，不关心包从哪来。
+///
 /// `catalog` 为加载器目录；为 `None`（未装 lip / 索引不可达）时所有版本的
 /// `has_loader` 都是 `false`——徽标宁可不显示，也不能凭「网络没通」就说这个版本能装
-/// 加载器。
+/// 加载器。UWP 版本一律 `false`：加载器需要往游戏进程注入桌面 DLL，而 UWP 只能纯
+/// AppContainer 注册（注入会让游戏启动即崩，见 `uwp_deploy`）。
 ///
 /// `local_packages` 是本地已存在的整包 slug 集合（调用方扫目录得到）；不在集合里
 /// 的版本 `downloaded` 为 `false`。徽标只代表「文件在」，不代表「内容对」——完整性
-/// 由安装流水线的 MD5 校验负责，列表页不做 GB 级读盘。
+/// 由安装流水线的 MD5 / 摘要校验负责，列表页不做 GB 级读盘。
 pub fn build_view(
     versions: &HistoricalVersions,
     catalog: Option<&loader_catalog::LoaderCatalog>,
@@ -308,6 +327,7 @@ pub fn build_view(
             downloaded: local_packages.contains(&slug),
             id: slug,
             kind: kind.to_string(),
+            package_type: "gdk".to_string(),
             has_loader: catalog.is_some_and(|c| c.supports(&game_version)),
             game_version,
         };
@@ -317,7 +337,26 @@ pub fn build_view(
         }
     }
 
-    // 新→旧：先按数值版本号降序，同数值再按时间降序（同版本号重发时后者更可信）。
+    for entry in super::uwp_catalog::all() {
+        let slug = entry.slug();
+        let view = VersionView {
+            downloaded: local_packages.contains(&slug),
+            id: slug,
+            kind: entry.channel.display_kind().to_string(),
+            package_type: "uwp".to_string(),
+            game_version: entry.version.clone(),
+            // UWP 实例不支持加载器（见函数注释）。
+            has_loader: false,
+        };
+        // 页面分组看 `display_kind`：Beta 渠道是开发版，归入测试版。
+        if entry.channel.display_kind() == "release" {
+            releases.push(view);
+        } else {
+            previews.push(view);
+        }
+    }
+
+    // 新→旧：先按数值版本号降序，同数值再按 id 降序（同版本号重发时后者更可信）。
     let sort_desc = |items: &mut Vec<VersionView>| {
         items.sort_by(|a, b| {
             b_numeric(b)
@@ -443,9 +482,23 @@ mod tests {
         }"#;
         let versions: HistoricalVersions = serde_json::from_str(sample).unwrap();
         let view = build_view(&versions, None, &Default::default());
-        let ids: Vec<&str> = view.releases.iter().map(|v| v.id.as_str()).collect();
-        assert_eq!(ids, ["1.21.130.22", "1.21.120.5", "1.21.100.2"]);
-        assert_eq!(view.previews.len(), 1);
+        // 视图里同时有 GDK 与 UWP 条目：只取 GDK 的那几条来验证排序与平表结构。
+        let gdk_ids: Vec<&str> = view
+            .releases
+            .iter()
+            .filter(|v| v.package_type == "gdk")
+            .map(|v| v.id.as_str())
+            .collect();
+        assert_eq!(gdk_ids, ["1.21.130.22", "1.21.120.5", "1.21.100.2"]);
+        // UWP 目录条目必须真的并进了同一张平表（离线也可见）。
+        assert!(view.releases.iter().any(|v| v.package_type == "uwp"));
+        assert!(view.previews.iter().any(|v| v.package_type == "uwp"));
+        // 排序必须是全局的（新→旧），不能把 UWP 条目一律排在后面。
+        for pair in view.releases.windows(2) {
+            let left = super::parse_numeric(&pair[0].game_version).unwrap_or((0, 0, 0, 0));
+            let right = super::parse_numeric(&pair[1].game_version).unwrap_or((0, 0, 0, 0));
+            assert!(left >= right, "正式版列表必须新→旧: {left:?} < {right:?}");
+        }
         assert_eq!(
             view.latest_release.as_ref().map(|v| v.id.as_str()),
             Some("1.21.130.22")
@@ -476,9 +529,16 @@ mod tests {
         let marked: Vec<(&str, bool)> = view
             .releases
             .iter()
+            .filter(|v| v.package_type == "gdk")
             .map(|v| (v.game_version.as_str(), v.has_loader))
             .collect();
         assert_eq!(marked, [("1.21.130.22", true), ("1.21.120.5", false)]);
+        // UWP 版本永不挂加载器徽标（UWP 实例不支持加载器）。
+        assert!(view
+            .releases
+            .iter()
+            .filter(|v| v.package_type == "uwp")
+            .all(|v| !v.has_loader));
         // 顺带确认选项视图与目录判定一致（下拉项的 compatible 与徽标同源）。
         let options = catalog.options_for("1.21.130.22");
         assert_eq!(options.len(), 2);
@@ -496,6 +556,7 @@ mod tests {
         let marked: Vec<(&str, bool)> = view
             .releases
             .iter()
+            .filter(|v| v.package_type == "gdk")
             .map(|v| (v.game_version.as_str(), v.downloaded))
             .collect();
         assert_eq!(marked, [("1.21.100.2", true)]);
@@ -507,10 +568,27 @@ mod tests {
         let marked: Vec<(&str, bool)> = view
             .previews
             .iter()
+            .filter(|v| v.package_type == "gdk")
             .map(|v| (v.game_version.as_str(), v.downloaded))
             .collect();
         assert_eq!(marked, [("1.21.130.20", true), ("1.21.120.21", false)]);
         assert!(view.releases.iter().all(|v| !v.downloaded));
+        // UWP 版本同样只看自己的 slug：`1.21.120.20_preview` 在集合里才挂徽标。
+        let uwp_local: std::collections::HashSet<String> =
+            ["1.21.120.20_preview".to_string()].into_iter().collect();
+        let view = build_view(&versions, None, &uwp_local);
+        let marked: Vec<(&str, bool)> = view
+            .previews
+            .iter()
+            .filter(|v| v.package_type == "uwp")
+            .map(|v| (v.id.as_str(), v.downloaded))
+            .collect();
+        assert!(marked.contains(&("1.21.120.20_preview", true)), "{marked:?}");
+        assert_eq!(
+            marked.iter().filter(|(_, downloaded)| *downloaded).count(),
+            1,
+            "只应有目标版本挂徽标: {marked:?}"
+        );
     }
 
     #[test]

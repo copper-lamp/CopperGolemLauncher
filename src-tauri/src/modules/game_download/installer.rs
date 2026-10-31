@@ -40,7 +40,7 @@ use crate::services::paths::Paths;
 use crate::services::settings::SettingsService;
 use crate::state::KernelContext;
 
-use super::{extractor, manifest, meta_bridge};
+use super::{extractor, manifest, meta_bridge, uwp, uwp_catalog, uwp_source};
 
 /// 模块在 cache 下的下载子目录。
 const CACHE_SUBDIR: &str = "game-download";
@@ -123,6 +123,14 @@ impl Ctx {
         self.download_dir().join(format!("{slug}.msixvc"))
     }
 
+    /// UWP 整包暂存路径（`versions_root/.download/<slug>.appx`）。
+    ///
+    /// 与 GDK 用不同后缀：两个渠道的包格式不同（XVC 容器 / ZIP），解包入口据此分流；
+    /// 也让「本地已有整包」这类目录扫描能一眼看出包属于哪个渠道。
+    pub fn dest_for_uwp(&self, slug: &str) -> PathBuf {
+        self.download_dir().join(format!("{slug}.appx"))
+    }
+
     /// 某实例安装目录（`versions_root/<实例名>`，根按设置动态解析）。
     pub fn install_dir(&self, instance: &str) -> PathBuf {
         self.versions_root().join(instance)
@@ -147,23 +155,41 @@ impl Ctx {
     }
 }
 
-/// 从文件名解析出 slug：`<slug>.msixvc` → `<slug>`，其余（含 `.part`）返回 `None`。
+/// 渠道类型是否使用预览包身份（`Microsoft.MinecraftWindowsBeta`）。
 ///
-/// 只认本模块的整包后缀，避免把用户放在同一目录下的其它文件误认成整包。
-fn package_slug_of(file_name: &str) -> Option<&str> {
-    file_name.strip_suffix(".msixvc")
+/// 只有 `preview` 是预览身份；`beta` 渠道用的是**正式包身份**
+/// （`Microsoft.MinecraftUWP`），它的隔离目录与包族都按正式包处理，
+/// 只是版本号属于开发版（见 `uwp_catalog::UwpChannel`）。
+fn is_preview_channel(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("preview")
 }
 
-/// 某slug 的整包是否**已经落盘**（存在、且不是零长度的截断残留）。
+/// 从文件名解析出 slug：`<slug>.msixvc` / `<slug>.appx` → `<slug>`，其余返回 `None`。
 ///
-/// 只判断「有文件」，不校验 MD5：整包是 GB 级，逐个版本算 MD5 会让打开清单页
+/// 只认本模块的整包后缀（GDK 的 `.msixvc` 与 UWP 的 `.appx`），避免把用户放在同一
+/// 目录下的其它文件误认成整包；`.part` 断点文件因为后缀对不上而天然被排除。
+fn package_slug_of(file_name: &str) -> Option<&str> {
+    file_name
+        .strip_suffix(".msixvc")
+        .or_else(|| file_name.strip_suffix(".appx"))
+}
+
+/// 某 slug 的整包是否**已经落盘**（存在、且不是零长度的截断残留）。
+///
+/// 两个渠道各查各的后缀：同一个 slug 不可能同时存在两种包（版本目录不重叠），
+/// 而「文件在」这件事由文件系统说了算。
+///
+/// 只判断「有文件」，不校验摘要：整包是 GB 级，逐个版本算摘要会让打开清单页
 /// 变成几分钟的读盘风暴。完整性由安装流水线解包前的强制校验负责（见
 /// `prepare_package`），列表页的「已下载」徽标只承诺「文件在」。
 pub fn has_local_package(ctx: &Ctx, slug: &str) -> bool {
-    let path = ctx.dest_for(slug);
-    std::fs::metadata(&path)
-        .map(|m| m.is_file() && m.len() > 0)
-        .unwrap_or(false)
+    [ctx.dest_for(slug), ctx.dest_for_uwp(slug)]
+        .iter()
+        .any(|path| {
+            std::fs::metadata(path)
+                .map(|m| m.is_file() && m.len() > 0)
+                .unwrap_or(false)
+        })
 }
 
 /// 本地已有整包的 slug 集合（扫 `versions_root/.download` 一遍）。
@@ -477,9 +503,34 @@ pub const MIGRATION_INSTANCES: crate::services::database::Migration =
               DROP TABLE IF EXISTS module_game_download_task;",
     };
 
+/// v4：UWP 渠道支持 —— 整包记录要能区分「整包来源」与「完整性依据」。
+///
+/// - `package_type`：`gdk` / `uwp`。决定解包走 XVC 还是 appx、启动时要不要松散注册；
+/// - `digest`：UWP 的完整性依据。Windows Update 下发的是 base64 SHA-1/SHA-256，
+///   这里存成 `sha1:<hex>` / `sha256:<hex>`；GDK 仍用清单 md5（`md5` 列），两列并存
+///   而不是复用同一列，避免「同一列里既有 md5 又有 sha1」这种靠前缀猜语义的写法。
+///
+/// 实例记录上的 `package_type` 是**安装期产物**的一部分：同版本多实例时，只有实例
+/// 记录能说明这个目录该按哪种包启动。
+pub const MIGRATION_UWP: crate::services::database::Migration =
+    crate::services::database::Migration {
+        version: 4,
+        name: "game_download_uwp",
+        sql: "ALTER TABLE module_game_download_package
+                ADD COLUMN package_type TEXT NOT NULL DEFAULT 'gdk';
+              ALTER TABLE module_game_download_package
+                ADD COLUMN digest TEXT NOT NULL DEFAULT '';
+              ALTER TABLE module_game_download_instance
+                ADD COLUMN package_type TEXT NOT NULL DEFAULT 'gdk';",
+    };
+
 /// 本模块全部迁移（按版本升序执行）。
-pub const MIGRATIONS: &[crate::services::database::Migration] =
-    &[MIGRATION, MIGRATION_ATTEMPTS, MIGRATION_INSTANCES];
+pub const MIGRATIONS: &[crate::services::database::Migration] = &[
+    MIGRATION,
+    MIGRATION_ATTEMPTS,
+    MIGRATION_INSTANCES,
+    MIGRATION_UWP,
+];
 
 /// 版本整包记录（下载单元）：一个版本一份整包，多实例共享。
 #[derive(Debug, Clone)]
@@ -493,6 +544,22 @@ pub struct PackageRecord {
     pub error: Option<String>,
     pub task_id: Option<u64>,
     pub attempts: i64,
+    /// `gdk` / `uwp`（见 [`MIGRATION_UWP`]）。
+    pub package_type: String,
+    /// UWP 的完整性依据（`sha1:<hex>` / `sha256:<hex>`）；GDK 为空。
+    pub digest: String,
+}
+
+impl PackageRecord {
+    /// 是否为 UWP 整包。
+    pub fn is_uwp(&self) -> bool {
+        self.package_type.eq_ignore_ascii_case("uwp")
+    }
+
+    /// 整包是否真的在盘上。
+    pub fn package_exists(&self) -> bool {
+        self.dest.is_file()
+    }
 }
 
 /// 实例记录（安装单元）：实例名即版本目录名。
@@ -506,10 +573,20 @@ pub struct InstanceRecord {
     /// `queued` | `installing` | `installed` | `failed`。
     pub state: String,
     pub error: Option<String>,
+    /// `gdk` / `uwp`。
+    pub package_type: String,
 }
 
-const PACKAGE_COLUMNS: &str = "version_id, kind, dest, md5, state, error, task_id, attempts";
-const INSTANCE_COLUMNS: &str = "instance, version_id, kind, loader, state, error";
+impl InstanceRecord {
+    /// 是否安装 UWP 包。
+    pub fn is_uwp(&self) -> bool {
+        self.package_type.eq_ignore_ascii_case("uwp")
+    }
+}
+
+const PACKAGE_COLUMNS: &str =
+    "version_id, kind, dest, md5, state, error, task_id, attempts, package_type, digest";
+const INSTANCE_COLUMNS: &str = "instance, version_id, kind, loader, state, error, package_type";
 
 fn row_to_package(r: &rusqlite::Row) -> rusqlite::Result<PackageRecord> {
     Ok(PackageRecord {
@@ -521,6 +598,8 @@ fn row_to_package(r: &rusqlite::Row) -> rusqlite::Result<PackageRecord> {
         error: r.get(5)?,
         task_id: r.get(6)?,
         attempts: r.get(7)?,
+        package_type: r.get(8)?,
+        digest: r.get(9)?,
     })
 }
 
@@ -532,6 +611,7 @@ fn row_to_instance(r: &rusqlite::Row) -> rusqlite::Result<InstanceRecord> {
         loader: r.get(3)?,
         state: r.get(4)?,
         error: r.get(5)?,
+        package_type: r.get(6)?,
     })
 }
 
@@ -599,11 +679,12 @@ fn upsert_package(ctx: &Ctx, rec: &PackageRecord) -> Result<(), KernelError> {
     ctx.db.with_conn(|conn| -> Result<(), KernelError> {
         conn.execute(
             "INSERT INTO module_game_download_package
-               (version_id, kind, dest, md5, state, error, task_id, attempts, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               (version_id, kind, dest, md5, state, error, task_id, attempts, package_type, digest, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(version_id) DO UPDATE SET
                kind=excluded.kind, dest=excluded.dest, md5=excluded.md5, state=excluded.state,
-               error=excluded.error, task_id=excluded.task_id, attempts=excluded.attempts",
+               error=excluded.error, task_id=excluded.task_id, attempts=excluded.attempts,
+               package_type=excluded.package_type, digest=excluded.digest",
             rusqlite::params![
                 rec.version_id,
                 rec.kind,
@@ -613,6 +694,8 @@ fn upsert_package(ctx: &Ctx, rec: &PackageRecord) -> Result<(), KernelError> {
                 rec.error,
                 rec.task_id,
                 rec.attempts,
+                rec.package_type,
+                rec.digest,
                 Ctx::now()
             ],
         )?;
@@ -624,11 +707,12 @@ fn upsert_instance(ctx: &Ctx, rec: &InstanceRecord) -> Result<(), KernelError> {
     ctx.db.with_conn(|conn| -> Result<(), KernelError> {
         conn.execute(
             "INSERT INTO module_game_download_instance
-               (instance, version_id, kind, loader, state, error, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+               (instance, version_id, kind, loader, state, error, package_type, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(instance) DO UPDATE SET
                version_id=excluded.version_id, kind=excluded.kind, loader=excluded.loader,
-               state=excluded.state, error=excluded.error",
+               state=excluded.state, error=excluded.error,
+               package_type=excluded.package_type",
             rusqlite::params![
                 rec.instance,
                 rec.version_id,
@@ -636,6 +720,7 @@ fn upsert_instance(ctx: &Ctx, rec: &InstanceRecord) -> Result<(), KernelError> {
                 rec.loader,
                 rec.state,
                 rec.error,
+                rec.package_type,
                 Ctx::now()
             ],
         )?;
@@ -872,6 +957,13 @@ pub async fn enqueue(
         .filter(|v| !v.is_empty())
         .map(str::to_string);
 
+    // UWP 渠道走自己的流水线：整包地址要现取（签名直链会过期）、完整性依据是
+    // Windows Update 下发的摘要、解包是普通 ZIP、且实例启动要经过系统松散注册。
+    // 这些差异全部集中在 `uwp_install` / `uwp_source`，此处只做分流。
+    if let Some(uwp) = uwp_catalog::find(version_id) {
+        return enqueue_uwp(ctx, lock, uwp, &instance, loader).await;
+    }
+
     // 清单取版本条目。
     let versions = manifest::load_manifest(ctx, false).await?;
     let entry = versions
@@ -901,6 +993,7 @@ pub async fn enqueue(
             loader: loader.clone(),
             state: "queued".into(),
             error: None,
+            package_type: "gdk".into(),
         },
     )?;
 
@@ -944,6 +1037,8 @@ pub async fn enqueue(
                 error: None,
                 task_id: None,
                 attempts: 0,
+                package_type: "gdk".into(),
+                digest: String::new(),
             },
         )?;
         log::info!(
@@ -1008,6 +1103,151 @@ pub async fn enqueue(
             error: None,
             task_id: Some(task_id),
             attempts: 0,
+            package_type: "gdk".into(),
+            digest: String::new(),
+        },
+    )?;
+
+    ctx.events.publish(
+        "game-download.enqueued",
+        serde_json::json!({ "id": slug, "instance": instance, "taskId": task_id }),
+    );
+    Ok(task_id)
+}
+
+/// UWP 安装入队：解析临时直链 → 建记录 → 投递下载（或复用本地整包直接安装）。
+///
+/// 与 GDK 的三处关键差异：
+/// 1. **没有长期直链**：每次都要向 Windows Update 解析（`uwp_source::resolve`），
+///    返回的是带签名与时间戳的临时地址，续传同理；
+/// 2. **完整性依据是服务端摘要**（SHA-1/SHA-256），不是清单 md5；
+/// 3. **不支持 LeviLamina**：UWP 实例必须纯 AppContainer 注册（见 `uwp_deploy`
+///    模块注释第 2 条），注入桌面 DLL 会让游戏启动即崩，因此在入队就拒绝，
+///    而不是等装完再告诉用户「加载器装了但用不上」。
+async fn enqueue_uwp(
+    ctx: &Ctx,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    entry: &'static uwp_catalog::UwpVersion,
+    instance: &str,
+    loader: Option<String>,
+) -> Result<u64, KernelError> {
+    if loader.is_some() {
+        return Err(KernelError::InvalidArgument(
+            "UWP 实例不支持 LeviLamina 加载器（UWP 包必须纯 AppContainer 注册）".into(),
+        ));
+    }
+    let slug = entry.slug();
+    let kind = entry.channel.as_str().to_string();
+    let dest = ctx.dest_for_uwp(&slug);
+
+    upsert_instance(
+        ctx,
+        &InstanceRecord {
+            instance: instance.to_string(),
+            version_id: slug.clone(),
+            kind: kind.clone(),
+            loader: None,
+            state: "queued".into(),
+            error: None,
+            package_type: "uwp".into(),
+        },
+    )?;
+
+    // 下载仍在引擎里跑着 → 直接挂到同一个任务上（两个任务写同一个文件会互相截断）。
+    if let Some(pkg) = get_package(ctx, &slug)? {
+        if pkg.state == "downloading" {
+            if let Some(task_id) = pkg.task_id.filter(|t| ctx.download.task(*t).is_some()) {
+                log::info!(
+                    "[game-download] 实例 {instance} 复用进行中的 UWP 整包下载（任务 {task_id}）"
+                );
+                ctx.events.publish(
+                    "game-download.enqueued",
+                    serde_json::json!({ "id": slug, "instance": instance, "taskId": task_id }),
+                );
+                return Ok(task_id);
+            }
+        }
+    }
+
+    // 摘要必须先拿到：没有校验值就不放行（与 GDK「清单缺 md5 即拒绝」同一立场）。
+    // 也顺带解决了「本地已有包但记录丢了」的情况：解析一次就能重新得到同一份包的
+    // 官方摘要（摘要按内容算，与下载次数无关）。
+    let client = crate::services::http_client::client_builder(std::time::Duration::from_secs(40))
+        .build()?;
+    let resolved = uwp_source::resolve(&client, &entry.update_id)
+        .await
+        .map_err(|error| {
+            KernelError::Config(format!(
+                "无法向 Windows Update 解析 UWP 版本 {slug} 的下载地址与校验值: {error}"
+            ))
+        })?;
+    let digest = resolved.digest_spec();
+
+    if dest.is_file() && std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false) {
+        if uwp_source::verify_digest(&dest, &digest, &mut |_, _| {}).unwrap_or(false) {
+            upsert_package(
+                ctx,
+                &PackageRecord {
+                    version_id: slug.clone(),
+                    kind,
+                    dest: dest.clone(),
+                    md5: String::new(),
+                    state: "ready".into(),
+                    error: None,
+                    task_id: None,
+                    attempts: 0,
+                    package_type: "uwp".into(),
+                    digest,
+                },
+            )?;
+            log::info!(
+                "[game-download] 实例 {instance} 复用本地 UWP 整包 {}",
+                dest.display()
+            );
+            spawn_batch(ctx, lock, &slug, None);
+            return Ok(0);
+        }
+        // 摘要不符 = 包损坏：删掉它，否则每次安装都卡在同一步。
+        log::warn!(
+            "[game-download] 本地 UWP 整包校验失败，已删除待重下: {}",
+            dest.display()
+        );
+        cleanup_package(&dest);
+    }
+
+    crate::services::paths::ensure_writable_dir(dest.parent().unwrap_or(Path::new(".")), "下载暂存")
+        .map_err(|error| annotate_versions_root(ctx, error))?;
+
+    // UWP 只有一个源（微软签名的临时直链），没有 CDN 故障转移可言；重试由引擎负责，
+    // 地址过期则整批失败后重排（`resume_pending` 会重新解析）。
+    let opts = DownloadOptions {
+        resume: true,
+        remove_on_cancel: true,
+        expected_sha256: None,
+        filename: Some(format!("{slug}.appx")),
+        ..Default::default()
+    };
+    let task_id = match ctx.download.enqueue(&resolved.url, &dest, opts) {
+        Ok(task_id) => task_id,
+        Err(error) => {
+            let _ = delete_instance(ctx, instance);
+            return Err(error);
+        }
+    };
+
+    upsert_package(
+        ctx,
+        &PackageRecord {
+            version_id: slug.clone(),
+            kind,
+            dest: dest.clone(),
+            md5: String::new(),
+            state: "downloading".into(),
+            error: None,
+            task_id: Some(task_id),
+            attempts: 0,
+            package_type: "uwp".into(),
+            digest,
         },
     )?;
 
@@ -1042,26 +1282,43 @@ pub fn retry_instance(
     let pkg = get_package(ctx, &rec.version_id)?.ok_or_else(|| {
         KernelError::InvalidArgument(format!("版本 `{}` 没有下载记录，无法安装", rec.version_id))
     })?;
+    require_intact_local_package(&pkg)?;
+    set_instance_state(ctx, instance, "queued", None)?;
+    spawn_batch(ctx, lock, &rec.version_id, pkg.task_id);
+    Ok(())
+}
+
+/// 校验本地整包完整性（GDK 比 md5，UWP 比 Windows Update 摘要）。
+///
+/// 失败即删包：损坏的整包会让「重试安装」每次都停在同一处，而用户看不出原因。
+/// 删除是唯一能让下一次重试真正重下的动作。
+fn require_intact_local_package(pkg: &PackageRecord) -> Result<(), KernelError> {
     if !pkg.dest.is_file() {
         return Err(KernelError::InvalidArgument(format!(
             "本地没有版本 `{}` 的完整安装包，请重新下载",
-            rec.version_id
+            pkg.version_id
         )));
     }
-    if pkg.md5.trim().is_empty() {
-        return Err(KernelError::Config("清单缺少 MD5 校验值，拒绝安装".into()));
-    }
-    if !md5_matches(&pkg.dest, &pkg.md5)? {
-        // 包已损坏：删掉它，否则它会一直卡住后续安装尝试（每次都走到这里失败，
-        // 而用户看不出为什么）。
+    let verified = if pkg.is_uwp() {
+        if pkg.digest.trim().is_empty() {
+            return Err(KernelError::Config(
+                "UWP 整包缺少官方校验摘要，拒绝安装（请重新下载）".into(),
+            ));
+        }
+        uwp_source::verify_digest(&pkg.dest, &pkg.digest, &mut |_, _| {})?
+    } else {
+        if pkg.md5.trim().is_empty() {
+            return Err(KernelError::Config("清单缺少 MD5 校验值，拒绝安装".into()));
+        }
+        md5_matches(&pkg.dest, &pkg.md5)?
+    };
+    if !verified {
         cleanup_package(&pkg.dest);
         return Err(KernelError::Config(format!(
             "本地安装包校验失败（{}），已删除该文件，请重新下载",
             pkg.dest.to_string_lossy()
         )));
     }
-    set_instance_state(ctx, instance, "queued", None)?;
-    spawn_batch(ctx, lock, &rec.version_id, pkg.task_id);
     Ok(())
 }
 
@@ -1143,9 +1400,18 @@ pub fn cancel(ctx: &Ctx, instance: &str) -> Result<(), KernelError> {
 /// `lip_available` 为假表示本机没有 lipd：加载器下拉仍列出候选项，但选中后装不上，
 /// 前端据此提前提示，而不是让用户在下完几个 G 之后才在安装末期失败。
 pub async fn loader_options(version_id: &str) -> Result<LoaderOptions, KernelError> {
+    let lip_available = lipd::find_lip_executable().is_some();
+    // UWP 实例不支持加载器（见 `enqueue_uwp`）：下拉里给出空集，前端按既有逻辑
+    // 显示「无可用加载器」，而不是列出一串选了必然失败的选项。
+    if uwp_catalog::is_uwp(version_id) {
+        return Ok(LoaderOptions {
+            lip_available,
+            loaders: Vec::new(),
+        });
+    }
     let catalog = loader_catalog::LoaderCatalog::load().await?;
     Ok(LoaderOptions {
-        lip_available: lipd::find_lip_executable().is_some(),
+        lip_available,
         loaders: catalog.options_for(&meta_bridge::game_version_of(version_id)),
     })
 }
@@ -1463,14 +1729,39 @@ pub async fn run_batch(
     }
 }
 
-/// 整包级准备：取商店内容密钥并校验完整性。
+/// 整包级准备：UWP 校验服务端摘要，GDK 取商店内容密钥并校验 md5。
 ///
 /// 返回**密钥租约**而不是裸字节：租约在整批安装期间保持存活，用完即随作用域清零。
+/// UWP 包未加密，恒返回 `None`。
 async fn prepare_package(
     ctx: &Ctx,
     pkg: &PackageRecord,
     progress: &mut InstallProgress,
 ) -> Result<Option<native_install::ContentKeyLease>, KernelError> {
+    if pkg.is_uwp() {
+        // UWP 不需要商店授权（包是明文的普通 ZIP），但摘要校验一步都不能省：
+        // 下载走的是微软签名的临时直链，完整性依据只有服务端下发的 SHA-1/SHA-256。
+        progress.enter(PHASE_VERIFYING, Some(pkg.version_id.clone()));
+        let verified = uwp_source::verify_digest(&pkg.dest, &pkg.digest, &mut |done, total| {
+            let fraction = if total > 0 {
+                done as f64 / total as f64
+            } else {
+                0.0
+            };
+            progress.inner(
+                fraction,
+                Some(format!("{} / {}", human_bytes(done), human_bytes(total))),
+            );
+        })?;
+        if !verified {
+            return Err(KernelError::Config(format!(
+                "UWP 整包摘要校验失败：{} 与 Windows Update 下发的摘要不符",
+                pkg.dest.to_string_lossy()
+            )));
+        }
+        return Ok(None);
+    }
+
     // 加密 MSIXVC 必须拿到商店 content key——拿不到就**显式失败**，不静默回退：
     // 旧的“回退兼容 DLL”路径依赖本机 Store 授权状态且返回码晦涩，已被上游弃用。
     progress.enter(PHASE_AUTHORIZING, Some(pkg.version_id.clone()));
@@ -1537,11 +1828,11 @@ async fn install_instance(
             pkg.dest.to_string_lossy()
         );
         progress.enter(PHASE_EXTRACTING, Some(target.instance.clone()));
-        let extract_result = extractor::extract_package_with_progress(
-            &pkg.dest,
-            &install_dir,
-            content_key,
-            &mut |done, total, entry| {
+        if pkg.is_uwp() {
+            // UWP：ZIP 解包 + 包身份校验，元数据里必须带 UWP 身份（启动链靠它做
+            // 松散注册与系统激活）。任何一步失败都清空输出目录，不留「名为已装、
+            // 实则空目录」的假成功。
+            let extracted = uwp::extract_package(&pkg.dest, &install_dir, &mut |done, total, entry| {
                 let fraction = if total > 0 {
                     done as f64 / total as f64
                 } else {
@@ -1551,22 +1842,63 @@ async fn install_instance(
                     fraction,
                     Some(format!("{} ({}/{})", shorten_entry(entry), done + 1, total)),
                 );
-            },
-        );
-        if let Err(error) = extract_result {
-            // 失败即清空输出目录，去掉「名为已装、实则空目录」的假成功。
-            let _ = std::fs::remove_dir_all(&install_dir);
-            return Err(KernelError::from(error));
-        }
+            });
+            let manifest = match extracted {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    let _ = std::fs::remove_dir_all(&install_dir);
+                    return Err(error.into());
+                }
+            };
+            // 清单里的包身份必须与目录记录一致：预览包混进正式实例会让包族、隔离目录
+            // 与激活 AUMID 全部错位，届时症状是「点启动没反应」。
+            if manifest.is_preview() != is_preview_channel(&target.kind) {
+                let _ = std::fs::remove_dir_all(&install_dir);
+                return Err(KernelError::Config(format!(
+                    "UWP 包身份与版本渠道不一致：包是 {}，渠道是 {}",
+                    manifest.identity_name, target.kind
+                )));
+            }
+            progress.enter(PHASE_FINALIZING, Some(target.instance.clone()));
+            meta_bridge::write_uwp_meta(
+                &install_dir,
+                &target.instance,
+                &target.version_id,
+                &target.kind,
+                &manifest,
+            )?;
+        } else {
+            let extract_result = extractor::extract_package_with_progress(
+                &pkg.dest,
+                &install_dir,
+                content_key,
+                &mut |done, total, entry| {
+                    let fraction = if total > 0 {
+                        done as f64 / total as f64
+                    } else {
+                        0.0
+                    };
+                    progress.inner(
+                        fraction,
+                        Some(format!("{} ({}/{})", shorten_entry(entry), done + 1, total)),
+                    );
+                },
+            );
+            if let Err(error) = extract_result {
+                // 失败即清空输出目录，去掉「名为已装、实则空目录」的假成功。
+                let _ = std::fs::remove_dir_all(&install_dir);
+                return Err(KernelError::from(error));
+            }
 
-        progress.enter(PHASE_FINALIZING, Some(target.instance.clone()));
-        meta_bridge::write_meta(
-            &install_dir,
-            &target.instance,
-            &target.version_id,
-            &target.kind,
-            None,
-        )?;
+            progress.enter(PHASE_FINALIZING, Some(target.instance.clone()));
+            meta_bridge::write_meta(
+                &install_dir,
+                &target.instance,
+                &target.version_id,
+                &target.kind,
+                None,
+            )?;
+        }
         // 游戏本体已就位 → 立刻让开始页看到它，不必等加载器装完。
         ctx.events.publish(
             "version.installed",
@@ -1576,7 +1908,22 @@ async fn install_instance(
 
     // 加载器：只在「这次要求的版本与磁盘上已装的版本不同」时才跑 lipd。
     // 这既是幂等（重试不会重复安装），也让失败重试能精确补装加载器。
-    if let Some(loader) = target
+    //
+    // UWP 实例一律没有加载器：它必须纯 AppContainer 注册，桌面 DLL 注入会让游戏
+    // 启动即崩（见 `uwp_deploy` 模块注释）。入队时已经拒绝过带加载器的请求，
+    // 这里再兜一次底，避免历史记录把加载器带进来。
+    if target.is_uwp() {
+        if target
+            .loader
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(KernelError::Config(
+                "UWP 实例不支持 LeviLamina 加载器".into(),
+            ));
+        }
+    } else if let Some(loader) = target
         .loader
         .as_deref()
         .map(str::trim)
@@ -1715,15 +2062,15 @@ async fn store_content_key(
         .map_err(|e| auth_error("package", e.to_string()))?;
 
     // 1) 本地缓存命中 → 离线安装（账户未变时有效，账户不匹配会走下面在线链）。
-    let xuid = match ctx.account.current().and_then(|a| a.xuid.clone()) {
-        Some(x) => x,
-        None => {
-            return Err(auth_error(
-                "account",
-                "未登录微软账户，请先登录后重试".into(),
-            ))
-        }
-    };
+    let account = ctx.account.current().ok_or_else(|| {
+        auth_error("account", "未登录微软账户，请先登录后重试".into())
+    })?;
+    let xuid = account.xuid.clone().ok_or_else(|| {
+        auth_error("account", "当前账户缺少 XUID，请重新登录 Microsoft 账户".into())
+    })?;
+    // Store scope 的 WebAccount.Id 是 PUID；没有 PUID 时退回 XUID 会让取票
+    // 永远报 AccountChanged，因此这里必须优先用登录时保存的 PUID。
+    let wam_account_id = account.wam_account_id.clone().unwrap_or_else(|| xuid.clone());
     if let Ok(Some(lease)) = native_install::load_cached_key(ctx, &identifiers.key_id, &xuid) {
         log::info!(
             "[game-download] 命中本地授权缓存 key_id={}（离线）",
@@ -1739,6 +2086,7 @@ async fn store_content_key(
         store_market(ctx),
         ctx.cache_home().join("store-device"),
     )
+    .with_wam_account_id(wam_account_id)
     .with_owner_window(ctx.window.get());
     match native_install::acquire_package_content_key(&ctx.store_http, &request, dest).await {
         Ok(lease) => {
@@ -1785,6 +2133,21 @@ fn cleanup_package(dest: &Path) {
     let _ = std::fs::remove_file(PathBuf::from(format!("{}.part", dest.to_string_lossy())));
 }
 
+/// 本地整包是否完整（GDK 比清单 md5，UWP 比 Windows Update 摘要）。
+///
+/// 只用于「能不能直接续装」的判定：校验失败不在这里删包（调用方各有各的处置策略），
+/// 但绝不放行——放行等于把损坏的包喂给解包器，失败点会离真正的原因很远。
+fn package_integrity_ok(pkg: &PackageRecord) -> bool {
+    if pkg.is_uwp() {
+        if pkg.digest.trim().is_empty() {
+            return false;
+        }
+        uwp_source::verify_digest(&pkg.dest, &pkg.digest, &mut |_, _| {}).unwrap_or(false)
+    } else {
+        md5_matches(&pkg.dest, &pkg.md5).unwrap_or(false)
+    }
+}
+
 // ---------------------------------------------------------------- 续传
 
 /// 启动恢复：对未完成的整包续传/续装，清理无主整包。
@@ -1819,8 +2182,11 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
             continue;
         }
 
-        // 整包已完整且 md5 命中 → 直接续装。
-        if pkg.dest.is_file() && md5_matches(&pkg.dest, &pkg.md5).unwrap_or(false) {
+        // 整包已完整且校验通过 → 直接续装。
+        //
+        // UWP 用官方摘要、GDK 用清单 md5：两者都不便宜（GB 级读盘），但「整包在盘上
+        // 且内容对」是续装的唯一前提，跳过它等于让损坏的包反复把安装打成失败。
+        if pkg.dest.is_file() && package_integrity_ok(&pkg) {
             set_package_state(ctx, &pkg.version_id, "ready", None).ok();
             spawn_batch(ctx, lock, &pkg.version_id, pkg.task_id);
             continue;
@@ -1883,6 +2249,25 @@ pub fn resume_pending(ctx: &Ctx, lock: &Arc<tokio::sync::Mutex<()>>) {
         }
 
         // 重新投递续传（引擎按 `.part` Range 续传）。
+        if pkg.is_uwp() {
+            // UWP 的下载地址是**临时签名直链**（查询串里带时间戳），重启后必然过期，
+            // 因此每次续传都要重新解析；解析失败只影响这一个任务。
+            match resume_uwp_package(ctx, &pkg) {
+                Ok(Some(task_id)) => {
+                    set_package_state(ctx, &pkg.version_id, "downloading", None).ok();
+                    set_package_task(ctx, &pkg.version_id, Some(task_id)).ok();
+                }
+                Ok(None) => log::warn!(
+                    "[game-download] UWP 续传 {} 没有拿到可用下载地址",
+                    pkg.version_id
+                ),
+                Err(error) => log::warn!(
+                    "[game-download] UWP 续传 {} 重新解析失败: {error}",
+                    pkg.version_id
+                ),
+            }
+            continue;
+        }
         let entry = match block_load(ctx).and_then(|v| {
             v.find_by_id(&pkg.version_id)
                 .ok_or_else(|| KernelError::InvalidArgument("清单无此版本".into()))
@@ -1981,11 +2366,13 @@ fn cleanup_orphan_instances(ctx: &Ctx) {
 /// 留着几个 G 也不误删用户资产。
 fn cleanup_orphan_packages(ctx: &Ctx) {
     let download_dir = ctx.download_dir();
-    let known: Option<std::collections::HashSet<String>> = match block_load(ctx) {
+    // `None` = GDK 清单不可用（离线且无缓存）。UWP 目录是内嵌的，任何时候都可用，
+    // 因此 UWP 整包有无主只能按目录判定，不受网络影响。
+    let gdk_known: Option<std::collections::HashSet<String>> = match block_load(ctx) {
         Ok(versions) => Some(versions.all().iter().map(|e| e.slug()).collect()),
         Err(error) => {
             log::warn!(
-                "[game-download] 清单不可用（{error}），无主整包清理只处理断点文件"
+                "[game-download] 清单不可用（{error}），无主整包清理只处理断点文件（UWP 版本仍按内嵌目录判定）"
             );
             None
         }
@@ -2017,13 +2404,20 @@ fn cleanup_orphan_packages(ctx: &Ctx) {
         let Some(slug) = package_slug_of(stem) else {
             continue;
         };
-        // 清单里还有这个版本 → 包是有主的（哪怕记录丢了），留着。
-        if let Some(known) = known.as_ref() {
-            if known.contains(slug) {
-                continue;
-            }
-        } else if !is_part {
+        // UWP 版本目录是内嵌的：只要 slug 在目录里，包就是有主的。
+        if uwp_catalog::is_uwp(slug) {
             continue;
+        }
+        // 清单里还有这个版本 → 包是有主的（哪怕记录丢了），留着。
+        match gdk_known.as_ref() {
+            Some(known) => {
+                if known.contains(slug) {
+                    continue;
+                }
+            }
+            // GDK 清单不可用：无法判断哪些包还有用，只敢删断点文件。
+            None if !is_part => continue,
+            None => {}
         }
         match get_package(ctx, slug) {
             Ok(Some(_)) => continue,
@@ -2046,6 +2440,41 @@ fn cleanup_orphan_packages(ctx: &Ctx) {
 fn block_load(ctx: &Ctx) -> Result<manifest::HistoricalVersions, KernelError> {
     ctx.runtime
         .block_on(manifest::load_manifest(ctx, false))
+}
+
+/// UWP 整包续传：重新解析临时直链后投递（`None` 表示没拿到可用地址）。
+///
+/// 摘要会随本次解析回写记录：同一版本号的重发包（服务端换包）摘要会变，按旧摘要
+/// 校验会把新包判成损坏。
+fn resume_uwp_package(ctx: &Ctx, pkg: &PackageRecord) -> Result<Option<u64>, KernelError> {
+    let Some(entry) = uwp_catalog::find(&pkg.version_id) else {
+        return Err(KernelError::InvalidArgument(format!(
+            "UWP 版本目录里没有 `{}`",
+            pkg.version_id
+        )));
+    };
+    let client = crate::services::http_client::client_builder(std::time::Duration::from_secs(40))
+        .build()?;
+    let resolved = ctx
+        .runtime
+        .block_on(uwp_source::resolve(&client, &entry.update_id))?;
+    let digest = resolved.digest_spec();
+    let opts = DownloadOptions {
+        resume: true,
+        remove_on_cancel: true,
+        expected_sha256: None,
+        filename: Some(format!("{}.appx", pkg.version_id)),
+        ..Default::default()
+    };
+    let task_id = ctx.download.enqueue(&resolved.url, &pkg.dest, opts)?;
+    ctx.db.with_conn(|conn| -> Result<(), KernelError> {
+        conn.execute(
+            "UPDATE module_game_download_package SET digest = ?1 WHERE version_id = ?2",
+            rusqlite::params![digest, pkg.version_id],
+        )?;
+        Ok(())
+    })?;
+    Ok(Some(task_id))
 }
 
 // ---------------------------------------------------------------- 测试

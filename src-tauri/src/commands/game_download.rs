@@ -13,10 +13,20 @@ use crate::state::KernelContext;
 ///
 /// 加载器目录（lipr 索引）拉取失败**不影响**清单本身：徽标退化为「不显示」，
 /// 而不是让整页因为一个可选装饰拉不到数据就空掉。
+///
+/// GDK 清单源（社区镜像）拉取失败同理：UWP 目录是**内嵌**的，离线也一定拿得到，
+/// 因此这里降级成「只有 UWP 条目」而不是把整页打成错误态。真正需要报错的是
+/// 「两个渠道都拿不到」——那种情况下页面确实没有任何可装内容。
 #[tauri::command]
 pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: Option<bool>) -> CommandResult<ManifestView> {
     let ctx = Ctx::from_kernel(&kernel);
-    let versions = manifest::load_manifest(&ctx, refresh.unwrap_or(false)).await.map_err(into_command_error)?;
+    let versions = match manifest::load_manifest(&ctx, refresh.unwrap_or(false)).await {
+        Ok(versions) => Some(versions),
+        Err(error) => {
+            log::warn!("[game-download] GDK 清单拉取失败（仍显示内嵌 UWP 版本）: {error}");
+            None
+        }
+    };
     let catalog = match loader_catalog::LoaderCatalog::load().await {
         Ok(catalog) => Some(catalog),
         Err(error) => {
@@ -26,6 +36,15 @@ pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: O
     };
     // 「已下载」徽标扫版本安装目录得出（文件才是事实源，记录会与磁盘分叉）。
     let local_packages = installer::local_package_slugs(&ctx);
+    let Some(versions) = versions else {
+        // GDK 源挂了且连缓存都没有：只渲染 UWP 条目（内嵌目录不需要网络）。
+        let empty = manifest::HistoricalVersions {
+            file_version: 0,
+            release_versions: Vec::new(),
+            preview_versions: Vec::new(),
+        };
+        return Ok(manifest::build_view(&empty, catalog.as_ref(), &local_packages));
+    };
     Ok(manifest::build_view(&versions, catalog.as_ref(), &local_packages))
 }
 

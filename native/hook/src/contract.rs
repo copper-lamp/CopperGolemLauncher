@@ -20,6 +20,13 @@ pub const ENV_DATA_DIR: &str = "COPPER_HOOK_DATA_DIR";
 pub const ENV_ROOT: &str = "COPPER_HOOK_ROOT";
 /// 交接变量：渠道（`release` / `preview`），供 DLL 自检与日志。
 pub const ENV_CHANNEL: &str = "COPPER_HOOK_CHANNEL";
+/// 交接变量：`%TEMP%` 的重定向目标（**绝对路径**）。
+///
+/// 由启动器按版本规则算好下发，与 LeviLauncher 的 `legacy_data_directory` 同义：
+/// `>= 1.26` 指向**版本目录本身**，更早的版本指向 `<版本目录>/Minecraft Bedrock`。
+/// 注入侧不重算版本规则——两侧各算一遍正是 F7 分叉的成因。
+pub const ENV_TEMP: &str = "COPPER_HOOK_TEMP";
+
 /// 交接变量：预加载清单路径（**绝对路径**）。
 pub const ENV_PRELOAD: &str = "COPPER_HOOK_PRELOAD";
 
@@ -83,7 +90,7 @@ mod tests {
     #[test]
     fn env_names_are_namespaced() {
         // 环境变量名是跨进程契约，改名等于静默失效；这里钉死字面量。
-        for name in [ENV_DATA_DIR, ENV_ROOT, ENV_CHANNEL, ENV_PRELOAD] {
+        for name in [ENV_DATA_DIR, ENV_ROOT, ENV_CHANNEL, ENV_PRELOAD, ENV_TEMP] {
             assert!(name.starts_with("COPPER_HOOK_"), "{name} 未走统一前缀");
         }
     }

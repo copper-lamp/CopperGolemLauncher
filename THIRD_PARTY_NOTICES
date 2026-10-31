@@ -52,3 +52,23 @@ and resource-generation inputs corresponding to the distributed binary.
 The migration must not remove or weaken the existing GPL obligations of
 CopperGolem Launcher. Other dependencies retain their own licenses as declared
 by Cargo.lock and their upstream notices.
+
+== UWP version catalog data ==
+
+File: src-tauri/src/modules/game_download/uwp_versions.json
+Source project: LeviLauncher
+Source repository: https://github.com/LiteLDev/LeviLauncher
+Source path: internal/uwpdownload/versions.json
+License: GNU GPL-3.0-only
+
+The file is a factual table of Windows Update identities: each row is
+[version, UpdateID, channel]. It is embedded verbatim (no code was copied) so
+that the launcher can resolve a UWP package URL without depending on a public
+catalog, which does not exist for the UWP channel. The Rust implementation that
+consumes it (uwp_catalog.rs / uwp_source.rs / uwp.rs / uwp_deploy.rs) is an
+independent implementation: only the format behavior and the documented
+registration constraints were reproduced, not upstream source code.
+
+Upstream catalog updates must be carried over with the upstream notice above
+kept intact; the corresponding source distribution requirement of GPL-3.0-only
+already applies to this repository.

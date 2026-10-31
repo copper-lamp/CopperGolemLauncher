@@ -134,7 +134,10 @@ mod tests {
         .unwrap();
         let plan = plan_from_file(&dir).unwrap().unwrap();
         assert_eq!(plan.root, dir);
-        assert!(plan.temp.ends_with("temp"));
+        // 与 LL 的 legacy_data_directory 同义：1.21 属于旧布局，temp 落在带渠道
+        // 目录的数据根；1.26+ 才会等于版本目录本身（见 paths 的单测）。
+        assert_eq!(plan.temp, plan.data);
+        assert_eq!(plan.temp, dir.join("Minecraft Bedrock"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

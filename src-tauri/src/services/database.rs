@@ -162,4 +162,17 @@ pub const CORE_MIGRATIONS: &[Migration] = &[
               ALTER TABLE core_download_task ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
               ALTER TABLE core_download_task ADD COLUMN options TEXT;",
     },
+    // v3：账户身份拆成 PUID（WAM AccountID）与真实 XUID。
+    //
+    // 旧实现把 Store scope 的 `WebAccount.Id`（PUID，含 A-F 的十六进制）当成
+    // XUID 存进 `xuid`，导致 profile 比对、device/content license 全部用错身份。
+    // 这里补 `wam_account_id`，并清掉明显不是十进制 XUID 的历史行（PUID 一定
+    // 含 A-F 或长度异常；真实 XUID 是纯十进制）。
+    Migration {
+        version: 3,
+        name: "core_account_wam_identity",
+        sql: "ALTER TABLE core_account ADD COLUMN wam_account_id TEXT;
+              DELETE FROM core_account
+               WHERE xuid IS NULL OR xuid = '' OR xuid GLOB '*[^0-9]*';",
+    },
 ];

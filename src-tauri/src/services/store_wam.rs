@@ -82,9 +82,22 @@ pub struct WamIdentity {
     pub gamertag: String,
 }
 
+/// Xbox Live scope 的 WAM 票据。
+///
+/// `account_id` 是 WAM 的 PUID（`WebAccount.Id`），**不是** XUID；XUID 必须由
+/// 票据换 XBL User Token 后再从 XSTS 的 `DisplayClaims.xui[0].xid` 取。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XboxTicket {
+    pub ticket: String,
+    pub account_id: String,
+}
+
 /// Store 票据的 scope 与客户端 ID（与 LeviLauncher 一致）。
 #[cfg(windows)]
 const STORE_SCOPE: &str = "service::www.microsoft.com::MBI_SSL";
+/// Xbox Live 用户认证 scope。身份类登录必须用它，Store scope 只签发 PUID。
+#[cfg(windows)]
+const XBOX_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 #[cfg(windows)]
 const STORE_CLIENT_ID: &str = "00000000402b5328";
 /// Microsoft 消费者账户 provider 的 authority。
@@ -178,6 +191,35 @@ pub fn sign_in_interactive(_hwnd: isize) -> Result<WamIdentity, WamStoreError> {
     Err(WamStoreError::WindowsOnly)
 }
 
+/// 交互式 Xbox Live 授权：弹系统账户界面，返回所选账户的 WAM 票据（PUID）。
+#[cfg(windows)]
+pub fn xbox_ticket_interactive(hwnd: isize) -> Result<XboxTicket, WamStoreError> {
+    native::validate_owner_window(hwnd)?;
+    native::initialize()?;
+    let result = native::xbox_ticket_interactive(hwnd);
+    native::uninitialize();
+    result
+}
+
+/// 静默 Xbox Live 授权：复用 WAM 缓存的默认账户，不弹窗（诊断/回退用）。
+#[cfg(windows)]
+pub fn xbox_ticket_silent() -> Result<XboxTicket, WamStoreError> {
+    native::initialize()?;
+    let result = native::xbox_ticket_silent();
+    native::uninitialize();
+    result
+}
+
+#[cfg(not(windows))]
+pub fn xbox_ticket_interactive(_hwnd: isize) -> Result<XboxTicket, WamStoreError> {
+    Err(WamStoreError::WindowsOnly)
+}
+
+#[cfg(not(windows))]
+pub fn xbox_ticket_silent() -> Result<XboxTicket, WamStoreError> {
+    Err(WamStoreError::WindowsOnly)
+}
+
 /// Windows 原生互操作。
 ///
 /// `IWebAuthenticationCoreManagerInterop` 未被 windows-rs 生成，只能手工
@@ -198,7 +240,10 @@ mod native {
         RoGetActivationFactory, RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED,
     };
 
-    use super::{WamStoreError, WamIdentity, MSA_PROVIDER, STORE_CLIENT_ID, STORE_SCOPE};
+    use super::{
+        WamIdentity, WamStoreError, XboxTicket, MSA_PROVIDER, STORE_CLIENT_ID, STORE_SCOPE,
+        XBOX_SCOPE,
+    };
     use crate::services::store_entitlement::StoreTicket;
 
     /// `IWebAuthenticationCoreManagerInterop` 的 IID。
@@ -331,10 +376,41 @@ mod native {
     /// 交互取身份：先以默认提示请求，若 WAM 未呈现界面则强制提示重试一次。
     pub(super) fn interactive_identity(hwnd: isize) -> Result<WamIdentity, WamStoreError> {
         let provider = find_msa_provider()?;
-        let (_, actual, result) = request_token_interactively(&provider, hwnd)?;
+        let (_, actual, result) = request_token_interactively(&provider, hwnd, STORE_SCOPE)?;
         Ok(WamIdentity {
             xuid: actual,
             gamertag: display_name(&result),
+        })
+    }
+
+    /// 交互式 Xbox Live 票据：账户选择界面 + XBOX_SCOPE。
+    pub(super) fn xbox_ticket_interactive(hwnd: isize) -> Result<XboxTicket, WamStoreError> {
+        let provider = find_msa_provider()?;
+        let (ticket, account_id, _) =
+            request_token_interactively(&provider, hwnd, XBOX_SCOPE)?;
+        Ok(XboxTicket {
+            ticket,
+            account_id,
+        })
+    }
+
+    /// 静默 Xbox Live 票据：复用 WAM 当前缓存的默认账户。
+    pub(super) fn xbox_ticket_silent() -> Result<XboxTicket, WamStoreError> {
+        let provider = find_msa_provider()?;
+        let request = step(
+            "WebTokenRequest::Create",
+            WebTokenRequest::Create(
+                &provider,
+                &HSTRING::from(XBOX_SCOPE),
+                &HSTRING::from(STORE_CLIENT_ID),
+            ),
+        )?;
+        let operation = silent_token_request(&request)?;
+        let result = wait_operation(&operation, SILENT_TIMEOUT, "GetTokenSilently")?;
+        let (ticket, account_id) = read_success(&result, false)?;
+        Ok(XboxTicket {
+            ticket,
+            account_id,
         })
     }
 
@@ -347,7 +423,7 @@ mod native {
         expected_xuid: &str,
     ) -> Result<StoreTicket, WamStoreError> {
         let provider = find_msa_provider()?;
-        let (token, actual, _) = request_token_interactively(&provider, hwnd)?;
+        let (token, actual, _) = request_token_interactively(&provider, hwnd, STORE_SCOPE)?;
         if actual != expected_xuid {
             return Err(WamStoreError::AccountChanged);
         }
@@ -360,12 +436,14 @@ mod native {
     fn request_token_interactively(
         provider: &windows::Security::Credentials::WebAccountProvider,
         hwnd: isize,
+        scope: &str,
     ) -> Result<(String, String, WebTokenRequestResult), WamStoreError> {
-        match request_with_prompt(provider, hwnd, WebTokenRequestPromptType::Default) {
+        match request_with_prompt(provider, hwnd, scope, WebTokenRequestPromptType::Default) {
             Ok(granted) => Ok(granted),
             Err(WamStoreError::InteractionRequired) => request_with_prompt(
                 provider,
                 hwnd,
+                scope,
                 WebTokenRequestPromptType::ForceAuthentication,
             ),
             Err(other) => Err(other),
@@ -375,13 +453,14 @@ mod native {
     fn request_with_prompt(
         provider: &windows::Security::Credentials::WebAccountProvider,
         hwnd: isize,
+        scope: &str,
         prompt: WebTokenRequestPromptType,
     ) -> Result<(String, String, WebTokenRequestResult), WamStoreError> {
         let request = step(
             "WebTokenRequest::CreateWithPromptType",
             WebTokenRequest::CreateWithPromptType(
                 provider,
-                &HSTRING::from(STORE_SCOPE),
+                &HSTRING::from(scope),
                 &HSTRING::from(STORE_CLIENT_ID),
                 prompt,
             ),

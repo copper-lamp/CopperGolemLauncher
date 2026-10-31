@@ -12,12 +12,18 @@ import {
   accountWamSignIn,
   type AccountInfo,
 } from "../api/account";
-import { onAccountChanged, onAccountLoginState } from "../events";
+import {
+  onAccountChanged,
+  onAccountLoginState,
+  onProfileMismatch,
+  type ProfileMismatch,
+} from "../events";
 import { useI18n } from "../i18n";
 import { showToast } from "./useToast";
 
 const account = ref<AccountInfo | null>(null);
 const loginWaiting = ref(false);
+const profileMismatch = ref<ProfileMismatch | null>(null);
 
 /** 初始化：拉取当前账户并订阅事件。 */
 export async function initAccount(): Promise<void> {
@@ -26,9 +32,14 @@ export async function initAccount(): Promise<void> {
   } catch {
     // 内核未就绪时视为未登录。
   }
+  const { t } = useI18n();
   await Promise.all([
     onAccountChanged((a) => {
       account.value = a;
+    }),
+    onProfileMismatch((payload) => {
+      profileMismatch.value = payload;
+      showToast(t("account.profile_mismatch_toast"), "error", 8000);
     }),
     onAccountLoginState((state, reason) => {
       if (state === "waiting") {
@@ -90,6 +101,10 @@ async function beginWamSignIn() {
   return {
     account: readonly(account),
     loginWaiting: readonly(loginWaiting),
+    profileMismatch: readonly(profileMismatch),
+    clearProfileMismatch: () => {
+      profileMismatch.value = null;
+    },
     beginLogin,
     beginWamSignIn,
     logout,

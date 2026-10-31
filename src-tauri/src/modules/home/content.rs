@@ -196,10 +196,14 @@ fn backup_dir_for(kind: ContentKind, com_mojang: &Path) -> PathBuf {
     }
 }
 
-/// 定位世界目录：`<Users>/<首个用户>/games/com.mojang/minecraftWorlds`。
+/// 定位世界目录：UWP 用确定落点，GDK 用 `<Users>/<首个用户>/games/com.mojang/minecraftWorlds`。
 fn first_player_worlds_dir(roots: &ContentRoots) -> Option<PathBuf> {
+    // UWP：包布局固定，世界就在 `games/com.mojang/minecraftWorlds`（没有玩家层）。
+    if let Some(worlds) = roots.worlds.as_ref() {
+        return worlds.is_dir().then(|| worlds.clone());
+    }
     let users = &roots.users_root;
-    if !users.is_dir() {
+    if users.as_os_str().is_empty() || !users.is_dir() {
         return None;
     }
     let entries = std::fs::read_dir(users).ok()?;
@@ -232,6 +236,10 @@ pub fn worlds_dir(
 ) -> Result<PathBuf, KernelError> {
     let roots = content_roots_for_write(kernel, name)?;
     let dir = first_player_worlds_dir(&roots).unwrap_or_else(|| {
+        // UWP：世界目录就是 `com.mojang/minecraftWorlds`，不能再拼一层 `games`。
+        if let Some(worlds) = roots.worlds.as_ref() {
+            return worlds.clone();
+        }
         first_user_root(&roots)
             .unwrap_or_else(|| roots.com_mojang.clone())
             .join(SHARED_GAME_DIR)
@@ -246,7 +254,7 @@ pub fn worlds_dir(
 /// 首个可用玩家目录（跳过 `Shared` 与点开头目录）。
 fn first_user_root(roots: &ContentRoots) -> Option<PathBuf> {
     let users = &roots.users_root;
-    if !users.is_dir() {
+    if users.as_os_str().is_empty() || !users.is_dir() {
         return None;
     }
     let entries = std::fs::read_dir(users).ok()?;
@@ -389,6 +397,7 @@ mod tests {
         let roots = ContentRoots {
             com_mojang: cm.clone(),
             users_root: base.join("Users"),
+            worlds: None,
         };
         let mut items = Vec::new();
         collect_dir_items(

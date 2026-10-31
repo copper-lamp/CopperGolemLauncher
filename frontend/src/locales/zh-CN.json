@@ -395,16 +395,18 @@
   "account": {
     "login": "登录",
     "login_microsoft": "登录正版（Microsoft）",
-    "store_sign_in": "授权 Microsoft 账户（商店）",
-    "store_reauthorize": "重新授权商店账户",
-    "store_authorized": "已授权商店账户，可下载正版整合包",
+    "store_sign_in": "登录 Microsoft 账户（Xbox）",
+    "store_reauthorize": "重新登录 Microsoft 账户",
+    "store_authorized": "已登录 Microsoft 账户（Xbox）",
     "logout": "退出登录",
     "logged_in_as": "已登录：{name}",
     "not_logged_in": "未登录",
     "login_begin_hint": "请在打开的浏览器中完成微软账户授权，然后回到本窗口等待。",
     "login_waiting": "等待授权完成…",
     "login_failed": "登录失败：{reason}",
-    "token_expired": "登录状态已过期，请重新登录"
+    "token_expired": "登录状态已过期，请重新登录",
+    "profile_mismatch_title": "当前实例的登录态属于其他 Microsoft 账户，请重新登录",
+    "profile_mismatch_toast": "账户不一致：请用实例所属的 Microsoft 账户重新登录"
   },
   "toast": {
     "settings_saved": "设置已保存",

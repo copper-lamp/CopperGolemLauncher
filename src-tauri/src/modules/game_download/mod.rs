@@ -1,8 +1,15 @@
 //! 游戏下载模块（`game-download`）：拉取 MCBE 版本清单，下载版本包并安装进开始页。
 //!
-//! 数据源：社区维护 GDK 清单（三镜像 CDN），历史 `.appx` 走 zip 回退；MSIXVC
-//! 原生格式校验与解包能力在 `msixvc` 中逐步替代旧兼容后端。安装完成写 `version.json`，
-//! 使版本进入「开始页」可启动项，并经事件总线广播 `version.installed`。
+//! 两个渠道：
+//! - **GDK**：社区维护的版本清单（多镜像 CDN），整包是 `.msixvc`（加密 XVC），
+//!   需要商店 content key 才能解包；
+//! - **UWP**：内嵌版本目录 + Windows Update 临时直链，整包是 `.appx`（明文 ZIP），
+//!   解密无关、但安装完的实例必须由启动链做系统松散注册才能启动。
+//!
+//! MSIXVC 原生格式校验与解包能力在 `msixvc` 中逐步替代旧兼容后端；UWP 的解包/注册/
+//! 激活分别在 `uwp` / `uwp_deploy` / `home::uwp_launch`，跨模块说明见
+//! `docs/uwp-install.md`。安装完成写 `version.json`，使版本进入「开始页」可启动项，
+//! 并经事件总线广播 `version.installed`。
 //!
 //! 联动（经内核中介）：
 //! - 订阅 `download.status`（内核全局下载队列）驱动 下载完成→安装；
@@ -23,8 +30,14 @@ pub mod installer;
 pub mod manifest;
 pub mod meta_bridge;
 pub mod msixvc;
+pub mod uwp;
+pub mod uwp_catalog;
+pub mod uwp_deploy;
+pub mod uwp_source;
 #[cfg(test)]
 mod real_package_check;
+#[cfg(test)]
+mod uwp_live;
 
 use installer::Ctx;
 
