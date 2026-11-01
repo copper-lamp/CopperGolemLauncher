@@ -588,7 +588,8 @@ let unlistenLocation: () => void = () => {};
 
       <template v-else-if="detail">
         <!-- ================= 上部：信息 + 文档（单卡片） ================= -->
-        <section id="cd-sec-info" class="cd-card cd-card--info">
+        <section id="cd-sec-info" class="cd-info">
+          <h2 class="cd-block__title">{{ t(KB + ".sectionInfo") }}</h2>
           <header class="cd-info__head">
             <div class="cd-info__thumb">
               <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
@@ -1856,5 +1857,68 @@ let unlistenLocation: () => void = () => {};
   font-family: inherit !important;
   font-size: inherit !important;
   background-color: transparent !important;
+}
+
+/* ---------------------------------------------------------------- 信息区（平摊 + 大黑体） */
+.cd-info {
+  margin-top: var(--copper-space-2);
+}
+
+.cd-info__head {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-5);
+}
+
+.cd-info__thumb {
+  width: 96px;
+  height: 96px;
+  flex-shrink: 0;
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface-2);
+  overflow: hidden;
+}
+
+.cd-info__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cd-info__badges {
+  display: flex;
+  gap: 6px;
+}
+
+/* 大黑体：模组名是整页的主标题。 */
+.cd-info__name {
+  margin: 8px 0 0;
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1.14;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.cd-info__desc {
+  margin-top: 10px;
+  max-width: 78ch;
+  color: var(--copper-text-secondary);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.cd-info__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--copper-space-3);
+  margin-top: 10px;
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-sm);
+}
+
+.cd-info__block {
+  margin-top: var(--copper-space-5);
 }
 </style>
