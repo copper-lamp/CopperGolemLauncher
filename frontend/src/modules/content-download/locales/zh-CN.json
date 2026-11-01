@@ -112,5 +112,9 @@
   },
   "tag": "标签",
   "tagAll": "全部标签",
-  "pageJump": "跳至"
+  "pageJump": "跳至",
+  "toc": "目录",
+  "noToc": "该内容没有可用的目录",
+  "from": "来自",
+  "otherVersions": "其他版本"
 }

@@ -77,6 +77,70 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const lipEnv = ref<LipEnv | null>(null);
 
+/** 页面骨架实例：正文的滚动容器在 CoPage 上（目录高亮以它为参照）。 */
+const pageRef = ref<InstanceType<typeof CoPage> | null>(null);
+/** 正文 HTML 的宿主：目录 id 写在渲染后的标题元素上。 */
+const docRef = ref<HTMLElement | null>(null);
+/** 扁平化后的目录（带层级用于缩进）。 */
+const tocFlat = ref<Array<{ id: string; text: string; level: number }>>([]);
+const activeId = ref("");
+let spyOff: (() => void) | null = null;
+
+/**
+ * 从渲染后的正文里解析标题层级，顺便给每个标题写 id。
+ *
+ * 事后读 DOM 而不是提前扫 HTML 字符串：v-html 渲染的就是这份 HTML，
+ * 直接读 DOM 拿到的是「实际显示出来」的标题，不会和被过滤掉的内容对不上。
+ */
+async function buildToc() {
+  await nextTick();
+  spyOff?.();
+  spyOff = null;
+  tocFlat.value = [];
+  activeId.value = "";
+  const root = docRef.value;
+  if (!root) return;
+  const headings = Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3,h4")).filter(
+    (el) => (el.textContent ?? "").trim().length > 0,
+  );
+  if (headings.length === 0) return;
+  const items: Array<{ id: string; text: string; level: number }> = [];
+  headings.forEach((el, index) => {
+    const id = "cd-sec-" + index;
+    el.id = id;
+    el.classList.add("cd-doc__heading");
+    items.push({
+      id,
+      text: (el.textContent ?? "").trim(),
+      level: Number(el.tagName.substring(1)) - 1,
+    });
+  });
+  tocFlat.value = items;
+
+  // 滚动高亮：取「最后一个已经越过参考线的标题」。
+  const scroller = pageRef.value?.bodyEl ?? null;
+  if (!scroller) return;
+  const onScroll = () => {
+    const top = scroller.getBoundingClientRect().top + 120;
+    let current = items[0]?.id ?? "";
+    for (const item of items) {
+      const el = document.getElementById(item.id);
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= top) current = item.id;
+      else break;
+    }
+    activeId.value = current;
+  };
+  scroller.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+  spyOff = () => scroller.removeEventListener("scroll", onScroll);
+}
+
+function goToHeading(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  activeId.value = id;
+}
+
 /** 已展开的版本分组（键为分组名）。默认全部折叠。 */
 const expanded = ref<Set<string>>(new Set());
 
@@ -150,36 +214,42 @@ const pickHint = computed(() =>
   needsTargetConfirm.value ? t(`${KB}.install`) : t(`${KB}.download`),
 );
 
-/** 按游戏版本归类文件；无版本（lip）归入「全部版本」。
- *
- * 用 computed 而非函数：分组结果同时驱动主栏版本区与副栏锚点，
- * 每次渲染各算一遍会让两侧在极端情况下读到不同的数组。 */
-const versionGroups = computed<{ category: string; files: ContentFile[] }[]>(() => {
+/** 版本号 → 分层键：取前两段（1.21.0.3 → 1.21）；没有数字段时归入「其他」。 */
+function versionBranch(version: string): string {
+  const parts = version.split(/[^0-9]+/).filter(Boolean);
+  if (parts.length >= 2) return parts[0] + "." + parts[1];
+  if (parts.length === 1) return parts[0];
+  return t(KB + ".otherVersions");
+}
+
+/** 大版本在前：1.21 排在 1.9 前面（逐段数值比较，不做字符串比较）。 */
+function compareBranch(a: string, b: string): number {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10));
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10));
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const y = Number.isFinite(pb[i]) ? pb[i] : 0;
+    if (x !== y) return y - x;
+  }
+  return 0;
+}
+
+/** 版本树：顶层是版本号前两段，叶子是该分支下的全部文件。 */
+const versionTree = computed<{ branch: string; files: ContentFile[] }[]>(() => {
   const d = detail.value;
   if (!d) return [];
-  const categories = d.gameVersions.filter(Boolean);
-  if (categories.length === 0) {
-    return [{ category: t(MB_KEY + ".versionAll"), files: d.files }];
+  const map = new Map<string, ContentFile[]>();
+  for (const file of d.files) {
+    const key = versionBranch(file.version);
+    const list = map.get(key);
+    if (list) list.push(file);
+    else map.set(key, [file]);
   }
-  return categories
-    .map((gv) => ({
-      category: gv,
-      files: d.files.filter((f) => f.gameVersions.includes(gv)),
-    }))
-    .filter((g) => g.files.length > 0);
+  return [...map.entries()]
+    .sort((a, b) => compareBranch(a[0], b[0]))
+    .map(([branch, files]) => ({ branch, files }));
 });
-
-/** 副栏锚点跳转：先展开分组，再滚动到对应卡片。
- *
- * 必须等 nextTick：折叠状态下卡片内容是 v-show 隐藏的，展开后高度变化，
- * 立刻滚动会落到错误位置。 */
-async function goToGroup(index: number, category: string) {
-  if (!isExpanded(category)) toggleGroup(category);
-  await nextTick();
-  document
-    .getElementById("cd-version-" + index)
-    ?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
 
 function isExpanded(key: string): boolean {
   return expanded.value.has(key);
@@ -245,6 +315,8 @@ async function loadReadme(id: string, data: ContentDetail) {
   } finally {
     readmeLoading.value = false;
   }
+  // 必须等 loading 关掉之后再解析：加载态占着正文位置，此时 docRef 还是 null。
+  await buildToc();
 }
 
 /** 圆点抛物线飞行：从点击坐标飞向下载中心，抵达时触发水波纹。 */
@@ -486,6 +558,7 @@ onMounted(async () => {
   unlistenLocation = await onContentDownloadLocation(reportLocation);
 });
 onUnmounted(() => {
+  spyOff?.();
   unlistenLocation();
   resetCrumbTitle();
 });
@@ -494,8 +567,9 @@ let unlistenLocation: () => void = () => {};
 </script>
 
 <template>
-  <CoPage>
-    <CoSplitLayout aside-position="end">
+  <CoPage ref="pageRef">
+    <div class="cd-detail" :class="{ 'cd-detail--no-toc': !tocFlat.length }">
+      <CoSplitLayout aside-position="end">
       <template v-if="loading">
         <div class="cd-detail__skeleton">
           <div class="cd-detail__skeleton-hero" />
@@ -576,7 +650,7 @@ let unlistenLocation: () => void = () => {};
             </div>
             <template v-else-if="readmeHtml">
               <div class="cd-doc-frame" :class="{ 'is-expanded': readmeExpanded }">
-                <div class="cd-doc" v-html="readmeHtml" />
+                <div ref="docRef" class="cd-doc" v-html="readmeHtml" />
               </div>
               <button
                 class="cd-doc-toggle"
@@ -595,32 +669,32 @@ let unlistenLocation: () => void = () => {};
         <section class="cd-versions">
           <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
 
-          <p v-if="!versionGroups.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
+          <p v-if="!versionTree.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
 
           <div
-            v-for="(g, index) in versionGroups"
+            v-for="(g, index) in versionTree"
             :id="'cd-version-' + index"
-            :key="g.category"
+            :key="g.branch"
             class="cd-version-card"
-            :class="{ 'is-open': isExpanded(g.category) }"
+            :class="{ 'is-open': isExpanded(g.branch) }"
           >
             <button
               class="cd-version-card__head"
-              :aria-expanded="isExpanded(g.category)"
-              @click="toggleGroup(g.category)"
+              :aria-expanded="isExpanded(g.branch)"
+              @click="toggleGroup(g.branch)"
             >
               <ChevronRight
                 :size="16"
                 class="cd-version-card__caret"
-                :class="{ 'is-open': isExpanded(g.category) }"
+                :class="{ 'is-open': isExpanded(g.branch) }"
               />
-              <span class="cd-version-card__label">{{ g.category }}</span>
+              <span class="cd-version-card__label">{{ g.branch }}</span>
               <span class="cd-version-card__count">
                 {{ t(`${KB}.versionCount`, { count: g.files.length }) }}
               </span>
             </button>
 
-            <div v-show="isExpanded(g.category)" class="cd-version-card__body">
+            <div v-show="isExpanded(g.branch)" class="cd-version-card__body">
               <div
                 v-for="file in g.files"
                 :key="file.id"
@@ -665,23 +739,26 @@ let unlistenLocation: () => void = () => {};
         </section>
       </template>
       <template #aside>
-        <div v-if="detail && versionGroups.length" class="cd-rail">
-          <h2 class="cd-rail__title">{{ t(`${KB}.onThisPage`) }}</h2>
-          <nav class="cd-rail__nav">
+        <!-- 钩子导航：正文标题的层级目录，钩子在右、文字右对齐 -->
+        <div v-if="tocFlat.length" class="cd-toc">
+          <h2 class="cd-toc__title">{{ t(`${KB}.toc`) }}</h2>
+          <nav class="cd-toc__nav">
             <button
-              v-for="(group, index) in versionGroups"
-              :key="group.category"
+              v-for="item in tocFlat"
+              :key="item.id"
               type="button"
-              class="cd-rail__item"
-              @click="goToGroup(index, group.category)"
+              class="cd-toc__item"
+              :class="{ 'is-active': activeId === item.id }"
+              :style="{ paddingRight: 12 + item.level * 10 + 'px' }"
+              @click="goToHeading(item.id)"
             >
-              <span class="cd-rail__label">{{ group.category }}</span>
-              <span class="cd-rail__count">{{ group.files.length }}</span>
+              {{ item.text }}
             </button>
           </nav>
         </div>
       </template>
-    </CoSplitLayout>
+      </CoSplitLayout>
+    </div>
 
     <!-- 无 MC 实例确认弹窗：内容只会落系统下载目录，不会装进游戏 -->
     <div v-if="downloadOnlyConfirm" class="cd-modal">
@@ -1499,5 +1576,78 @@ let unlistenLocation: () => void = () => {};
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ---------------------------------------------------------------- 钩子导航（右栏目录） */
+.cd-toc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-2);
+  padding-top: var(--copper-space-2);
+}
+
+.cd-toc__title {
+  margin: 0;
+  padding-right: 12px;
+  color: var(--copper-text);
+  font-size: var(--copper-font-size-md);
+  font-weight: 600;
+  text-align: right;
+}
+
+/* 钩子线：虚线沿右缘走，选中的小节从线上伸出一小段实线勾住文字。 */
+.cd-toc__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-right: 1px dashed var(--copper-border);
+}
+
+.cd-toc__item {
+  position: relative;
+  overflow-wrap: anywhere;
+  border: none;
+  background: transparent;
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  line-height: 1.45;
+  text-align: right;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition:
+    color var(--copper-duration-fast) var(--copper-easing),
+    background-color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.cd-toc__item:hover {
+  color: var(--copper-text);
+}
+
+.cd-toc__item.is-active {
+  color: var(--copper-text);
+  font-weight: 600;
+}
+
+/* 钩子：选中项在右侧虚线上「勾」一下。 */
+.cd-toc__item.is-active::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  width: 9px;
+  height: 2px;
+  transform: translateY(-50%);
+  border-radius: 1px;
+  background: var(--copper-accent);
+}
+
+/* 没有小节标题时收起右栏：目录是可选导航，空着不如让正文占满。 */
+.cd-detail--no-toc :deep(.co-split__inner) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.cd-detail--no-toc :deep(.co-split__aside) {
+  display: none;
 }
 </style>

@@ -112,5 +112,9 @@
   },
   "tag": "Tag",
   "tagAll": "All tags",
-  "pageJump": "Go to"
+  "pageJump": "Go to",
+  "toc": "Contents",
+  "noToc": "No headings in this document",
+  "from": "By",
+  "otherVersions": "Other versions"
 }
