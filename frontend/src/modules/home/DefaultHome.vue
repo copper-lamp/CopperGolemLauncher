@@ -11,7 +11,7 @@
 // 启动区与列表区共用 CoBoard 容器；列表行可拖拽重排，
 // 重排动画由 TransitionGroup 的 move 过渡提供。
 
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { Play, Square, LoaderCircle, Settings2, ChevronDown, UserRound, Layers, ArrowDownToLine, Globe2, Folder } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -63,6 +63,55 @@ onMounted(load);
 watch(() => props.versions.length, () => void load());
 
 const dragEntry = ref<string | null>(null);
+const dragWidget = ref<string | null>(null);
+const widgetOrder = ref(["account", "instances", "downloads"]);
+
+/** 小组件卡：顺序由 widgetOrder 决定，拖拽只改本页展示。 */
+const widgetCards = computed(() =>
+  widgetOrder.value.map((id) => {
+    if (id === "account") {
+      return {
+        id,
+        icon: UserRound,
+        label: t("module.home.default.account"),
+        value: account.value?.gamertag || t("module.home.default.offline"),
+        hint: "",
+      };
+    }
+    if (id === "instances") {
+      return {
+        id,
+        icon: Layers,
+        label: t("module.home.default.instances"),
+        value: String(props.versions.length),
+        hint: props.selectedName || t("module.home.default.none"),
+      };
+    }
+    const count = activeCount();
+    return {
+      id,
+      icon: ArrowDownToLine,
+      label: t("module.home.default.downloads"),
+      value:
+        count > 0
+          ? t("module.home.default.downloads_active", { count })
+          : t("module.home.default.downloads_idle"),
+      hint: "",
+    };
+  }),
+);
+
+function dropWidget(target: string) {
+  const from = dragWidget.value;
+  dragWidget.value = null;
+  if (!from || from === target) return;
+  const list = widgetOrder.value;
+  const a = list.indexOf(from);
+  const b = list.indexOf(target);
+  if (a < 0 || b < 0) return;
+  const [item] = list.splice(a, 1);
+  list.splice(b, 0, item);
+}
 
 function dropEntry(target: string) {
   const from = dragEntry.value;
@@ -189,33 +238,30 @@ function detailOf(name: string) {
     </div>
 
     <!-- 小组件区 -->
-    <aside class="dash__widgets">
-      <div class="widget">
-        <UserRound :size="16" class="widget__icon" />
-        <span class="widget__label">{{ t('module.home.default.account') }}</span>
-        <span class="widget__value">{{ account?.gamertag ?? t('module.home.default.offline') }}</span>
+    <TransitionGroup name="list" tag="aside" class="dash__widgets">
+      <div
+        v-for="w in widgetCards"
+        :key="w.id"
+        class="widget"
+        draggable="true"
+        @dragstart="dragWidget = w.id"
+        @dragover.prevent
+        @drop="dropWidget(w.id)"
+      >
+        <component :is="w.icon" :size="16" class="widget__icon" />
+        <span class="widget__label">{{ w.label }}</span>
+        <span class="widget__value">{{ w.value }}</span>
+        <span v-if="w.hint" class="widget__hint">{{ w.hint }}</span>
       </div>
-      <div class="widget">
-        <Layers :size="16" class="widget__icon" />
-        <span class="widget__label">{{ t('module.home.default.instances') }}</span>
-        <span class="widget__value">{{ versions.length }}</span>
-        <span class="widget__hint">{{ selectedName || t('module.home.default.none') }}</span>
-      </div>
-      <div class="widget">
-        <ArrowDownToLine :size="16" class="widget__icon" />
-        <span class="widget__label">{{ t('module.home.default.downloads') }}</span>
-        <span class="widget__value">
-          {{ activeCount() > 0 ? t('module.home.default.downloads_active', { count: activeCount() }) : t('module.home.default.downloads_idle') }}
-        </span>
-      </div>
-    </aside>
+    </TransitionGroup>
   </div>
 </template>
 
 <style scoped>
 .dash {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px;
+  /* 左右 6 : 4。 */
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   gap: var(--copper-space-5);
   align-items: start;
   padding-top: var(--copper-space-2);
