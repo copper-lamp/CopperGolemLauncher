@@ -107,6 +107,7 @@
     "installedToVersion": "Content installed to version \"{version}\"",
     "installFailed": "Install failed: {message}",
     "docLoading": "Loading documentation",
-    "docRenderFailed": "Unsupported document format, shown as plain text"
+    "docRenderFailed": "Unsupported document format, shown as plain text",
+    "onThisPage": "On this page"
   }
 }

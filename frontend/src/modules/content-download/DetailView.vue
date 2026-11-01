@@ -1,14 +1,15 @@
 <script setup lang="ts">
 // 内容详情页。
 //
-// 布局分上下两部分：
-// - 上部：一张卡片，容纳内容信息（缩略图 / 名称 / 描述 / 作者 / 徽标 / 适配版本）与说明文档；
-// - 下部：版本区，每个游戏版本（大版本）一张可折叠卡片，默认折叠，展开后列出该版本下的文件。
+// 布局（V3 骨架）：主栏 + 右侧「本页」导航。
+// - 主栏：一张信息卡（缩略图 / 名称 / 描述 / 作者 / 徽标 / 适配版本 / 说明文档）+ 版本区；
+// - 副栏：版本分组锚点，点击展开对应分组并滚动到它；吸顶，长文档滚动时仍可跳转；
+// - 版本区：每个游戏版本（大版本）一张可折叠卡片，默认折叠，展开后列出该版本下的文件。
 //
 // 文件卡片整卡可点击：CF 直接投递下载、lip 走安装确认弹窗；点击后由点击坐标发出圆点，
 // 沿抛物线飞向左侧「下载中心」图标，到达时触发水波纹提示。
 
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ExternalLink,
@@ -30,6 +31,8 @@ import { useSettings } from "../../composables/useSettings";
 import { onContentDownloadLocation, type ContentDownloadLocation } from "../../events";
 import { homeVersionsList, type VersionView } from "../../api/home";
 import TipsRotator from "../../components/TipsRotator.vue";
+import CoPage from "../../components/layout/CoPage.vue";
+import CoSplitLayout from "../../components/layout/CoSplitLayout.vue";
 import CoBadge from "../../components/ui/CoBadge.vue";
 import {
   sourceBadgeLabel,
@@ -146,13 +149,16 @@ const pickHint = computed(() =>
   needsTargetConfirm.value ? t(`${KB}.install`) : t(`${KB}.download`),
 );
 
-/** 按游戏版本归类文件；无版本（lip）归入「全部版本」。 */
-function groups(): { category: string; files: ContentFile[] }[] {
+/** 按游戏版本归类文件；无版本（lip）归入「全部版本」。
+ *
+ * 用 computed 而非函数：分组结果同时驱动主栏版本区与副栏锚点，
+ * 每次渲染各算一遍会让两侧在极端情况下读到不同的数组。 */
+const versionGroups = computed<{ category: string; files: ContentFile[] }[]>(() => {
   const d = detail.value;
   if (!d) return [];
   const categories = d.gameVersions.filter(Boolean);
   if (categories.length === 0) {
-    return [{ category: t(`${MB_KEY}.versionAll`), files: d.files }];
+    return [{ category: t(MB_KEY + ".versionAll"), files: d.files }];
   }
   return categories
     .map((gv) => ({
@@ -160,6 +166,18 @@ function groups(): { category: string; files: ContentFile[] }[] {
       files: d.files.filter((f) => f.gameVersions.includes(gv)),
     }))
     .filter((g) => g.files.length > 0);
+});
+
+/** 副栏锚点跳转：先展开分组，再滚动到对应卡片。
+ *
+ * 必须等 nextTick：折叠状态下卡片内容是 v-show 隐藏的，展开后高度变化，
+ * 立刻滚动会落到错误位置。 */
+async function goToGroup(index: number, category: string) {
+  if (!isExpanded(category)) toggleGroup(category);
+  await nextTick();
+  document
+    .getElementById("cd-version-" + index)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function isExpanded(key: string): boolean {
@@ -468,174 +486,194 @@ let unlistenLocation: () => void = () => {};
 </script>
 
 <template>
-  <div class="cd-detail">
-    <template v-if="loading">
-      <div class="cd-detail__skeleton">
-        <div class="cd-detail__skeleton-hero" />
-        <div class="cd-detail__skeleton-line" />
-        <div class="cd-detail__skeleton-line cd-detail__skeleton-line--short" />
-      </div>
-      <!-- 详情拉取期间展示内核随机提示 -->
-      <TipsRotator compact />
-    </template>
+  <CoPage>
+    <CoSplitLayout aside-position="end">
+      <template v-if="loading">
+        <div class="cd-detail__skeleton">
+          <div class="cd-detail__skeleton-hero" />
+          <div class="cd-detail__skeleton-line" />
+          <div class="cd-detail__skeleton-line cd-detail__skeleton-line--short" />
+        </div>
+        <!-- 详情拉取期间展示内核随机提示 -->
+        <TipsRotator compact />
+      </template>
 
-    <template v-else-if="error">
-      <p class="cd-detail__error">{{ t(`${MB_KEY}.loadError`) }}</p>
-      <div class="cd-detail__error-actions">
-        <button class="cd-btn" @click="goList">{{ t(`${KB}.back`) }}</button>
-        <button class="cd-btn cd-btn--primary" @click="load">{{ t(`${MB_KEY}.retry`) }}</button>
-      </div>
-    </template>
+      <template v-else-if="error">
+        <p class="cd-detail__error">{{ t(`${MB_KEY}.loadError`) }}</p>
+        <div class="cd-detail__error-actions">
+          <button class="cd-btn" @click="goList">{{ t(`${KB}.back`) }}</button>
+          <button class="cd-btn cd-btn--primary" @click="load">{{ t(`${MB_KEY}.retry`) }}</button>
+        </div>
+      </template>
 
-    <template v-else-if="detail">
-      <!-- ================= 上部：信息 + 文档（单卡片） ================= -->
-      <section class="cd-card cd-card--info">
-        <header class="cd-info__head">
-          <div class="cd-info__thumb">
-            <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
-            <component
-              :is="typeIcon(detail.item.contentType)"
-              v-else
-              :size="34"
-              class="cd-info__thumb-fallback"
-            />
-          </div>
-
-          <div class="cd-info__main">
-            <div class="cd-info__badges">
-              <CoBadge
-                :tone="typeBadgeTone(detail.item.contentType)"
-                :label="typeBadgeLabel(detail.item.contentType, detail.item.source)"
-              />
-              <CoBadge
-                :tone="sourceBadgeTone(detail.item.source)"
-                :label="sourceBadgeLabel(detail.item.source)"
+      <template v-else-if="detail">
+        <!-- ================= 上部：信息 + 文档（单卡片） ================= -->
+        <section class="cd-card cd-card--info">
+          <header class="cd-info__head">
+            <div class="cd-info__thumb">
+              <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
+              <component
+                :is="typeIcon(detail.item.contentType)"
+                v-else
+                :size="34"
+                class="cd-info__thumb-fallback"
               />
             </div>
-            <h1 class="cd-info__name">{{ detail.item.name }}</h1>
-            <p class="cd-info__desc">{{ detail.item.description }}</p>
-            <div class="cd-info__links">
-              <span v-if="detail.authors.length" class="cd-info__author">
-                {{ t(`${KB}.author`) }}：{{ detail.authors[0] }}
-              </span>
-              <a
-                v-if="detail.projectUrl"
-                class="cd-info__link"
-                :href="detail.projectUrl"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <ExternalLink :size="13" />
-                {{ t(`${KB}.projectUrl`) }}
-              </a>
-            </div>
-          </div>
-        </header>
 
-        <!-- 适配游戏版本 -->
-        <div v-if="detail.gameVersions.length" class="cd-info__block">
-          <h2 class="cd-block__title">{{ t(`${KB}.compatibleVersions`) }}</h2>
-          <div class="cd-chips">
-            <span v-for="gv in detail.gameVersions" :key="gv" class="cd-chip">{{ gv }}</span>
-          </div>
-        </div>
-
-        <!-- 说明文档 -->
-        <div class="cd-info__block cd-info__block--doc">
-          <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
-          <div v-if="readmeLoading" class="cd-doc__state">
-            <LoaderCircle :size="15" class="spin" />
-            {{ t(`${KB}.docLoading`) }}
-          </div>
-          <template v-else-if="readmeHtml">
-            <div class="cd-doc-frame" :class="{ 'is-expanded': readmeExpanded }">
-              <div class="cd-doc" v-html="readmeHtml" />
-            </div>
-            <button
-              class="cd-doc-toggle"
-              type="button"
-              :aria-expanded="readmeExpanded"
-              @click="readmeExpanded = !readmeExpanded"
-            >
-              {{ readmeExpanded ? t(`${KB}.collapse`) : t(`${KB}.expand`) }}
-            </button>
-          </template>
-          <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
-        </div>
-      </section>
-
-      <!-- ================= 下部：版本（按大版本折叠） ================= -->
-      <section class="cd-versions">
-        <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
-
-        <p v-if="!groups().length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
-
-        <div
-          v-for="g in groups()"
-          :key="g.category"
-          class="cd-version-card"
-          :class="{ 'is-open': isExpanded(g.category) }"
-        >
-          <button
-            class="cd-version-card__head"
-            :aria-expanded="isExpanded(g.category)"
-            @click="toggleGroup(g.category)"
-          >
-            <ChevronRight
-              :size="16"
-              class="cd-version-card__caret"
-              :class="{ 'is-open': isExpanded(g.category) }"
-            />
-            <span class="cd-version-card__label">{{ g.category }}</span>
-            <span class="cd-version-card__count">
-              {{ t(`${KB}.versionCount`, { count: g.files.length }) }}
-            </span>
-          </button>
-
-          <div v-show="isExpanded(g.category)" class="cd-version-card__body">
-            <div
-              v-for="file in g.files"
-              :key="file.id"
-              class="cd-file"
-              role="button"
-              tabindex="0"
-              :title="pickHint"
-              @click="onPickFile(file, $event)"
-              @keydown.enter="onPickFile(file, $event as unknown as MouseEvent)"
-            >
-              <FileDigit :size="16" class="cd-file__icon" />
-              <div class="cd-file__main">
-                <div class="cd-file__row">
-                  <span class="cd-file__version">{{ file.version }}</span>
-                  <CoBadge
-                    :tone="releaseBadgeTone(file.releaseType)"
-                    :label="releaseBadgeLabel(file.releaseType)"
-                  />
-                  <span v-if="file.size > 0" class="cd-file__meta">
-                    {{ formatBytes(file.size) }}
-                  </span>
-                </div>
-                <div v-if="file.dependencies.length" class="cd-file__deps">
-                  <Link2 :size="12" class="cd-file__deps-icon" />
-                  <span
-                    v-for="dep in file.dependencies"
-                    :key="dep.refId"
-                    class="cd-file__dep"
-                    :class="`is-${dep.kind}`"
-                  >
-                    {{ dep.name || dep.refId }}
-                  </span>
-                </div>
+            <div class="cd-info__main">
+              <div class="cd-info__badges">
+                <CoBadge
+                  :tone="typeBadgeTone(detail.item.contentType)"
+                  :label="typeBadgeLabel(detail.item.contentType, detail.item.source)"
+                />
+                <CoBadge
+                  :tone="sourceBadgeTone(detail.item.source)"
+                  :label="sourceBadgeLabel(detail.item.source)"
+                />
               </div>
-              <span class="cd-file__hint">
-                <PackageCheck v-if="needsTargetConfirm" :size="15" />
-                {{ pickHint }}
-              </span>
+              <h1 class="cd-info__name">{{ detail.item.name }}</h1>
+              <p class="cd-info__desc">{{ detail.item.description }}</p>
+              <div class="cd-info__links">
+                <span v-if="detail.authors.length" class="cd-info__author">
+                  {{ t(`${KB}.author`) }}：{{ detail.authors[0] }}
+                </span>
+                <a
+                  v-if="detail.projectUrl"
+                  class="cd-info__link"
+                  :href="detail.projectUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink :size="13" />
+                  {{ t(`${KB}.projectUrl`) }}
+                </a>
+              </div>
+            </div>
+          </header>
+
+          <!-- 适配游戏版本 -->
+          <div v-if="detail.gameVersions.length" class="cd-info__block">
+            <h2 class="cd-block__title">{{ t(`${KB}.compatibleVersions`) }}</h2>
+            <div class="cd-chips">
+              <span v-for="gv in detail.gameVersions" :key="gv" class="cd-chip">{{ gv }}</span>
             </div>
           </div>
+
+          <!-- 说明文档 -->
+          <div class="cd-info__block cd-info__block--doc">
+            <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
+            <div v-if="readmeLoading" class="cd-doc__state">
+              <LoaderCircle :size="15" class="spin" />
+              {{ t(`${KB}.docLoading`) }}
+            </div>
+            <template v-else-if="readmeHtml">
+              <div class="cd-doc-frame" :class="{ 'is-expanded': readmeExpanded }">
+                <div class="cd-doc" v-html="readmeHtml" />
+              </div>
+              <button
+                class="cd-doc-toggle"
+                type="button"
+                :aria-expanded="readmeExpanded"
+                @click="readmeExpanded = !readmeExpanded"
+              >
+                {{ readmeExpanded ? t(`${KB}.collapse`) : t(`${KB}.expand`) }}
+              </button>
+            </template>
+            <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
+          </div>
+        </section>
+
+        <!-- ================= 下部：版本（按大版本折叠） ================= -->
+        <section class="cd-versions">
+          <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
+
+          <p v-if="!versionGroups.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
+
+          <div
+            v-for="(g, index) in versionGroups"
+            :id="'cd-version-' + index"
+            :key="g.category"
+            class="cd-version-card"
+            :class="{ 'is-open': isExpanded(g.category) }"
+          >
+            <button
+              class="cd-version-card__head"
+              :aria-expanded="isExpanded(g.category)"
+              @click="toggleGroup(g.category)"
+            >
+              <ChevronRight
+                :size="16"
+                class="cd-version-card__caret"
+                :class="{ 'is-open': isExpanded(g.category) }"
+              />
+              <span class="cd-version-card__label">{{ g.category }}</span>
+              <span class="cd-version-card__count">
+                {{ t(`${KB}.versionCount`, { count: g.files.length }) }}
+              </span>
+            </button>
+
+            <div v-show="isExpanded(g.category)" class="cd-version-card__body">
+              <div
+                v-for="file in g.files"
+                :key="file.id"
+                class="cd-file"
+                role="button"
+                tabindex="0"
+                :title="pickHint"
+                @click="onPickFile(file, $event)"
+                @keydown.enter="onPickFile(file, $event as unknown as MouseEvent)"
+              >
+                <FileDigit :size="16" class="cd-file__icon" />
+                <div class="cd-file__main">
+                  <div class="cd-file__row">
+                    <span class="cd-file__version">{{ file.version }}</span>
+                    <CoBadge
+                      :tone="releaseBadgeTone(file.releaseType)"
+                      :label="releaseBadgeLabel(file.releaseType)"
+                    />
+                    <span v-if="file.size > 0" class="cd-file__meta">
+                      {{ formatBytes(file.size) }}
+                    </span>
+                  </div>
+                  <div v-if="file.dependencies.length" class="cd-file__deps">
+                    <Link2 :size="12" class="cd-file__deps-icon" />
+                    <span
+                      v-for="dep in file.dependencies"
+                      :key="dep.refId"
+                      class="cd-file__dep"
+                      :class="`is-${dep.kind}`"
+                    >
+                      {{ dep.name || dep.refId }}
+                    </span>
+                  </div>
+                </div>
+                <span class="cd-file__hint">
+                  <PackageCheck v-if="needsTargetConfirm" :size="15" />
+                  {{ pickHint }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </template>
+      <template #aside>
+        <div v-if="detail && versionGroups.length" class="cd-rail">
+          <h2 class="cd-rail__title">{{ t(`${KB}.onThisPage`) }}</h2>
+          <nav class="cd-rail__nav">
+            <button
+              v-for="(group, index) in versionGroups"
+              :key="group.category"
+              type="button"
+              class="cd-rail__item"
+              @click="goToGroup(index, group.category)"
+            >
+              <span class="cd-rail__label">{{ group.category }}</span>
+              <span class="cd-rail__count">{{ group.files.length }}</span>
+            </button>
+          </nav>
         </div>
-      </section>
-    </template>
+      </template>
+    </CoSplitLayout>
 
     <!-- 无 MC 实例确认弹窗：内容只会落系统下载目录，不会装进游戏 -->
     <div v-if="downloadOnlyConfirm" class="cd-modal">
@@ -692,7 +730,7 @@ let unlistenLocation: () => void = () => {};
         </div>
       </div>
     </div>
-  </div>
+  </CoPage>
 </template>
 
 <style>
@@ -716,15 +754,70 @@ let unlistenLocation: () => void = () => {};
 </style>
 
 <style scoped>
-.cd-detail {
-  height: 100%;
-  padding: var(--copper-space-5);
-  overflow-y: auto;
+/* 副栏：本页版本锚点。卡片语言与主栏一致，吸顶由 CoSplitLayout 负责。 */
+.cd-rail {
+  padding: var(--copper-space-3);
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface);
 }
 
-/* 内容阅读宽度上限：避免超宽窗口下文档行宽过大影响可读性。 */
-.cd-detail > * {
-  max-width: 1080px;
+.cd-rail__title {
+  margin-bottom: var(--copper-space-2);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-sm);
+  font-weight: 600;
+}
+
+.cd-rail__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cd-rail__item {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  width: 100%;
+  padding: 6px var(--copper-space-2);
+  border: none;
+  border-radius: var(--copper-radius-sm);
+  background: transparent;
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.cd-rail__item:hover {
+  background: var(--copper-hover);
+  color: var(--copper-text);
+}
+
+.cd-rail__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cd-rail__count {
+  flex-shrink: 0;
+  color: var(--copper-text-disabled);
+  font-size: var(--copper-font-size-xs);
+}
+
+/* 折叠成单列后锚点排在正文末尾，已失去导航意义，直接隐藏。 */
+@container (max-width: 760px) {
+  .cd-rail {
+    display: none;
+  }
 }
 
 .cd-card {
@@ -1101,6 +1194,8 @@ let unlistenLocation: () => void = () => {};
   background: var(--copper-surface);
   margin-bottom: var(--copper-space-3);
   overflow: hidden;
+  /* 锚点跳转落点留出与页面顶边的呼吸位。 */
+  scroll-margin-top: var(--copper-space-3);
 }
 
 .cd-version-card__head {
