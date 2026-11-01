@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "铜傀儡启动器",
-        "width": 1000,
-        "height": 680,
-        "minWidth": 860,
-        "minHeight": 560,
+        "width": 1120,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 600,
         "decorations": false,
         "transparent": true,
         "center": true
