@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 内容列表：只负责「列表 + 悬浮操作栏」。
 //
-// 搜索词与类型过滤由 `ContentTab` 承担（搜索框上提到面板工具栏），本组件接收已过滤
+// 搜索词与类型过滤由实例资源页（`InstanceContentPage`）承担（搜索框在面板工具栏），本组件接收已过滤
 // 的条目；启用 / 停用 / 删除在此完成后经 `changed` 通知调用方重新拉取清单。
 
 import { computed, ref, watch } from "vue";

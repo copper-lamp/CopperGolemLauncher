@@ -29,11 +29,16 @@ import {
 } from "../../api/home";
 import { onModsChanged } from "../../events";
 
-const props = defineProps<{
-  versionName: string;
-  /** 面板工具栏的搜索词（由 `VersionSettings` 传入）。 */
-  search: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    versionName: string;
+    /** 页面工具栏的搜索词（由实例模组页传入）。 */
+    search: string;
+    /** 启停状态过滤（左栏分类）。 */
+    filter?: "all" | "enabled" | "disabled";
+  }>(),
+  { filter: "all" },
+);
 
 const { t } = useI18n();
 
@@ -51,19 +56,25 @@ const selected = computed(
 
 const filtered = computed(() => {
   const q = props.search.trim().toLowerCase();
-  if (!q) return mods.value;
-  return mods.value.filter(
-    (m) =>
-      m.name.toLowerCase().includes(q) ||
-      m.folder.toLowerCase().includes(q) ||
-      m.mod_type.toLowerCase().includes(q) ||
-      m.author.toLowerCase().includes(q),
-  );
+  return mods.value.filter((mod) => {
+    if (props.filter === "enabled" && !mod.enabled) return false;
+    if (props.filter === "disabled" && mod.enabled) return false;
+    if (!q) return true;
+    return (
+      mod.name.toLowerCase().includes(q) ||
+      mod.folder.toLowerCase().includes(q) ||
+      mod.mod_type.toLowerCase().includes(q) ||
+      mod.author.toLowerCase().includes(q)
+    );
+  });
 });
 
-const emptyText = computed(() =>
-  props.search.trim() ? t("module.home.mods.empty_search") : t("module.home.mods.empty"),
-);
+const emptyText = computed(() => {
+  if (props.search.trim()) return t("module.home.mods.empty_search");
+  // 分类为空与整个实例为空是两码事：前者要提示"换个分类"，别让用户以为模组丢了。
+  if (props.filter !== "all") return t("module.home.mods.empty_filter");
+  return t("module.home.mods.empty");
+});
 
 watch(
   () => props.versionName,

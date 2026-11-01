@@ -35,7 +35,6 @@
   },
   "detail": "详情",
   "welcome": {
-    "friend": "旅行者",
     "0": "欢迎回来，{name}",
     "1": "又见面了，{name}",
     "2": "今天想玩点什么，{name}？",
@@ -55,7 +54,8 @@
     "16": "慢慢来，选好版本再出发",
     "17": "铜傀儡陪你一起冒险",
     "18": "{name}，今天的冒险是什么？",
-    "19": "世界不会自己生成，出发吧"
+    "19": "世界不会自己生成，出发吧",
+    "friend": "旅行者"
   },
   "rename": "重命名",
   "delete": "删除",
@@ -65,12 +65,6 @@
   "back": "返回",
   "open_folder": "版本文件夹",
   "rename_placeholder": "输入新版本名",
-  "tab": {
-    "basic": "基本设置",
-    "content": "内容管理",
-    "mods": "模组管理",
-    "controls": "控制层"
-  },
   "basic": {
     "cover": "版本封面",
     "name": "版本名称",
@@ -142,7 +136,8 @@
       "w": "宽度 %",
       "h": "高度 %"
     }
-  },  "dir": {
+  },
+  "dir": {
     "version": "版本目录",
     "mods": "模组目录",
     "worlds": "存档目录"
@@ -224,7 +219,8 @@
     "imported": "模组已导入",
     "saved": "模组清单已保存",
     "removed": "模组已删除",
-    "author_none": "未署名"
+    "author_none": "未署名",
+    "empty_filter": "该分类下没有模组"
   },
   "toast": {
     "launch_failed": "启动失败：{message}",
@@ -237,5 +233,89 @@
     "deleted": "版本已删除",
     "renamed": "版本已重命名",
     "saved": "设置已保存"
+  },
+  "instance": {
+    "mode": {
+      "label": "实例模式",
+      "original": "原版",
+      "levi": "模组",
+      "client": "客户端",
+      "hint_original": "纯原版启动：不注入加载器，也不加载第三方客户端",
+      "hint_levi_installed": "当前加载器：{loader}，启动时随游戏进程注入",
+      "hint_levi_missing": "该实例尚未安装加载器，模组不会被读取；请到游戏下载页的版本详情安装",
+      "hint_client_set": "启动时预加载 {file}",
+      "hint_client_unset": "尚未选择客户端 DLL，进入「管理客户端」完成选择",
+      "hint_client_unsupported": "客户端 DLL 注入仅支持 Windows 实例",
+      "changed": "实例模式已切换",
+      "switch_failed": "切换实例模式失败：{message}"
+    },
+    "group": {
+      "manage": "管理",
+      "maintain": "维护"
+    },
+    "action": {
+      "content": "管理资源",
+      "content_hint": "资源包 / 行为包 / 世界",
+      "mods": "管理模组",
+      "mods_hint": "加载器读取的模组文件",
+      "client": "管理客户端",
+      "client_hint": "第三方客户端 DLL 与启动状态",
+      "restore": "还原版本",
+      "restore_hint": "清除注入，恢复原始启动文件",
+      "restore_none": "没有可还原的备份，启动文件仍是原始状态",
+      "restore_unsupported": "当前平台读不到启动文件状态",
+      "restore_confirm": "确定还原「{name}」的原始启动文件吗？已注入的隔离与加载器会一并移除，下次启动重新注入。",
+      "edit": "修改实例",
+      "edit_hint": "封面、名称与启动选项",
+      "delete": "删除实例",
+      "delete_hint": "移除版本目录，不可恢复",
+      "controls": "屏幕触控层",
+      "controls_hint": "自定义游戏内触控布局"
+    },
+    "edit": {
+      "title": "修改实例",
+      "done": "完成"
+    },
+    "page": {
+      "content": "资源",
+      "mods": "模组",
+      "client": "客户端",
+      "controls": "屏幕触控层"
+    },
+    "filter": "筛选"
+  },
+  "category": {
+    "all": "全部",
+    "enabled": "已启用",
+    "disabled": "已停用"
+  },
+  "client": {
+    "category": {
+      "dll": "客户端 DLL",
+      "launch": "启动与注入"
+    },
+    "hint": "第三方客户端以 DLL 形式挂到游戏进程上，由注入器在启动时预加载；只接受本机已存在的文件。",
+    "current": "当前文件",
+    "none": "未选择",
+    "pick": "选择 DLL",
+    "change": "更换 DLL",
+    "clear": "清除",
+    "dll_filter": "DLL 文件",
+    "saved": "客户端 DLL 已更新",
+    "cleared": "已清除客户端 DLL",
+    "not_client_mode": "当前实例不是客户端模式，所选 DLL 不会生效；请先在入口页把模式切换为「客户端」。",
+    "launch_injected": "启动文件注入",
+    "launch_injected_hint_on": "隔离与加载器在生效",
+    "launch_injected_hint_off": "下次启动时自动注入",
+    "launch_value_on": "已注入",
+    "launch_value_off": "未注入",
+    "launch_backup": "原始备份",
+    "launch_backup_some": "已保留（{size}）",
+    "launch_backup_none": "无",
+    "launch_preload": "预加载条目",
+    "launch_preload_none": "无",
+    "launch_preload_count": "{count} 个原生模块",
+    "launch_preload_external": "外部预加载器接管",
+    "launch_unavailable": "该平台读不到启动文件状态。"
   }
 }

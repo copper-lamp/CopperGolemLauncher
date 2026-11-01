@@ -1,22 +1,18 @@
 <script setup lang="ts">
-// 版本设置 · 基本设置分区。
+// 实例基本信息表单：封面、版本名、目录快捷方式、启动文件与注入。
 //
-// 封面（点击进入编辑弹窗）、版本名（失焦 / 回车提交重命名）、元信息（类型 · 游戏版本 ·
-// 已注册），以及 目录快捷方式 / 渲染龙 / 世界编辑器 三个设置行与「删除版本」。
+// 从旧「版本设置 · 基本设置分区」收敛而来：实例模式分段与三个开关已上移到实例入口页，
+// 「删除实例」也归入口页的危险动作，这里只留「修改实例」该改的内容。
 //
-// 目录快捷方式经后端统一命令打开（版本 / 模组 / 存档目录解析在 Rust 侧完成，
-// 非隔离版本与多用户存档路径前端无法自行拼出）。
-//
-// 重命名与设置写入在本组件内完成（便于失败时回滚输入框草稿），成功后经 `updated`
-// 把新视图交回 `VersionSettings` 同步清单与路由；删除涉及路由跳转，由父级处理。
+// 写入仍在本组件内完成（便于失败时回滚输入框草稿），成功后经 `updated` 把新视图
+// 交回弹窗 / 入口页同步清单与路由。封面走 `edit-cover` 事件，由外层打开封面弹窗 ——
+// 裁剪与上传不属于表单逻辑。
 
 import { computed, onMounted, ref, watch } from "vue";
-import { FolderOpen, Gamepad2, Puzzle, Trash2, Upload, RotateCcw, Eraser } from "@lucide/vue";
+import { FolderOpen, Gamepad2, Puzzle, Upload, RotateCcw, Eraser } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
-import CoButton from "../../components/ui/CoButton.vue";
-import CoSwitch from "../../components/ui/CoSwitch.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import {
   homeLaunchBackupDelete,
@@ -25,7 +21,6 @@ import {
   homePreloadSummary,
   homeVersionOpenDir,
   homeVersionRename,
-  homeVersionSaveMeta,
   type LaunchFileState,
   type PreloadSummary,
   type VersionDirKind,
@@ -37,10 +32,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  /** 重命名 / 设置写入成功后回传新视图。 */
+  /** 重命名成功后回传新视图。 */
   updated: [view: VersionView];
-  /** 请求删除当前版本（确认与路由跳转由父级处理）。 */
-  remove: [];
   /** 请求打开封面编辑弹窗。 */
   "edit-cover": [];
 }>();
@@ -61,13 +54,6 @@ const typeLabel = computed(() => {
   const label = t(key);
   return label === key ? props.version.version_type : label;
 });
-
-/** 加载器说明：装了就说明来源与生效方式（注入），没装则提示去哪里装。 */
-const loaderHint = computed(() =>
-  props.version.loader
-    ? t("module.home.basic.loader_hint")
-    : t("module.home.basic.loader_hint_none"),
-);
 
 // ---------------------------------------------------------------- 启动文件维护
 
@@ -169,18 +155,6 @@ async function saveName() {
   }
 }
 
-async function saveMeta(update: {
-  enable_editor_mode?: boolean;
-  enable_console?: boolean;
-}) {
-  try {
-    const updated = await homeVersionSaveMeta(props.version.name, update);
-    emit("updated", updated);
-  } catch (e) {
-    showToast(String(e), "error");
-  }
-}
-
 /** 目录快捷方式：图标 + i18n key + 后端目标种类。 */
 const dirShortcuts: Array<{
   kind: VersionDirKind;
@@ -249,43 +223,6 @@ async function openDir(kind: VersionDirKind) {
           </button>
         </div>
       </li>
-      <li class="basic__row">
-        <div class="basic__row-text">
-          <span class="basic__row-title">{{ t("module.home.meta.isolation") }}</span>
-          <span class="basic__row-hint">{{ t("module.home.basic.isolation_hint") }}</span>
-        </div>
-        <span class="basic__row-value">{{ t("module.home.basic.isolation_on") }}</span>
-      </li>
-      <li class="basic__row">
-        <div class="basic__row-text">
-          <span class="basic__row-title">{{ t("module.home.meta.loader") }}</span>
-          <span class="basic__row-hint">{{ loaderHint }}</span>
-        </div>
-        <span class="basic__row-value">{{ version.loader ?? t("module.home.basic.loader_none") }}</span>
-      </li>
-      <li class="basic__row">
-        <div class="basic__row-text">
-          <span class="basic__row-title">{{ t("module.home.meta.editor_mode") }}</span>
-          <span v-if="!version.editor_supported" class="basic__row-hint">
-            {{ t("module.home.basic.editor_unsupported") }}
-          </span>
-        </div>
-        <CoSwitch
-          :model-value="version.enable_editor_mode && version.editor_supported"
-          :disabled="!version.editor_supported"
-          @update:model-value="(v: boolean) => void saveMeta({ enable_editor_mode: v })"
-        />
-      </li>
-      <li class="basic__row">
-        <div class="basic__row-text">
-          <span class="basic__row-title">{{ t("module.home.meta.console") }}</span>
-          <span class="basic__row-hint">{{ t("module.home.basic.console_hint") }}</span>
-        </div>
-        <CoSwitch
-          :model-value="version.enable_console"
-          @update:model-value="(v: boolean) => void saveMeta({ enable_console: v })"
-        />
-      </li>
       <li v-if="launchFile" class="basic__row">
         <div class="basic__row-text">
           <span class="basic__row-title">{{ t("module.home.basic.launch_file") }}</span>
@@ -317,13 +254,6 @@ async function openDir(kind: VersionDirKind) {
         </div>
       </li>
     </ul>
-
-    <footer class="basic__footer">
-      <CoButton variant="danger" size="sm" @click="emit('remove')">
-        <Trash2 :size="14" />
-        <span>{{ t("module.home.delete") }}</span>
-      </CoButton>
-    </footer>
   </div>
 </template>
 
@@ -463,10 +393,5 @@ async function openDir(kind: VersionDirKind) {
   border-color: var(--copper-accent);
   background: var(--copper-surface-3);
   color: var(--copper-text);
-}
-
-.basic__footer {
-  display: flex;
-  justify-content: flex-end;
 }
 </style>

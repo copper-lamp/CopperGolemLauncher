@@ -35,7 +35,6 @@
   },
   "detail": "Details",
   "welcome": {
-    "friend": "Traveler",
     "0": "Welcome back, {name}",
     "1": "Good to see you again, {name}",
     "2": "What are we playing today, {name}?",
@@ -55,7 +54,8 @@
     "16": "No rush — pick a version first",
     "17": "CopperGolem rides along",
     "18": "What is today's adventure, {name}?",
-    "19": "Worlds don't generate themselves — go"
+    "19": "Worlds don't generate themselves — go",
+    "friend": "Traveler"
   },
   "rename": "Rename",
   "delete": "Delete",
@@ -65,12 +65,6 @@
   "back": "Back",
   "open_folder": "Version folder",
   "rename_placeholder": "Enter a new version name",
-  "tab": {
-    "basic": "Basic",
-    "content": "Content",
-    "mods": "Mods",
-    "controls": "Controls"
-  },
   "basic": {
     "cover": "Cover",
     "name": "Version name",
@@ -92,13 +86,7 @@
     "delete_backup": "Delete backup",
     "preload_external": "An external preloader owns native modules",
     "preload_entries": "{count} native module(s) preloaded at launch",
-    "preload_none": "No native modules to preload",
-    "isolation_hint": "Worlds, packs and settings are written only inside this instance; always on",
-    "isolation_on": "On",
-    "loader_none": "Not installed",
-    "loader_hint": "Injected into the game process at launch",
-    "loader_hint_none": "Pick a loader in the version detail page of Game Downloads",
-    "editor_unsupported": "This game version has no editor mode"
+    "preload_none": "No native modules to preload"
   },
   "controls": {
     "android_only": "The on-screen control layer only applies to Android instances: desktop instances have no game Activity, so no in-game controls are rendered.",
@@ -148,7 +136,8 @@
       "w": "Width %",
       "h": "Height %"
     }
-  },  "dir": {
+  },
+  "dir": {
     "version": "Version folder",
     "mods": "Mods folder",
     "worlds": "Worlds folder"
@@ -230,7 +219,8 @@
     "imported": "Mod imported",
     "saved": "Mod manifest saved",
     "removed": "Mod removed",
-    "author_none": "Unknown author"
+    "author_none": "Unknown author",
+    "empty_filter": "No mods in this category"
   },
   "toast": {
     "launch_failed": "Launch failed: {message}",
@@ -243,5 +233,89 @@
     "deleted": "Version deleted",
     "renamed": "Version renamed",
     "saved": "Settings saved"
+  },
+  "instance": {
+    "mode": {
+      "label": "Instance mode",
+      "original": "Vanilla",
+      "levi": "Modded",
+      "client": "Client",
+      "hint_original": "Vanilla launch: no loader injection, no third-party client",
+      "hint_levi_installed": "Loader: {loader}, injected with the game process at launch",
+      "hint_levi_missing": "No loader installed, so mods are not read. Install one from the version detail page",
+      "hint_client_set": "Preload {file} at launch",
+      "hint_client_unset": "No client DLL yet. Open Manage client to pick one",
+      "hint_client_unsupported": "Client DLL injection is Windows-only",
+      "changed": "Instance mode switched",
+      "switch_failed": "Could not switch instance mode: {message}"
+    },
+    "group": {
+      "manage": "Manage",
+      "maintain": "Maintain"
+    },
+    "action": {
+      "content": "Manage content",
+      "content_hint": "Resource packs / behavior packs / worlds",
+      "mods": "Manage mods",
+      "mods_hint": "Mod files read by the loader",
+      "client": "Manage client",
+      "client_hint": "Third-party client DLL and launch state",
+      "restore": "Restore version",
+      "restore_hint": "Remove injection and restore the original launch file",
+      "restore_none": "Nothing to restore: the launch file is still original",
+      "restore_unsupported": "Launch file state is unavailable on this platform",
+      "restore_confirm": "Restore the original launch file of \"{name}\"? Isolation and loader injection will be removed and reapplied on the next launch.",
+      "edit": "Edit instance",
+      "edit_hint": "Cover, name and launch options",
+      "delete": "Delete instance",
+      "delete_hint": "Removes the version folder, cannot be undone",
+      "controls": "Touch controls",
+      "controls_hint": "Customize the in-game touch layout"
+    },
+    "edit": {
+      "title": "Edit instance",
+      "done": "Done"
+    },
+    "page": {
+      "content": "Content",
+      "mods": "Mods",
+      "client": "Client",
+      "controls": "Touch controls"
+    },
+    "filter": "Filter"
+  },
+  "category": {
+    "all": "All",
+    "enabled": "Enabled",
+    "disabled": "Disabled"
+  },
+  "client": {
+    "category": {
+      "dll": "Client DLL",
+      "launch": "Launch and injection"
+    },
+    "hint": "A third-party client is a DLL attached to the game process and preloaded at launch. Only files already on this machine are accepted.",
+    "current": "Current file",
+    "none": "Not selected",
+    "pick": "Select DLL",
+    "change": "Change DLL",
+    "clear": "Clear",
+    "dll_filter": "DLL file",
+    "saved": "Client DLL updated",
+    "cleared": "Client DLL cleared",
+    "not_client_mode": "This instance is not in client mode, so the selected DLL will not be used. Switch the mode to Client on the entry page first.",
+    "launch_injected": "Launch file injection",
+    "launch_injected_hint_on": "Isolation and loader are active",
+    "launch_injected_hint_off": "Applied automatically on the next launch",
+    "launch_value_on": "Injected",
+    "launch_value_off": "Not injected",
+    "launch_backup": "Original backup",
+    "launch_backup_some": "Kept ({size})",
+    "launch_backup_none": "None",
+    "launch_preload": "Preload entries",
+    "launch_preload_none": "None",
+    "launch_preload_count": "{count} native modules",
+    "launch_preload_external": "Handled by an external preloader",
+    "launch_unavailable": "Launch file state is unavailable on this platform."
   }
 }
