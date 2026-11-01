@@ -67,6 +67,20 @@
   /* 左导航 */
   --copper-nav-w: 64px;
 
+  /* 页面骨架（V3 布局系统，见 docs/铜核心/界面布局.md）。
+   * - page-pad：内容区四周留白，窄窗口与移动端由 CoPage 内部再收一档；
+   * - aside-w / aside-w-narrow：左右分栏副栏宽度（动作栏 / 筛选栏 / 分类导航）；
+   * - subnav-w：二级分类导航（设置左栏）的单列宽度，比动作栏窄一档；
+   * - split-gap：主栏与副栏之间的沟槽；
+   * - page-max：内容最大宽度，窗口最大化时避免一行文字被拉成一条线。 */
+  --copper-page-pad-x: 28px;
+  --copper-page-pad-y: 24px;
+  --copper-aside-w: 264px;
+  --copper-aside-w-narrow: 232px;
+  --copper-subnav-w: 208px;
+  --copper-split-gap: 20px;
+  --copper-page-max: 1240px;
+
   /* 安全区（刘海 / 圆角 / 手势条）：桌面端 env() 取不到值，恒为 0。
    * 移动端由浏览器注入真实内边距，Shell 与底部标签栏据此避让系统区域。 */
   --copper-safe-top: env(safe-area-inset-top, 0px);
