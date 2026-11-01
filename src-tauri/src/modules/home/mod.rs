@@ -17,6 +17,8 @@ use crate::registry::modules::Module;
 use crate::state::KernelContext;
 
 pub mod content;
+/// 默认模式列表区：跨实例的世界与外部服务器扫描。
+pub mod dashboard;
 /// 触控层布局（屏幕控件）的事实源：`<版本目录>/controls.json`。
 pub mod controls;
 /// 账户—profile 一致性检查（启动前诊断，防止静默恢复别人的账户）。

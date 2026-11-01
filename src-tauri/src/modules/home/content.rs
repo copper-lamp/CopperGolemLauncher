@@ -201,7 +201,7 @@ fn backup_dir_for(kind: ContentKind, com_mojang: &Path) -> PathBuf {
 }
 
 /// 定位世界目录：UWP 用确定落点，GDK 用 `<Users>/<首个用户>/games/com.mojang/minecraftWorlds`。
-fn first_player_worlds_dir(roots: &ContentRoots) -> Option<PathBuf> {
+pub(crate) fn first_player_worlds_dir(roots: &ContentRoots) -> Option<PathBuf> {
     // UWP：包布局固定，世界就在 `games/com.mojang/minecraftWorlds`（没有玩家层）。
     if let Some(worlds) = roots.worlds.as_ref() {
         return worlds.is_dir().then(|| worlds.clone());

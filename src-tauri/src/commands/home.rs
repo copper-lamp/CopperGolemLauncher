@@ -7,6 +7,7 @@ use tauri::State;
 use crate::commands::into_command_error;
 use crate::error::{CommandResult, KernelError};
 use crate::modules::home::content;
+use crate::modules::home::dashboard;
 use crate::modules::home::controls;
 use crate::modules::home::launch::LaunchOutcome;
 use crate::modules::home::mods;
@@ -141,6 +142,14 @@ pub fn home_logo_set(
 pub fn home_logo_remove(kernel: State<'_, KernelContext>, name: String) -> CommandResult<()> {
     let dir = meta::resolve_version_dir(&kernel.inner().versions_root(), &name).map_err(into_command_error)?;
     meta::remove_logo(&dir).map_err(into_command_error)
+}
+
+/// 开始页默认模式：跨实例扫描本地世界与外部服务器。
+#[tauri::command]
+pub fn home_dashboard_entries(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<dashboard::DashboardEntry>> {
+    Ok(dashboard::entries(kernel.inner()))
 }
 
 /// 版本已加入资源清单。

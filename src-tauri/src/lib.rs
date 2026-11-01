@@ -478,6 +478,7 @@ pub fn run() {
             commands::home::home_logo_set,
             commands::home::home_logo_remove,
             commands::home::home_content_list,
+            commands::home::home_dashboard_entries,
             commands::home::home_content_set_enabled,
             commands::home::home_content_remove,
             commands::home::home_controls_get,
