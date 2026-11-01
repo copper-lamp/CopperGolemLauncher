@@ -325,8 +325,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="scrollerEl" class="content-list">
-    <!-- 刷新按钮注入全局标题栏操作区 -->
-    <Teleport to="#copper-titlebar-actions">
+    <!-- 刷新按钮注入全局标题栏操作区（defer 原因见 HomePage 同处注释） -->
+    <Teleport defer to="#copper-titlebar-actions">
       <button
         class="content-list__refresh"
         :title="t(`${MB_KEY}.refresh`)"

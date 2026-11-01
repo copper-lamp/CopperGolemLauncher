@@ -212,8 +212,14 @@ function goDownload() {
       </CoButton>
     </div>
 
-    <!-- 模式切换注入全局标题栏操作区 -->
-    <Teleport to="#copper-titlebar-actions">
+    <!--
+      模式切换注入全局标题栏操作区。
+      必须 `defer`：内嵌资源（release / custom-protocol）下路由分包已在本地，
+      HomePage 会和外壳在同一次渲染里挂载，此时标题栏还没插进文档，
+      Teleport 找不到目标 → 整棵 vnode 树损坏（首页永远停在加载态）。
+      `defer` 把目标解析推迟到本次渲染结束后，等价于「只晚一个 tick」。
+    -->
+    <Teleport defer to="#copper-titlebar-actions">
       <CoSegmented v-model="mode" :options="modeOptions" />
     </Teleport>
 

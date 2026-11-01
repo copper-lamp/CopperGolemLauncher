@@ -248,8 +248,8 @@ async function importApk() {
       {{ importStatus }}
     </p>
     <p v-if="loadError" class="gd-page__import-error" role="alert">{{ loadError }}</p>
-    <!-- 导入 / 刷新按钮注入全局标题栏操作区 -->
-    <Teleport to="#copper-titlebar-actions">
+    <!-- 导入 / 刷新按钮注入全局标题栏操作区（defer 原因见 HomePage 同处注释） -->
+    <Teleport defer to="#copper-titlebar-actions">
       <button
         v-if="canImport"
         class="gd-page__refresh"
