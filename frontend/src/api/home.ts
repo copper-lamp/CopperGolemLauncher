@@ -28,7 +28,9 @@ export interface VersionView {
   mode: string;
   /** 实例创建时间（RFC3339；展示时只取日期部分）。 */
   created_at: string;
-  /** 客户端模式注入的 DLL 路径。 */
+  /** 客户端模式选中的客户端库记录 id。 */
+  client_id: string | null;
+  /** 旧版客户端 DLL 路径（已弃用，仅兼容旧数据）。 */
   client_dll: string | null;
   logo_data_url: string | null;
   /** 版本目录绝对路径（打开文件夹用）。 */
@@ -40,6 +42,7 @@ export interface VersionMetaUpdate {
   enable_editor_mode?: boolean;
   enable_console?: boolean;
   mode?: string;
+  client_id?: string;
   client_dll?: string;
   launch_args?: string;
   env_vars?: string;
@@ -412,4 +415,51 @@ export function homeControlsGet(name: string): Promise<ControlLayout> {
  */
 export function homeControlsSave(name: string, layout: ControlLayout): Promise<ControlLayout> {
   return call<ControlLayout>("home_controls_save", { name, layout });
+}
+// ---------------------------------------------------------------- 客户端库
+
+/** 启动器管理的第三方客户端（与后端 module.home.client.ClientView 同构）。 */
+export interface ClientView {
+  id: string;
+  name: string;
+  file_name: string;
+  sha256: string;
+  size: number;
+  imported_at: number;
+  /** 客户端 DLL 的绝对路径。 */
+  path: string;
+  /** 文件是否还在客户端目录里。 */
+  available: boolean;
+}
+
+/** 一次客户端注入的结果（事件 client-inject_result 的负载）。 */
+export interface ClientInjectResult {
+  instance: string;
+  client_id: string;
+  client_name: string;
+  success: boolean;
+  error: string | null;
+  source: "auto" | "manual" | string;
+  /** Unix 毫秒时间戳。 */
+  at: number;
+}
+
+/** 本地客户端库列表（开始页模块内部，Windows 专属）。 */
+export function homeClientsList(): Promise<ClientView[]> {
+  return call<ClientView[]>("home_clients_list");
+}
+
+/** 导入客户端 DLL（会复制进启动器数据目录并写库）。 */
+export function homeClientImport(sourcePath: string, name: string): Promise<ClientView> {
+  return call<ClientView>("home_client_import", { sourcePath, name });
+}
+
+/** 删除客户端（数据库记录 + 文件；游戏正在使用该 DLL 时会失败）。 */
+export function homeClientDelete(id: string): Promise<void> {
+  return call<void>("home_client_delete", { id });
+}
+
+/** 游戏运行期间重新注入该实例选中的客户端（结果经事件返回）。 */
+export function homeClientReinject(name: string): Promise<void> {
+  return call<void>("home_client_reinject", { name });
 }

@@ -422,6 +422,7 @@ pub fn run() {
             commands::account::account_logout,
             commands::account::account_refresh,
             commands::account::account_credentials,
+        commands::account::account_refresh_avatar,
             commands::updater::updater_check,
             commands::updater::updater_download,
             commands::updater::updater_cancel,
@@ -493,6 +494,10 @@ pub fn run() {
             commands::home::home_mods_save_manifest,
             commands::home::home_mods_open_folder,
             commands::home::home_version_open_dir,
+            commands::home::home_clients_list,
+            commands::home::home_client_import,
+            commands::home::home_client_delete,
+            commands::home::home_client_reinject,
             // 游戏下载模块（game-download）
             commands::game_download::game_download_manifest,
             commands::game_download::game_download_loaders,

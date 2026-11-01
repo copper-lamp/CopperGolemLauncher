@@ -9,6 +9,7 @@ import {
   accountBeginLogin,
   accountCurrent,
   accountLogout,
+  accountRefreshAvatar,
   accountWamSignIn,
   type AccountInfo,
 } from "../api/account";
@@ -26,6 +27,22 @@ const loginWaiting = ref(false);
 const profileMismatch = ref<ProfileMismatch | null>(null);
 
 /** 初始化：拉取当前账户并订阅事件。 */
+/**
+ * 补取头像。
+ *
+ * 旧版本登录写进库里的账户行没有 `avatar_url`，只靠登录时抓取的话，已登录用户
+ * 必须退出重登才看得到头像。这里在启动时补一次，内核取到后会广播
+ * `account.changed`，界面自动换图；取不到就安静地保留首字母兜底。
+ */
+async function ensureAvatar(): Promise<void> {
+  try {
+    const url = await accountRefreshAvatar();
+    if (url && account.value) account.value = { ...account.value, avatar_url: url };
+  } catch {
+    // 头像不是必需品：网络不通、票据失效都只影响这一张图。
+  }
+}
+
 export async function initAccount(): Promise<void> {
   try {
     account.value = await accountCurrent();
@@ -52,6 +69,8 @@ export async function initAccount(): Promise<void> {
       }
     }),
   ]);
+
+  if (account.value && !account.value.avatar_url) void ensureAvatar();
 }
 
 export function useAccount() {

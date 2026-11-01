@@ -175,4 +175,14 @@ pub const CORE_MIGRATIONS: &[Migration] = &[
               DELETE FROM core_account
                WHERE xuid IS NULL OR xuid = '' OR xuid GLOB '*[^0-9]*';",
     },
+    // v4：账户头像。
+    //
+    // 头像来自 Xbox 档案（`GameDisplayPicRaw`），必须带 XSTS 票据才取得到，
+    // 因此登录时顺手落库、之后直接读，避免每次启动都再去换票。允许为空：
+    // 取不到时前端回退成 gamertag 首字母，不能因为一张图卡住登录。
+    Migration {
+        version: 4,
+        name: "core_account_avatar",
+        sql: "ALTER TABLE core_account ADD COLUMN avatar_url TEXT;",
+    },
 ];

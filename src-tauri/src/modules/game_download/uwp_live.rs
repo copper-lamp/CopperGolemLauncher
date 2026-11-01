@@ -290,6 +290,7 @@ fn live_uwp_launch_and_isolation() {
     let launch_ctx = launch::LaunchCtx {
         paths,
         settings,
+        db,
         runtime: runtime.handle().clone(),
         events: events.clone(),
         account: None,

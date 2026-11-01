@@ -6,6 +6,7 @@ use tauri::State;
 
 use crate::commands::into_command_error;
 use crate::error::{CommandResult, KernelError};
+use crate::modules::home::client;
 use crate::modules::home::content;
 use crate::modules::home::dashboard;
 use crate::modules::home::controls;
@@ -181,6 +182,87 @@ pub fn home_content_remove(
     item_id: String,
 ) -> CommandResult<()> {
     content::remove_content(kernel.inner(), &name, &item_id).map_err(into_command_error)
+}
+
+// ---------------------------------------------------------------- 客户端库（开始页模块内部）
+
+/// 本地客户端列表（开始页模块 · 实例「管理客户端」页使用）。
+#[tauri::command]
+pub fn home_clients_list(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<client::ClientView>> {
+    client::ensure_supported().map_err(into_command_error)?;
+    client::list(kernel.paths(), kernel.db()).map_err(into_command_error)
+}
+
+/// 导入客户端 DLL（落启动器数据目录 + 写库）。
+#[tauri::command]
+pub fn home_client_import(
+    kernel: State<'_, KernelContext>,
+    source_path: String,
+    name: String,
+) -> CommandResult<client::ClientView> {
+    client::ensure_supported().map_err(into_command_error)?;
+    client::import(
+        kernel.paths(),
+        kernel.db(),
+        kernel.events(),
+        &source_path,
+        &name,
+    )
+    .map_err(into_command_error)
+}
+
+/// 删除客户端（记录 + 文件），并清掉实例里对它的引用。
+#[tauri::command]
+pub fn home_client_delete(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    client::ensure_supported().map_err(into_command_error)?;
+    client::remove(kernel.paths(), kernel.db(), kernel.events(), &id)
+        .map_err(into_command_error)?;
+    clear_client_references(&kernel.versions_root(), &id);
+    Ok(())
+}
+
+/// 客户端删除后，把各实例里指向它的 client_id 清掉，避免留下悬空引用。
+fn clear_client_references(versions_root: &std::path::Path, client_id: &str) {
+    for mut version in meta::scan_versions(versions_root) {
+        if version.client_id.as_deref() != Some(client_id) {
+            continue;
+        }
+        version.client_id = None;
+        version.client_dll = None;
+        let dir = versions_root.join(&version.name);
+        if let Err(error) = meta::VersionMeta::write(&dir, &version) {
+            log::warn!(
+                "[home/client] 清除实例 '{}' 的客户端引用失败: {error}",
+                version.name
+            );
+        }
+    }
+}
+
+/// 重新注入当前实例的客户端（仅客户端模式 + 游戏运行期间可用）。
+///
+/// 命令只投递任务，结果经 client.inject_result 事件回传：远程线程最长等 60s，
+/// 不能让按钮卡在那里。
+#[tauri::command]
+pub fn home_client_reinject(kernel: State<'_, KernelContext>, name: String) -> CommandResult<()> {
+    client::ensure_supported().map_err(into_command_error)?;
+    let versions_root = kernel.versions_root();
+    let dir = meta::resolve_version_dir(&versions_root, &name).map_err(into_command_error)?;
+    let version = meta::VersionMeta::read(&dir)
+        .ok_or_else(|| KernelError::InvalidArgument(format!("版本「{name}」不存在")))
+        .map_err(into_command_error)?;
+    client::reinject(
+        kernel.paths(),
+        kernel.db(),
+        kernel.events().clone(),
+        &name,
+        &versions_root,
+        version.mode.as_deref(),
+        version.client_id.as_deref(),
+    )
+    .map_err(into_command_error)
 }
 
 // ---------------------------------------------------------------- 触控层布局

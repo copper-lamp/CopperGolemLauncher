@@ -16,7 +16,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
+  ArrowRight,
   Play,
+  PlugZap,
+  RefreshCw,
   Square,
   LoaderCircle,
   Settings2,
@@ -24,6 +27,7 @@ import {
   Folder,
   Globe2,
   Puzzle,
+  Syringe,
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -34,6 +38,7 @@ import {
   homeDashboardEntries,
   homeModsList,
   homeModsUpdates,
+  type ClientView,
   type DashboardEntry,
   type ModView,
   type VersionView,
@@ -49,6 +54,13 @@ const props = defineProps<{
   running: boolean;
   stopping: boolean;
   welcome: string;
+  /** 客户端模式：开启后版本切换变成「客户端 -> 注入 -> 实例」两个下拉框。 */
+  clientMode: boolean;
+  clients: ClientView[];
+  selectedClientId: string;
+  reinjecting: boolean;
+  /** 「重新注入」按钮是否可见（客户端模式 + 进程已创建）。 */
+  reinjectVisible: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -56,6 +68,8 @@ const emit = defineEmits<{
   launch: [name: string];
   stop: [name: string];
   detail: [name: string];
+  selectClient: [id: string];
+  reinject: [];
 }>();
 
 const { t } = useI18n();
@@ -73,6 +87,13 @@ const versionOptions = computed(() =>
     label: v.name,
     icon: v.logo_data_url,
   })),
+);
+
+/** 客户端下拉框选项（只有文件仍在的客户端可选）。 */
+const clientOptions = computed(() =>
+  props.clients
+    .filter((client) => client.available)
+    .map((client) => ({ value: client.id, label: client.name, icon: null })),
 );
 
 // ---------------------------------------------------------------- 列表区
@@ -293,7 +314,31 @@ watch(
 
       <!-- 启动区：矩形，无"启动"标题；上切换实例，下开始游戏 + 详情 -->
       <section class="launch">
+        <!-- 客户端模式：客户端 -> 注入 -> 实例；关闭时保持单个实例下拉框。 -->
+        <div v-if="clientMode" class="launch__selects">
+          <CoInstanceSelect
+            :model-value="selectedClientId"
+            :options="clientOptions"
+            :icon="PlugZap"
+            :placeholder="t('module.home.client.client_select')"
+            variant="block"
+            class="launch__select"
+            @update:model-value="emit('selectClient', $event)"
+          />
+          <span class="launch__inject" :title="t('module.home.client.inject_arrow')">
+            <Syringe :size="15" :stroke-width="1.9" />
+            <ArrowRight :size="13" :stroke-width="2.2" />
+          </span>
+          <CoInstanceSelect
+            :model-value="selectedName"
+            :options="versionOptions"
+            variant="block"
+            class="launch__select"
+            @update:model-value="emit('select', $event)"
+          />
+        </div>
         <CoInstanceSelect
+          v-else
           :model-value="selectedName"
           :options="versionOptions"
           variant="block"
@@ -311,6 +356,18 @@ watch(
             <Square v-else-if="running" :size="14" />
             <Play v-else :size="16" />
             <span>{{ running ? t("module.home.stop") : t("module.home.play") }}</span>
+          </button>
+          <button
+            v-if="reinjectVisible"
+            type="button"
+            class="launch__reinject"
+            :title="t('module.home.client.retry_inject')"
+            :aria-label="t('module.home.client.retry_inject')"
+            :disabled="reinjecting"
+            @click="emit('reinject')"
+          >
+            <RefreshCw :size="16" :class="{ spin: reinjecting }" />
+            <span>{{ t("module.home.client.retry_inject") }}</span>
           </button>
           <button
             type="button"
@@ -518,6 +575,28 @@ watch(
   box-shadow: var(--copper-shadow-subtle);
 }
 
+.launch__selects {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-1);
+}
+
+.launch__select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 注入方向提示：客户端 -> 实例。无描边，只用强调色与箭头表达方向。 */
+.launch__inject {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 2px;
+  color: var(--copper-accent);
+  opacity: 0.85;
+}
+
 .launch__row {
   display: flex;
   align-items: center;
@@ -558,6 +637,37 @@ watch(
 }
 
 .launch__play:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.launch__reinject {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 52px;
+  padding: 0 var(--copper-space-3);
+  border: none;
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface-2);
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.launch__reinject:hover:not(:disabled) {
+  background: var(--copper-surface-3);
+  color: var(--copper-text);
+}
+
+.launch__reinject:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

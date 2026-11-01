@@ -111,6 +111,12 @@ export function usePlatform() {
      * docs/模块/内容下载/设计.md 安卓章节）。
      */
     isAndroid: computed(() => platform.value === "android-arm64"),
+    /**
+     * 是否 Windows（桌面 x64 / arm64）。第三方客户端注入只有 Windows 侧有实现，
+     * UI 必须按这个值隐藏入口，而不是只判断"不是移动端"——Linux/macOS 桌面
+     * 同样没有注入能力。
+     */
+    isWindows: computed(() => platform.value.startsWith("windows")),
   };
 }
 

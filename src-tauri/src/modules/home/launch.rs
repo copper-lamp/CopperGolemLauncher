@@ -39,6 +39,7 @@ const WATCH_INTERVAL_MS: u64 = 1500;
 pub struct LaunchCtx {
     pub paths: Arc<Paths>,
     pub settings: Arc<SettingsService>,
+    pub db: Arc<crate::services::database::DatabaseService>,
     pub runtime: tokio::runtime::Handle,
     pub events: Arc<EventBus>,
     /// 启动器当前账户（用于 profile 一致性检查；测试可为 None）。
@@ -53,6 +54,7 @@ impl LaunchCtx {
         Self {
             paths: kernel.paths().clone(),
             settings: kernel.settings().clone(),
+            db: kernel.db().clone(),
             runtime: kernel.runtime().clone(),
             events: kernel.events().clone(),
             account: Some(kernel.account().clone()),
@@ -287,6 +289,12 @@ pub fn launch_game(
     let dir = resolve_launch_dir(&ctx.paths, &ctx.settings, name)?;
     let mut meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
+    #[cfg(not(windows))]
+    if meta.mode.as_deref() == Some("client") {
+        return Err(KernelError::InvalidArgument(
+            "客户端注入仅支持 Windows".into(),
+        ));
+    }
     #[cfg(target_os = "android")]
     if let Some(android) = meta.android.as_ref() {
         return launch_android(ctx, name, &dir, android);
@@ -308,6 +316,11 @@ pub fn launch_game(
     // 也不切控制台子系统：包必须纯 AppContainer 注册（全信任清单会让游戏启动即崩），
     // 隔离由包状态子目录的连接点承担（见 `home::uwp_launch`）。
     if meta.is_uwp() {
+        if meta.mode.as_deref() == Some("client") {
+            return Err(KernelError::InvalidArgument(
+                "客户端模式不支持 UWP 实例；请切换到 GDK 实例或关闭客户端模式".into(),
+            ));
+        }
         // 隔离标记归一 + 骨架目录：与 GDK 用同一套数据目录规则，只是内容根布局不同。
         if super::isolate::enforce_isolation(&mut meta) {
             if let Err(error) = VersionMeta::write(&dir, &meta) {
@@ -321,6 +334,15 @@ pub fn launch_game(
 
     // 0) prepare：骨架目录 + 预加载清单（控制台子系统与导入表注入合并到第 1 步）
     prepare_instance(name, &dir, &exe, &mut meta)?;
+
+    // 0.7) 客户端注入计划：关闭客户端模式时为 None；启用但客户端文件缺失 / 摘要
+    //      不符时在这里就拒绝启动，而不是等游戏跑起来才发现注入不了。
+    let client_plan = super::client::launch_plan(
+        ctx.paths.as_ref(),
+        ctx.db.as_ref(),
+        meta.mode.as_deref(),
+        meta.client_id.as_deref(),
+    )?;
 
     // 0.5) 账户—profile 一致性：游戏用 profile 的三键静默恢复 Xbox 会话。
     //      如果 profile 属于另一个账户，当前 WAM 会话里没有它，游戏会 0 TCP
@@ -399,6 +421,18 @@ pub fn launch_game(
         "[home/launch] 版本 `{name}` 以远程注入启动（console={console}）"
     );
     let pid = spawn_game(&exe, &dir, &args, &env, &dll, true, console)?;
+
+    // 4) 客户端注入：游戏进程起来 5s 后再加载第三方 DLL（见 home::client）。
+    //    失败不终止游戏；结果经 client.inject_result 事件回传，开始页同时提供
+    //    「重新注入」按钮作为兜底。
+    if let Some(plan) = client_plan {
+        log::info!(
+            "[home/launch] 版本 `{name}` 将在启动 {}ms 后注入客户端 `{}`",
+            plan.delay_ms,
+            plan.client.name
+        );
+        super::client::schedule_injection(ctx.events.clone(), name.to_string(), pid, plan);
+    }
 
     monitor_after_launch(ctx, name, dir, pid);
     Ok(LaunchOutcome::Spawned)
@@ -861,12 +895,14 @@ mod tests {
         .expect("迁移 core schema");
         let events = Arc::new(EventBus::new());
         let settings = Arc::new(
-            SettingsService::new(db, events.clone(), Default::default()).expect("创建设置服务"),
+            SettingsService::new(db.clone(), events.clone(), Default::default())
+                .expect("创建设置服务"),
         );
         let runtime = tokio::runtime::Runtime::new().expect("创建 tokio 运行时");
         let ctx = LaunchCtx {
             paths,
             settings,
+            db,
             runtime: runtime.handle().clone(),
             events,
             account: None,

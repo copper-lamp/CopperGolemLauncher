@@ -49,7 +49,9 @@ use windows::Win32::System::Threading::{
     GetExitCodeThread, OpenProcess, OpenProcessToken, ResumeThread, TerminateProcess,
     WaitForSingleObject, CREATE_NEW_CONSOLE, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     LOGON_WITH_PROFILE,
-    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+    PROCESS_CREATE_THREAD, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
+    STARTUPINFOW,
 };
 
 use crate::error::KernelError;
@@ -518,14 +520,95 @@ pub fn launch_plain(
     Ok(info.dwProcessId)
 }
 
-/// 在挂起的进程里起远程线程加载 dll。
+/// 在挂起的进程里起远程线程加载 dll（hook DLL 的主注入路径）。
 fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
+    inject_library(target.process, dll, INJECT_TIMEOUT_MS)
+}
+
+/// 对已经运行的游戏进程注入一个 DLL（客户端模式用）。
+///
+/// 与启动注入共用同一套远程线程实现，但不改 exe、不参与启动时序：客户端
+/// 必须在游戏起来 5 秒后加载，且用户随时可能点「重新注入」。
+pub fn inject_dll_into_process(pid: u32, dll: &Path) -> Result<(), KernelError> {
+    if !dll.is_file() {
+        return Err(KernelError::Module(format!(
+            "[home/injector] 客户端文件不存在：{}",
+            dll.display()
+        )));
+    }
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_CREATE_THREAD
+                | PROCESS_VM_OPERATION
+                | PROCESS_VM_WRITE
+                | PROCESS_VM_READ
+                | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            pid,
+        )
+    }
+    .map_err(|error| {
+        KernelError::Module(format!(
+            "[home/injector] 打开游戏进程失败（pid={pid}）：{error}（游戏可能已退出）"
+        ))
+    })?;
+    let result = inject_library(process, dll, INJECT_TIMEOUT_MS);
+    unsafe { let _ = CloseHandle(process); }
+    result
+}
+
+/// 目标进程的模块表里是否已有指定文件名的模块。
+///
+/// 远程线程的 LoadLibraryW 返回非零只代表调用返回了模块基址；客户端被安全
+/// 软件「放行调用、拦截实际加载」时，模块表里不会有它。注入后核对一次模块表，
+/// 才能把「调用成功」和「真的在进程里」分开。
+pub fn is_module_loaded(pid: u32, module_file_name: &str) -> Option<bool> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        Module32FirstW, Module32NextW, MODULEENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32,
+    };
+
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
+        else {
+            // 快照都拿不到时不能断言「没加载」：LoadLibrary 已经返回成功，
+            // 这里只是核对手段不可用。交给调用方按「无法核对」处理。
+            return None;
+        };
+        let mut entry: MODULEENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<MODULEENTRY32W>() as u32;
+        let mut found = false;
+        if Module32FirstW(snapshot, &mut entry).is_err() {
+            let _ = CloseHandle(snapshot);
+            return None;
+        }
+        loop {
+            let end = entry
+                .szModule
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szModule.len());
+            let name = String::from_utf16_lossy(&entry.szModule[..end]);
+            if name.eq_ignore_ascii_case(module_file_name) {
+                found = true;
+                break;
+            }
+            if Module32NextW(snapshot, &mut entry).is_err() {
+                break;
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        Some(found)
+    }
+}
+
+/// 远程线程加载 DLL 的共用实现。
+fn inject_library(process: HANDLE, dll: &Path, timeout_ms: u32) -> Result<(), KernelError> {
     let path = wide(&dll.to_string_lossy());
     let bytes = path.len() * std::mem::size_of::<u16>();
 
     unsafe {
         let remote = VirtualAllocEx(
-            target.process,
+            process,
             None,
             bytes,
             MEM_COMMIT | MEM_RESERVE,
@@ -539,16 +622,10 @@ fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
         }
 
         let result = (|| -> Result<HANDLE, KernelError> {
-            WriteProcessMemory(
-                target.process,
-                remote,
-                path.as_ptr() as *const _,
-                bytes,
-                None,
-            )
-            .map_err(|error| {
-                KernelError::Module(format!("[home/injector] 写入 DLL 路径失败: {error}"))
-            })?;
+            WriteProcessMemory(process, remote, path.as_ptr() as *const _, bytes, None)
+                .map_err(|error| {
+                    KernelError::Module(format!("[home/injector] 写入 DLL 路径失败: {error}"))
+                })?;
 
             let kernel = GetModuleHandleW(PCWSTR(wide("kernel32.dll").as_ptr())).map_err(
                 |error| {
@@ -567,7 +644,7 @@ fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
                 ));
             };
             CreateRemoteThread(
-                target.process,
+                process,
                 None,
                 0,
                 Some(entry),
@@ -580,16 +657,22 @@ fn inject_into(target: &Suspended, dll: &Path) -> Result<(), KernelError> {
             })
         })();
 
-        let thread = result?;
-        let waited = WaitForSingleObject(thread, INJECT_TIMEOUT_MS);
+        let thread = match result {
+            Ok(thread) => thread,
+            Err(error) => {
+                let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+                return Err(error);
+            }
+        };
+        let waited = WaitForSingleObject(thread, timeout_ms);
         let mut code = 0u32;
         let read = GetExitCodeThread(thread, &mut code).is_ok();
         let _ = CloseHandle(thread);
-        let _ = VirtualFreeEx(target.process, remote, 0, MEM_RELEASE);
+        let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
         if waited != WAIT_OBJECT_0 {
             return Err(KernelError::Module(format!(
                 "[home/injector] 远程线程在 {}ms 内未返回：{} 可能缺少依赖、被杀软拦截，或 DllMain 卡在加载器锁上",
-                INJECT_TIMEOUT_MS,
+                timeout_ms,
                 dll.display()
             )));
         }

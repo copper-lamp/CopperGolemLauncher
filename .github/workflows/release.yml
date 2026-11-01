@@ -40,6 +40,25 @@ jobs:
           npm ci
           npm --prefix frontend ci
 
+      # Release 正文直接取 CHANGELOG.md 对应版本段，不再在工作流里手写一份文案。
+      # 这一步同时校验 tag（去掉 v 前缀）与 src-tauri/tauri.conf.json 的版本一致；
+      # 版本段缺失或版本号对不上都会在这里失败，避免产出一个「版本对不上说明」的包。
+      - name: 读取 CHANGELOG 发布说明
+        id: changelog
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          node scripts/release-notes.mjs --version $version --out release-notes.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $body = (Get-Content -LiteralPath release-notes.md -Raw -Encoding utf8).TrimEnd()
+          $delimiter = "EOF_" + [guid]::NewGuid().ToString("N")
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "body<<$delimiter" >> $env:GITHUB_OUTPUT
+          $body | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $delimiter | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: 安装前端依赖并构建发布
         uses: tauri-apps/tauri-action@v0
         env:
@@ -49,12 +68,12 @@ jobs:
           # 工程目录用 `projectPath`，默认即仓库根，因此这里不需要填。
           # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
           args: --features vendored-openssl
-          tagName: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
-          releaseName: '铜傀儡 ${{ inputs.tag || github.ref_name }}'
-          releaseBody: '自动生成的发布。完整变更见仓库 CHANGE.md。'
+          tagName: ${{ steps.changelog.outputs.tag }}
+          releaseName: '铜傀儡 ${{ steps.changelog.outputs.tag }}'
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: true
           # 内测阶段：自动发布一律标记为预发布（Pre-release）。
-          # 转为正式版时改回 false，并同步调整 README / CHANGE.md 的状态描述。
+          # 转为正式版时改回 false，并同步调整 README / CHANGELOG.md 的状态描述。
           prerelease: true
 
   # Android arm64：debug APK，作为 **Release 资产** 直接给出。
@@ -125,6 +144,18 @@ jobs:
           npm ci
           npm --prefix frontend ci
 
+      # 与桌面 job 同一个事实源：Android 资产挂到同一个草稿 Release，
+      # 若由本 job 先创建 Release，正文同样取 CHANGELOG.md。
+      - name: 读取 CHANGELOG 发布说明
+        id: changelog
+        env:
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -e
+          VERSION="${TAG_NAME#v}"
+          node scripts/release-notes.mjs --version "$VERSION" --out release-notes.md
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
       - name: 打包 Android APK
         # Android 无系统 OpenSSL，openssl 需从源码交叉编译（openssl-src 支持 NDK）。
         run: npx tauri android build --apk --debug --target aarch64 --features vendored-openssl
@@ -147,11 +178,11 @@ jobs:
       - name: 创建草稿 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
+          TAG_NAME: ${{ steps.changelog.outputs.tag }}
         run: |
           set -e
           if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            gh release create "$TAG_NAME" --draft --prerelease --title "铜傀儡 $TAG_NAME" --notes "自动生成的发布。完整变更见仓库 CHANGE.md。"
+            gh release create "$TAG_NAME" --draft --prerelease --title "铜傀儡 $TAG_NAME" --notes-file release-notes.md
           fi
           {
             echo "## Android APK"
@@ -163,7 +194,7 @@ jobs:
       - name: 把 APK 挂成 Release 资产
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name == 'main' && inputs.tag || github.ref_name }}
+          TAG_NAME: ${{ steps.changelog.outputs.tag }}
         run: |
           set -e
           gh release upload "$TAG_NAME" dist/*.apk --clobber

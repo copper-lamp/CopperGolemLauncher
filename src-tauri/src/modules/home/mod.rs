@@ -23,6 +23,8 @@ pub mod dashboard;
 pub mod controls;
 /// 账户—profile 一致性检查（启动前诊断，防止静默恢复别人的账户）。
 pub mod account_check;
+/// 第三方客户端库：导入、存储、选择与注入编排。
+pub mod client;
 /// 注入编排：hook DLL 落位 + 导入表改写 + 原始文件备份与还原。
 pub mod inject;
 /// 挂起启动 + 远程线程注入：游戏 exe 不改一个字节。
@@ -84,7 +86,9 @@ pub struct VersionView {
     pub mode: String,
     /// 实例创建时间（RFC3339，前端只取日期部分展示）。
     pub created_at: String,
-    /// 客户端模式要注入的 DLL 路径。
+    /// 客户端模式要注入的客户端库记录 id。
+    pub client_id: Option<String>,
+    /// 旧版客户端 DLL 路径（已弃用，仅兼容旧数据）。
     pub client_dll: Option<String>,
     pub logo_data_url: Option<String>,
     /// 版本目录绝对路径（前端打开文件夹用）。
@@ -99,7 +103,9 @@ pub struct VersionMetaUpdate {
     pub enable_console: Option<bool>,
     /// 实例模式切换。
     pub mode: Option<String>,
-    /// 客户端 DLL 路径；空串表示清除。
+    /// 客户端库记录 id；空串表示清除。
+    pub client_id: Option<String>,
+    /// 旧版客户端 DLL 路径；空串表示清除（已弃用）。
     pub client_dll: Option<String>,
     pub launch_args: Option<String>,
     pub env_vars: Option<String>,
@@ -204,10 +210,15 @@ impl HomeModule {
                 return Err(KernelError::InvalidArgument(format!("未知实例模式 `{v}`")));
             }
             meta.mode = Some(v.clone());
-            // 切出客户端模式时清掉旧 DLL，避免下次切回来悄悄注入上次的路径。
+            // 切出客户端模式时清掉旧选择，避免下次切回来悄悄注入上次的客户端。
             if v != "client" {
+                meta.client_id = None;
                 meta.client_dll = None;
             }
+        }
+        if let Some(v) = &update.client_id {
+            let trimmed = v.trim();
+            meta.client_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
         if let Some(v) = &update.client_dll {
             let trimmed = v.trim();
@@ -363,6 +374,7 @@ fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
         loader: meta.loader.clone(),
         mode: effective_mode(&meta),
         created_at: meta.created_at.clone(),
+        client_id: meta.client_id.clone(),
         client_dll: meta.client_dll.clone(),
         logo_data_url: meta::logo_data_url(&dir),
         folder: dir.to_string_lossy().into_owned(),
@@ -380,6 +392,11 @@ impl Module for HomeModule {
     }
 
     fn init(&self, kernel: &KernelContext) -> Result<(), KernelError> {
+        // 客户端库 schema：与开始页模块同作用域，卸载版本不牵动客户端记录。
+        kernel
+            .db()
+            .migrate_scope("module:home", client::MIGRATIONS)?;
+
         // i18n：注册模块语言包（数据源在前端目录，后端 include_str 同源）。
         kernel.i18n().register_module_pack(
             "home",

@@ -12,6 +12,8 @@ export interface AccountInfo {
   xuid: string | null;
   /** WAM 的 WebAccount.Id（PUID）；只用于取票，不参与 profile 比对。 */
   wam_account_id?: string | null;
+  /** Xbox 档案头像 URL；未取到时为 null，界面回退成 gamertag 首字母。 */
+  avatar_url?: string | null;
 }
 
 /** 设备码信息（前端展示授权链接与用户码）。 */
@@ -44,6 +46,15 @@ export function accountWamSignIn(): Promise<AccountInfo> {
 /** 退出登录。 */
 export function accountLogout(): Promise<void> {
   return call<void>("account_logout");
+}
+
+/**
+ * 补齐账户头像：内核会在缺少头像时重新换票取一次（老账户行没有头像）。
+ *
+ * 取不到返回 `null`，调用方继续用首字母兜底，不要当成错误弹提示。
+ */
+export function accountRefreshAvatar(): Promise<string | null> {
+  return call<string | null>("account_refresh_avatar");
 }
 
 /** 刷新当前账户令牌。 */

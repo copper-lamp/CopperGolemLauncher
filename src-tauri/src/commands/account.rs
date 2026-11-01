@@ -80,6 +80,21 @@ pub async fn account_refresh(kernel: State<'_, KernelContext>) -> CommandResult<
     kernel.account().refresh().await.map_err(into_command_error)
 }
 
+/// 补齐账户头像（老账户行没有头像时补取一次）。
+///
+/// 取不到不算错误：返回 `null` 让前端继续用首字母兜底，不要把一次图片请求
+/// 变成挡住界面的失败。
+#[tauri::command]
+pub async fn account_refresh_avatar(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Option<String>> {
+    kernel
+        .account()
+        .ensure_avatar()
+        .await
+        .map_err(into_command_error)
+}
+
 /// 取当前账户的 MSA + XSTS 凭证（自动刷新，供启动游戏使用）。
 #[tauri::command]
 pub async fn account_credentials(kernel: State<'_, KernelContext>) -> CommandResult<Value> {

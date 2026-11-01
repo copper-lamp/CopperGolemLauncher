@@ -173,7 +173,16 @@ pub struct VersionMeta {
     /// 空串按旧数据推导：有 loader 视为 `levi`，否则 `original`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// 客户端模式要注入的 DLL 绝对路径；其它模式为空。
+    /// 客户端模式要注入的客户端库记录 id；其它模式为空。
+    ///
+    /// 客户端文件由开始页模块的客户端库统一保管（见 `home::client`），实例只记 id，
+    /// 不记路径：路径属于启动器的数据布局，写进实例元数据会在迁移 / 重装后失效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// 旧版客户端 DLL 绝对路径（已弃用）。
+    ///
+    /// 仅用于兼容旧 `version.json`：启动链路不再消费它。保留字段是为了让旧文件
+    /// 继续可解析，而不是让用户的实例凭空消失。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_dll: Option<String>,
     #[serde(default)]

@@ -33,6 +33,10 @@ const MSA_DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/consumers/o
 const MSA_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const XBOX_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
+/// Xbox 档案接口（取头像 `GameDisplayPicRaw`）。需要 XSTS 票据 + 用户 uhs。
+const XBOX_PROFILE_URL: &str = "https://profile.xboxlive.com/users/xuid({xuid})/profile/settings";
+/// 头像请求的上限：登录主流程在等它，宁可没有头像也不能卡住登录。
+const AVATAR_TIMEOUT: Duration = Duration::from_secs(6);
 const KEYRING_SERVICE: &str = "copper-golem";
 
 /// access_token 的存储命名空间。
@@ -55,6 +59,12 @@ pub struct AccountInfo {
     /// profile 比对或 license 绑定。
     #[serde(default)]
     pub wam_account_id: Option<String>,
+    /// Xbox 档案头像（GameDisplayPicRaw）的绝对 URL。
+    ///
+    /// 取不到就是 None：前端回退成 gamertag 首字母。头像只是一张图，
+    /// 不允许它把登录流程拖垮，所以所有获取路径都是「尽力而为」。
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 /// 设备码信息（前端展示授权链接与用户码）。
@@ -111,7 +121,7 @@ impl AccountService {
         self.db
             .with_conn(|conn| {
                 conn.query_row(
-                    "SELECT id, gamertag, xuid, wam_account_id FROM core_account ORDER BY updated_at DESC LIMIT 1",
+                    "SELECT id, gamertag, xuid, wam_account_id, avatar_url FROM core_account ORDER BY updated_at DESC LIMIT 1",
                     [],
                     |r| {
                         Ok(AccountInfo {
@@ -119,6 +129,7 @@ impl AccountService {
                             gamertag: r.get(1)?,
                             xuid: r.get(2)?,
                             wam_account_id: r.get(3)?,
+                            avatar_url: r.get(4)?,
                         })
                     },
                 )
@@ -232,18 +243,20 @@ impl AccountService {
         };
 
         // WAM 票据 → XBL User Token → XSTS。失败同样要落状态，不能停在「等待中」。
-        let result: Result<(String, String), KernelError> = async {
+        let result: Result<(String, String, Option<String>), KernelError> = async {
             let xbl = exchange_xbox_wam(&self.client, &ticket.ticket).await?;
-            // xid / gtg 在 XSTS **响应体**的 DisplayClaims 里，不在 Token 的 JWT 里。
+            // xid / gtg / uhs 都在 XSTS **响应体**的 DisplayClaims 里，不在 Token 的 JWT 里。
             let xsts = exchange_xsts_with_identity(&self.client, &xbl).await?;
-            let xuid = xsts.xuid.ok_or_else(|| {
+            let XstsAuth { token, uhs, xuid, gamertag } = xsts;
+            let xuid = xuid.ok_or_else(|| {
                 KernelError::Account("XSTS 响应里没有 xid（不是 Xbox 账户）".into())
             })?;
-            Ok((xuid, xsts.gamertag))
+            let avatar = fetch_avatar(&self.client, &token, uhs.as_deref(), Some(&xuid)).await;
+            Ok((xuid, gamertag, avatar))
         }
         .await;
 
-        let (xuid, gamertag) = match result {
+        let (xuid, gamertag, avatar_url) = match result {
             Ok(value) => value,
             Err(error) => {
                 self.publish_login_state(LoginState::Failed, Some(&error.to_string()));
@@ -256,7 +269,8 @@ impl AccountService {
         } else {
             gamertag
         };
-        let account = self.save_account(display_name, Some(xuid), Some(ticket.account_id))?;
+        let account =
+            self.save_account(display_name, Some(xuid), Some(ticket.account_id), avatar_url)?;
         self.publish_login_state(LoginState::Done, None);
         Ok(account)
     }
@@ -288,6 +302,95 @@ impl AccountService {
             .current()
             .ok_or_else(|| KernelError::Account("未登录".into()))?;
         self.do_refresh(&account).await
+    }
+
+    /// 补齐头像：只对「已登录但没有头像」的账户跑一次。
+    ///
+    /// 旧版本登录写下的账户行没有 `avatar_url`。没有这条补取路径，老用户必须
+    /// 退出再登录才能看到自己的头像——那不是一个可接受的修复。
+    /// 返回最新头像 URL；仍为 None 时说明取不到（例如只完成了商店授权、没有 MSA 凭据）。
+    pub async fn ensure_avatar(&self) -> Result<Option<String>, KernelError> {
+        let account = self
+            .current()
+            .ok_or_else(|| KernelError::Account("未登录".into()))?;
+        if let Some(url) = account.avatar_url.clone() {
+            return Ok(Some(url));
+        }
+        let xuid = account
+            .xuid
+            .clone()
+            .ok_or_else(|| KernelError::Account("账户缺少 XUID，无法获取头像".into()))?;
+        // 两条取票路径：有 MSA 令牌就走设备码那套；只完成过商店授权的账户没有
+        // MSA 令牌，只能复用 WAM 缓存账户静默取票（不弹窗）。
+        let xsts = match self.xsts_via_msa(&account).await {
+            Some(xsts) => xsts,
+            None => self.xsts_via_wam().await.ok_or_else(|| {
+                KernelError::Account("暂时取不到 Xbox 票据，头像稍后再试".into())
+            })?,
+        };
+        let avatar =
+            fetch_avatar(&self.client, &xsts.token, xsts.uhs.as_deref(), Some(&xuid)).await;
+        if let Some(url) = avatar.clone() {
+            self.update_avatar(&account.id, &url)?;
+        }
+        Ok(avatar)
+    }
+
+    /// 用 MSA 令牌换 XSTS。access_token 只有一小时有效期，老账户行里的那份几乎
+    /// 必然过期，所以失败后先用 refresh_token 换一张新的再试一次。
+    async fn xsts_via_msa(&self, account: &AccountInfo) -> Option<XstsAuth> {
+        let Ok(ms_token) = self.load_ms_token(account) else {
+            return None;
+        };
+        let mut xbl = exchange_xbox(&self.client, &ms_token).await;
+        if xbl.is_err() {
+            self.do_refresh(account).await.ok()?;
+            let retry = self.load_ms_token(account).ok()?;
+            xbl = exchange_xbox(&self.client, &retry).await;
+        }
+        exchange_xsts_with_identity(&self.client, &xbl.ok()?).await.ok()
+    }
+
+    /// 复用 WAM 缓存账户静默取 Xbox 票据（不弹系统界面）。
+    ///
+    /// 只完成商店授权（WAM）的账户没有 MSA 令牌，这条是它唯一的取头像通道。
+    /// WAM 是阻塞 API，必须放到阻塞线程池，不能占用 async 线程。
+    async fn xsts_via_wam(&self) -> Option<XstsAuth> {
+        #[cfg(windows)]
+        {
+            let client = self.client.clone();
+            let ticket = self
+                .runtime
+                .spawn_blocking(crate::services::store_wam::xbox_ticket_silent)
+                .await
+                .ok()?
+                .ok()?;
+            let xbl = exchange_xbox_wam(&client, &ticket.ticket).await.ok()?;
+            exchange_xsts_with_identity(&client, &xbl).await.ok()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    /// 头像落库并广播 `account.changed`：前端不用重新拉取账户就能换上新头像。
+    fn update_avatar(&self, account_id: &str, url: &str) -> Result<(), KernelError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE core_account SET avatar_url = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![url, now_ms, account_id],
+            )?;
+            Ok(())
+        })?;
+        if let Some(account) = self.current() {
+            self.events.publish("account.changed", json!({ "account": account }));
+        }
+        Ok(())
     }
 
     /// 供游戏启动使用：取当前账户的 MSA + XSTS 凭证（自动刷新）。
@@ -323,12 +426,14 @@ impl AccountService {
         gamertag: String,
         xuid: Option<String>,
         wam_account_id: Option<String>,
+        avatar_url: Option<String>,
     ) -> Result<AccountInfo, KernelError> {
         let account = AccountInfo {
             id: Uuid::new_v4().to_string(),
             gamertag,
             xuid,
             wam_account_id,
+            avatar_url,
         };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -336,13 +441,15 @@ impl AccountService {
             .unwrap_or(0);
         self.db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO core_account (id, gamertag, xuid, wam_account_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                "INSERT INTO core_account
+                     (id, gamertag, xuid, wam_account_id, avatar_url, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
                 rusqlite::params![
                     account.id,
                     account.gamertag,
                     account.xuid,
                     account.wam_account_id,
+                    account.avatar_url,
                     now_ms
                 ],
             )?;
@@ -487,18 +594,21 @@ async fn poll_login_completion(
     let result = async {
         let xbl = exchange_xbox(&client, &ms_token.0).await?;
         let xsts = exchange_xsts_with_identity(&client, &xbl).await?;
-        Ok::<_, KernelError>((xsts.xuid, xsts.gamertag))
+        let XstsAuth { token, uhs, xuid, gamertag } = xsts;
+        let avatar = fetch_avatar(&client, &token, uhs.as_deref(), xuid.as_deref()).await;
+        Ok::<_, KernelError>((xuid, gamertag, avatar))
     }
     .await;
 
     match result {
-        Ok((xuid, gamertag)) => {
+        Ok((xuid, gamertag, avatar_url)) => {
             let id = Uuid::new_v4().to_string();
             let account = AccountInfo {
                 id: id.clone(),
                 gamertag,
                 xuid,
                 wam_account_id: None,
+                avatar_url,
             };
             // 先把凭证写进安全存储，**写失败即视为登录失败**。
             //
@@ -541,13 +651,15 @@ async fn poll_login_completion(
                 .unwrap_or(0);
             let result = db.with_conn(|conn| {
                 conn.execute(
-                    "INSERT INTO core_account (id, gamertag, xuid, wam_account_id, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    "INSERT INTO core_account
+                         (id, gamertag, xuid, wam_account_id, avatar_url, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
                     rusqlite::params![
                         account.id,
                         account.gamertag,
                         account.xuid,
                         account.wam_account_id,
+                        account.avatar_url,
                         now_ms
                     ],
                 )?;
@@ -649,6 +761,9 @@ async fn exchange_xbox(client: &Client, ms_access: &str) -> Result<String, Kerne
 #[derive(Debug, Clone)]
 struct XstsAuth {
     token: String,
+    /// 用户的私有化哈希（uhs）。请求 Xbox 档案接口时需要 `XBL3.0 x=<uhs>;<token>`
+    /// 形式的授权头，和 Token 一样来自 XSTS 响应体。
+    uhs: Option<String>,
     xuid: Option<String>,
     gamertag: String,
 }
@@ -704,11 +819,87 @@ async fn exchange_xsts_with_identity(
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| "玩家".to_string());
+    let uhs = claim
+        .and_then(|item| item.get("uhs"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     Ok(XstsAuth {
         token,
+        uhs,
         xuid,
         gamertag,
     })
+}
+
+/// 取 Xbox 档案头像 URL（`GameDisplayPicRaw`）。
+///
+/// 失败一律返回 None 并只记一条 warn：头像缺失是可以接受的降级，
+/// 但把它变成登录失败就会让用户莫名其妙地登不进去。
+///
+/// 授权头是 `XBL3.0 x=<uhs>;<xsts_token>`，两个值都来自同一次 XSTS 响应；
+/// 少了 uhs 服务端只会回 401，所以这里直接放弃，不去发一次注定失败的请求。
+async fn fetch_avatar(
+    client: &Client,
+    xsts_token: &str,
+    uhs: Option<&str>,
+    xuid: Option<&str>,
+) -> Option<String> {
+    let (Some(uhs), Some(xuid)) = (uhs, xuid) else {
+        log::debug!("[account] 缺少 uhs/xuid，跳过头像获取");
+        return None;
+    };
+    let url = XBOX_PROFILE_URL.replace("{xuid}", xuid);
+    let request = client
+        .get(&url)
+        .query(&[("settings", "GameDisplayPicRaw")])
+        .header("Authorization", format!("XBL3.0 x={uhs};{xsts_token}"))
+        .header("x-xbl-contract-version", "3")
+        .header("Accept", "application/json")
+        .send();
+    let response = match tokio::time::timeout(AVATAR_TIMEOUT, request).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            log::warn!("[account] 头像请求失败: {error}");
+            return None;
+        }
+        Err(_) => {
+            log::warn!("[account] 头像请求超时");
+            return None;
+        }
+    };
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        log::warn!(
+            "[account] 头像接口返回 {status}: {}",
+            body.chars().take(200).collect::<String>()
+        );
+        return None;
+    }
+    let body: Value = match response.json().await {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("[account] 头像响应不是 JSON: {error}");
+            return None;
+        }
+    };
+    avatar_from_profile(&body)
+}
+
+/// 从档案响应体里挑出头像地址（单独成函数，便于单测）。
+fn avatar_from_profile(body: &Value) -> Option<String> {
+    body.get("profileUsers")?
+        .as_array()?
+        .first()?
+        .get("settings")?
+        .as_array()?
+        .iter()
+        .find(|setting| setting.get("id").and_then(Value::as_str) == Some("GameDisplayPicRaw"))
+        .and_then(|setting| setting.get("value"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// 只要 XSTS token 的调用方。
@@ -751,6 +942,32 @@ fn decode_jwt_payload(token: &str) -> Option<Value> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn avatar_from_profile_picks_display_picture() {
+        let body = serde_json::json!({
+            "profileUsers": [{
+                "id": "2535467518347612",
+                "settings": [
+                    { "id": "Gamerscore", "value": "1234" },
+                    { "id": "GameDisplayPicRaw", "value": "https://images-eds.xboxlive.com/image?url=abc" }
+                ]
+            }]
+        });
+        assert_eq!(
+            avatar_from_profile(&body).as_deref(),
+            Some("https://images-eds.xboxlive.com/image?url=abc")
+        );
+    }
+
+    #[test]
+    fn avatar_from_profile_rejects_empty_and_missing() {
+        assert_eq!(avatar_from_profile(&serde_json::json!({})), None);
+        let blank = serde_json::json!({
+            "profileUsers": [{ "settings": [{ "id": "GameDisplayPicRaw", "value": "   " }] }]
+        });
+        assert_eq!(avatar_from_profile(&blank), None);
+    }
 
     #[test]
     fn decode_jwt_payload_extracts_claims() {

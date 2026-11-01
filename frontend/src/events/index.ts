@@ -7,6 +7,7 @@ import type { DownloadTask } from "../api/download";
 import type { AccountInfo, LoginState } from "../api/account";
 import type { UpdateStatus } from "../api/updater";
 import type { JsonValue } from "../api/types";
+import type { ClientInjectResult } from "../api/home";
 
 /** 订阅取消函数。 */
 export type Unlisten = () => void;
@@ -190,6 +191,19 @@ export function onUpdateReady(
   handler: (payload: { version: string; download_task_id: number }) => void,
 ): Promise<Unlisten> {
   return listen<{ version: string; download_task_id: number }>("update-ready", (e) =>
+    handler(e.payload),
+  );
+}
+/** 订阅客户端库变更（导入 / 删除 / 选中 / 开关后由后端广播）。 */
+export function onClientsChanged(handler: () => void): Promise<Unlisten> {
+  return listen("clients-changed", () => handler());
+}
+
+/** 订阅客户端注入结果（自动注入与「重新注入」共用一条通道）。 */
+export function onClientInjectResult(
+  handler: (result: ClientInjectResult) => void,
+): Promise<Unlisten> {
+  return listen<ClientInjectResult>("client-inject_result", (e) =>
     handler(e.payload),
   );
 }

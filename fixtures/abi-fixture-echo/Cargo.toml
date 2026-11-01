@@ -1,6 +1,6 @@
 [package]
 name = "abi-fixture-echo"
-version = "0.0.1"
+version = "0.0.2"
 description = "测试夹具：一个真实编译为动态库的附加模块插件，用于端到端验证 helper 加载链路"
 edition.workspace = true
 license.workspace = true

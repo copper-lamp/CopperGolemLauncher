@@ -13,7 +13,7 @@
 import { injectPreviewState } from "./composables/useUpdate";
 import type { UpdateInfo, UpdatePhase, UpdateStatus } from "./api/updater";
 
-const CURRENT = "0.0.1";
+const CURRENT = "0.0.2";
 const TOTAL = 47_352_320;
 const NOW = Math.floor(Date.now() / 1000);
 

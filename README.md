@@ -7,7 +7,7 @@
   <p>为 Minecraft Bedrock 打造的现代化模块化启动器：把版本、账户与游戏内容，收进一个干净、迅捷的入口。</p>
 
   <p>
-    <img src="https://img.shields.io/badge/release-0.0.1--pre-4c8bf5?style=flat-square" alt="release v0.0.1 pre-release">
+    <img src="https://img.shields.io/badge/release-0.0.2--pre-4c8bf5?style=flat-square" alt="release v0.0.2 pre-release">
     <img src="https://img.shields.io/badge/Minecraft%20Bedrock-Windows%20x64-62b47a?style=flat-square" alt="Windows x64 Minecraft Bedrock">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 许可证"></a>
   </p>
@@ -19,7 +19,7 @@
     ·
     <a href="https://github.com/copper-lamp/CopperGolemLauncher/releases">发行版本</a>
     ·
-    <a href="CHANGE.md">更新日志</a>
+    <a href="CHANGELOG.md">更新日志</a>
     ·
     <a href="https://github.com/copper-lamp/CopperGolemLauncher/issues">问题反馈</a>
     ·
@@ -64,13 +64,13 @@
 
 | 平台 | 版本 | 状态 |
 | --- | --- | --- |
-| Windows x64 · Minecraft Bedrock（基岩版） | `0.0.1` | 预发布（首个内测版，NSIS 安装包） |
+| Windows x64 · Minecraft Bedrock（基岩版） | `0.0.2` | 预发布（内测版，NSIS 安装包） |
 
 > [!NOTE]
 > Android 端仍在适配，本版不提供安装包；CI 的 APK 打包暂时禁用，恢复条件见 `release` 工作流注释。
 
 > [!NOTE]
-> 具体变更见 [更新日志](CHANGE.md)。发布自动打包生成，见仓库工作流的 `release` 说明。
+> 具体变更见 [更新日志](CHANGELOG.md)。发布自动打包生成，见仓库工作流的 `release` 说明。
 
 ## 常见问题
 

@@ -1,14 +1,14 @@
 <script setup lang="ts">
 // 账户菜单：头像入口，弹出登录 / 账户信息 / 退出。
 
-import { ref, computed } from "vue";
-import { UserRound, LogIn, LogOut, LoaderCircle, ShieldCheck } from "@lucide/vue";
+import { ref, computed, watch } from "vue";
+import { UserRound, LogOut, LoaderCircle, ShieldCheck } from "@lucide/vue";
 
 import { useAccount } from "../composables/useAccount";
 import { useI18n } from "../i18n";
 
 const { t } = useI18n();
-const { account, loginWaiting, beginLogin, beginWamSignIn, logout } = useAccount();
+const { account, loginWaiting, beginWamSignIn, logout } = useAccount();
 
 const open = ref(false);
 
@@ -16,6 +16,15 @@ const avatarText = computed(() => {
   const name = account.value?.gamertag;
   if (!name) return null;
   return name.trim().charAt(0).toUpperCase();
+});
+
+/** Xbox 档案头像。取不到时回退成首字母，不影响任何登录状态。 */
+const avatarUrl = computed(() => account.value?.avatar_url?.trim() || null);
+/** 图片加载失败（被墙 / URL 过期）时退回首字母，不留一个破图。 */
+const avatarBroken = ref(false);
+
+watch(avatarUrl, () => {
+  avatarBroken.value = false;
 });
 
 function toggle() {
@@ -28,11 +37,6 @@ async function handleWamSignIn() {
   await beginWamSignIn();
 }
 
-async function handleLogin() {
-  open.value = false;
-  await beginLogin();
-}
-
 async function handleLogout() {
   open.value = false;
   await logout();
@@ -43,11 +47,19 @@ async function handleLogout() {
   <div class="account-menu">
     <button
       class="account-menu__trigger"
-      :title="account ? t('account.logged_in_as', { name: account.gamertag }) : t('account.not_logged_in')"
+      :title="account ? t('account.logged_in_as', { name: account.gamertag }) : t('account.login')"
       @click="toggle"
     >
       <span class="account-menu__avatar">
         <LoaderCircle v-if="loginWaiting" :size="16" class="spin" />
+        <img
+          v-else-if="avatarUrl && !avatarBroken"
+          :src="avatarUrl"
+          class="account-menu__avatar-img"
+          alt=""
+          referrerpolicy="no-referrer"
+          @error="avatarBroken = true"
+        />
         <template v-else-if="avatarText">{{ avatarText }}</template>
         <UserRound v-else :size="16" />
       </span>
@@ -60,10 +72,24 @@ async function handleLogout() {
       <div v-if="open" class="account-menu__panel">
         <template v-if="account">
           <div class="account-menu__info">
-            <div class="account-menu__name">{{ account.gamertag }}</div>
-            <div v-if="account.xuid" class="account-menu__sub">
-              {{ account.xuid }}
-            </div>
+            <span class="account-menu__avatar account-menu__avatar--lg">
+              <img
+                v-if="avatarUrl && !avatarBroken"
+                :src="avatarUrl"
+                class="account-menu__avatar-img"
+                alt=""
+                referrerpolicy="no-referrer"
+                @error="avatarBroken = true"
+              />
+              <template v-else-if="avatarText">{{ avatarText }}</template>
+              <UserRound v-else :size="18" />
+            </span>
+            <span class="account-menu__identity">
+              <span class="account-menu__name">{{ account.gamertag }}</span>
+              <span v-if="account.xuid" class="account-menu__sub">
+                {{ account.xuid }}
+              </span>
+            </span>
           </div>
           <div class="account-menu__hint">{{ t("account.store_authorized") }}</div>
           <button
@@ -80,8 +106,11 @@ async function handleLogout() {
           </button>
         </template>
         <template v-else>
-          <div class="account-menu__info">
-            <div class="account-menu__name">{{ t("account.not_logged_in") }}</div>
+          <div class="account-menu__info account-menu__info--out">
+            <span class="account-menu__identity">
+              <span class="account-menu__name">{{ t("account.not_logged_in") }}</span>
+              <span class="account-menu__sub">{{ t("account.store_sign_in") }}</span>
+            </span>
           </div>
           <button
             class="account-menu__action account-menu__action--primary"
@@ -89,11 +118,7 @@ async function handleLogout() {
             @click="handleWamSignIn"
           >
             <ShieldCheck :size="15" />
-            <span>{{ t("account.store_sign_in") }}</span>
-          </button>
-          <button class="account-menu__action" @click="handleLogin">
-            <LogIn :size="15" />
-            <span>{{ t("account.login_microsoft") }}</span>
+            <span>{{ t("account.login") }}</span>
           </button>
         </template>
       </div>
@@ -131,15 +156,31 @@ async function handleLogout() {
 
 .account-menu__avatar {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
+  overflow: hidden;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-sm);
   font-weight: 600;
+}
+
+/* 头像铺满圆形：档案图是正方形，裁切比留白更像「头像」。 */
+.account-menu__avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.account-menu__avatar--lg {
+  width: 34px;
+  height: 34px;
+  font-size: var(--copper-font-size-md);
 }
 
 .account-menu__label {
@@ -168,7 +209,8 @@ async function handleLogout() {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  width: 220px;
+  /* 240px：唯一的登录按钮文案是「登录 Microsoft 账户（Xbox）」，220px 会折行。 */
+  width: 240px;
   padding: var(--copper-space-2);
   background: var(--copper-surface);
   border: 1px solid var(--copper-border);
@@ -178,9 +220,23 @@ async function handleLogout() {
 }
 
 .account-menu__info {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  min-width: 0;
   padding: var(--copper-space-2) var(--copper-space-3) var(--copper-space-3);
   border-bottom: 1px solid var(--copper-border);
   margin-bottom: var(--copper-space-2);
+}
+
+.account-menu__info--out {
+  padding: var(--copper-space-2) var(--copper-space-3) var(--copper-space-2);
+}
+
+.account-menu__identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .account-menu__name {

@@ -14,7 +14,7 @@
 // 浮层是绝对定位的兄弟节点，不做 Teleport：触发条所在容器都允许溢出，
 // 而 Teleport 会把焦点顺序打乱（键盘用户要先跳出触发条才能进浮层）。
 
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch, type Component } from "vue";
 import { ChevronDown, Gamepad2 } from "@lucide/vue";
 
 const props = withDefaults(
@@ -22,6 +22,8 @@ const props = withDefaults(
     modelValue: string;
     /** 选项：`icon` 为实例封面的 data URL，缺失时用占位图标。 */
     options: Array<{ value: string; label: string; icon?: string | null }>;
+    /** 占位图标（实例用 Gamepad2，客户端用 PlugZap）。 */
+    icon?: Component;
     variant?: "pill" | "block";
     size?: "lg" | "md";
     placeholder?: string;
@@ -40,6 +42,8 @@ const root = ref<HTMLElement | null>(null);
 const current = computed(
   () => props.options.find((option) => option.value === props.modelValue) ?? null,
 );
+
+const selectIcon = computed(() => props.icon ?? Gamepad2);
 
 function close() {
   open.value = false;
@@ -102,7 +106,7 @@ onBeforeUnmount(() => {
     >
       <span class="instance-select__icon">
         <img v-if="current?.icon" :src="current.icon" alt="" />
-        <Gamepad2 v-else :size="20" :stroke-width="1.6" />
+        <component :is="selectIcon" v-else :size="20" :stroke-width="1.6" />
       </span>
       <span class="instance-select__label" :title="current?.label ?? placeholder">
         {{ current?.label ?? placeholder }}
@@ -126,7 +130,7 @@ onBeforeUnmount(() => {
         >
           <span class="instance-select__icon">
             <img v-if="option.icon" :src="option.icon" alt="" />
-            <Gamepad2 v-else :size="20" :stroke-width="1.6" />
+            <component :is="selectIcon" v-else :size="20" :stroke-width="1.6" />
           </span>
           <span class="instance-select__option-label" :title="option.label">{{ option.label }}</span>
         </button>

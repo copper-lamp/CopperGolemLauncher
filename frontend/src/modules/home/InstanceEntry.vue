@@ -56,7 +56,7 @@ interface EntryAction {
 
 const { t } = useI18n();
 const router = useRouter();
-const { isMobile } = usePlatform();
+const { isMobile, isWindows } = usePlatform();
 const { current, currentName, loading, refresh, applyView } = useVersionInstance();
 
 const iconDialogOpen = ref(false);
@@ -85,9 +85,9 @@ const modeOptions = computed(() => {
     { value: "original", label: t("module.home.instance.mode.original") },
     { value: "levi", label: t("module.home.instance.mode.levi") },
   ];
-  // 客户端 DLL 注入只有 Windows 侧有实现；移动端不提供该选项，
-  // 但实例本来就是客户端模式时仍要显示，否则分段控件没有选中项。
-  if (!isMobile.value || current.value?.mode === "client") {
+  // 客户端注入只有 Windows 有实现；移动端 / Linux / macOS 不提供该选项。
+  // 旧数据已是 client 模式时仍显示，否则分段控件会没有选中项。
+  if (isWindows.value || current.value?.mode === "client") {
     options.push({ value: "client", label: t("module.home.instance.mode.client") });
   }
   return options;
@@ -101,8 +101,8 @@ const modeWarning = computed(() => {
     return t("module.home.instance.mode.hint_levi_missing");
   }
   if (view.mode === "client") {
-    if (isMobile.value) return t("module.home.instance.mode.hint_client_unsupported");
-    if (!view.client_dll) return t("module.home.instance.mode.hint_client_unset");
+    if (!isWindows.value) return t("module.home.instance.mode.hint_client_unsupported");
+    if (!view.client_id) return t("module.home.instance.mode.hint_client_unset");
   }
   return "";
 });

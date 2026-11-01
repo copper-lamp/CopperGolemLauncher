@@ -12,12 +12,13 @@
 
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { Play, Download, Square, Settings2 } from "@lucide/vue";
+import { ArrowRight, Download, Play, PlugZap, RefreshCw, Settings2, Square, Syringe } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
 import { useAccount } from "../../composables/useAccount";
+import { usePlatform } from "../../composables/usePlatform";
 import {
   beginLaunch,
   endSession,
@@ -34,12 +35,22 @@ import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import DefaultHome from "./DefaultHome.vue";
 import {
+  homeClientReinject,
+  homeClientsList,
   homeGameKill,
   homeLaunch,
+  homeVersionSaveMeta,
   homeVersionsList,
+  type ClientView,
   type VersionView,
 } from "../../api/home";
-import { onVersionInstalled, onVersionRemoved, onVersionsChanged } from "../../events";
+import {
+  onClientInjectResult,
+  onClientsChanged,
+  onVersionInstalled,
+  onVersionRemoved,
+  onVersionsChanged,
+} from "../../events";
 
 type HomeMode = "simple" | "default";
 
@@ -52,6 +63,7 @@ const { t } = useI18n();
 const router = useRouter();
 
 const settings = useSettings();
+const { isWindows } = usePlatform();
 const mode = ref<HomeMode>(
   settings.get<string>("home.mode", "simple") === "default" ? "default" : "simple",
 );
@@ -109,10 +121,99 @@ const versionOptions = computed(() =>
   })),
 );
 
+// ---------------------------------------------------------------- 客户端模式
+//
+// 客户端是启动器级资源：开启客户端模式后，开始页从「一个实例下拉框」变成
+// 「客户端 -> 注入 -> 实例」两个下拉框。客户端与实例是平级选择，互不绑定；
+// 启动时把选中的客户端注入选中的实例，游戏起来 5s 后自动加载。
+const clients = ref<ClientView[]>([]);
+/** 手动重新注入进行中（按钮转圈，结果由事件收尾）。 */
+const clientInjecting = ref(false);
+let clientInjectingTimer: number | undefined;
+/** 本次启动的游戏进程已经创建（spawn 返回），但 game.launched 可能还没到。 */
+const launchSpawned = ref(false);
+
+/** 客户端模式是实例属性：当前实例 mode=client 且平台是 Windows。 */
+const clientMode = computed(
+  () => isWindows.value && current.value?.mode === "client",
+);
+
+/** 当前实例选中的客户端 id（空串 = 未选择）。 */
+const selectedClientId = computed(() => current.value?.client_id ?? "");
+
+/**
+ * 「重新注入」按钮的可见性。
+ *
+ * 不只是 running：自动注入发生在 spawn 后 5s，而 game.launched 要等游戏窗口
+ * 真正上屏，可能比 5s 更晚。启动命令一返回（进程已创建）就允许重新注入，
+ * 用户才不会在自动注入失败的那段时间里看不到任何补救入口。
+ */
+const clientReinjectVisible = computed(
+  () => clientMode.value && (running.value || (launching.value && launchSpawned.value)),
+);
+
+/** 客户端下拉框选项（客户端没有封面，统一用 PlugZap 占位图标）。 */
+const clientOptions = computed(() =>
+  clients.value
+    .filter((client) => client.available)
+    .map((client) => ({ value: client.id, label: client.name, icon: null })),
+);
+
+async function loadClients() {
+  if (!isWindows.value) {
+    clients.value = [];
+    return;
+  }
+  try {
+    clients.value = await homeClientsList();
+  } catch {
+    // 客户端库读不出来时保持空态：宁可只显示实例，也不要给一个假客户端。
+  }
+}
+
+/** 把客户端选择写进当前实例元数据（客户端是实例属性）。 */
+async function chooseClient(id: string) {
+  const version = current.value;
+  if (!version || !id || id === selectedClientId.value) return;
+  try {
+    const updated = await homeVersionSaveMeta(version.name, { client_id: id });
+    const index = versions.value.findIndex((item) => item.name === updated.name);
+    if (index >= 0) versions.value[index] = updated;
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
+/** 重新注入当前选中实例的客户端（只在客户端模式 + 游戏运行中可用）。 */
+async function reinjectClient() {
+  const version = current.value;
+  if (!version || clientInjecting.value) return;
+  clientInjecting.value = true;
+  try {
+    await homeClientReinject(version.name);
+    showToast(t("module.home.client.reinject_started"), "success");
+    // 结果正常经事件回来；事件丢了也不能让按钮永远转圈。
+    if (clientInjectingTimer !== undefined) window.clearTimeout(clientInjectingTimer);
+    clientInjectingTimer = window.setTimeout(() => {
+      clientInjecting.value = false;
+    }, 70_000);
+  } catch (e) {
+    clientInjecting.value = false;
+    showToast(String(e), "error");
+  }
+}
+
 /** 会话状态只对当前选中版本生效，避免 A 实例的状态染到 B 的按钮上。 */
 const session = computed<GameSessionState>(() =>
   gameSessionName.value === selectedName.value ? gameSessionState.value : "idle",
 );
+
+watch(session, (value) => {
+  if (value === "idle") {
+    clientInjecting.value = false;
+    launchSpawned.value = false;
+  }
+});
 
 /** 启动确认中：按钮内嵌环形进度，不可再次点击。 */
 const launching = computed(() => session.value === "launching");
@@ -132,12 +233,30 @@ onMounted(async () => {
     nowTick.value = Date.now();
   }, WELCOME_TICK_MS);
   await refresh();
+  await loadClients();
   void syncSessionState(selectedName.value);
   // 版本安装 / 删除事件直达刷新，无需重启。
   unlisten = [
     await onVersionInstalled(() => void refresh()),
     await onVersionRemoved(() => void refresh()),
     await onVersionsChanged(() => void refresh()),
+    await onClientsChanged(() => void loadClients()),
+    await onClientInjectResult((result) => {
+      if (result.instance !== selectedName.value) return;
+      if (clientInjectingTimer !== undefined) {
+        window.clearTimeout(clientInjectingTimer);
+        clientInjectingTimer = undefined;
+      }
+      clientInjecting.value = false;
+      if (result.success) {
+        showToast(t("module.home.client.inject_success", { name: result.client_name }), "success");
+      } else {
+        showToast(
+          t("module.home.client.inject_failed", { message: result.error ?? "" }),
+          "error",
+        );
+      }
+    }),
   ];
 });
 
@@ -149,6 +268,10 @@ onUnmounted(() => {
   if (welcomeTimer !== undefined) {
     window.clearInterval(welcomeTimer);
     welcomeTimer = undefined;
+  }
+  if (clientInjectingTimer !== undefined) {
+    window.clearTimeout(clientInjectingTimer);
+    clientInjectingTimer = undefined;
   }
 });
 
@@ -198,6 +321,7 @@ async function launch() {
   beginLaunch(version.name);
   try {
     await homeLaunch(version.name);
+    launchSpawned.value = true;
   } catch (e) {
     // 命令本身就失败 ⇒ 后端没有起监控任务，不会再有事件来收尾，必须手动复位。
     endSession();
@@ -228,6 +352,7 @@ async function launchNamed(name: string) {
   beginLaunch(name);
   try {
     await homeLaunch(name);
+    launchSpawned.value = true;
   } catch (e) {
     endSession();
     showToast(t("module.home.toast.launch_failed", { message: String(e) }), "error");
@@ -291,9 +416,16 @@ function goDownload() {
         :running="running"
         :stopping="stopping"
         :welcome="welcome"
+        :client-mode="clientMode"
+        :clients="clients"
+        :selected-client-id="selectedClientId"
+        :reinjecting="clientInjecting"
+        :reinject-visible="clientReinjectVisible"
         @select="selectedName = $event"
+        @select-client="chooseClient"
         @launch="launchNamed"
         @stop="stopNamed"
+        @reinject="reinjectClient"
         @detail="openVersionSettingsFor"
       />
 
@@ -324,14 +456,49 @@ function goDownload() {
             注意：这一支走网格舞台（不是 flex 居中）—— 只有面板本身居中，
             欢迎语挂在面板上方，否则整组居中会让面板看起来偏下。
           -->
-          <div class="home-simple__dock">
+          <div :class="['home-simple__dock', { 'home-simple__dock--client': clientMode }]">
+            <!-- 客户端模式：客户端 -> 注入图标 -> 实例。两个下拉框平级，互不绑定。 -->
+            <template v-if="clientMode">
+              <div class="home-simple__dock-selects">
+                <CoInstanceSelect
+                  :model-value="selectedClientId"
+                  :options="clientOptions"
+                  :icon="PlugZap"
+                  class="home-simple__dock-select"
+                  :placeholder="t('module.home.client.client_select')"
+                  @update:model-value="chooseClient"
+                />
+                <span class="home-simple__inject" :title="t('module.home.client.inject_arrow')">
+                  <Syringe :size="15" :stroke-width="1.9" />
+                  <ArrowRight :size="13" :stroke-width="2.2" />
+                </span>
+                <CoInstanceSelect
+                  v-model="selectedName"
+                  :options="versionOptions"
+                  class="home-simple__dock-select"
+                />
+              </div>
+            </template>
             <CoInstanceSelect
+              v-else
               v-model="selectedName"
               :options="versionOptions"
               class="home-simple__dock-select"
             />
 
             <div class="home-simple__dock-actions">
+              <button
+                v-if="clientReinjectVisible"
+                type="button"
+                class="home-simple__reinject"
+                :title="t('module.home.client.retry_inject')"
+                :aria-label="t('module.home.client.retry_inject')"
+                :disabled="clientInjecting"
+                @click="reinjectClient"
+              >
+                <RefreshCw :size="16" :class="{ spin: clientInjecting }" />
+                <span>{{ t("module.home.client.retry_inject") }}</span>
+              </button>
               <button
                 type="button"
                 class="home-simple__detail"
@@ -442,9 +609,83 @@ function goDownload() {
   box-shadow: var(--copper-shadow);
 }
 
+.home-simple__dock--client {
+  width: min(900px, 100%);
+}
+
+/* 客户端 -> 注入 -> 实例：两个下拉框共占剩余宽度，注入图标只是方向提示。 */
+.home-simple__dock-selects {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-1);
+}
+
 .home-simple__dock-select {
   flex: 1;
   min-width: 0;
+}
+
+.home-simple__inject {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 2px;
+  color: var(--copper-accent);
+  opacity: 0.85;
+}
+
+.home-simple__reinject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 var(--copper-space-3);
+  border: none;
+  border-radius: var(--copper-radius-full);
+  background: var(--copper-surface-2);
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing),
+    transform var(--copper-duration-fast) var(--copper-easing);
+}
+
+.home-simple__reinject:hover:not(:disabled) {
+  background: var(--copper-surface-3);
+  color: var(--copper-text);
+}
+
+.home-simple__reinject:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.home-simple__reinject:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 760px) {
+  .home-simple__dock--client {
+    flex-wrap: wrap;
+    border-radius: var(--copper-radius-lg);
+  }
+
+  .home-simple__dock-selects {
+    width: 100%;
+  }
+
+  .home-simple__dock-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .home-simple__tips {
@@ -520,3 +761,12 @@ function goDownload() {
   color: var(--copper-text-secondary);
 }
 </style>
+.spin {
+  animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abi-fixture-echo"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "copper-module-abi",
  "serde_json",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "copper-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "copper-core-hook"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "copper-downloader"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "copper-module-abi"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "libloading 0.8.9",
  "serde",
