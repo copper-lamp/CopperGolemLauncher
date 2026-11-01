@@ -73,7 +73,6 @@ const settings = useSettings();
 const detail = ref<ContentDetail | null>(null);
 const readmeHtml = ref<string | null>(null);
 const readmeLoading = ref(false);
-const readmeExpanded = ref(false);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const lipEnv = ref<LipEnv | null>(null);
@@ -281,6 +280,7 @@ async function load() {
   error.value = null;
   expanded.value = new Set();
   detail.value = null;
+  tocFlat.value = [];
   // 先清空面包屑末级：上一个内容的名字绝不能留在新页面上。
   detailCrumbTitle.value = "";
   const id = String(route.params.id ?? "");
@@ -304,7 +304,6 @@ async function load() {
 /** 拉取并渲染 readme：CF 与 lip 都支持，格式按来源区分。 */
 async function loadReadme(id: string, data: ContentDetail) {
   readmeLoading.value = true;
-  readmeExpanded.value = false;
   try {
     const raw = await contentDownloadReadme(id, locale.value);
     readmeHtml.value = raw
@@ -651,17 +650,9 @@ let unlistenLocation: () => void = () => {};
               {{ t(`${KB}.docLoading`) }}
             </div>
             <template v-else-if="readmeHtml">
-              <div class="cd-doc-frame" :class="{ 'is-expanded': readmeExpanded }">
                 <div ref="docRef" class="cd-doc" v-html="readmeHtml" />
-              </div>
-              <button
-                class="cd-doc-toggle"
-                type="button"
-                :aria-expanded="readmeExpanded"
-                @click="readmeExpanded = !readmeExpanded"
-              >
-                {{ readmeExpanded ? t(`${KB}.collapse`) : t(`${KB}.expand`) }}
-              </button>
+
+
             </template>
             <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
         </section>
@@ -1766,4 +1757,104 @@ let unlistenLocation: () => void = () => {};
   overflow-wrap: anywhere;
 }
 
+
+/* ---------------------------------------------------------------- 介绍区（阅读栏，无卡片） */
+.cd-doc-section {
+  margin-top: var(--copper-space-6);
+}
+
+.cd-doc {
+  max-width: 78ch;
+  color: var(--copper-text);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.cd-doc :where(p, ul, ol, blockquote, table, pre, figure) {
+  margin: 0 0 1em;
+}
+
+.cd-doc :where(h1, h2, h3, h4) {
+  margin: 1.8em 0 0.6em;
+  line-height: 1.3;
+  font-weight: 600;
+  /* 目录跳转按 96px 到达线对齐，标题自身也要留出这段距离。 */
+  scroll-margin-top: 96px;
+}
+
+.cd-doc h1 { font-size: 24px; }
+.cd-doc h2 { font-size: 20px; }
+.cd-doc h3 { font-size: 16px; }
+.cd-doc h4 { font-size: 14px; }
+
+.cd-doc a {
+  color: var(--copper-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cd-doc img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  border-radius: var(--copper-radius-md);
+}
+
+.cd-doc iframe,
+.cd-doc video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
+  border-radius: var(--copper-radius-md);
+}
+
+.cd-doc table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--copper-font-size-sm);
+}
+
+.cd-doc :where(th, td) {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--copper-border);
+  text-align: left;
+}
+
+.cd-doc blockquote {
+  padding-left: var(--copper-space-3);
+  border-left: 2px solid var(--copper-accent);
+  color: var(--copper-text-secondary);
+}
+
+.cd-doc pre {
+  padding: var(--copper-space-3);
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface-2);
+  overflow-x: auto;
+}
+
+.cd-doc code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--copper-surface-2);
+  font-size: 0.92em;
+}
+
+.cd-doc pre code {
+  padding: 0;
+  background: transparent;
+}
+
+/* CurseForge 的富文本带内联字号 / 颜色，会把主题撑坏：只保留布局，表现交给令牌。 */
+.cd-doc [style] {
+  color: inherit !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+  background-color: transparent !important;
+}
 </style>
