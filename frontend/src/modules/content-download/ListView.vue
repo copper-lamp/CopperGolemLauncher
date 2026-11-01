@@ -1,7 +1,11 @@
 <script setup lang="ts">
-// 内容下载列表页：搜索 / 来源·类型·版本·排序筛选（持久化）/ 分页 / 长条卡片。
+// 内容下载列表页：长条卡片列表 + 右栏「搜索 / 筛选 / 分页」。
+//
+// 布局（V3 骨架）：主栏只放结果列表，搜索框、来源·类型·版本·排序筛选（持久化）
+// 与分页全部收进右侧副栏。窄容器折叠时副栏排到列表之前（stack-aside-first），
+// 因为筛选必须先于结果出现。
 
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   Search,
@@ -13,9 +17,7 @@ import {
   Download,
   User,
   Tag,
-  ChevronDown,
   LoaderCircle,
-  SlidersHorizontal,
   RotateCcw,
 } from "@lucide/vue";
 
@@ -23,6 +25,8 @@ import { useI18n } from "../../i18n";
 import CoBadge from "../../components/ui/CoBadge.vue";
 import CoPagination from "../../components/ui/CoPagination.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
+import CoPage from "../../components/layout/CoPage.vue";
+import CoSplitLayout from "../../components/layout/CoSplitLayout.vue";
 import TipsRotator from "../../components/TipsRotator.vue";
 import { usePlatform } from "../../composables/usePlatform";
 import { useSettings } from "../../composables/useSettings";
@@ -117,9 +121,12 @@ const SORT_LABEL_KEY: Record<ContentSort, string> = {
 let loadSeq = 0;
 let hydrated = false;
 
-const filterOpen = ref(false);
-const filterRoot = ref<HTMLElement | null>(null);
-const scrollerEl = ref<HTMLElement | null>(null);
+/** 页面骨架实例：列表的滚动位置由 CoPage 的正文容器承载。 */
+const pageRef = ref<InstanceType<typeof CoPage> | null>(null);
+
+function scrollBody(): HTMLElement | null {
+  return pageRef.value?.bodyEl ?? null;
+}
 
 /**
  * 分页文案：由本模块的 i18n 命名空间注入，CoPagination 本身不认识「内容下载」。
@@ -225,13 +232,13 @@ function jumpPage(target: number) {
   if (target < 0 || target >= knownPages.value || target === page.value) return;
   page.value = target;
   // 翻页后滚回顶部，否则用户停在新页面的半截位置，还以为没换页。
-  const scroller = scrollerEl.value;
+  const scroller = scrollBody();
   if (scroller) scroller.scrollTop = 0;
   void fetchPage();
 }
 
 function openDetail(item: ContentItem) {
-  const scroller = scrollerEl.value;
+  const scroller = scrollBody();
   if (scroller) scrollTop.value = scroller.scrollTop;
   void router.push(`/content/${encodeURIComponent(item.id)}`);
 }
@@ -252,22 +259,11 @@ async function loadVersions(force = false) {
   }
 }
 
-function toggleFilter() {
-  filterOpen.value = !filterOpen.value;
-  if (filterOpen.value) void loadVersions();
-}
-
 function resetFilters() {
   source.value = "";
   contentType.value = "";
   gameVersion.value = "";
   sort.value = "downloads_desc";
-}
-
-function onDocumentPointerDown(event: PointerEvent) {
-  if (!filterOpen.value) return;
-  const root = filterRoot.value;
-  if (root && !root.contains(event.target as Node)) filterOpen.value = false;
 }
 
 // 来源/类型/版本/排序变化即回到第一页并重新加载；返回列表时保留此前的数据与页码。
@@ -283,7 +279,8 @@ watch([source, contentType, gameVersion, sort], () => {
 });
 
 onMounted(() => {
-  document.addEventListener("pointerdown", onDocumentPointerDown);
+  // 版本下拉在右栏常驻，进入页面就拉一次；失败可点重试。
+  void loadVersions();
   if (items.value.length === 0) {
     // 首次进入：读取持久化的筛选设置（仅首次，避免覆盖用户当前选择）。
     if (!hydrated) {
@@ -313,201 +310,188 @@ onMounted(() => {
   } else {
     // 从详情页返回时数据已在 store 中，无需重新拉取；仅恢复滚动位置。
     requestAnimationFrame(() => {
-      if (scrollerEl.value) scrollerEl.value.scrollTop = scrollTop.value;
+      const scroller = scrollBody();
+      if (scroller) scroller.scrollTop = scrollTop.value;
     });
   }
 });
 
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", onDocumentPointerDown);
-});
 </script>
 
 <template>
-  <div ref="scrollerEl" class="content-list">
-    <!-- 刷新按钮注入全局标题栏操作区（defer 原因见 HomePage 同处注释） -->
-    <Teleport defer to="#copper-titlebar-actions">
-      <button
-        class="content-list__refresh"
-        :title="t(`${MB_KEY}.refresh`)"
-        :disabled="loading"
-        @click="search"
-      >
-        <RefreshCw :size="15" :class="{ spin: loading }" />
-      </button>
-    </Teleport>
+  <CoPage ref="pageRef">
+    <CoSplitLayout aside-position="end" stack-aside-first>
+      <Teleport defer to="#copper-titlebar-actions">
+        <button
+          class="content-list__refresh"
+          :title="t(`${MB_KEY}.refresh`)"
+          :disabled="loading"
+          @click="search"
+        >
+          <RefreshCw :size="15" :class="{ spin: loading }" />
+        </button>
+      </Teleport>
+      <div class="content-list">
+        <!-- 加载骨架 -->
+        <div v-if="loading && items.length === 0" class="content-list__loading">
+          <div class="content-list__rows">
+            <div v-for="n in 8" :key="n" class="content-card content-card--skeleton">
+              <div class="content-card__skeleton-thumb" />
+              <div class="content-card__skeleton-body">
+                <div class="content-card__skeleton-line" />
+                <div class="content-card__skeleton-line content-card__skeleton-line--short" />
+              </div>
+            </div>
+          </div>
+          <!-- 内容拉取期间展示内核随机提示 -->
+          <TipsRotator compact />
+        </div>
 
-    <!-- 顶部操作栏：左搜索框，右筛选 + 搜索 -->
-    <div class="content-list__toolbar">
-      <div class="content-list__search">
-        <Search :size="15" class="content-list__search-icon" />
-        <input
-          v-model="searchInput"
-          class="content-list__search-input"
-          :placeholder="t(`${MB_KEY}.searchPlaceholder`)"
-          @keyup.enter="search"
-        />
+        <!-- 错误态 -->
+        <div v-else-if="error" class="content-list__state">
+          <p class="content-list__state-text">{{ t(`${MB_KEY}.loadError`) }}</p>
+          <button class="content-list__retry" @click="search">{{ t(`${MB_KEY}.retry`) }}</button>
+        </div>
+
+        <!-- 空态 -->
+        <div v-else-if="items.length === 0" class="content-list__state">
+          <p class="content-list__state-text">{{ t(`${MB_KEY}.noResult`) }}</p>
+        </div>
+
+        <!-- 长条卡片列表 -->
+        <div v-else class="content-list__rows">
+          <button
+            v-for="item in items"
+            :key="item.id"
+            class="content-card"
+            @click="openDetail(item)"
+          >
+            <div class="content-card__thumb">
+              <img v-if="item.iconUrl" :src="item.iconUrl" :alt="item.name" loading="lazy" />
+              <component :is="typeIcon(item.contentType)" v-else :size="24" class="content-card__thumb-fallback" />
+            </div>
+
+            <div class="content-card__main">
+              <div class="content-card__title-row">
+                <span class="content-card__name" :title="item.name">{{ item.name }}</span>
+                <CoBadge
+                  :tone="typeBadgeTone(item.contentType)"
+                  :label="typeBadgeLabel(item.contentType, item.source)"
+                />
+                <CoBadge
+                  :tone="sourceBadgeTone(item.source)"
+                  :label="sourceBadgeLabel(item.source)"
+                />
+              </div>
+              <div class="content-card__desc">{{ item.description }}</div>
+            </div>
+
+            <div class="content-card__meta">
+              <span class="content-card__meta-item" :title="item.author || ''">
+                <User :size="12" />
+                <span class="content-card__meta-text">{{ item.author || t(`${MB_KEY}.unknownVersion`) }}</span>
+              </span>
+              <span class="content-card__meta-item">
+                <Tag :size="12" />
+                <span class="content-card__meta-text">{{ versionRange(item) }}</span>
+              </span>
+              <span class="content-card__meta-item">
+                <Download :size="12" />
+                <span class="content-card__meta-text">{{ item.downloadCount.toLocaleString() }}</span>
+              </span>
+            </div>
+          </button>
+        </div>
+
       </div>
 
-      <div ref="filterRoot" class="content-list__filter-root">
-        <button
-          class="content-list__filter-btn"
-          :class="{ active: filterOpen, 'has-value': activeFilterCount > 0 }"
-          :title="t(`${MB_KEY}.filter`)"
-          @click="toggleFilter"
-        >
-          <SlidersHorizontal :size="15" />
-          <span>{{ t(`${MB_KEY}.filter`) }}</span>
-          <span v-if="activeFilterCount > 0" class="content-list__filter-count">
-            {{ activeFilterCount }}
-          </span>
-          <ChevronDown :size="14" :class="{ 'rotate-180': filterOpen }" />
-        </button>
+      <template #aside>
+        <aside class="content-filters">
+          <div class="content-filters__search">
+            <Search :size="15" class="content-filters__search-icon" />
+            <input
+              v-model="searchInput"
+              class="content-filters__search-input"
+              :placeholder="t(`${MB_KEY}.searchPlaceholder`)"
+              @keyup.enter="search"
+            />
+          </div>
+          <button class="content-filters__search-btn" @click="search">
+            {{ t(`${MB_KEY}.search`) }}
+          </button>
 
-        <!-- 筛选面板 -->
-        <div v-if="filterOpen" class="content-list__popover">
-          <div class="content-list__popover-head">
-            <span class="content-list__popover-title">{{ t(`${MB_KEY}.filterTitle`) }}</span>
+          <div class="content-filters__head">
+            <span class="content-filters__title">{{ t(`${MB_KEY}.filterTitle`) }}</span>
             <button
-              class="content-list__popover-reset"
+              class="content-filters__reset"
               :disabled="activeFilterCount === 0"
               @click="resetFilters"
             >
-              <RotateCcw :size="13" />
+              <RotateCcw :size="12" />
               {{ t(`${MB_KEY}.filterReset`) }}
             </button>
           </div>
 
-          <label class="content-list__field">
-            <span class="content-list__field-label">{{ t(`${MB_KEY}.source`) }}</span>
-            <CoSelect v-model="source" :options="sourceOptions" />
-          </label>
+          <div class="content-filters__fields">
+            <label class="content-filters__field">
+              <span class="content-filters__field-label">{{ t(`${MB_KEY}.source`) }}</span>
+              <CoSelect v-model="source" :options="sourceOptions" />
+            </label>
 
-          <label class="content-list__field">
-            <span class="content-list__field-label">{{ t(`${MB_KEY}.type`) }}</span>
-            <CoSelect v-model="contentType" :options="typeOptions" />
-          </label>
+            <label class="content-filters__field">
+              <span class="content-filters__field-label">{{ t(`${MB_KEY}.type`) }}</span>
+              <CoSelect v-model="contentType" :options="typeOptions" />
+            </label>
 
-          <label class="content-list__field">
-            <span class="content-list__field-label">{{ t(`${MB_KEY}.version`) }}</span>
-            <CoSelect
-              v-model="gameVersion"
-              :options="versionOptions"
-              :disabled="versionsLoading || !!versionsError"
-            />
-            <span v-if="versionsLoading" class="content-list__field-hint">
-              <LoaderCircle :size="12" class="spin" />
-            </span>
-            <span v-else-if="versionsError" class="content-list__field-hint content-list__field-hint--error">
-              {{ t(`${MB_KEY}.versionLoadFailed`) }}
-              <button class="content-list__field-retry" @click="loadVersions(true)">
-                {{ t(`${MB_KEY}.retry`) }}
-              </button>
-            </span>
-          </label>
+            <label class="content-filters__field">
+              <span class="content-filters__field-label">{{ t(`${MB_KEY}.version`) }}</span>
+              <CoSelect
+                v-model="gameVersion"
+                :options="versionOptions"
+                :disabled="versionsLoading || !!versionsError"
+              />
+              <span v-if="versionsLoading" class="content-filters__field-hint">
+                <LoaderCircle :size="12" class="spin" />
+              </span>
+              <span
+                v-else-if="versionsError"
+                class="content-filters__field-hint content-filters__field-hint--error"
+              >
+                {{ t(`${MB_KEY}.versionLoadFailed`) }}
+                <button class="content-filters__field-retry" @click="loadVersions(true)">
+                  {{ t(`${MB_KEY}.retry`) }}
+                </button>
+              </span>
+            </label>
 
-          <label class="content-list__field">
-            <span class="content-list__field-label">{{ t(`${MB_KEY}.sort`) }}</span>
-            <CoSelect v-model="sort" :options="sortOptions" />
-          </label>
-        </div>
-      </div>
-
-      <button class="content-list__search-btn" @click="search">
-        {{ t(`${MB_KEY}.search`) }}
-      </button>
-    </div>
-
-    <!-- 加载骨架 -->
-    <div v-if="loading && items.length === 0" class="content-list__loading">
-      <div class="content-list__rows">
-        <div v-for="n in 8" :key="n" class="content-card content-card--skeleton">
-          <div class="content-card__skeleton-thumb" />
-          <div class="content-card__skeleton-body">
-            <div class="content-card__skeleton-line" />
-            <div class="content-card__skeleton-line content-card__skeleton-line--short" />
+            <label class="content-filters__field">
+              <span class="content-filters__field-label">{{ t(`${MB_KEY}.sort`) }}</span>
+              <CoSelect v-model="sort" :options="sortOptions" />
+            </label>
           </div>
-        </div>
-      </div>
-      <!-- 内容拉取期间展示内核随机提示 -->
-      <TipsRotator compact />
-    </div>
 
-    <!-- 错误态 -->
-    <div v-else-if="error" class="content-list__state">
-      <p class="content-list__state-text">{{ t(`${MB_KEY}.loadError`) }}</p>
-      <button class="content-list__retry" @click="search">{{ t(`${MB_KEY}.retry`) }}</button>
-    </div>
-
-    <!-- 空态 -->
-    <div v-else-if="items.length === 0" class="content-list__state">
-      <p class="content-list__state-text">{{ t(`${MB_KEY}.noResult`) }}</p>
-    </div>
-
-    <!-- 长条卡片列表 -->
-    <div v-else class="content-list__rows">
-      <button
-        v-for="item in items"
-        :key="item.id"
-        class="content-card"
-        @click="openDetail(item)"
-      >
-        <div class="content-card__thumb">
-          <img v-if="item.iconUrl" :src="item.iconUrl" :alt="item.name" loading="lazy" />
-          <component :is="typeIcon(item.contentType)" v-else :size="24" class="content-card__thumb-fallback" />
-        </div>
-
-        <div class="content-card__main">
-          <div class="content-card__title-row">
-            <span class="content-card__name" :title="item.name">{{ item.name }}</span>
-            <CoBadge
-              :tone="typeBadgeTone(item.contentType)"
-              :label="typeBadgeLabel(item.contentType, item.source)"
-            />
-            <CoBadge
-              :tone="sourceBadgeTone(item.source)"
-              :label="sourceBadgeLabel(item.source)"
+          <div v-if="items.length > 0" class="content-filters__pager">
+            <CoPagination
+              compact
+              :page="page"
+              :total-pages="knownPages"
+              :loading="loading"
+              :labels="pagerLabels"
+              @change="jumpPage"
             />
           </div>
-          <div class="content-card__desc">{{ item.description }}</div>
-        </div>
-
-        <div class="content-card__meta">
-          <span class="content-card__meta-item" :title="item.author || ''">
-            <User :size="12" />
-            <span class="content-card__meta-text">{{ item.author || t(`${MB_KEY}.unknownVersion`) }}</span>
-          </span>
-          <span class="content-card__meta-item">
-            <Tag :size="12" />
-            <span class="content-card__meta-text">{{ versionRange(item) }}</span>
-          </span>
-          <span class="content-card__meta-item">
-            <Download :size="12" />
-            <span class="content-card__meta-text">{{ item.downloadCount.toLocaleString() }}</span>
-          </span>
-        </div>
-      </button>
-    </div>
-
-    <!-- 分页：仅在真的有内容、且能翻页时出现 -->
-    <CoPagination
-      v-if="items.length > 0"
-      :page="page"
-      :total-pages="knownPages"
-      :loading="loading"
-      :labels="pagerLabels"
-      @change="jumpPage"
-    />
-  </div>
+        </aside>
+      </template>
+    </CoSplitLayout>
+  </CoPage>
 </template>
 
 <style scoped>
+/* 主栏只放结果；留白与滚动由 CoPage 承担。 */
 .content-list {
-  height: 100%;
-  padding: var(--copper-space-5);
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .content-list__refresh {
@@ -529,40 +513,44 @@ onBeforeUnmount(() => {
   color: var(--copper-text);
 }
 
-/* ---------------------------------------------------------------- 顶部操作栏 */
-.content-list__toolbar {
+/* ---------------------------------------------------------------- 右栏：搜索 / 筛选 / 分页 */
+.content-filters {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: var(--copper-space-2);
-  flex-shrink: 0;
+  min-width: 0;
+  padding: var(--copper-space-3);
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface);
 }
 
-.content-list__search {
-  flex: 1;
-  min-width: 0;
+.content-filters__search {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--copper-space-2);
   height: var(--copper-control-h);
-  padding: 0 var(--copper-space-3);
   border: 1px solid var(--copper-border);
   border-radius: var(--copper-radius-md);
-  background: var(--copper-surface);
+  background: var(--copper-bg);
   transition: border-color var(--copper-duration-fast) var(--copper-easing);
 }
 
-.content-list__search:focus-within {
+.content-filters__search:focus-within {
   border-color: var(--copper-accent);
 }
 
-.content-list__search-icon {
-  flex-shrink: 0;
+.content-filters__search-icon {
+  position: absolute;
+  left: var(--copper-space-2);
   color: var(--copper-text-secondary);
+  pointer-events: none;
 }
 
-.content-list__search-input {
-  flex: 1;
-  min-width: 0;
+.content-filters__search-input {
+  width: 100%;
+  height: 100%;
+  padding: 0 var(--copper-space-2) 0 calc(var(--copper-space-2) + 22px);
   border: none;
   outline: none;
   background: transparent;
@@ -570,137 +558,104 @@ onBeforeUnmount(() => {
   font-size: var(--copper-font-size-md);
 }
 
-.content-list__filter-root {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.content-list__filter-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--copper-space-1);
+.content-filters__search-btn {
   height: var(--copper-control-h);
-  padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
+  border: none;
   border-radius: var(--copper-radius-md);
-  background: var(--copper-surface);
-  color: var(--copper-text);
+  background: var(--copper-accent);
+  color: var(--copper-accent-foreground);
+  font-family: inherit;
   font-size: var(--copper-font-size-sm);
   cursor: pointer;
-  transition:
-    border-color var(--copper-duration-fast) var(--copper-easing),
-    background-color var(--copper-duration-fast) var(--copper-easing);
+  transition: opacity var(--copper-duration-fast) var(--copper-easing);
 }
 
-.content-list__filter-btn:hover,
-.content-list__filter-btn.active {
-  border-color: var(--copper-accent);
+.content-filters__search-btn:hover {
+  opacity: 0.9;
 }
 
-.content-list__filter-btn.has-value {
-  color: var(--copper-accent);
-}
-
-.content-list__filter-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: var(--copper-radius-full);
-  background: var(--copper-accent);
-  color: var(--copper-on-accent, #fff);
-  font-size: 10px;
-  line-height: 1;
-}
-
-.content-list__popover {
-  position: absolute;
-  top: calc(100% + var(--copper-space-2));
-  right: 0;
-  z-index: 20;
-  width: 300px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--copper-space-3);
-  padding: var(--copper-space-4);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-  background: var(--copper-surface);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
-}
-
-.content-list__popover-head {
+.content-filters__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--copper-space-2);
+  margin-top: var(--copper-space-2);
 }
 
-.content-list__popover-title {
-  font-size: var(--copper-font-size-sm);
+.content-filters__title {
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
   font-weight: 600;
+  letter-spacing: 0.4px;
 }
 
-.content-list__popover-reset {
+.content-filters__reset {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   border: none;
   background: transparent;
   color: var(--copper-text-secondary);
+  font-family: inherit;
   font-size: var(--copper-font-size-xs);
   cursor: pointer;
   transition: color var(--copper-duration-fast) var(--copper-easing);
 }
 
-.content-list__popover-reset:hover:not(:disabled) {
+.content-filters__reset:hover:not(:disabled) {
   color: var(--copper-accent);
 }
 
-.content-list__popover-reset:disabled {
+.content-filters__reset:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
-.content-list__field {
+.content-filters__fields {
   display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-2);
+}
+
+.content-filters__field {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--copper-space-2);
 }
 
-.content-list__field-label {
+.content-filters__field-label {
   flex-shrink: 0;
-  width: 60px;
+  width: 52px;
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
 }
 
-.content-list__field :deep(.co-select) {
+.content-filters__field :deep(.co-select) {
   flex: 1;
   min-width: 0;
 }
 
-.content-list__field :deep(.co-select select) {
+.content-filters__field :deep(.co-select select) {
   width: 100%;
   height: var(--copper-control-h-sm);
   font-size: var(--copper-font-size-sm);
 }
 
-.content-list__field-hint {
+.content-filters__field-hint {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  margin-left: 60px;
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
 }
 
-.content-list__field-hint--error {
-  color: var(--copper-danger, #e5484d);
-  flex-shrink: 0;
+.content-filters__field-hint--error {
+  color: var(--copper-danger);
 }
 
-.content-list__field-retry {
+.content-filters__field-retry {
   border: none;
   background: transparent;
   color: var(--copper-accent);
@@ -709,21 +664,28 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
-.content-list__search-btn {
-  flex-shrink: 0;
-  height: var(--copper-control-h);
-  padding: 0 var(--copper-space-4);
-  border: none;
-  border-radius: var(--copper-radius-md);
-  background: var(--copper-accent);
-  color: var(--copper-on-accent, #fff);
-  font-size: var(--copper-font-size-sm);
-  cursor: pointer;
-  transition: opacity var(--copper-duration-fast) var(--copper-easing);
+.content-filters__pager {
+  margin-top: var(--copper-space-1);
+  padding-top: var(--copper-space-3);
+  border-top: 1px solid var(--copper-border);
 }
 
-.content-list__search-btn:hover {
-  opacity: 0.9;
+/* 翻页控件自带顶部间距；右栏已用分隔线断句，不再叠一层。 */
+.content-filters__pager :deep(.co-pager) {
+  padding-top: 0;
+}
+
+/* 折叠成单列后右栏横跨整行：筛选压成两列，避免把列表推到首屏之外。 */
+@container (max-width: 760px) {
+  .content-filters__fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--copper-space-2) var(--copper-space-3);
+  }
+
+  .content-filters__field-hint {
+    margin-left: 0;
+  }
 }
 
 /* ---------------------------------------------------------------- 长条卡片 */
@@ -732,11 +694,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--copper-space-2);
   flex: 1;
-  margin-top: var(--copper-space-4);
 }
 
 .content-list__state {
   flex: 1;
+  /* 骨架不再给内容区固定高度，空 / 错状态至少占半屏，避免缩成顶部一行。 */
+  min-height: 40vh;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -907,10 +870,6 @@ onBeforeUnmount(() => {
   animation: spin 1.2s linear infinite;
 }
 
-.rotate-180 {
-  transform: rotate(180deg);
-  transition: transform var(--copper-duration-fast) var(--copper-easing);
-}
 
 @keyframes spin {
   to {
