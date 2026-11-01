@@ -126,10 +126,12 @@ let loadSeq = 0;
 let hydrated = false;
 
 const pageRef = ref<InstanceType<typeof CoPage> | null>(null);
+/** 左侧列表自己的滚动容器（整页不滚动，右栏才能顶满高度且不跟滚）。 */
+const resultsRef = ref<HTMLElement | null>(null);
 const tagOptions = ref<string[]>([]);
 
 function scrollBody(): HTMLElement | null {
-  return pageRef.value?.bodyEl ?? null;
+  return resultsRef.value ?? pageRef.value?.bodyEl ?? null;
 }
 
 const pagerLabels = computed(() => ({
@@ -318,7 +320,7 @@ onMounted(() => {
 });
 </script>
 <template>
-  <CoPage ref="pageRef">
+  <CoPage ref="pageRef" :scroll="false">
     <Teleport defer to="#copper-titlebar-actions">
       <button
         class="list-page__refresh"
@@ -332,7 +334,7 @@ onMounted(() => {
 
     <div class="list-page">
       <!-- 左：结果列表 -->
-      <section class="list-page__results">
+      <section ref="resultsRef" class="list-page__results">
         <div v-if="loading && items.length === 0" class="list-page__state">
           <div v-for="n in 6" :key="n" class="list-page__skeleton">
             <div class="list-page__skeleton-thumb" />
@@ -540,9 +542,22 @@ onMounted(() => {
 <style scoped>
 .list-page {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
+  /* 7:3：列表是主区，右栏只放搜索与筛选。 */
+  grid-template-columns: minmax(0, 7fr) minmax(240px, 3fr);
   gap: var(--copper-space-4);
-  align-items: start;
+  /* 顶满可用高度：右栏不跟随页面滚动，列表自己滚。 */
+  height: 100%;
+  min-height: 0;
+  align-items: stretch;
+}
+
+/* 左：列表自己的滚动容器。滚动条贴内容区右缘，不推动右栏。 */
+.list-page__results {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 
 .list-page__refresh {
@@ -754,6 +769,9 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--copper-space-2);
   min-width: 0;
+  min-height: 0;
+  /* 顶满高度：卡片撑满剩余空间，筛选在自己内部滚动。 */
+  height: 100%;
 }
 
 /* 搜索框：独立组件，不套卡片。 */
@@ -810,6 +828,8 @@ onMounted(() => {
 
 /* 卡片：顶部翻页，下面平铺筛选。 */
 .rail__card {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-3);
@@ -831,10 +851,11 @@ onMounted(() => {
 
 /* 筛选栏：平铺，内容多了在卡片内滚动。 */
 .rail__filters {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-3);
-  max-height: 46vh;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
@@ -937,14 +958,21 @@ onMounted(() => {
 @container (max-width: 860px) {
   .list-page {
     grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    overflow-y: auto;
+  }
+
+  .list-page__results {
+    overflow: visible;
   }
 
   .rail {
     order: -1;
+    height: auto;
   }
 
   .rail__filters {
-    max-height: none;
+    overflow: visible;
   }
 }
 
