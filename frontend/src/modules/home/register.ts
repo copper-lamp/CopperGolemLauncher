@@ -53,7 +53,7 @@ registerModule({
       component: () => import("./InstanceContentPage.vue"),
       meta: {
         titleKey: "module.home.instance.page.content",
-        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.content" }],
+        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.content", path: "/version-settings/content" }],
       },
     },
     {
@@ -62,7 +62,7 @@ registerModule({
       component: () => import("./InstanceModsPage.vue"),
       meta: {
         titleKey: "module.home.instance.page.mods",
-        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.mods" }],
+        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.mods", path: "/version-settings/mods" }],
       },
     },
     {
@@ -71,7 +71,7 @@ registerModule({
       component: () => import("./InstanceClientPage.vue"),
       meta: {
         titleKey: "module.home.instance.page.client",
-        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.client" }],
+        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.client", path: "/version-settings/client" }],
       },
     },
     {
@@ -80,7 +80,7 @@ registerModule({
       component: () => import("./InstanceControlsPage.vue"),
       meta: {
         titleKey: "module.home.instance.page.controls",
-        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.controls" }],
+        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.controls", path: "/version-settings/controls" }],
       },
     },
   ],

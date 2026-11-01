@@ -58,23 +58,8 @@ const mode = ref<HomeMode>(
 const versions = ref<VersionView[]>([]);
 const selectedName = ref("");
 const loading = ref(true);
-const {
-  account,
-  loginWaiting,
-  beginWamSignIn,
-  profileMismatch,
-  clearProfileMismatch,
-} = useAccount();
-const showAccountBanner = computed(() => !account.value || !!profileMismatch.value);
-const accountBannerText = computed(() =>
-  profileMismatch.value
-    ? t("account.profile_mismatch_title")
-    : t("account.not_logged_in"),
-);
-async function handleAccountBanner() {
-  await beginWamSignIn();
-  clearProfileMismatch();
-}
+// 只取账户名给欢迎语做称呼；未登录横幅已按产品要求彻底移除。
+const { account } = useAccount();
 
 const modeOptions = computed(() => [
   { value: "simple", label: t("module.home.mode.simple") },
@@ -285,18 +270,6 @@ function goDownload() {
 <template>
   <CoPage :scroll="false">
     <div :class="['home-simple', { 'home-simple--default': mode === 'default' }]">
-      <div v-if="showAccountBanner" class="home-simple__account">
-        <span>{{ accountBannerText }}</span>
-        <CoButton
-          variant="primary"
-          size="sm"
-          :disabled="loginWaiting"
-          @click="handleAccountBanner"
-        >
-          {{ t("account.store_sign_in") }}
-        </CoButton>
-      </div>
-
       <!--
         模式切换注入全局标题栏操作区。
         必须 `defer`：内嵌资源（release / custom-protocol）下路由分包已在本地，
@@ -341,13 +314,15 @@ function goDownload() {
           </CoButton>
         </template>
 
-        <template v-else>
+        <div v-else class="home-simple__stage">
           <h1 class="home-simple__welcome">{{ welcome }}</h1>
 
           <!--
             胶囊面板：整页的视觉中心。
             左 = 实例选择（图标 + 名字，点开是圆角矩形浮层，最多同屏 5 项），
             右 = 详情（只显示图标，标题用 tooltip 补）+ 开始游戏。
+            注意：这一支走网格舞台（不是 flex 居中）—— 只有面板本身居中，
+            欢迎语挂在面板上方，否则整组居中会让面板看起来偏下。
           -->
           <div class="home-simple__dock">
             <CoInstanceSelect
@@ -382,8 +357,8 @@ function goDownload() {
           </div>
 
           <!-- 启动确认期间在面板下方给一条提示：这段时间可达数十秒，不能留白 -->
-          <TipsRotator v-if="launching" compact />
-        </template>
+          <TipsRotator v-if="launching" compact class="home-simple__tips" />
+        </div>
       </div>
     </div>
   </CoPage>
@@ -401,22 +376,7 @@ function goDownload() {
   padding-top: var(--copper-space-4);
 }
 
-.home-simple__account {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-3);
-  max-width: 640px;
-  margin-bottom: var(--copper-space-4);
-  padding: var(--copper-space-2) var(--copper-space-2) var(--copper-space-2)
-    var(--copper-space-4);
-  /* 无描边：账号提示条靠底色阶差 + 阴影与页面分离（本轮统一规则）。 */
-  border-radius: var(--copper-radius-lg);
-  background: var(--copper-surface-2);
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-sm);
-}
-
-/* 欢迎语与操作条整体在剩余高度里居中。 */
+/* 加载 / 空态：整组在剩余高度里居中。 */
 .home-simple__center {
   flex: 1;
   min-height: 0;
@@ -428,6 +388,35 @@ function goDownload() {
   justify-content: safe center;
   gap: var(--copper-space-5);
   padding-bottom: var(--copper-space-6);
+}
+
+/*
+ * 正常态：网格舞台。
+ *
+ * 上下两行等分（minmax(min-content, 1fr)），胶囊面板落在中间那一行 ——
+ * 于是面板本身严格居中，欢迎语挂在它上方。此前用 flex 居中整个
+ * 「欢迎语 + 面板」组，面板会被欢迎语顶得偏下，正是要修的问题。
+ * 上下行留 min-content 下限，矮窗口时舞台撑高、由外层滚动，不会裁掉内容。
+ */
+.home-simple__stage {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: grid;
+  grid-template-rows: minmax(min-content, 1fr) auto minmax(min-content, 1fr);
+  justify-items: center;
+  align-items: center;
+  row-gap: var(--copper-space-5);
+  padding-bottom: var(--copper-space-4);
+}
+
+.home-simple__stage .home-simple__welcome {
+  grid-row: 1;
+  align-self: end;
+}
+
+.home-simple__stage .home-simple__dock {
+  grid-row: 2;
 }
 
 .home-simple__welcome {
@@ -456,6 +445,11 @@ function goDownload() {
 .home-simple__dock-select {
   flex: 1;
   min-width: 0;
+}
+
+.home-simple__tips {
+  grid-row: 3;
+  align-self: start;
 }
 
 .home-simple__dock-actions {
