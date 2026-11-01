@@ -111,5 +111,6 @@
     "onThisPage": "On this page"
   },
   "tag": "Tag",
-  "tagAll": "All tags"
+  "tagAll": "All tags",
+  "pageJump": "Go to"
 }

@@ -126,6 +126,8 @@ let loadSeq = 0;
 let hydrated = false;
 
 const pageRef = ref<InstanceType<typeof CoPage> | null>(null);
+/** 手动跳页输入框的草稿（回车 / 失焦提交）。 */
+const jumpDraft = ref("");
 /** 左侧列表自己的滚动容器（整页不滚动，右栏才能顶满高度且不跟滚）。 */
 const resultsRef = ref<HTMLElement | null>(null);
 const tagOptions = ref<string[]>([]);
@@ -228,6 +230,17 @@ function jumpPage(target: number) {
   const scroller = scrollBody();
   if (scroller) scroller.scrollTop = 0;
   void fetchPage();
+}
+
+/** 手动跳页：解析 → 夹到 [1, 总页数] → 落地。非法输入直接清空。 */
+function submitJump() {
+  const raw = jumpDraft.value.trim();
+  if (!raw) return;
+  const parsed = Number.parseInt(raw, 10);
+  jumpDraft.value = "";
+  if (!Number.isFinite(parsed)) return;
+  const target = Math.min(Math.max(parsed, 1), Math.max(totalPages.value, 1)) - 1;
+  if (target !== page.value) jumpPage(target);
 }
 
 function openDetail(item: ContentItem) {
@@ -438,6 +451,20 @@ onMounted(() => {
               :labels="pagerLabels"
               @change="jumpPage"
             />
+
+            <!-- 手动跳页：625 页时逐个点太慢，直接输入页码更快。 -->
+            <div class="rail__jump">
+              <span>{{ t(MB_KEY + ".pageJump") }}</span>
+              <input
+                v-model="jumpDraft"
+                class="rail__jump-input"
+                inputmode="numeric"
+                :placeholder="String(page + 1)"
+                @keyup.enter="submitJump"
+                @blur="submitJump"
+              />
+              <span class="rail__jump-total">/ {{ totalPages }}</span>
+            </div>
           </div>
 
           <div class="rail__filters">
@@ -846,7 +873,37 @@ onMounted(() => {
 }
 
 .rail__pager :deep(.co-pager__summary) {
-  font-size: 10px;
+  display: none;
+}
+
+.rail__jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: var(--copper-space-2);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
+}
+
+.rail__jump-input {
+  width: 54px;
+  height: 26px;
+  border: none;
+  border-radius: var(--copper-radius-sm);
+  background: var(--copper-surface-2);
+  color: var(--copper-text);
+  font-family: inherit;
+  font-size: var(--copper-font-size-xs);
+  text-align: center;
+  outline: none;
+}
+
+.rail__jump-input:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--copper-accent) 40%, transparent);
+}
+
+.rail__jump-total {
+  color: var(--copper-text-disabled);
 }
 
 /* 筛选栏：平铺，内容多了在卡片内滚动。 */
