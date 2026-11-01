@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // 下载页：全量下载列表，分「正在下载」与「历史下载」两区。
 //
+// 布局（V3 骨架）：单列，交给 CoPage 统一留白与滚动；本页不再自己写 padding / overflow。
+//
 // - 顶部工具栏（面板右上方）：并发数下拉框 + 全部继续/全部暂停按钮。
 // - 历史区展示上限取设置 `download.history_limit`（0 = 不显示），
 //   只影响展示窗口，不删除任何记录（历史行落库于 `core_download_task`，
@@ -57,6 +59,7 @@ import {
 import { gameRetryVersion, gameTaskBindings } from "../modules/game-download/api";
 import CoSelect from "../components/ui/CoSelect.vue";
 import CoButton from "../components/ui/CoButton.vue";
+import CoPage from "../components/layout/CoPage.vue";
 
 const { t } = useI18n();
 const router = useRouter();
@@ -516,7 +519,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="downloads">
+  <CoPage>
     <header class="downloads__toolbar">
       <label class="downloads__concurrency" :title="t('download.concurrency_hint')">
         <span class="downloads__concurrency-label">{{ t("download.concurrency") }}</span>
@@ -793,15 +796,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Teleport>
-  </div>
+  </CoPage>
 </template>
 
 <style scoped>
-.downloads {
-  height: 100%;
-  padding: var(--copper-space-5);
-  overflow-y: auto;
-}
 
 .downloads__toolbar {
   display: flex;
