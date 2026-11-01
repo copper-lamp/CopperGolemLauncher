@@ -93,6 +93,16 @@ const tocItems = computed(() =>
 /** 正文的滚动容器：CoPage 挂载后才能拿到。 */
 const scrollEl = computed(() => pageRef.value?.bodyEl ?? null);
 
+/** 导航栏条目 = 正文标题 + 末尾的版本列表（点版本能直接滚到对应分组）。 */
+const railItems = computed(() => [
+  ...tocItems.value,
+  ...versionTree.value.map((group, index) => ({
+    id: "cd-version-" + index,
+    label: group.branch,
+    depth: 0,
+  })),
+]);
+
 /**
  * 从渲染后的正文里解析标题层级，顺便给每个标题写 id。
  *
@@ -622,7 +632,9 @@ let unlistenLocation: () => void = () => {};
           </div>
 
           <!-- 说明文档 -->
-          <div class="cd-info__block cd-info__block--doc">
+        </section>
+
+        <section class="cd-doc-section">
             <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
             <div v-if="readmeLoading" class="cd-doc__state">
               <LoaderCircle :size="15" class="spin" />
@@ -642,7 +654,6 @@ let unlistenLocation: () => void = () => {};
               </button>
             </template>
             <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
-          </div>
         </section>
 
         <!-- ================= 下部：版本（按大版本折叠） ================= -->
@@ -720,8 +731,8 @@ let unlistenLocation: () => void = () => {};
       </template>
       <template #aside>
         <RailToc
-          v-if="tocItems.length"
-          :items="tocItems"
+          v-if="railItems.length"
+          :items="railItems"
           :scroller="scrollEl"
           :title="t(KB + '.onThisPage')"
         />
@@ -965,6 +976,10 @@ let unlistenLocation: () => void = () => {};
 
 .cd-info__block {
   margin-top: var(--copper-space-4);
+}
+
+.cd-doc-section {
+  margin-top: var(--copper-space-5);
 }
 
 .cd-info__block--doc {
