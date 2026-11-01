@@ -108,7 +108,10 @@
     "installFailed": "Install failed: {message}",
     "docLoading": "Loading documentation",
     "docRenderFailed": "Unsupported document format, shown as plain text",
-    "onThisPage": "On this page"
+    "onThisPage": "On this page",
+    "sectionInfo": "Info",
+    "sectionIntro": "Overview",
+    "sectionVersions": "Versions"
   },
   "tag": "Tag",
   "tagAll": "All tags",
@@ -116,8 +119,5 @@
   "toc": "Contents",
   "noToc": "No headings in this document",
   "from": "By",
-  "otherVersions": "Other versions",
-  "sectionInfo": "Info",
-  "sectionIntro": "Overview",
-  "sectionVersions": "Versions"
+  "otherVersions": "Other versions"
 }

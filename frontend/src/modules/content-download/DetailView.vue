@@ -566,7 +566,7 @@ let unlistenLocation: () => void = () => {};
 
 <template>
   <CoPage ref="pageRef">
-    <div class="cd-detail" :class="{ 'cd-detail--no-toc': !tocFlat.length }">
+    <div class="cd-detail">
       <CoSplitLayout aside-position="end">
       <template v-if="loading">
         <div class="cd-detail__skeleton">

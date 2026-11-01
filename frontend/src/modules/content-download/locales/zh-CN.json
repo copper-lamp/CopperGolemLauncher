@@ -108,7 +108,10 @@
     "installFailed": "安装失败：{message}",
     "docLoading": "文档加载中",
     "docRenderFailed": "文档格式不受支持，已按纯文本显示",
-    "onThisPage": "本页内容"
+    "onThisPage": "本页内容",
+    "sectionInfo": "信息",
+    "sectionIntro": "介绍",
+    "sectionVersions": "版本"
   },
   "tag": "标签",
   "tagAll": "全部标签",
@@ -116,8 +119,5 @@
   "toc": "目录",
   "noToc": "该内容没有可用的目录",
   "from": "来自",
-  "otherVersions": "其他版本",
-  "sectionInfo": "信息",
-  "sectionIntro": "介绍",
-  "sectionVersions": "版本"
+  "otherVersions": "其他版本"
 }
