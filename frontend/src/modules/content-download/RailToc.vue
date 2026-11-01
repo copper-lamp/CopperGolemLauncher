@@ -117,6 +117,10 @@ function tick() {
 }
 
 function travelTo(next: number) {
+  if (Math.abs(next - target) < 2) {
+    target = next;
+    return;
+  }
   target = next;
   if (!raf) raf = requestAnimationFrame(tick);
 }
@@ -409,6 +413,5 @@ onBeforeUnmount(() => {
 
 .rail-toc__item.is-active {
   color: var(--copper-text);
-  font-weight: 600;
 }
 </style>
