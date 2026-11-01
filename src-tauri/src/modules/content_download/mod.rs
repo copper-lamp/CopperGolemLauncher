@@ -1822,4 +1822,5 @@ mod tests {
         }
     }
 }
-// locale-refresh: 触发重编，让 include_str! 重新载入模块语言包
+
+// locale-refresh: 语言键迁到 detail 下，强制重编以重新 include_str!
