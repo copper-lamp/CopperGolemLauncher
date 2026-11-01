@@ -16,6 +16,8 @@
 import { computed } from "vue";
 import { ChevronRight } from "@lucide/vue";
 
+import CoNumberWheel from "./CoNumberWheel.vue";
+
 /** 面包屑项：页码，或省略号（`-1` 表示「还有更多页」）。 */
 type PageItem = number | "gap";
 
@@ -46,6 +48,14 @@ const props = withDefaults(
      */
     shape?: "crumb" | "circle";
     /**
+     * 待定页码（**1 基**），只影响当前页那一位的显示：传值进来时那一格用
+     * 滚轮数字跟着变，但不改页码序列的排版、也不触发翻页。
+     *
+     * 与 CoPageScrubber 配合：拖动扫页时把待定值喂到这里，视线只需要盯一个数字；
+     * 松手由调用方真正翻页，`preview` 复位。
+     */
+    preview?: number | null;
+    /**
      * 文案由调用方按自己的 i18n 命名空间注入。
      * 组件本身不引入 i18n：它是内核控件，不该知道「内容下载」这种模块概念。
      */
@@ -60,7 +70,7 @@ const props = withDefaults(
       goto: (page: number) => string;
     };
   }>(),
-  { loading: false, compact: false, shape: "crumb" },
+  { loading: false, compact: false, shape: "crumb", preview: null },
 );
 
 const emit = defineEmits<{ (e: "change", page: number): void }>();
@@ -170,8 +180,8 @@ function go(target: number) {
           v-else
           class="co-pager__circle"
           :class="{ 'co-pager__circle--current': item === current }"
-          :aria-current="item === current ? 'page' : undefined"
-          :aria-label="labels.goto(item)"
+          :aria-current="item === current && preview == null ? 'page' : undefined"
+          :aria-label="labels.goto(preview != null && item === current ? preview : item)"
           :disabled="loading"
           @click="go(item - 1)"
         >
@@ -179,6 +189,12 @@ function go(target: number) {
             v-if="loading && item === current"
             class="co-pager__num-spinner"
             aria-hidden="true"
+          />
+          <CoNumberWheel
+            v-else-if="preview != null && item === current"
+            class="co-pager__wheel"
+            :value="preview"
+            :duration="0.28"
           />
           <template v-else>{{ item }}</template>
         </button>
@@ -295,8 +311,9 @@ function go(target: number) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
+  min-width: 30px;
   height: 30px;
+  padding: 0 7px;
   border: none;
   border-radius: 50%;
   background: var(--copper-surface-2);
@@ -337,6 +354,12 @@ function go(target: number) {
   width: 18px;
   color: var(--copper-text-disabled);
   font-size: var(--copper-font-size-sm);
+}
+
+/* 待定页码用滚轮数字，同字号、同色，只是会滚。 */
+.co-pager__wheel {
+  display: inline-flex;
+  line-height: 1;
 }
 
 /* 面包屑主体 */

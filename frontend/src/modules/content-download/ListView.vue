@@ -29,6 +29,7 @@ import {
 import { useI18n } from "../../i18n";
 import CoBadge from "../../components/ui/CoBadge.vue";
 import CoPagination from "../../components/ui/CoPagination.vue";
+import CoPageScrubber from "../../components/ui/CoPageScrubber.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import TipsRotator from "../../components/TipsRotator.vue";
 import { usePlatform } from "../../composables/usePlatform";
@@ -126,8 +127,8 @@ let loadSeq = 0;
 let hydrated = false;
 
 const pageRef = ref<InstanceType<typeof CoPage> | null>(null);
-/** 手动跳页输入框的草稿（回车 / 失焦提交）。 */
-const jumpDraft = ref("");
+/** 拖动扫页的待定页码（1 基），只在拖动中存在：松手才真正翻页。 */
+const pendingPage = ref<number | null>(null);
 /** 左侧列表自己的滚动容器（整页不滚动，右栏才能顶满高度且不跟滚）。 */
 const resultsRef = ref<HTMLElement | null>(null);
 const tagOptions = ref<string[]>([]);
@@ -135,6 +136,12 @@ const tagOptions = ref<string[]>([]);
 function scrollBody(): HTMLElement | null {
   return resultsRef.value ?? pageRef.value?.bodyEl ?? null;
 }
+
+/** 跳页滑轨的文案（与分页共用同一套 key，不新增词条）。 */
+const scrubLabels = computed(() => ({
+  jump: t(MB_KEY + ".pageJump"),
+  goto: (n: number) => t(MB_KEY + ".pageGoto", { page: n }),
+}));
 
 const pagerLabels = computed(() => ({
   summary: (current: number, all: number) =>
@@ -232,15 +239,10 @@ function jumpPage(target: number) {
   void fetchPage();
 }
 
-/** 手动跳页：解析 → 夹到 [1, 总页数] → 落地。非法输入直接清空。 */
-function submitJump() {
-  const raw = jumpDraft.value.trim();
-  if (!raw) return;
-  const parsed = Number.parseInt(raw, 10);
-  jumpDraft.value = "";
-  if (!Number.isFinite(parsed)) return;
-  const target = Math.min(Math.max(parsed, 1), Math.max(totalPages.value, 1)) - 1;
-  if (target !== page.value) jumpPage(target);
+/** 扫页落定：清掉待定值，按 1 基页码真正翻页（同页不重复请求）。 */
+function onScrubCommit(target: number) {
+  pendingPage.value = null;
+  jumpPage(target - 1);
 }
 
 function openDetail(item: ContentItem) {
@@ -448,23 +450,21 @@ onMounted(() => {
               :page="page"
               :total-pages="totalPages"
               :loading="loading"
+              :preview="pendingPage"
               :labels="pagerLabels"
               @change="jumpPage"
             />
 
-            <!-- 手动跳页：625 页时逐个点太慢，直接输入页码更快。 -->
-            <div class="rail__jump">
-              <span>{{ t(MB_KEY + ".pageJump") }}</span>
-              <input
-                v-model="jumpDraft"
-                class="rail__jump-input"
-                inputmode="numeric"
-                :placeholder="String(page + 1)"
-                @keyup.enter="submitJump"
-                @blur="submitJump"
-              />
-              <span class="rail__jump-total">/ {{ totalPages }}</span>
-            </div>
+            <!-- 跳页滑轨：625 页时逐个点太慢。横拖扫页，拖出来的数字显示在
+                 分页的当前页位上，松手才翻页（不跟着拖动疯狂请求）。 -->
+            <CoPageScrubber
+              :page="page"
+              :total-pages="totalPages"
+              :loading="loading"
+              :labels="scrubLabels"
+              @preview="pendingPage = $event"
+              @commit="onScrubCommit"
+            />
           </div>
 
           <div class="rail__filters">
@@ -874,36 +874,6 @@ onMounted(() => {
 
 .rail__pager :deep(.co-pager__summary) {
   display: none;
-}
-
-.rail__jump {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-top: var(--copper-space-2);
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-xs);
-}
-
-.rail__jump-input {
-  width: 54px;
-  height: 26px;
-  border: none;
-  border-radius: var(--copper-radius-sm);
-  background: var(--copper-surface-2);
-  color: var(--copper-text);
-  font-family: inherit;
-  font-size: var(--copper-font-size-xs);
-  text-align: center;
-  outline: none;
-}
-
-.rail__jump-input:focus {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--copper-accent) 40%, transparent);
-}
-
-.rail__jump-total {
-  color: var(--copper-text-disabled);
 }
 
 /* 筛选栏：平铺，内容多了在卡片内滚动。 */
