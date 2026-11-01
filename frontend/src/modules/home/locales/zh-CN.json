@@ -31,7 +31,14 @@
     "none": "未选择",
     "downloads": "下载",
     "downloads_active": "{count} 个进行中",
-    "downloads_idle": "没有进行中的下载"
+    "downloads_idle": "没有进行中的下载",
+    "play": "开始游戏",
+    "pinned": "已顶置",
+    "pin": "顶置",
+    "unpin": "取消顶置",
+    "configure": "设置",
+    "switch_preview": "切换预览图",
+    "preview_single": "该条目只有一张预览图"
   },
   "detail": "详情",
   "welcome": {
@@ -317,5 +324,13 @@
     "launch_preload_count": "{count} 个原生模块",
     "launch_preload_external": "外部预加载器接管",
     "launch_unavailable": "该平台读不到启动文件状态。"
+  },
+  "widget": {
+    "mods": {
+      "title": "模组管理",
+      "enter": "进入",
+      "update": "可更新",
+      "update_hint": "目录里有新版本 {version}"
+    }
   }
 }

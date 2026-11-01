@@ -30,7 +30,7 @@ import TipsRotator from "../../components/TipsRotator.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoRingProgress from "../../components/ui/CoRingProgress.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
-import CoSelect from "../../components/ui/CoSelect.vue";
+import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import DefaultHome from "./DefaultHome.vue";
 import {
@@ -115,8 +115,13 @@ const current = computed(() => {
   return versions.value.find((v) => v.name === selectedName.value) ?? null;
 });
 
+/** 实例选项：胶囊下拉里要显示封面，所以把 logo 一起带下去。 */
 const versionOptions = computed(() =>
-  versions.value.map((v) => ({ value: v.name, label: v.name })),
+  versions.value.map((v) => ({
+    value: v.name,
+    label: v.name,
+    icon: v.logo_data_url,
+  })),
 );
 
 /** 会话状态只对当前选中版本生效，避免 A 实例的状态染到 B 的按钮上。 */
@@ -339,28 +344,27 @@ function goDownload() {
         <template v-else>
           <h1 class="home-simple__welcome">{{ welcome }}</h1>
 
-          <!-- 胶囊操作条：左版本选择，右详情 + 启动 -->
-          <div class="home-simple__bar">
-            <div class="home-simple__version">
-              <CoSelect
-                v-if="versionOptions.length > 1"
-                v-model="selectedName"
-                :options="versionOptions"
-                class="home-simple__version-select"
-              />
-              <span v-else class="home-simple__version-name" :title="current.name">
-                {{ current.name }}
-              </span>
-            </div>
+          <!--
+            胶囊面板：整页的视觉中心。
+            左 = 实例选择（图标 + 名字，点开是圆角矩形浮层，最多同屏 5 项），
+            右 = 详情（只显示图标，标题用 tooltip 补）+ 开始游戏。
+          -->
+          <div class="home-simple__dock">
+            <CoInstanceSelect
+              v-model="selectedName"
+              :options="versionOptions"
+              class="home-simple__dock-select"
+            />
 
-            <div class="home-simple__actions">
+            <div class="home-simple__dock-actions">
               <button
                 type="button"
                 class="home-simple__detail"
+                :title="t('module.home.detail')"
+                :aria-label="t('module.home.detail')"
                 @click="openVersionSettings"
               >
-                <Settings2 :size="15" />
-                <span>{{ t("module.home.detail") }}</span>
+                <Settings2 :size="19" />
               </button>
               <CoButton
                 class="home-simple__play"
@@ -369,15 +373,15 @@ function goDownload() {
                 :disabled="launching || stopping"
                 @click="onPrimaryClick"
               >
-                <CoRingProgress v-if="launching" :size="15" :stroke="2" />
-                <Square v-else-if="running" :size="13" />
-                <Play v-else :size="15" />
+                <CoRingProgress v-if="launching" :size="17" :stroke="2" />
+                <Square v-else-if="running" :size="14" />
+                <Play v-else :size="17" />
                 <span>{{ primaryLabel }}</span>
               </CoButton>
             </div>
           </div>
 
-          <!-- 启动确认期间在操作条下方给一条提示：这段时间可达数十秒，不能留白 -->
+          <!-- 启动确认期间在面板下方给一条提示：这段时间可达数十秒，不能留白 -->
           <TipsRotator v-if="launching" compact />
         </template>
       </div>
@@ -403,9 +407,9 @@ function goDownload() {
   gap: var(--copper-space-3);
   max-width: 640px;
   margin-bottom: var(--copper-space-4);
-  padding: var(--copper-space-2) var(--copper-space-3) var(--copper-space-2)
+  padding: var(--copper-space-2) var(--copper-space-2) var(--copper-space-2)
     var(--copper-space-4);
-  border: 1px solid var(--copper-border);
+  /* 无描边：账号提示条靠底色阶差 + 阴影与页面分离（本轮统一规则）。 */
   border-radius: var(--copper-radius-lg);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
@@ -427,97 +431,72 @@ function goDownload() {
 }
 
 .home-simple__welcome {
-  max-width: 640px;
+  max-width: 720px;
   padding: 0 var(--copper-space-4);
-  font-size: 24px;
+  /* 识别度：欢迎语是整页唯一的大字，过小会让页面显得空。 */
+  font-size: 30px;
   font-weight: 700;
-  letter-spacing: 0.02em;
-  line-height: 1.3;
+  letter-spacing: 0.01em;
+  line-height: 1.28;
   text-align: center;
 }
 
-/* 胶囊操作条：版本选择在左，动作在右；整条宽度有限，避免拉满窗口。 */
-.home-simple__bar {
+/* 胶囊面板：整页视觉中心。无描边，靠底色阶差 + 阴影浮起。 */
+.home-simple__dock {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--copper-space-3);
-  width: min(560px, 100%);
-  padding: 6px;
-  padding-left: var(--copper-space-4);
-  border: 1px solid var(--copper-border);
+  gap: var(--copper-space-2);
+  width: min(720px, 100%);
+  padding: 8px;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow);
 }
 
-.home-simple__version {
+.home-simple__dock-select {
   flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: center;
 }
 
-.home-simple__version-name {
-  overflow: hidden;
-  color: var(--copper-text);
-  font-size: var(--copper-font-size-lg);
-  font-weight: 500;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-/* 版本选择也做成胶囊：去掉原生 select 的边框与底色，只留文字与箭头。 */
-.home-simple__version-select :deep(.co-select select) {
-  height: 40px;
-  padding-right: var(--copper-space-5);
-  border-color: transparent;
-  border-radius: var(--copper-radius-full);
-  background: transparent;
-  color: var(--copper-text);
-  font-size: var(--copper-font-size-lg);
-  font-weight: 500;
-}
-
-.home-simple__version-select :deep(.co-select select:hover) {
-  background: var(--copper-hover);
-}
-
-.home-simple__actions {
+.home-simple__dock-actions {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: var(--copper-space-1);
+  gap: var(--copper-space-2);
 }
 
+/* 详情：只显示图标，文字靠 tooltip / aria-label 补。 */
 .home-simple__detail {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 40px;
-  padding: 0 var(--copper-space-3);
+  justify-content: center;
+  width: 56px;
+  height: 56px;
   border: none;
   border-radius: var(--copper-radius-full);
-  background: transparent;
+  background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
-  font-family: inherit;
-  font-size: var(--copper-font-size-sm);
   cursor: pointer;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
-    color var(--copper-duration-fast) var(--copper-easing);
+    color var(--copper-duration-fast) var(--copper-easing),
+    transform var(--copper-duration-fast) var(--copper-easing);
 }
 
 .home-simple__detail:hover {
-  background: var(--copper-hover);
+  background: var(--copper-surface-3);
   color: var(--copper-text);
 }
 
+.home-simple__detail:active {
+  transform: scale(0.96);
+}
+
 .home-simple__play {
-  height: 40px;
-  padding: 0 var(--copper-space-5);
+  height: 56px;
+  padding: 0 var(--copper-space-6);
   border-radius: var(--copper-radius-full);
-  font-size: var(--copper-font-size-md);
+  font-size: 15px;
   font-weight: 600;
 }
 

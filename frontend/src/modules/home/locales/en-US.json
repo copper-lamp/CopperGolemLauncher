@@ -31,7 +31,14 @@
     "none": "None selected",
     "downloads": "Downloads",
     "downloads_active": "{count} active",
-    "downloads_idle": "No active downloads"
+    "downloads_idle": "No active downloads",
+    "play": "Play",
+    "pinned": "Pinned",
+    "pin": "Pin to top",
+    "unpin": "Unpin",
+    "configure": "Settings",
+    "switch_preview": "Switch preview",
+    "preview_single": "Only one preview image for this item"
   },
   "detail": "Details",
   "welcome": {
@@ -317,5 +324,13 @@
     "launch_preload_count": "{count} native modules",
     "launch_preload_external": "Handled by an external preloader",
     "launch_unavailable": "Launch file state is unavailable on this platform."
+  },
+  "widget": {
+    "mods": {
+      "title": "Mods",
+      "enter": "Open",
+      "update": "Update",
+      "update_hint": "A newer version is available: {version}"
+    }
   }
 }
