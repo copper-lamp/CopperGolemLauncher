@@ -103,14 +103,14 @@ function pose(length: number) {
 function tick() {
   raf = 0;
   const diff = target - current;
-  if (Math.abs(diff) < 0.35) {
+  if (Math.abs(diff) < 1) {
     current = target;
     pose(current);
     return;
   }
   // 往回走超过 2px 才掉头，避免滚动抖动把飞机翻来翻去。
-  if (diff < -2 && facing.value !== -1) facing.value = -1;
-  else if (diff > 2 && facing.value !== 1) facing.value = 1;
+  if (diff < -6 && facing.value !== -1) facing.value = -1;
+  else if (diff > 6 && facing.value !== 1) facing.value = 1;
   current += diff * 0.16;
   pose(current);
   raf = requestAnimationFrame(tick);
@@ -121,15 +121,26 @@ function travelTo(next: number) {
   if (!raf) raf = requestAnimationFrame(tick);
 }
 
+let measuring = false;
+
 function measure() {
+  if (measuring) return;
+  measuring = true;
+  try {
   const list = listEl.value;
   if (!list) return;
   const points = props.items.map((item, i) => ({
     x: RAIL_X + (item.depth ?? 0) * props.indent,
     y: (rowEls.value[i]?.offsetTop ?? 0) + (rowEls.value[i]?.offsetHeight ?? 0) / 2,
   }));
+  const nextD = buildPath(points);
+  const same = nextD === pathD.value && size.value.height === list.offsetHeight;
   nodes.value = points;
-  pathD.value = buildPath(points);
+  pathD.value = nextD;
+  if (same) {
+    measuring = false;
+    return;
+  }
   size.value = {
     width: Math.max(...points.map((p) => p.x), RAIL_X) + RAIL_X + 4,
     height: list.offsetHeight,
@@ -141,6 +152,9 @@ function measure() {
     lengths.value = points.map((p) => lengthAtY(path, total.value, p.y));
     sync();
   });
+  } finally {
+    measuring = false;
+  }
 }
 
 /** 当前阅读位置 → 目标路径长度（首尾标题都能到达）。 */
