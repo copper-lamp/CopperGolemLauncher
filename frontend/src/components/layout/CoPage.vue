@@ -15,6 +15,8 @@
 // 滚动为什么放在 `.co-page__body` 而不是根节点：根节点若滚动，标题栏下方会滚出一条
 // 多余的滚动条，且 `position: sticky` 的参照系会变成根节点自身，分栏副栏会跟着整页跑。
 
+import { ref } from "vue";
+
 withDefaults(
   defineProps<{
     /** 正文是否由本组件滚动；false 时滚动交给页面内部容器。 */
@@ -26,6 +28,13 @@ withDefaults(
   }>(),
   { scroll: true, padded: true, width: "default" },
 );
+
+/**
+ * 正文滚动元素：页面需要保存 / 恢复滚动位置时（如列表→详情→返回）取它，
+ * 而不是去猜骨架内部的类名或拿根节点。
+ */
+const bodyEl = ref<HTMLElement | null>(null);
+defineExpose({ bodyEl });
 </script>
 
 <template>
@@ -42,7 +51,7 @@ withDefaults(
     <div v-if="$slots.header" class="co-page__header">
       <slot name="header" />
     </div>
-    <div class="co-page__body">
+    <div ref="bodyEl" class="co-page__body">
       <div class="co-page__inner">
         <slot />
       </div>

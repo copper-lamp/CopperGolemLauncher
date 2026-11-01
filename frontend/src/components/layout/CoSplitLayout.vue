@@ -30,6 +30,8 @@ const props = withDefaults(
     sticky?: boolean;
     /** 副栏是否内部滚动；开启后副栏高度受滚动区限制。 */
     asideScroll?: boolean;
+    /** 折叠成单列时副栏是否排到主栏之前（筛选栏这类要先于结果出现的控件）。 */
+    stackAsideFirst?: boolean;
   }>(),
   {
     asidePosition: "end",
@@ -37,6 +39,7 @@ const props = withDefaults(
     gap: "",
     sticky: true,
     asideScroll: false,
+    stackAsideFirst: false,
   },
 );
 
@@ -50,7 +53,13 @@ const style = computed<Record<string, string>>(() => {
 
 <template>
   <div class="co-split" :style="style">
-    <div :class="['co-split__inner', `co-split__inner--${asidePosition}`]">
+    <div
+      :class="[
+        'co-split__inner',
+        `co-split__inner--${asidePosition}`,
+        { 'co-split__inner--stack-aside-first': stackAsideFirst },
+      ]"
+    >
       <div class="co-split__main">
         <slot />
       </div>
@@ -161,7 +170,8 @@ const style = computed<Record<string, string>>(() => {
     grid-row: auto;
   }
 
-  .co-split__inner--start .co-split__aside {
+  .co-split__inner--start .co-split__aside,
+  .co-split__inner--stack-aside-first .co-split__aside {
     order: -1;
   }
 

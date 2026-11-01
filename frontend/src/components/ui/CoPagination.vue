@@ -35,6 +35,11 @@ const props = withDefaults(
     /** 翻页中：禁用所有跳转，但不隐藏控件（避免布局跳动）。 */
     loading?: boolean;
     /**
+     * 紧凑形态：隐藏面包屑页码序列，只保留「上一页 / 下一页」。
+     * 用于宽度有限的容器（右栏、抽屉），与移动端降级共用同一套结构。
+     */
+    compact?: boolean;
+    /**
      * 文案由调用方按自己的 i18n 命名空间注入。
      * 组件本身不引入 i18n：它是内核控件，不该知道「内容下载」这种模块概念。
      */
@@ -49,7 +54,7 @@ const props = withDefaults(
       goto: (page: number) => string;
     };
   }>(),
-  { loading: false },
+  { loading: false, compact: false },
 );
 
 const emit = defineEmits<{ (e: "change", page: number): void }>();
@@ -90,7 +95,11 @@ function go(target: number) {
 </script>
 
 <template>
-  <nav v-if="visible" class="co-pager" :aria-label="labels.nav">
+  <nav
+    v-if="visible"
+    :class="['co-pager', { 'co-pager--compact': compact }]"
+    :aria-label="labels.nav"
+  >
     <!-- 汇总行：页数 -->
     <p class="co-pager__summary">
       <span class="co-pager__summary-page">{{ labels.summary(current, totalPages) }}</span>
@@ -325,6 +334,20 @@ html[data-form-factor="mobile"] .co-pager__crumbs {
 
 html[data-form-factor="mobile"] .co-pager__compact {
   display: flex;
+}
+
+/* 显式紧凑形态：与移动端同一套降级，但不依赖表单因子。 */
+.co-pager--compact .co-pager__crumbs {
+  display: none;
+}
+
+.co-pager--compact .co-pager__compact {
+  display: flex;
+}
+
+/* 汇总行已经写了页数，紧凑形态的中间状态文案是重复信息。 */
+.co-pager--compact .co-pager__compact-state {
+  display: none;
 }
 
 html[data-form-factor="mobile"] .co-pager__compact-state {
