@@ -82,6 +82,8 @@ pub struct VersionView {
     pub loader: Option<String>,
     /// 实例模式：`original` / `levi` / `client`（旧实例按 loader 推导）。
     pub mode: String,
+    /// 实例创建时间（RFC3339，前端只取日期部分展示）。
+    pub created_at: String,
     /// 客户端模式要注入的 DLL 路径。
     pub client_dll: Option<String>,
     pub logo_data_url: Option<String>,
@@ -360,6 +362,7 @@ fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
         registered: meta.registered,
         loader: meta.loader.clone(),
         mode: effective_mode(&meta),
+        created_at: meta.created_at.clone(),
         client_dll: meta.client_dll.clone(),
         logo_data_url: meta::logo_data_url(&dir),
         folder: dir.to_string_lossy().into_owned(),

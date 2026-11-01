@@ -26,6 +26,8 @@ export interface VersionView {
   loader: string | null;
   /** 实例模式：original / levi / client（旧实例按 loader 推导）。 */
   mode: string;
+  /** 实例创建时间（RFC3339；展示时只取日期部分）。 */
+  created_at: string;
   /** 客户端模式注入的 DLL 路径。 */
   client_dll: string | null;
   logo_data_url: string | null;
