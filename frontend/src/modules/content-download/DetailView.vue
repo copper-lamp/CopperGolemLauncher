@@ -92,16 +92,19 @@ const tocItems = computed(() =>
 );
 /** 正文的滚动容器：CoPage 挂载后才能拿到。 */
 const scrollEl = computed(() => pageRef.value?.bodyEl ?? null);
-
-/** 导航栏条目 = 正文标题 + 末尾的版本列表（点版本能直接滚到对应分组）。 */
+/** 导航条目 = 三个固定一级区块（信息 / 介绍 / 版本）+ 介绍下的文档标题 + 版本分组。 */
 const railItems = computed(() => [
-  ...tocItems.value,
+  { id: "cd-sec-info", label: t(KB + ".sectionInfo"), depth: 0 },
+  { id: "cd-sec-intro", label: t(KB + ".sectionIntro"), depth: 0 },
+  ...tocItems.value.map((item) => ({ ...item, depth: item.depth + 1 })),
+  { id: "cd-sec-versions", label: t(KB + ".sectionVersions"), depth: 0 },
   ...versionTree.value.map((group, index) => ({
     id: "cd-version-" + index,
     label: group.branch,
-    depth: 0,
+    depth: 1,
   })),
 ]);
+
 
 /**
  * 从渲染后的正文里解析标题层级，顺便给每个标题写 id。
@@ -114,9 +117,15 @@ async function buildToc() {
   tocFlat.value = [];
   const root = docRef.value;
   if (!root) return;
-  const headings = Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3,h4")).filter(
-    (el) => (el.textContent ?? "").trim().length > 0,
-  );
+  // CurseForge 的描述里大量用标题标签排版整段文字，原样收进目录就是一堆段落。
+  // 这里只认「像标题的标题」：长度受控、不以句末标点结尾；层级收敛到 h1~h3。
+  const headings = Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3")).filter((el) => {
+    const text = (el.textContent ?? "").trim();
+    if (!text) return false;
+    if (text.length > 48) return false;
+    if (/[。！？；.?!;]$/.test(text)) return false;
+    return true;
+  });
   if (headings.length === 0) return;
   const items: Array<{ id: string; text: string; level: number }> = [];
   headings.forEach((el, index) => {
@@ -580,7 +589,7 @@ let unlistenLocation: () => void = () => {};
 
       <template v-else-if="detail">
         <!-- ================= 上部：信息 + 文档（单卡片） ================= -->
-        <section class="cd-card cd-card--info">
+        <section id="cd-sec-info" class="cd-card cd-card--info">
           <header class="cd-info__head">
             <div class="cd-info__thumb">
               <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
@@ -634,7 +643,8 @@ let unlistenLocation: () => void = () => {};
           <!-- 说明文档 -->
         </section>
 
-        <section class="cd-doc-section">
+        <section id="cd-sec-intro" class="cd-doc-section">
+          <h2 class="cd-block__title">{{ t(KB + ".sectionIntro") }}</h2>
             <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
             <div v-if="readmeLoading" class="cd-doc__state">
               <LoaderCircle :size="15" class="spin" />
@@ -657,7 +667,7 @@ let unlistenLocation: () => void = () => {};
         </section>
 
         <!-- ================= 下部：版本（按大版本折叠） ================= -->
-        <section class="cd-versions">
+        <section id="cd-sec-versions" class="cd-versions">
           <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
 
           <p v-if="!versionTree.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>

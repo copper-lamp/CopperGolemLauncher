@@ -82,6 +82,9 @@ function lengthAtY(path: SVGPathElement, all: number, y: number): number {
   return hi;
 }
 
+/** 朝向：向上翻时掉头朝上。 */
+const facing = ref<1 | -1>(1);
+
 function pose(length: number) {
   const path = pathEl.value;
   const all = total.value;
@@ -89,7 +92,8 @@ function pose(length: number) {
   const at = path.getPointAtLength(length);
   const behind = path.getPointAtLength(Math.max(0, length - 1));
   const ahead = path.getPointAtLength(Math.min(all, length + 1));
-  const angle = (Math.atan2(ahead.y - behind.y, ahead.x - behind.x) * 180) / Math.PI + 90;
+  const base = (Math.atan2(ahead.y - behind.y, ahead.x - behind.x) * 180) / Math.PI + 90;
+  const angle = base + (facing.value < 0 ? 180 : 0);
   plane.value = { x: at.x, y: at.y, angle };
   filled.value = all > 0 ? length / all : 0;
   reached.value = lengths.value.filter((n) => n <= length + 0.5).length;
@@ -104,6 +108,9 @@ function tick() {
     pose(current);
     return;
   }
+  // 往回走超过 2px 才掉头，避免滚动抖动把飞机翻来翻去。
+  if (diff < -2 && facing.value !== -1) facing.value = -1;
+  else if (diff > 2 && facing.value !== 1) facing.value = 1;
   current += diff * 0.16;
   pose(current);
   raf = requestAnimationFrame(tick);
