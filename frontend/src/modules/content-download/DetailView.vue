@@ -23,8 +23,6 @@ import {
   FileDigit,
   Link2,
   ChevronRight,
-  Menu,
-  Send,
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -45,6 +43,7 @@ import {
   releaseBadgeTone,
 } from "./badges";
 import { detailCrumbTitle } from "./detailCrumb";
+import RailToc from "./RailToc.vue";
 import { renderReadme, type ReadmeFormat } from "./readme";
 import {
   contentDownloadDetail,
@@ -85,8 +84,14 @@ const pageRef = ref<InstanceType<typeof CoPage> | null>(null);
 const docRef = ref<HTMLElement | null>(null);
 /** 扁平化后的目录（带层级用于缩进）。 */
 const tocFlat = ref<Array<{ id: string; text: string; level: number }>>([]);
-const activeId = ref("");
-let spyOff: (() => void) | null = null;
+
+
+/** 传给轨道目录的条目（正文标题 → { id, label, depth }）。 */
+const tocItems = computed(() =>
+  tocFlat.value.map((item) => ({ id: item.id, label: item.text, depth: item.level })),
+);
+/** 正文的滚动容器：CoPage 挂载后才能拿到。 */
+const scrollEl = computed(() => pageRef.value?.bodyEl ?? null);
 
 /**
  * 从渲染后的正文里解析标题层级，顺便给每个标题写 id。
@@ -96,10 +101,7 @@ let spyOff: (() => void) | null = null;
  */
 async function buildToc() {
   await nextTick();
-  spyOff?.();
-  spyOff = null;
   tocFlat.value = [];
-  activeId.value = "";
   const root = docRef.value;
   if (!root) return;
   const headings = Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3,h4")).filter(
@@ -118,35 +120,6 @@ async function buildToc() {
     });
   });
   tocFlat.value = items;
-
-  // 滚动高亮：取「最后一个已经越过参考线的标题」。
-  const scroller = pageRef.value?.bodyEl ?? null;
-  if (!scroller) return;
-  const onScroll = () => {
-    const top = scroller.getBoundingClientRect().top + 120;
-    let current = items[0]?.id ?? "";
-    for (const item of items) {
-      const el = document.getElementById(item.id);
-      if (!el) continue;
-      if (el.getBoundingClientRect().top <= top) current = item.id;
-      else break;
-    }
-    activeId.value = current;
-  };
-  scroller.addEventListener("scroll", onScroll, { passive: true });
-  onScroll();
-  spyOff = () => scroller.removeEventListener("scroll", onScroll);
-}
-
-/** 当前小节在目录里的序号（纸飞机与"已点亮轨道"的依据）。 */
-const activeOrder = computed(() => {
-  const index = tocFlat.value.findIndex((item) => item.id === activeId.value);
-  return index < 0 ? -1 : index;
-});
-
-function goToHeading(id: string) {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  activeId.value = id;
 }
 
 /** 已展开的版本分组（键为分组名）。默认全部折叠。 */
@@ -566,7 +539,6 @@ onMounted(async () => {
   unlistenLocation = await onContentDownloadLocation(reportLocation);
 });
 onUnmounted(() => {
-  spyOff?.();
   unlistenLocation();
   resetCrumbTitle();
 });
@@ -747,33 +719,12 @@ let unlistenLocation: () => void = () => {};
         </section>
       </template>
       <template #aside>
-        <!-- 轨道式目录：虚线轨道 + 节点 + 当前小节箭头，层级靠节点缩进与横向虚线表达 -->
-        <div v-if="tocFlat.length" class="rail-toc">
-          <div class="rail-toc__head">
-            <Menu :size="15" />
-            <span>{{ t(`${KB}.onThisPage`) }}</span>
-          </div>
-          <nav class="rail-toc__nav">
-            <button
-              v-for="(item, order) in tocFlat"
-              :key="item.id"
-              type="button"
-              class="rail-toc__item"
-              :class="{
-                'is-active': activeId === item.id,
-                'is-passed': order <= activeOrder,
-              }"
-              :style="{ '--depth': item.level }"
-              @click="goToHeading(item.id)"
-            >
-              <span class="rail-toc__rail" aria-hidden="true" />
-              <span class="rail-toc__node" aria-hidden="true" />
-              <span class="rail-toc__text">{{ item.text }}</span>
-              <!-- 纸飞机：停在当前阅读的章节上，滚动时沿轨道上下移动 -->
-              <Send v-if="activeId === item.id" :size="15" class="rail-toc__plane" />
-            </button>
-          </nav>
-        </div>
+        <RailToc
+          v-if="tocItems.length"
+          :items="tocItems"
+          :scroller="scrollEl"
+          :title="t(KB + '.onThisPage')"
+        />
       </template>
       </CoSplitLayout>
     </div>
