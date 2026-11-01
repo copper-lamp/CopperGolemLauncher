@@ -13,7 +13,7 @@
 
 ## [0.0.1] - 2026-10-31 · 预发布
 
-> 首个公开预发布版本（Pre-release）。产物为 Windows x64 安装包与 Android arm64 调试 APK。
+> 首个公开预发布版本（Pre-release）。本版仅提供 Windows x64 安装包（NSIS / MSI）。
 > 本版聚焦把「登录 → 下载游戏 → 启动 → 安装内容」主链路打通。内测阶段功能仍在快速变化，
 > 旧配置与旧实例不保证向前兼容。
 
@@ -39,7 +39,7 @@
 - **更新系统**：对接 GitHub Releases，按 semver 取最高版本；stable / beta 通道（beta 额外接纳预发布）；
   下载、校验、替换与重启，更新检查不依赖元数据体系，避免死锁。
 - **发布链路**：GitHub Actions `build` / `release` 工作流；打 `v*` 标签自动构建并创建草稿 Release，
-  产物含 Windows NSIS 安装包与 Android arm64 调试 APK。
+  产物为 Windows NSIS / MSI 安装包。Android 打包在 CI 上尚未打通，本版不发布 APK。
 
 ### 修复（本版收口项）
 
@@ -55,7 +55,7 @@
 ### 已知限制
 
 - 内测阶段：界面与能力仍在演进，已装实例在后续版本可能因路径或元数据调整而需要重建。
-- 桌面端仅支持 Windows x64 基岩版；Android 为调试 APK，能力仍在补齐，不作为正式支持平台。
+- 桌面端仅支持 Windows x64 基岩版；Android 端仍在适配，本版不提供构建产物（CI 的 APK 打包亦暂时禁用）。
 - 附加模块（Agent / MCP）尚未提供一键下载安装，动态装载仍在开发中。
 - Linux 仅有 CI 构建产物，启动链路尚未适配；macOS 暂无构建产物。
 - 真实 Windows Store 账户的端到端安装验收覆盖有限，异常账号状态的问题定位仍依赖用户日志。

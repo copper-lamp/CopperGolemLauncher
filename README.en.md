@@ -65,7 +65,9 @@ CopperGolem follows semantic versioning. Current release status:
 | Platform | Version | Status |
 | --- | --- | --- |
 | Windows x64 · Minecraft Bedrock | `0.0.1` | Pre-release (first closed beta, NSIS installer) |
-| Android arm64 | `0.0.1` | Pre-release (debug APK, capabilities still being filled in) |
+
+> [!NOTE]
+> Android is still being adapted and ships no installer in this release; the CI APK job is disabled for now (see the `release` workflow comment for how to re-enable it).
 
 
 > [!NOTE]
@@ -105,7 +107,7 @@ Always get builds from this repository's [Releases](https://github.com/copper-la
 ## Known Limitations
 
 - The project is in early development; the interface and capabilities are actively changing and do not represent the final form. Pre-release builds may introduce incompatible changes.
-- The desktop build supports Windows x64 Bedrock only; Android ships as a debug APK and is not a supported platform yet; Linux has CI build artifacts but its launch path is not adapted yet; no macOS builds.
+- The desktop build supports Windows x64 Bedrock only; Android is still being adapted and ships no artifact in this release (the CI APK job is disabled); Linux has CI build artifacts but its launch path is not adapted yet; no macOS builds.
 - Addon modules cannot be installed from the launcher yet; dynamic loading is still in development.
 - End-to-end install verification with real Windows Store accounts is limited, so diagnosing abnormal account states still relies on user logs.
 - Compatibility may need to be re-verified after Minecraft or system updates.

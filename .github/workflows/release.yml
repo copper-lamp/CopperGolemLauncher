@@ -64,8 +64,14 @@ jobs:
   #
   # 与桌面版共用同一个草稿 Release：两个 job 用同一个 tagName，谁先到谁建，
   # 后到的把文件追加进去；`gh release upload --clobber` 保证重跑不冲突。
+  #
+  # 暂时禁用（2026-11-01）：CI 的 `tauri android build` 长期在「打包 Android APK」
+  # 失败（build 与 release 两个工作流都一样），根因尚未定位；Android 目前也不作为
+  # 正式支持平台。为保证每次发版的结论干净（Windows 成功即成功），先把该 job 关掉。
+  # 恢复方式：删掉下面的 `if: false`，并先确认本机 `build-apk.cmd` 能出包。
   android:
     name: Android APK
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
