@@ -1,14 +1,18 @@
 <script setup lang="ts">
-// 开始页 · 简洁模式：页面中央竖直排版 文案 → 版本名 → 主按钮 → 版本设置。
-// 主按钮上方是版本名，下方是版本设置；启动确认期间主按钮内嵌环形进度，
-// 按钮下方补一条随机提示，避免「点了没反应」的空白等待。
-// 左上角为 简洁 / 默认 模式切换；默认模式（Win10 磁贴风格）本次不实现，展示占位。
+// 开始页 · 简洁模式（V3）：欢迎语 + 胶囊操作条。
 //
-// 多个版本时版本名以选择器呈现（核心功能「选择版本」），否则仅显示版本名。
+// - 欢迎语共 20 条，按本地时间每 6 小时换一条：用「当前时刻 / 6h」取槽位，
+//   不需要持久化，也不会因为重启而跳回第一条；分钟级定时器只负责跨槽时刷新。
+// - 胶囊操作条：左侧版本选择（单版本时退化为纯文本），右侧「详情」与「启动」。
+//   版本选择即当前实例，必须落盘（content download 的落点取自它）。
+// - 启动中在操作条下方显示内核随机提示；运行中主按钮变为「退出游戏」。
+// - 默认模式（磁贴 / 拖拽容器）尚未实现，保持占位。
+//
+// 布局交给 CoPage：本页不写 padding / overflow，简单模式内部再撑满高度居中。
 
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { Play, Gamepad2, Download, Square } from "@lucide/vue";
+import { Play, Download, Square, Settings2 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -27,6 +31,7 @@ import CoButton from "../../components/ui/CoButton.vue";
 import CoRingProgress from "../../components/ui/CoRingProgress.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
+import CoPage from "../../components/layout/CoPage.vue";
 import {
   homeGameKill,
   homeLaunch,
@@ -37,13 +42,20 @@ import { onVersionInstalled, onVersionRemoved, onVersionsChanged } from "../../e
 
 type HomeMode = "simple" | "default";
 
+/** 欢迎语条数与轮换周期。 */
+const WELCOME_COUNT = 20;
+const WELCOME_PERIOD_MS = 6 * 60 * 60 * 1000;
+const WELCOME_TICK_MS = 60 * 1000;
+
 const { t } = useI18n();
 const router = useRouter();
 
-const mode = ref<HomeMode>("simple");
+const settings = useSettings();
+const mode = ref<HomeMode>(
+  settings.get<string>("home.mode", "simple") === "default" ? "default" : "simple",
+);
 const versions = ref<VersionView[]>([]);
 const selectedName = ref("");
-const settings = useSettings();
 const loading = ref(true);
 const {
   account,
@@ -68,12 +80,38 @@ const modeOptions = computed(() => [
   { value: "default", label: t("module.home.mode.default") },
 ]);
 
+// 模式落盘：下次打开保持用户上次的选择。
+watch(mode, (value) => {
+  if (settings.get<string>("home.mode", "simple") !== value) {
+    void settings.set("home.mode", value);
+  }
+});
+
+// ---------------------------------------------------------------- 欢迎语轮换
+//
+// 槽位按**本地时间**对齐：先补上时区偏移再取整，否则 UTC 对齐会让中国用户的
+// 换句时刻落在 02:00 / 08:00 / 14:00 / 20:00，与「每 6 小时」的直觉不符。
+const nowTick = ref(Date.now());
+let welcomeTimer: number | undefined;
+
+const welcomeIndex = computed(() => {
+  const offset = -new Date().getTimezoneOffset() * 60 * 1000;
+  return Math.floor((nowTick.value + offset) / WELCOME_PERIOD_MS) % WELCOME_COUNT;
+});
+
+/** 未登录时用一个中性称呼，避免文案里出现空名字。 */
+const playerName = computed(
+  () => account.value?.gamertag?.trim() || t("module.home.welcome.friend"),
+);
+
+const welcome = computed(() =>
+  t(`module.home.welcome.${welcomeIndex.value}`, { name: playerName.value }),
+);
+
 /** 当前版本（多版本时可经选择器切换）。 */
 const current = computed(() => {
   if (!selectedName.value) return null;
-  return (
-    versions.value.find((v) => v.name === selectedName.value) ?? null
-  );
+  return versions.value.find((v) => v.name === selectedName.value) ?? null;
 });
 
 const versionOptions = computed(() =>
@@ -99,6 +137,9 @@ const primaryLabel = computed(() => {
 });
 
 onMounted(async () => {
+  welcomeTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, WELCOME_TICK_MS);
   await refresh();
   void syncSessionState(selectedName.value);
   // 版本安装 / 删除事件直达刷新，无需重启。
@@ -114,6 +155,10 @@ let unlisten: Array<() => void> = [];
 onUnmounted(() => {
   unlisten.forEach((u) => u());
   unlisten = [];
+  if (welcomeTimer !== undefined) {
+    window.clearInterval(welcomeTimer);
+    welcomeTimer = undefined;
+  }
 });
 
 async function refresh() {
@@ -199,107 +244,118 @@ function goDownload() {
 </script>
 
 <template>
-  <div class="home-page">
-    <div v-if="showAccountBanner" class="home-page__account">
-      <span>{{ accountBannerText }}</span>
-      <CoButton
-        variant="primary"
-        size="sm"
-        :disabled="loginWaiting"
-        @click="handleAccountBanner"
-      >
-        {{ t("account.store_sign_in") }}
-      </CoButton>
-    </div>
+  <CoPage :scroll="false">
+    <div class="home-simple">
+      <div v-if="showAccountBanner" class="home-simple__account">
+        <span>{{ accountBannerText }}</span>
+        <CoButton
+          variant="primary"
+          size="sm"
+          :disabled="loginWaiting"
+          @click="handleAccountBanner"
+        >
+          {{ t("account.store_sign_in") }}
+        </CoButton>
+      </div>
 
-    <!--
-      模式切换注入全局标题栏操作区。
-      必须 `defer`：内嵌资源（release / custom-protocol）下路由分包已在本地，
-      HomePage 会和外壳在同一次渲染里挂载，此时标题栏还没插进文档，
-      Teleport 找不到目标 → 整棵 vnode 树损坏（首页永远停在加载态）。
-      `defer` 把目标解析推迟到本次渲染结束后，等价于「只晚一个 tick」。
-    -->
-    <Teleport defer to="#copper-titlebar-actions">
-      <CoSegmented v-model="mode" :options="modeOptions" />
-    </Teleport>
+      <!--
+        模式切换注入全局标题栏操作区。
+        必须 `defer`：内嵌资源（release / custom-protocol）下路由分包已在本地，
+        HomePage 会和外壳在同一次渲染里挂载，此时标题栏还没插进文档，
+        Teleport 找不到目标 → 整棵 vnode 树损坏（首页永远停在加载态）。
+        `defer` 把目标解析推迟到本次渲染结束后，等价于「只晚一个 tick」。
+      -->
+      <Teleport defer to="#copper-titlebar-actions">
+        <CoSegmented v-model="mode" :options="modeOptions" />
+      </Teleport>
 
-    <!-- 默认模式占位（后续阶段实现） -->
-    <div v-if="mode === 'default'" class="home-page__default-placeholder">
-      <Gamepad2 :size="40" :stroke-width="1.5" />
-      <p>{{ t("module.home.mode.default_placeholder") }}</p>
-    </div>
+      <!-- 默认模式占位（后续阶段实现） -->
+      <div v-if="mode === 'default'" class="home-simple__placeholder">
+        <p>{{ t("module.home.mode.default_placeholder") }}</p>
+      </div>
 
-    <!-- 简洁模式 -->
-    <div v-else class="home-page__simple">
-      <template v-if="loading">
-        <p class="home-page__hint">{{ t("common.loading") }}</p>
-        <!-- 版本清单扫描期间展示内核随机提示，避免空白等待 -->
-        <TipsRotator compact />
-      </template>
+      <div v-else class="home-simple__center">
+        <template v-if="loading">
+          <p class="home-simple__hint">{{ t("common.loading") }}</p>
+          <!-- 版本清单扫描期间展示内核随机提示，避免空白等待 -->
+          <TipsRotator compact />
+        </template>
 
-      <template v-else-if="!current">
-        <h1 class="home-page__hero">{{ t("module.home.hero_title") }}</h1>
-        <p class="home-page__empty">{{ t("module.home.empty") }}</p>
-        <p class="home-page__hint">{{ t("module.home.install_hint") }}</p>
-        <div class="home-page__actions">
+        <template v-else-if="!current">
+          <h1 class="home-simple__welcome">{{ welcome }}</h1>
+          <p class="home-simple__empty">{{ t("module.home.empty") }}</p>
+          <p class="home-simple__hint">{{ t("module.home.install_hint") }}</p>
           <CoButton variant="primary" size="md" @click="goDownload">
             <Download :size="16" />
             <span>{{ t("module.home.go_download") }}</span>
           </CoButton>
-        </div>
-      </template>
+        </template>
 
-      <template v-else>
-        <h1 class="home-page__hero">{{ t("module.home.hero_title") }}</h1>
-        <div class="home-page__version">
-          <CoSelect
-            v-if="versionOptions.length > 1"
-            v-model="selectedName"
-            :options="versionOptions"
-            class="home-page__version-select"
-          />
-          <span v-else class="home-page__version-name">{{ current.name }}</span>
-        </div>
-        <div class="home-page__actions">
-          <CoButton
-            class="home-page__primary"
-            :variant="running ? 'danger' : 'primary'"
-            size="md"
-            :disabled="launching || stopping"
-            @click="onPrimaryClick"
-          >
-            <CoRingProgress v-if="launching" :size="16" :stroke="2" />
-            <Square v-else-if="running" :size="14" />
-            <Play v-else :size="16" />
-            <span>{{ primaryLabel }}</span>
-          </CoButton>
-          <CoButton variant="ghost" size="md" @click="openVersionSettings">
-            {{ t("module.home.settings") }}
-          </CoButton>
-        </div>
-        <!-- 启动确认期间在按钮下方给一条提示：这段时间可达数十秒，不能留白 -->
-        <TipsRotator v-if="launching" compact />
-      </template>
+        <template v-else>
+          <h1 class="home-simple__welcome">{{ welcome }}</h1>
+
+          <!-- 胶囊操作条：左版本选择，右详情 + 启动 -->
+          <div class="home-simple__bar">
+            <div class="home-simple__version">
+              <CoSelect
+                v-if="versionOptions.length > 1"
+                v-model="selectedName"
+                :options="versionOptions"
+                class="home-simple__version-select"
+              />
+              <span v-else class="home-simple__version-name" :title="current.name">
+                {{ current.name }}
+              </span>
+            </div>
+
+            <div class="home-simple__actions">
+              <button
+                type="button"
+                class="home-simple__detail"
+                @click="openVersionSettings"
+              >
+                <Settings2 :size="15" />
+                <span>{{ t("module.home.detail") }}</span>
+              </button>
+              <CoButton
+                class="home-simple__play"
+                :variant="running ? 'danger' : 'primary'"
+                size="md"
+                :disabled="launching || stopping"
+                @click="onPrimaryClick"
+              >
+                <CoRingProgress v-if="launching" :size="15" :stroke="2" />
+                <Square v-else-if="running" :size="13" />
+                <Play v-else :size="15" />
+                <span>{{ primaryLabel }}</span>
+              </CoButton>
+            </div>
+          </div>
+
+          <!-- 启动确认期间在操作条下方给一条提示：这段时间可达数十秒，不能留白 -->
+          <TipsRotator v-if="launching" compact />
+        </template>
+      </div>
     </div>
-  </div>
+  </CoPage>
 </template>
 
 <style scoped>
-.home-page {
+.home-simple {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  overflow-y: auto;
+  padding-top: var(--copper-space-4);
 }
 
-.home-page__account {
+.home-simple__account {
   display: flex;
   align-items: center;
   gap: var(--copper-space-3);
   max-width: 640px;
-  margin: 0 var(--copper-space-4) var(--copper-space-4);
+  margin-bottom: var(--copper-space-4);
   padding: var(--copper-space-2) var(--copper-space-3) var(--copper-space-2)
     var(--copper-space-4);
   border: 1px solid var(--copper-border);
@@ -309,82 +365,130 @@ function goDownload() {
   font-size: var(--copper-font-size-sm);
 }
 
-.home-page__simple {
+/* 欢迎语与操作条整体在剩余高度里居中。 */
+.home-simple__center {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: var(--copper-space-4);
-  padding: var(--copper-space-6);
-  max-width: 480px;
-}
-
-.home-page__hero {
-  font-size: 28px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.home-page__version {
-  min-height: var(--copper-control-h);
-  display: flex;
   align-items: center;
   justify-content: center;
+  gap: var(--copper-space-5);
+  padding-bottom: var(--copper-space-6);
 }
 
-.home-page__version-name {
-  color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-lg);
+.home-simple__welcome {
+  max-width: 640px;
+  padding: 0 var(--copper-space-4);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  text-align: center;
 }
 
-.home-page__version-select :deep(select) {
-  background: transparent;
-  border-color: transparent;
-  color: var(--copper-text-secondary);
+/* 胶囊操作条：版本选择在左，动作在右；整条宽度有限，避免拉满窗口。 */
+.home-simple__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--copper-space-3);
+  width: min(560px, 100%);
+  padding: 6px;
+  padding-left: var(--copper-space-4);
+  border: 1px solid var(--copper-border);
+  border-radius: var(--copper-radius-full);
+  background: var(--copper-surface);
+  box-shadow: var(--copper-shadow-subtle);
+}
+
+.home-simple__version {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.home-simple__version-name {
+  overflow: hidden;
+  color: var(--copper-text);
   font-size: var(--copper-font-size-lg);
   font-weight: 500;
-  height: calc(var(--copper-control-h) + 4px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.home-page__actions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--copper-space-2);
-  margin-top: var(--copper-space-2);
-}
-
-/* 主按钮在竖排里独占一行，「版本设置」紧随其下。 */
-.home-page__actions .home-page__primary {
-  min-width: 160px;
-  height: 44px;
+/* 版本选择也做成胶囊：去掉原生 select 的边框与底色，只留文字与箭头。 */
+.home-simple__version-select :deep(.co-select select) {
+  height: 40px;
+  padding-right: var(--copper-space-5);
+  border-color: transparent;
+  border-radius: var(--copper-radius-full);
+  background: transparent;
+  color: var(--copper-text);
   font-size: var(--copper-font-size-lg);
-  border-radius: var(--copper-radius-lg);
+  font-weight: 500;
 }
 
-.home-page__actions .home-page__primary.co-btn--primary {
-  box-shadow: 0 4px 18px color-mix(in srgb, var(--copper-accent) 35%, transparent);
+.home-simple__version-select :deep(.co-select select:hover) {
+  background: var(--copper-hover);
 }
 
-.home-page__empty-icon {
-  color: var(--copper-text-disabled);
+.home-simple__actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-1);
 }
 
-.home-page__empty {
+.home-simple__detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 var(--copper-space-3);
+  border: none;
+  border-radius: var(--copper-radius-full);
+  background: transparent;
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.home-simple__detail:hover {
+  background: var(--copper-hover);
+  color: var(--copper-text);
+}
+
+.home-simple__play {
+  height: 40px;
+  padding: 0 var(--copper-space-5);
+  border-radius: var(--copper-radius-full);
+  font-size: var(--copper-font-size-md);
+  font-weight: 600;
+}
+
+.home-simple__empty {
   color: var(--copper-text-secondary);
   text-align: center;
 }
 
-.home-page__hint {
+.home-simple__hint {
   color: var(--copper-text-disabled);
   font-size: var(--copper-font-size-sm);
   text-align: center;
 }
 
-.home-page__default-placeholder {
+.home-simple__placeholder {
+  flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: var(--copper-space-3);
+  justify-content: center;
   color: var(--copper-text-secondary);
 }
 </style>
