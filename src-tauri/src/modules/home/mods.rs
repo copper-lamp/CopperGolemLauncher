@@ -765,8 +765,131 @@ fn to_view(dir: &Path, folder: String, manifest: ModManifest, enabled: bool) -> 
     }
 }
 
+// ---------------------------------------------------------------- 更新检查
+
+/// 一个可更新的模组。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ModUpdateView {
+    /// 模组文件夹名（与 `ModView.folder` 对齐）。
+    pub folder: String,
+    /// 目录里的最新版本号（仅用于提示，不代替用户确认）。
+    pub latest_version: String,
+}
+
+/// 检查可更新的模组。
+///
+/// 只有**来自内容目录**的模组才有更新来源：下载记录里存着安装时的目录版本与跨源 id，
+/// 拿它查一次目录详情就能对比出有没有新版本。手动导入的 ZIP / DLL 没有来源信息，
+/// 这里直接跳过 —— 不联网、不猜、不误报。
+///
+/// 返回的是"有更新"的模组子集；调用方按 `folder` 匹配即可。
+pub async fn check_updates(
+    kernel: &KernelContext,
+    name: &str,
+) -> Result<Vec<ModUpdateView>, KernelError> {
+    let mods = list_mods(kernel, name)?.mods;
+    if mods.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 记录读不到（数据库异常）时按"没有来源"处理：不阻断开始页。
+    let records = crate::modules::content_download::records(kernel).unwrap_or_default();
+    let mut out = Vec::new();
+    for view in mods {
+        let mod_path = Path::new(&view.path);
+        let Some(record) = records.iter().find(|record| {
+            record.state == "installed" && record_covers(record.dest.as_deref(), mod_path)
+        }) else {
+            continue;
+        };
+        let Ok(detail) =
+            crate::modules::content_download::ContentDownloadModule::detail(kernel, &record.id).await
+        else {
+            // 单个模组查询失败不影响其它模组：网络抖动不该把整块徽标打没。
+            continue;
+        };
+        let Some(latest) = newest_version(&detail.files) else {
+            continue;
+        };
+        if latest == record.version {
+            continue;
+        }
+        out.push(ModUpdateView {
+            folder: view.folder,
+            latest_version: latest,
+        });
+    }
+    Ok(out)
+}
+
+/// 下载记录的落点是否就是该模组目录（或其内部）。
+///
+/// 安卓目录源的落点是 `<版本>/mods/<modId>`，与模组文件夹一一对应；
+/// 只做"等于或包含在内"的判断，绝不反向匹配，免得把 `mods/` 根目录的记录算到每个模组上。
+fn record_covers(dest: Option<&str>, mod_path: &Path) -> bool {
+    let Some(dest) = dest else {
+        return false;
+    };
+    let dest = Path::new(dest);
+    dest == mod_path || dest.starts_with(mod_path)
+}
+
+/// 版本号里的数字段，用于自然序比较（`1.10 > 1.2`，`v1.2` 与 `1.2` 等价）。
+fn version_parts(version: &str) -> Vec<u64> {
+    version
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<u64>().unwrap_or(u64::MAX))
+        .collect()
+}
+
+/// 目录里的最新版本号；全部为空时返回 `None`（不把空版本当成新版本）。
+/// 一组版本号里的最新者；全部为空时返回 None（不把空版本当成新版本）。
+fn newest_of_versions(versions: &[String]) -> Option<String> {
+    versions
+        .iter()
+        .filter(|version| !version.trim().is_empty())
+        .max_by(|a, b| version_parts(a).cmp(&version_parts(b)))
+        .cloned()
+}
+
+/// 目录里的最新版本号。
+fn newest_version(files: &[crate::modules::content_download::model::ContentFile]) -> Option<String> {
+    let versions: Vec<String> = files.iter().map(|file| file.version.clone()).collect();
+    newest_of_versions(&versions)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn version_parts_compare_naturally() {
+        assert!(version_parts("1.10.0") > version_parts("1.2.9"));
+        assert_eq!(version_parts("v1.2"), version_parts("1.2"));
+        assert!(version_parts("2.0.0-beta") > version_parts("1.9.9"));
+    }
+
+    #[test]
+    fn picks_the_newest_non_empty_version() {
+        let versions = vec![
+            "1.0.0".to_string(),
+            String::new(),
+            "1.2.0".to_string(),
+            "1.1.9".to_string(),
+        ];
+        assert_eq!(newest_of_versions(&versions).as_deref(), Some("1.2.0"));
+        assert_eq!(newest_of_versions(&[]), None);
+        assert_eq!(newest_of_versions(&[String::new()]), None);
+    }
+
+    #[test]
+    fn record_matches_only_its_own_mod_folder() {
+        let mod_path = Path::new("/v/inst/mods/alpha");
+        assert!(record_covers(Some("/v/inst/mods/alpha"), mod_path));
+        assert!(record_covers(Some("/v/inst/mods/alpha/file.dll"), mod_path));
+        assert!(!record_covers(Some("/v/inst/mods/beta"), mod_path));
+        assert!(!record_covers(Some("/v/inst/mods"), mod_path));
+        assert!(!record_covers(None, mod_path));
+    }
     use super::*;
     use std::io::Cursor;
 

@@ -75,7 +75,10 @@ export interface DashboardEntry {
   name: string;
   version: string;
   detail: string;
+  /** 封面（`images` 的第一张）；服务器为 null。 */
   image_data_url: string | null;
+  /** 该条目全部可用预览图；服务器为空数组。 */
+  images: string[];
 }
 
 /** 跨实例扫描本地世界与外部服务器。 */
@@ -224,6 +227,22 @@ export interface ModListResult {
 /** 模组清单。 */
 export function homeModsList(name: string): Promise<ModListResult> {
   return call<ModListResult>("home_mods_list", { name });
+}
+
+/** 可更新的模组（只有来自内容目录、且目录里有更新版本的模组会返回）。 */
+export interface ModUpdate {
+  folder: string;
+  latest_version: string;
+}
+
+/**
+ * 检查可更新的模组。
+ *
+ * 手动导入的 ZIP / DLL 没有来源信息，不会出现在结果里；调用方按 `folder` 匹配清单即可。
+ * 这是**网络请求**，列表应先渲染再补徽标。
+ */
+export function homeModsUpdates(name: string): Promise<ModUpdate[]> {
+  return call<ModUpdate[]>("home_mods_updates", { name });
 }
 
 /** 从 ZIP 导入模组；重名且未显式覆盖时抛 `KernelApiError`（`kind === "conflict"`）。 */

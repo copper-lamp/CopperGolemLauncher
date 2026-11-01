@@ -38,8 +38,12 @@ pub struct DashboardEntry {
     pub version: String,
     /// 附加说明：世界用目录名，服务器用 `地址:端口`。
     pub detail: String,
-    /// 世界封面（`data:image/...;base64,...`）；服务器没有封面。
+    /// 世界封面（`data:image/...;base64,...`，等于 `images` 的第一张）；服务器没有封面。
     pub image_data_url: Option<String>,
+    /// 该条目可用的全部预览图（官方图标在前，其后是用户自己放进世界目录的图片）。
+    ///
+    /// 前端「切换预览图」按这个列表循环；服务器没有预览图，为空数组。
+    pub images: Vec<String>,
 }
 
 /// 扫描全部实例的世界与服务器。单个实例失败只跳过它，不影响其它实例。
@@ -74,13 +78,15 @@ fn collect_worlds(worlds: &Path, version: &str, out: &mut Vec<DashboardEntry>) {
         let Some(name) = world_name(&path) else {
             continue;
         };
+        let images = world_images(&path);
         out.push(DashboardEntry {
             id: format!("world:{version}:{folder}"),
             kind: DashboardKind::World,
             name,
             version: version.to_string(),
             detail: folder.clone(),
-            image_data_url: world_icon(&path),
+            image_data_url: images.first().cloned(),
+            images,
         });
     }
 }
@@ -98,21 +104,67 @@ fn world_name(dir: &Path) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
-fn world_icon(dir: &Path) -> Option<String> {
-    for (file, mime) in [
-        ("world_icon.jpeg", "image/jpeg"),
-        ("world_icon.png", "image/png"),
-    ] {
-        let Ok(raw) = std::fs::read(dir.join(file)) else {
-            continue;
-        };
-        if raw.is_empty() {
-            continue;
-        }
-        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
-        return Some(format!("data:{mime};base64,{b64}"));
+/// 单个预览图的体积上限：图片要经 IPC 以 data URL 送到前端，
+/// 大图会拖慢整个列表的首屏。
+const MAX_IMAGE_BYTES: u64 = 1_500_000;
+/// 每个世界最多收集的预览图数量（官方图标 + 用户自备图片）。
+const MAX_IMAGES: usize = 8;
+
+/// 按扩展名判定图片 MIME；不认识的后缀返回 `None`（不猜）。
+fn image_mime(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        Some("image/png")
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if lower.ends_with(".webp") {
+        Some("image/webp")
+    } else {
+        None
     }
-    None
+}
+
+fn encode_image(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let mime = image_mime(path.file_name()?.to_str()?)?;
+    let raw = std::fs::read(path).ok()?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+    Some(format!("data:{mime};base64,{b64}"))
+}
+
+/// 世界的全部预览图：官方图标优先，其次是用户自己丢进世界目录的图片。
+///
+/// 顺序固定（官方图标 → 其余按文件名排序），「切换预览图」才能稳定地循环，
+/// 不会因为目录遍历顺序变化而每次点出来都不一样。
+fn world_images(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for fixed in ["world_icon.jpeg", "world_icon.png"] {
+        if dir.join(fixed).is_file() {
+            names.push(fixed.to_string());
+        }
+    }
+    if let Ok(read) = std::fs::read_dir(dir) {
+        let mut extra: Vec<String> = read
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .filter(|name| image_mime(name).is_some())
+            .filter(|name| {
+                !name.eq_ignore_ascii_case("world_icon.jpeg")
+                    && !name.eq_ignore_ascii_case("world_icon.png")
+            })
+            .collect();
+        extra.sort_by_key(|name| name.to_ascii_lowercase());
+        names.extend(extra);
+    }
+    names.truncate(MAX_IMAGES);
+    names
+        .iter()
+        .filter_map(|name| encode_image(&dir.join(name)))
+        .collect()
 }
 
 fn collect_servers(com_mojang: &Path, version: &str, out: &mut Vec<DashboardEntry>) {
@@ -127,6 +179,7 @@ fn collect_servers(com_mojang: &Path, version: &str, out: &mut Vec<DashboardEntr
             version: version.to_string(),
             detail: format!("{}:{}", server.address, server.port),
             image_data_url: None,
+            images: Vec::new(),
         });
     }
 }
@@ -212,6 +265,39 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].port, 19132);
         assert_eq!(list[0].address, "mc.example.com");
+    }
+
+    #[test]
+    fn maps_image_extensions_to_mime() {
+        assert_eq!(image_mime("a.PNG"), Some("image/png"));
+        assert_eq!(image_mime("b.jpg"), Some("image/jpeg"));
+        assert_eq!(image_mime("c.jpeg"), Some("image/jpeg"));
+        assert_eq!(image_mime("d.webp"), Some("image/webp"));
+        assert_eq!(image_mime("level.dat"), None);
+    }
+
+    #[test]
+    fn world_images_puts_the_official_icon_first() {
+        let dir = std::env::temp_dir().join(format!("cgl-dash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("world_icon.png"), b"\x89PNG").unwrap();
+        std::fs::write(dir.join("a-screenshot.png"), b"\x89PNG").unwrap();
+        std::fs::write(dir.join("level.dat"), b"nope").unwrap();
+
+        let images = world_images(&dir);
+        assert_eq!(images.len(), 2);
+        assert!(images[0].starts_with("data:image/png;base64,"));
+        // 官方图标在前，其余按文件名排序。
+        let _ = images;
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"level.dat".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

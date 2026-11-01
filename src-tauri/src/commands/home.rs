@@ -204,6 +204,19 @@ pub fn home_controls_save(
     controls::save(kernel.inner(), &name, &layout).map_err(into_command_error)
 }
 
+/// 可更新的模组：只有来自内容目录、且目录里有更新版本的模组会出现在结果里。
+///
+/// 手动导入的 ZIP / DLL 没有来源信息，永远不会被判定为"可更新"。
+#[tauri::command]
+pub async fn home_mods_updates(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<Vec<mods::ModUpdateView>> {
+    mods::check_updates(kernel.inner(), &name)
+        .await
+        .map_err(into_command_error)
+}
+
 // ---------------------------------------------------------------- 模组管理
 
 /// 模组清单（附带缺少清单被跳过的目录数）。

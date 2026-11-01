@@ -484,6 +484,7 @@ pub fn run() {
             commands::home::home_controls_get,
             commands::home::home_controls_save,
             commands::home::home_mods_list,
+            commands::home::home_mods_updates,
             commands::home::home_mods_import_zip,
             commands::home::home_mods_import_dll,
             commands::home::home_mods_set_enabled,
