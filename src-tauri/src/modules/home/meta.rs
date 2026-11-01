@@ -168,6 +168,14 @@ pub struct VersionMeta {
     /// 必须跟着实例目录走。字段是可选的，旧 `version.json` 与 LeviLauncher 均不受影响。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loader: Option<String>,
+    /// 实例模式：`original`（原版，只保留 hook）/ `levi`（LeviLamina）/ `client`（注入指定 DLL）。
+    ///
+    /// 空串按旧数据推导：有 loader 视为 `levi`，否则 `original`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// 客户端模式要注入的 DLL 绝对路径；其它模式为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_dll: Option<String>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]

@@ -24,6 +24,10 @@ export interface VersionView {
   registered: boolean;
   /** 该实例已安装的加载器版本；null = 未装。 */
   loader: string | null;
+  /** 实例模式：original / levi / client（旧实例按 loader 推导）。 */
+  mode: string;
+  /** 客户端模式注入的 DLL 路径。 */
+  client_dll: string | null;
   logo_data_url: string | null;
   /** 版本目录绝对路径（打开文件夹用）。 */
   folder: string;
@@ -33,6 +37,8 @@ export interface VersionView {
 export interface VersionMetaUpdate {
   enable_editor_mode?: boolean;
   enable_console?: boolean;
+  mode?: string;
+  client_dll?: string;
   launch_args?: string;
   env_vars?: string;
 }

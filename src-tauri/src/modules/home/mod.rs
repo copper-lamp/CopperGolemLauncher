@@ -80,6 +80,10 @@ pub struct VersionView {
     pub registered: bool,
     /// 该实例已安装的加载器版本（`None` = 未装）。
     pub loader: Option<String>,
+    /// 实例模式：`original` / `levi` / `client`（旧实例按 loader 推导）。
+    pub mode: String,
+    /// 客户端模式要注入的 DLL 路径。
+    pub client_dll: Option<String>,
     pub logo_data_url: Option<String>,
     /// 版本目录绝对路径（前端打开文件夹用）。
     pub folder: String,
@@ -91,6 +95,10 @@ pub struct VersionView {
 pub struct VersionMetaUpdate {
     pub enable_editor_mode: Option<bool>,
     pub enable_console: Option<bool>,
+    /// 实例模式切换。
+    pub mode: Option<String>,
+    /// 客户端 DLL 路径；空串表示清除。
+    pub client_dll: Option<String>,
     pub launch_args: Option<String>,
     pub env_vars: Option<String>,
 }
@@ -188,6 +196,20 @@ impl HomeModule {
         }
         if let Some(v) = &update.env_vars {
             meta.env_vars = v.clone();
+        }
+        if let Some(v) = &update.mode {
+            if !matches!(v.as_str(), "original" | "levi" | "client") {
+                return Err(KernelError::InvalidArgument(format!("未知实例模式 `{v}`")));
+            }
+            meta.mode = Some(v.clone());
+            // 切出客户端模式时清掉旧 DLL，避免下次切回来悄悄注入上次的路径。
+            if v != "client" {
+                meta.client_dll = None;
+            }
+        }
+        if let Some(v) = &update.client_dll {
+            let trimmed = v.trim();
+            meta.client_dll = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
         // 隔离强制开启：无论元数据里写的是什么，落盘的都是 true。
         isolate::enforce_isolation(&mut meta);
@@ -312,6 +334,18 @@ impl HomeModule {
 }
 
 /// 构建前端视图（附带图标 data URL、加载器与目录路径）。
+/// 实例有效模式：显式字段优先，旧数据按是否装了加载器推导。
+fn effective_mode(meta: &VersionMeta) -> String {
+    if let Some(mode) = meta.mode.as_deref().filter(|m| !m.is_empty()) {
+        return mode.to_string();
+    }
+    if meta.loader.is_some() {
+        "levi".to_string()
+    } else {
+        "original".to_string()
+    }
+}
+
 fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
     let dir = root.join(&meta.name);
     VersionView {
@@ -325,6 +359,8 @@ fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
         enable_console: meta.enable_console,
         registered: meta.registered,
         loader: meta.loader.clone(),
+        mode: effective_mode(&meta),
+        client_dll: meta.client_dll.clone(),
         logo_data_url: meta::logo_data_url(&dir),
         folder: dir.to_string_lossy().into_owned(),
     }
