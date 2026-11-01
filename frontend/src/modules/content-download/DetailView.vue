@@ -23,6 +23,8 @@ import {
   FileDigit,
   Link2,
   ChevronRight,
+  Menu,
+  Send,
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -135,6 +137,12 @@ async function buildToc() {
   onScroll();
   spyOff = () => scroller.removeEventListener("scroll", onScroll);
 }
+
+/** 当前小节在目录里的序号（纸飞机与"已点亮轨道"的依据）。 */
+const activeOrder = computed(() => {
+  const index = tocFlat.value.findIndex((item) => item.id === activeId.value);
+  return index < 0 ? -1 : index;
+});
 
 function goToHeading(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -739,20 +747,30 @@ let unlistenLocation: () => void = () => {};
         </section>
       </template>
       <template #aside>
-        <!-- 钩子导航：正文标题的层级目录，钩子在右、文字右对齐 -->
-        <div v-if="tocFlat.length" class="cd-toc">
-          <h2 class="cd-toc__title">{{ t(`${KB}.toc`) }}</h2>
-          <nav class="cd-toc__nav">
+        <!-- 轨道式目录：虚线轨道 + 节点 + 当前小节箭头，层级靠节点缩进与横向虚线表达 -->
+        <div v-if="tocFlat.length" class="rail-toc">
+          <div class="rail-toc__head">
+            <Menu :size="15" />
+            <span>{{ t(`${KB}.onThisPage`) }}</span>
+          </div>
+          <nav class="rail-toc__nav">
             <button
-              v-for="item in tocFlat"
+              v-for="(item, order) in tocFlat"
               :key="item.id"
               type="button"
-              class="cd-toc__item"
-              :class="{ 'is-active': activeId === item.id }"
-              :style="{ paddingRight: 12 + item.level * 10 + 'px' }"
+              class="rail-toc__item"
+              :class="{
+                'is-active': activeId === item.id,
+                'is-passed': order <= activeOrder,
+              }"
+              :style="{ '--depth': item.level }"
               @click="goToHeading(item.id)"
             >
-              {{ item.text }}
+              <span class="rail-toc__rail" aria-hidden="true" />
+              <span class="rail-toc__node" aria-hidden="true" />
+              <span class="rail-toc__text">{{ item.text }}</span>
+              <!-- 纸飞机：停在当前阅读的章节上，滚动时沿轨道上下移动 -->
+              <Send v-if="activeId === item.id" :size="15" class="rail-toc__plane" />
             </button>
           </nav>
         </div>
@@ -1650,4 +1668,126 @@ let unlistenLocation: () => void = () => {};
 .cd-detail--no-toc :deep(.co-split__aside) {
   display: none;
 }
+
+/* ---------------------------------------------------------------- 轨道式目录 */
+/*
+ * 参照 Rare UI 的 rail-toc：左侧一条轨道，章节节点挂在轨道上，层级越深节点越向内缩、
+ * 用一段横向短虚线接回轨道；当前章节由一枚纸飞机标记，读过的轨道从虚线变实线。
+ */
+.rail-toc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-3);
+  padding-top: var(--copper-space-2);
+}
+
+.rail-toc__head {
+  display: flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+  color: var(--copper-text);
+  font-size: var(--copper-font-size-md);
+  font-weight: 600;
+}
+
+.rail-toc__nav {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-toc__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  line-height: 1.45;
+  text-align: left;
+  padding: 6px 8px 6px calc(26px + var(--depth, 0) * 16px);
+  cursor: pointer;
+  transition: color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.rail-toc__item:hover {
+  color: var(--copper-text);
+}
+
+.rail-toc__item.is-active {
+  color: var(--copper-text);
+  font-weight: 600;
+}
+
+/* 轨道：每行一段竖线，横坐标随层级内缩。 */
+.rail-toc__rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(10px + var(--depth, 0) * 16px);
+  border-left: 1px dashed var(--copper-border);
+}
+
+/* 读过的部分点亮成实线（纸飞机飞过的地方）。 */
+.rail-toc__item.is-passed .rail-toc__rail {
+  border-left-style: solid;
+  border-left-color: color-mix(in srgb, var(--copper-text) 45%, transparent);
+}
+
+/* 层级折角：内缩那一层用一段横虚线接回轨道。 */
+.rail-toc__item::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  width: calc(var(--depth, 0) * 16px);
+  border-top: 1px dashed var(--copper-border);
+}
+
+.rail-toc__item.is-passed::before {
+  border-top-style: solid;
+  border-top-color: color-mix(in srgb, var(--copper-text) 45%, transparent);
+}
+
+/* 节点：骑在轨道上的小圆点。 */
+.rail-toc__node {
+  position: absolute;
+  top: 50%;
+  left: calc(6.5px + var(--depth, 0) * 16px);
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  border: 1px solid var(--copper-border);
+  border-radius: 50%;
+  background: var(--copper-bg);
+}
+
+.rail-toc__item.is-passed .rail-toc__node {
+  border-color: color-mix(in srgb, var(--copper-text) 45%, transparent);
+}
+
+/* 纸飞机：当前章节的游标，停在这一行的轨道上。 */
+.rail-toc__plane {
+  position: absolute;
+  left: calc(2px + var(--depth, 0) * 16px);
+  top: 50%;
+  transform: translateY(-50%) rotate(-45deg);
+  color: var(--copper-accent);
+  animation: rail-plane-in 240ms var(--copper-easing);
+}
+
+@keyframes rail-plane-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) rotate(-45deg) scale(0.7);
+  }
+}
+
+.rail-toc__text {
+  overflow-wrap: anywhere;
+}
+
 </style>
