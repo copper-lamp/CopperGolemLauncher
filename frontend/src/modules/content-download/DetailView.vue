@@ -589,7 +589,6 @@ let unlistenLocation: () => void = () => {};
       <template v-else-if="detail">
         <!-- ================= 上部：信息 + 文档（单卡片） ================= -->
         <section id="cd-sec-info" class="cd-info">
-          <h2 class="cd-block__title">{{ t(KB + ".sectionInfo") }}</h2>
           <header class="cd-info__head">
             <div class="cd-info__thumb">
               <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
@@ -644,8 +643,7 @@ let unlistenLocation: () => void = () => {};
         </section>
 
         <section id="cd-sec-intro" class="cd-doc-section">
-          <h2 class="cd-block__title">{{ t(KB + ".sectionIntro") }}</h2>
-            <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
+                      <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
             <div v-if="readmeLoading" class="cd-doc__state">
               <LoaderCircle :size="15" class="spin" />
               {{ t(`${KB}.docLoading`) }}
@@ -1871,8 +1869,8 @@ let unlistenLocation: () => void = () => {};
 }
 
 .cd-info__thumb {
-  width: 96px;
-  height: 96px;
+  width: 132px;
+  height: 132px;
   flex-shrink: 0;
   border-radius: var(--copper-radius-lg);
   background: var(--copper-surface-2);
@@ -1893,7 +1891,7 @@ let unlistenLocation: () => void = () => {};
 /* 大黑体：模组名是整页的主标题。 */
 .cd-info__name {
   margin: 8px 0 0;
-  font-size: 38px;
+  font-size: 42px;
   font-weight: 800;
   line-height: 1.14;
   letter-spacing: -0.01em;
