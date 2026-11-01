@@ -359,8 +359,10 @@ watch(
             <!-- 未展开：图标 + 文本，无背景，文字向右铺满 -->
             <template v-if="expandedId !== entry.id">
               <span class="row__icon">
-                <Globe2 v-if="entry.kind === 'server'" :size="16" />
-                <Folder v-else :size="16" />
+                <!-- 有预览图就直接用图（世界几乎都有），没有时退回图标。 -->
+                <img v-if="previewOf(entry)" :src="previewOf(entry) ?? ''" alt="" />
+                <Globe2 v-else-if="entry.kind === 'server'" :size="18" :stroke-width="1.9" />
+                <Folder v-else :size="18" :stroke-width="1.9" />
               </span>
               <span class="row__text">
                 <span class="row__name"><McText :text="entry.name" /></span>
@@ -385,7 +387,7 @@ watch(
                     :style="{ '--marquee-shift': marqueeShift }"
                   >
                     <span class="card__title-inner">
-                      <McText :text="entry.name" />
+                      <McText :text="entry.name" on-dark />
                     </span>
                   </span>
                   <span class="card__source">
@@ -668,11 +670,19 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
+  overflow: hidden;
+}
+
+/* 世界预览图当行首图标：比通用图标更容易认，也顺手解决"图标像是空的"。 */
+.row__icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 /* 文本向右铺满：flex:1 + min-width:0，长名字截断而不是把行撑宽。 */
@@ -692,9 +702,10 @@ watch(
   text-overflow: ellipsis;
 }
 
+/* 次要信息用 secondary 而不是 disabled：后者在浅色底上只有 3:1，读起来吃力。 */
 .row__meta {
   overflow: hidden;
-  color: var(--copper-text-disabled);
+  color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -996,7 +1007,7 @@ watch(
 
 .mod__meta {
   overflow: hidden;
-  color: var(--copper-text-disabled);
+  color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
   white-space: nowrap;
   text-overflow: ellipsis;
