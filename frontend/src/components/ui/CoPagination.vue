@@ -40,6 +40,12 @@ const props = withDefaults(
      */
     compact?: boolean;
     /**
+     * 形态：
+     * - `crumb`（默认）：面包屑页码序列，全宽页脚用；
+     * - `circle`：全圆形按钮（上一页 / 页码 / 下一页），右栏或卡片头部用。
+     */
+    shape?: "crumb" | "circle";
+    /**
      * 文案由调用方按自己的 i18n 命名空间注入。
      * 组件本身不引入 i18n：它是内核控件，不该知道「内容下载」这种模块概念。
      */
@@ -54,7 +60,7 @@ const props = withDefaults(
       goto: (page: number) => string;
     };
   }>(),
-  { loading: false, compact: false },
+  { loading: false, compact: false, shape: "crumb" },
 );
 
 const emit = defineEmits<{ (e: "change", page: number): void }>();
@@ -126,8 +132,49 @@ function go(target: number) {
       </button>
     </div>
 
+    <!-- 圆形形态：右栏 / 卡片头部用 -->
+    <div v-if="shape === 'circle'" class="co-pager__circles">
+      <button
+        class="co-pager__circle co-pager__circle--step"
+        :disabled="!canPrev"
+        :aria-label="labels.prev"
+        @click="go(page - 1)"
+      >
+        <ChevronRight :size="15" class="co-pager__step-icon co-pager__step-icon--back" />
+      </button>
+
+      <template v-for="(item, index) in items" :key="`c-${item}-${index}`">
+        <span v-if="item === 'gap'" class="co-pager__circle-gap" aria-hidden="true">…</span>
+        <button
+          v-else
+          class="co-pager__circle"
+          :class="{ 'co-pager__circle--current': item === current }"
+          :aria-current="item === current ? 'page' : undefined"
+          :aria-label="labels.goto(item)"
+          :disabled="loading"
+          @click="go(item - 1)"
+        >
+          <span
+            v-if="loading && item === current"
+            class="co-pager__num-spinner"
+            aria-hidden="true"
+          />
+          <template v-else>{{ item }}</template>
+        </button>
+      </template>
+
+      <button
+        class="co-pager__circle co-pager__circle--step"
+        :disabled="!canNext"
+        :aria-label="labels.next"
+        @click="go(page + 1)"
+      >
+        <ChevronRight :size="15" class="co-pager__step-icon" />
+      </button>
+    </div>
+
     <!-- 桌面形态：面包屑页码序列 -->
-    <div class="co-pager__crumbs">
+    <div v-else class="co-pager__crumbs">
       <button
         class="co-pager__step"
         :disabled="!canPrev"
@@ -210,6 +257,62 @@ function go(target: number) {
   font-size: var(--copper-font-size-sm);
   font-weight: 600;
   color: var(--copper-text);
+}
+
+/* 圆形形态：无描边，靠底色阶差与选中态区分。 */
+.co-pager__circles {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.co-pager__circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: var(--copper-surface-2);
+  color: var(--copper-text-secondary);
+  font-family: inherit;
+  font-size: var(--copper-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.co-pager__circle:hover:not(:disabled) {
+  background: var(--copper-surface-3);
+  color: var(--copper-text);
+}
+
+.co-pager__circle--current {
+  background: var(--copper-accent);
+  color: var(--copper-accent-foreground);
+  font-weight: 600;
+}
+
+.co-pager__circle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.co-pager__circle--step {
+  color: var(--copper-text);
+}
+
+.co-pager__circle-gap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  color: var(--copper-text-disabled);
+  font-size: var(--copper-font-size-sm);
 }
 
 /* 面包屑主体 */

@@ -77,7 +77,10 @@ export interface ContentItem {
 export interface ContentListPage {
   items: ContentItem[];
   hasMore: boolean;
+  /** 匹配总数（权威值）。 */
   total: number;
+  /** 总页数（1 基），分页 UI 的唯一依据。 */
+  totalPages: number;
 }
 
 /** 列表查询参数（camelCase，与后端 `ContentListQuery` 序列化名一致）。 */
@@ -87,6 +90,8 @@ export interface ContentListQuery {
   search?: string;
   /** 按 MCBE 游戏版本过滤（LL 模组无游戏版本元数据，指定后不匹配）。 */
   gameVersion?: string;
+  /** 分类 / 标签过滤（按名称精确匹配）。 */
+  tag?: string;
   /** 排序方式，缺省后端按下载量降序。 */
   sort?: ContentSort;
   page?: number;
@@ -168,6 +173,11 @@ export function contentDownloadReadme(
 /** 可选游戏版本列表（供「版本过滤」下拉；来源为 CurseForge）。 */
 export function contentDownloadGameVersions(): Promise<string[]> {
   return call<string[]>("content_download_game_versions");
+}
+
+/** 平铺筛选栏的标签 / 类别名（可选按来源收窄）。 */
+export function contentDownloadTags(source?: ContentSource): Promise<string[]> {
+  return call<string[]>("content_download_tags", { source: source ?? null });
 }
 
 /** 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。 */

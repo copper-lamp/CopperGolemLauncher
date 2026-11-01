@@ -16,16 +16,18 @@ export const source = ref<ContentSource | "">("");
 export const contentType = ref<ContentType | "">("");
 /** 游戏版本过滤；空串 = 不限版本。 */
 export const gameVersion = ref<string>("");
+/** 标签 / 分类过滤；空串 = 不限。 */
+export const tag = ref<string>("");
 /** 排序方式；与后端 `SORT_*` 对应，默认下载量降序。 */
 export const sort = ref<ContentSort>("downloads_desc");
 export const page = ref(0);
 
 export const items = ref<ContentItem[]>([]);
 export const hasMore = ref(false);
-/**
- * 内核返回的条目总数。**不可作为分页依据**（见 `knownPages`），只保留原样回填。
- */
+/** 匹配总数（后端给的权威值）。 */
 export const total = ref(0);
+/** 总页数（后端算好的 1 基页数）；分页 UI 直接用，不再靠"已探索页数"猜。 */
+export const totalPages = ref(1);
 export const loading = ref(false);
 export const error = ref<string | null>(null);
 
@@ -39,39 +41,15 @@ let versionsLoaded = false;
 export const scrollTop = ref(0);
 
 /**
- * **已探索到的页数**，分页 UI 的唯一依据。
+ * 总页数的来源：后端在每条列表路径上都算了真数。
  *
- * 为什么不能用 `total` 算总页数 —— 内核三条列表路径的 `total` 语义各不相同：
- * | 路径 | `total` 的值 | 可用？ |
- * |---|---|---|
- * | `curseforge::list` | 接口回的 `total_count`，真总数 | 可用 |
- * | `lip::list` | **恒为 0**（lipr 索引不回总数） | 不可用 |
- * | `mixed_list`（默认「全部来源」走这条） | 每次翻页 `+= per_page`，是**累加值不是总数** | 不可用 |
- *
- * 默认路径恰恰是 `mixed_list`，按 `ceil(total / PAGE_SIZE)` 算出来恒为 1，
- * 分页条会整个消失（这正是回归里踩到的坑）。
- *
- * 抓取型接口不提供总数，那「总共有多少页」在**用户没翻到那里之前就是未知的**。
- * 与其编一个假数字，不如如实呈现「已探索到的页数」：
- * - `hasMore` 为真 → 至少还有下一页，页数取 `当前页 + 2`；
- * - `hasMore` 为假 → 当前页就是末页，页数取 `当前页 + 1`。
- * 于是末页时数字必然准确，往前翻时数字单调增长，且「下一页」永远可用。
- * 这个值只在本次浏览会话内有效：回到第 0 页（搜索 / 重置筛选）即归零重来。
+ * 上一版只能"已探索页数"猜测，因为 `total` 的语义在三条路径上不一致
+ * （mixed 路径当时是累加假值）。现在三条路径统一返回 `totalPages`：
+ * - `curseforge::list`：接口的 `total_count` / 每页条数；
+ * - `lip::list` / `lla`：本地索引匹配数 / 每页条数；
+ * - `mixed_list`：各类型页数的最大值（每页各类型只消耗自己的配额）；
+ * - `search_list`：两源总数之和 / 每页条数。
  */
-export const knownPages = ref(1);
-
-/**
- * 拉取一页后推进已探索页数。
- *
- * 回到第 0 页（首次加载、搜索、重置筛选）时先归零：此时结果集已经换过，
- * 之前探索出来的页数对不上，留着会让页码序列出现点不存在的末页。
- * 其它情况只增不减 —— 翻回上一页时不能让它掉回去（页码序列会缩水）。
- */
-export function advanceKnownPages(currentPage: number, more: boolean): void {
-  const reached = currentPage + 1;
-  if (currentPage === 0) knownPages.value = 1;
-  knownPages.value = Math.max(knownPages.value, reached + (more ? 1 : 0));
-}
 
 /** 是否已成功拉取过版本列表（失败时允许重试）。 */
 export function hasLoadedVersions(): boolean {
@@ -89,6 +67,6 @@ export function resetList() {
   items.value = [];
   hasMore.value = false;
   total.value = 0;
-  knownPages.value = 1;
+  totalPages.value = 1;
   scrollTop.value = 0;
 }

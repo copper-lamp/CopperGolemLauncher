@@ -109,5 +109,7 @@
     "docLoading": "文档加载中",
     "docRenderFailed": "文档格式不受支持，已按纯文本显示",
     "onThisPage": "本页内容"
-  }
+  },
+  "tag": "标签",
+  "tagAll": "全部标签"
 }

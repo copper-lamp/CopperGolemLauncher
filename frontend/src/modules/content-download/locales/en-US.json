@@ -109,5 +109,7 @@
     "docLoading": "Loading documentation",
     "docRenderFailed": "Unsupported document format, shown as plain text",
     "onThisPage": "On this page"
-  }
+  },
+  "tag": "Tag",
+  "tagAll": "All tags"
 }
