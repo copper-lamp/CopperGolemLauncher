@@ -91,6 +91,27 @@ const items = computed<PageItem[]>(() => {
   return out;
 });
 
+/**
+ * 圆形形态的页码序列：**固定最多 5 个槽位**，保证无论总页数多大都是一行。
+ *
+ * 圆形按钮 + 前后箭头在右栏（约 240~350px）里最多放得下 7 个 30px 的圆，
+ * 所以这里只保留「首页 / … / 当前页 / … / 末页」，相邻页交给左右箭头。
+ * 面包屑形态不参与这个裁剪（它有整行宽度）。
+ */
+const circleItems = computed<PageItem[]>(() => {
+  const last = props.totalPages;
+  const cur = current.value;
+  if (last <= 5) {
+    return Array.from({ length: Math.max(last, 1) }, (_, i) => i + 1);
+  }
+  const out: PageItem[] = [1];
+  if (cur > 2) out.push("gap");
+  if (cur !== 1 && cur !== last) out.push(cur);
+  if (cur < last - 1) out.push("gap");
+  out.push(last);
+  return out;
+});
+
 function go(target: number) {
   if (props.loading) return;
   // 越界与重复点击直接吞掉：调用方的 page 可能还没被新响应改回来，
@@ -143,7 +164,7 @@ function go(target: number) {
         <ChevronRight :size="15" class="co-pager__step-icon co-pager__step-icon--back" />
       </button>
 
-      <template v-for="(item, index) in items" :key="`c-${item}-${index}`">
+      <template v-for="(item, index) in circleItems" :key="`c-${item}-${index}`">
         <span v-if="item === 'gap'" class="co-pager__circle-gap" aria-hidden="true">…</span>
         <button
           v-else
@@ -263,8 +284,11 @@ function go(target: number) {
 .co-pager__circles {
   display: flex;
   align-items: center;
+  /* 固定一行：不换行，靠 space-between 铺满左右。 */
+  flex-wrap: nowrap;
+  justify-content: space-between;
   gap: 4px;
-  flex-wrap: wrap;
+  width: 100%;
 }
 
 .co-pager__circle {
