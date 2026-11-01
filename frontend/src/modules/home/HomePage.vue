@@ -344,6 +344,8 @@ function goDownload() {
 .home-simple {
   height: 100%;
   min-height: 0;
+  /* 竖屏 / 矮窗口下允许整页滚动：欢迎语与操作条不能被裁掉。 */
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -373,7 +375,8 @@ function goDownload() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* safe center：内容高于可视区时从顶部开始排，而不是把标题挤出滚动区。 */
+  justify-content: safe center;
   gap: var(--copper-space-5);
   padding-bottom: var(--copper-space-6);
 }
