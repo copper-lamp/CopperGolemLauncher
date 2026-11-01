@@ -451,6 +451,7 @@ pub fn run() {
             commands::registry::registry_modules,
             // 内容下载模块（content-download）
             commands::content_download::content_download_list,
+            commands::content_download::content_download_tags,
             commands::content_download::content_download_detail,
             commands::content_download::content_download_readme,
             commands::content_download::content_download_game_versions,

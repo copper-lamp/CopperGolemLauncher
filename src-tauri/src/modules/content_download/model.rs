@@ -150,6 +150,12 @@ pub struct ContentListQuery {
     pub game_version: Option<String>,
     /// 排序方式（`downloads_desc` / `downloads_asc` / `name_asc` / `updated_desc`）。
     pub sort: Option<String>,
+    /// 分类 / 标签过滤（按名称精确匹配，大小写不敏感）。
+    ///
+    /// 三个来源的"标签"语义不同：CurseForge 是**类别名**（反查 categoryId），
+    /// lip / lla 是模组清单里的 tags。名字查不到时各来源按"不过滤"处理，
+    /// 不伪造空结果。
+    pub tag: Option<String>,
     /// 页码（从 0 起），每页默认 40。
     pub page: u32,
 }
@@ -164,5 +170,8 @@ pub struct ContentListPage {
     pub items: Vec<ContentItem>,
     /// 是否还有下一页。
     pub has_more: bool,
+    /// 匹配总数（权威值）。各来源都必须给真数，前端据此算总页数。
     pub total: u64,
+    /// 总页数（1 基）。分页 UI 直接用它，不再靠"已探索页数"猜末页。
+    pub total_pages: u64,
 }

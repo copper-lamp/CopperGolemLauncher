@@ -24,6 +24,17 @@ pub async fn content_download_list(
         .map_err(into_command_error)
 }
 
+/// 平铺筛选栏的标签 / 类别名（可选按来源收窄）。
+#[tauri::command]
+pub async fn content_download_tags(
+    kernel: State<'_, KernelContext>,
+    source: Option<String>,
+) -> CommandResult<Vec<String>> {
+    ContentDownloadModule::tags(kernel.inner(), source.as_deref())
+        .await
+        .map_err(into_command_error)
+}
+
 /// 详情：按跨源 id（`cf:` / `lip:`）。
 #[tauri::command]
 pub async fn content_download_detail(

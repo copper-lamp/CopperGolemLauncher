@@ -237,21 +237,26 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
 ///
 /// 游戏版本过滤对 LL 模组不适用：lipr 索引只声明 LeviLamina 依赖，没有 MCBE
 /// 游戏版本元数据，因此指定 `game_version` 时返回空列表（不伪造匹配）。
+/// 索引里出现过的全部标签（升序去重），供前端平铺筛选栏。
+pub async fn tags(_kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
+    let data = index().await?;
+    let mut out: Vec<String> = data
+        .packages
+        .values()
+        .flat_map(|p| p.tags.iter().cloned())
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 pub async fn list(
     _kernel: &KernelContext,
     query: &ContentListQuery,
 ) -> Result<ContentListPage, KernelError> {
-    if query
-        .game_version
-        .as_deref()
-        .is_some_and(|gv| !gv.trim().is_empty())
-    {
-        return Ok(ContentListPage {
-            items: Vec::new(),
-            has_more: false,
-            total: 0,
-        });
-    }
+    // 游戏版本过滤对 LL 模组不成立：lipr 索引没有 MC 版本元数据。
+    // 旧实现直接返回空结果，于是用户一旦选过版本筛选，整个 LL 来源就"搜不到"。
+    // 现在的语义是**不按版本过滤**（宁可多给，也不静默吞掉整个来源）。
 
     let data = index().await?;
     let search = query.search.as_deref().unwrap_or("").to_lowercase();
@@ -260,10 +265,11 @@ pub async fn list(
         .packages
         .values()
         .filter(|p| {
-            search.is_empty()
+            (search.is_empty()
                 || p.name.to_lowercase().contains(&search)
                 || p.identifier.to_lowercase().contains(&search)
-                || p.description.to_lowercase().contains(&search)
+                || p.description.to_lowercase().contains(&search))
+                && tag_matches(&p.tags, query.tag.as_deref())
         })
         .map(package_to_item)
         .collect();
@@ -298,6 +304,7 @@ pub async fn list(
         items,
         has_more,
         total,
+        total_pages: total.div_ceil(PAGE_SIZE as u64),
     })
 }
 
@@ -561,6 +568,17 @@ async fn fetch_text(url: &str) -> Option<String> {
     }
     let text = resp.text().await.ok()?;
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// 标签匹配：大小写不敏感，空过滤条件视为不限制。
+fn tag_matches(tags: &[String], tag: Option<&str>) -> bool {
+    match tag.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(want) => {
+            let want = want.to_lowercase();
+            tags.iter().any(|t| t.to_lowercase() == want)
+        }
+        None => true,
+    }
 }
 
 fn package_to_item(p: &Package) -> ContentItem {

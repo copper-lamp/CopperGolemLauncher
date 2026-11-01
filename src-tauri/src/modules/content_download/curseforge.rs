@@ -246,6 +246,22 @@ struct CategoryCache {
 
 static CATEGORY_CACHE: OnceLock<Mutex<Option<CategoryCache>>> = OnceLock::new();
 
+/// 全部类别名（小写；前端用 `text-transform: capitalize` 呈现）。
+///
+/// CurseForge 侧没有独立的"标签"概念，列表的 categories 就是类别名，
+/// 所以平铺筛选栏直接用这份类别表。
+pub async fn tags(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
+    ensure_categories(kernel).await?;
+    let mut out: Vec<String> = category_cache()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|cache| cache.id_by_name.keys().cloned().collect())
+        .unwrap_or_default();
+    out.sort();
+    Ok(out)
+}
+
 fn category_cache() -> &'static Mutex<Option<CategoryCache>> {
     CATEGORY_CACHE.get_or_init(|| Mutex::new(None))
 }
@@ -369,6 +385,17 @@ pub async fn list(
             url.push_str(&format!("&searchFilter={}", urlencoded(s)));
         }
     }
+    if let Some(tag) = query.tag.as_deref() {
+        let tag = tag.trim();
+        if !tag.is_empty() {
+            // CurseForge 没有"标签"概念，能做的是按**类别名**过滤：
+            // 这条链路产出的 categories 本来就是类别名，名字能反查回 categoryId。
+            // 查不到同名类别时不加参数 —— 宁可不过滤，也不伪造一个必然为空的结果。
+            if let Some(id) = class_id_by_name(kernel, tag).await? {
+                url.push_str(&format!("&categoryId={id}"));
+            }
+        }
+    }
     if let Some(gv) = query.game_version.as_deref() {
         let gv = gv.trim();
         if !gv.is_empty() {
@@ -405,6 +432,7 @@ pub async fn list(
         items,
         has_more,
         total,
+        total_pages: total.div_ceil(PAGE_SIZE as u64),
     })
 }
 

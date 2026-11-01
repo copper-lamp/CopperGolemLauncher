@@ -24,8 +24,8 @@ use crate::state::KernelContext;
 use self::install_target::{Placement, PlacementKind};
 use self::model::{
     ContentDetail, ContentFile, ContentItem, ContentListPage, ContentListQuery, PAGE_SIZE,
-    SOURCE_LIP, SOURCE_LL_ANDROID, TYPE_BEHAVIOR_PACK, TYPE_LL_MOD, TYPE_SHADER,
-    TYPE_TEXTURE_PACK,
+    SOURCE_CURSEFORGE, SOURCE_LIP, SOURCE_LL_ANDROID, TYPE_BEHAVIOR_PACK, TYPE_LL_MOD,
+    TYPE_SHADER, TYPE_TEXTURE_PACK,
 };
 
 pub use self::install_target::Placement as ContentPlacement;
@@ -129,7 +129,12 @@ impl ContentDownloadModule {
             ll_list(kernel, query).await
         } else if source.is_none() || source == Some("") {
             if ctype.is_none() || ctype == Some("") {
-                mixed_list(kernel, query).await
+                if query.search.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+                    // 带关键字且未指定来源：两个来源都查再合并（见 `search_list`）。
+                    search_list(kernel, query).await
+                } else {
+                    mixed_list(kernel, query).await
+                }
             } else {
                 curseforge::list(kernel, query).await
             }
@@ -155,6 +160,36 @@ impl ContentDownloadModule {
             ),
         }
         result
+    }
+
+    /// 平铺筛选栏的标签 / 类别名。
+    ///
+    /// 未指定来源时合并三个来源（桌面端没有 lla，不会出现它的标签）。
+    /// 失败不抛错：筛选栏是辅助 UI，拿不到就少一排选项，不该把列表页打成错误态。
+    pub async fn tags(
+        kernel: &KernelContext,
+        source: Option<&str>,
+    ) -> Result<Vec<String>, KernelError> {
+        let mut out: Vec<String> = Vec::new();
+        match source {
+            Some(s) if s == SOURCE_CURSEFORGE => {
+                out.extend(curseforge::tags(kernel).await.unwrap_or_default())
+            }
+            Some(s) if s == SOURCE_LIP => out.extend(lip::tags(kernel).await.unwrap_or_default()),
+            Some(s) if s == SOURCE_LL_ANDROID => {
+                out.extend(ll_android::tags(kernel).await.unwrap_or_default())
+            }
+            _ => {
+                out.extend(curseforge::tags(kernel).await.unwrap_or_default());
+                out.extend(lip::tags(kernel).await.unwrap_or_default());
+                if android_ll_source() {
+                    out.extend(ll_android::tags(kernel).await.unwrap_or_default());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
     }
 
     /// 详情：按跨源 id（`cf:` / `lip:` / `lla:` 前缀）路由。
@@ -598,9 +633,11 @@ async fn type_pick(
     count: usize,
     game_version: Option<&str>,
     sort: Option<&str>,
-) -> Result<(Vec<ContentItem>, bool), KernelError> {
+    tag: Option<&str>,
+) -> Result<(Vec<ContentItem>, bool, u64), KernelError> {
     let mut out = Vec::with_capacity(count);
     let mut has_more = false;
+    let mut total = 0u64;
     let mut from = offset;
     let mut need = count;
     while need > 0 {
@@ -612,6 +649,7 @@ async fn type_pick(
             search: None,
             game_version: game_version.map(str::to_string),
             sort: sort.map(str::to_string),
+            tag: tag.map(str::to_string),
             page: sub_page as u32,
         };
         let typed: ContentListPage = if t == TYPE_LL_MOD {
@@ -620,6 +658,7 @@ async fn type_pick(
             curseforge::list(kernel, &t_query).await?
         };
         has_more = typed.has_more;
+        total = typed.total;
         let part: Vec<ContentItem> = typed
             .items
             .into_iter()
@@ -634,22 +673,82 @@ async fn type_pick(
         from += got;
         need -= got;
     }
-    Ok((out, has_more))
+    Ok((out, has_more, total))
+}
+
+/// 「全部来源 + 关键字」：两个来源都查，合并后再排序、分页。
+///
+/// 旧实现按关键字里是否含 "mod / 模组" 之类词二选一，搜普通模组名（比如 "playback"）
+/// 时永远只查 CurseForge，LL 模组根本不会出现 —— 这就是"LL 内容搜不到"的根因。
+///
+/// 合并分页：把两个来源 `0..=当前页` 的条目都取回来（来源内部已按同一排序键排好），
+/// 合并后再按同一比较器排一次，最后切出当前页。代价是页码越深请求越多（页 0 只要 2 次，
+/// 页 n 要 2(n+1) 次），换来的是**页码与总页数都是真的**，不会出现"翻到第 2 页就缺一半"。
+async fn search_list(
+    kernel: &KernelContext,
+    query: &ContentListQuery,
+) -> Result<ContentListPage, KernelError> {
+    // 深翻保护：搜索结果的深页体验远不如"换个更准的关键字"，最多取到第 20 页。
+    const MAX_PAGE: u32 = 20;
+    let page = query.page.min(MAX_PAGE - 1) as usize;
+    let mut all: Vec<ContentItem> = Vec::new();
+    let mut cf_total = 0u64;
+    let mut lip_total = 0u64;
+    for sub_page in 0..=page {
+        let mut sub = query.clone();
+        sub.page = sub_page as u32;
+        sub.source = None;
+        sub.content_type = None;
+        let cf = curseforge::list(kernel, &sub).await?;
+        cf_total = cf.total;
+        all.extend(cf.items);
+        let lp = lip::list(kernel, &sub).await?;
+        lip_total = lp.total;
+        all.extend(lp.items);
+        if !cf.has_more && !lp.has_more {
+            break;
+        }
+    }
+    sort_items(&mut all, query.sort.as_deref());
+    let total = cf_total + lip_total;
+    let start = page * PAGE_SIZE as usize;
+    let items: Vec<ContentItem> = all.into_iter().skip(start).take(PAGE_SIZE as usize).collect();
+    let total_pages = total.div_ceil(PAGE_SIZE as u64);
+    Ok(ContentListPage {
+        items,
+        has_more: (page as u64 + 1) < total_pages,
+        total,
+        total_pages,
+    })
+}
+
+/// 跨源合并后的排序：与各来源内部的排序键保持一致，否则合并出来的顺序会自相矛盾。
+fn sort_items(items: &mut [ContentItem], sort: Option<&str>) {
+    match sort.unwrap_or_default() {
+        "downloads_asc" => items.sort_by(|a, b| {
+            a.download_count
+                .cmp(&b.download_count)
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+        "name_asc" => items.sort_by(|a, b| a.name.cmp(&b.name)),
+        "updated_desc" => items.sort_by(|a, b| {
+            b.latest_published_at
+                .cmp(&a.latest_published_at)
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+        _ => items.sort_by(|a, b| {
+            b.download_count
+                .cmp(&a.download_count)
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+    }
 }
 
 async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<ContentListPage, KernelError> {
     let search = query.search.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("");
     if !search.is_empty() {
-        // 带关键字时退化为定向来源，避免跨源拼接语义混乱。
-        let trimmed = search.trim().to_lowercase();
-        let is_mod_word = ["ll", "lal", "levilamina", "mod", "模组", "插件"]
-            .iter()
-            .any(|k| trimmed.contains(k));
-        return if is_mod_word {
-            lip::list(kernel, query).await
-        } else {
-            curseforge::list(kernel, query).await
-        };
+        // 兜底：带关键字时一律走跨源合并（`list` 已提前分流，这里防直接调用）。
+        return search_list(kernel, query).await;
     }
 
     let page = query.page as usize;
@@ -665,19 +764,22 @@ async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<
     let mut consumed: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::new();
 
+    let mut total_pages: u64 = 1;
     for &(t, per_page) in TYPE_PER_PAGE {
-        let (items, more) = type_pick(
+        let (items, more, type_total) = type_pick(
             kernel,
             t,
             page * per_page,
             per_page,
             query.game_version.as_deref(),
             query.sort.as_deref(),
+            query.tag.as_deref(),
         )
         .await?;
         has_more = has_more || more;
-        // 类型 total 仅作分页近似合计（抓取接口不再回传 total，此处用已取到的量近似）。
-        total += per_page as u64;
+        total += type_total;
+        // 混合列表的总页数 = 各类型页数的最大值（每页各类型只消耗自己那份配额）。
+        total_pages = total_pages.max(type_total.div_ceil(per_page as u64));
         pools.insert(t, items);
         consumed.insert(t, 0);
     }
@@ -697,8 +799,9 @@ async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<
 
     Ok(ContentListPage {
         items: output,
-        has_more,
+        has_more: has_more || (page as u64 + 1) < total_pages,
         total,
+        total_pages,
     })
 }
 

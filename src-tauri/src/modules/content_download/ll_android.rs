@@ -508,6 +508,19 @@ pub fn resolve_install_target(
 // ---------------------------------------------------------------- 对外接口
 
 /// 列表：关键字搜索 + 排序 + 页码分页；`game_version` 按 `minecraft_versions` 过滤。
+/// 目录里出现过的全部标签（升序去重），供前端平铺筛选栏。
+pub async fn tags(_kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
+    let data = catalog().await?;
+    let mut out: Vec<String> = data
+        .mods
+        .iter()
+        .flat_map(|m| m.tags.iter().cloned())
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 pub async fn list(
     _kernel: &KernelContext,
     query: &ContentListQuery,
@@ -531,6 +544,13 @@ pub async fn list(
         })
         .filter(|m| match game_version {
             Some(version) => m.releases.iter().any(|r| release_supports(r, version)),
+            None => true,
+        })
+        .filter(|m| match query.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(want) => {
+                let want = want.to_lowercase();
+                m.tags.iter().any(|t| t.to_lowercase() == want)
+            }
             None => true,
         })
         .map(mod_to_item)
@@ -560,6 +580,7 @@ pub async fn list(
         items,
         has_more,
         total,
+        total_pages: total.div_ceil(PAGE_SIZE as u64),
     })
 }
 
