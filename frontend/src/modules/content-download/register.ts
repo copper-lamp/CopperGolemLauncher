@@ -13,6 +13,7 @@
 import { PackageOpen } from "@lucide/vue";
 
 import { registerModule } from "../registry";
+import { detailCrumbTitle } from "./detailCrumb";
 
 registerModule({
   id: "content-download",
@@ -39,10 +40,17 @@ registerModule({
       meta: {
         titleKey: "module.content-download.detailTitle",
         backPath: "/content",
-        // 末级标题为动态内容名：详情页加载完成后写入 `title` 字面量（见 DetailView）。
+        // 末级标题是当前内容名，由 `detailCrumbTitle` 这个响应式引用提供：
+        // 直接改 meta 里的字面量会把上一页的名字留在共享的数组里（切详情时先看到旧名字）。
         breadcrumb: [
           { titleKey: "module.content-download.listTitle", path: "/content" },
-          { titleKey: "module.content-download.detailTitle", path: "" },
+          {
+            titleKey: "module.content-download.detailTitle",
+            path: "",
+            get title() {
+              return detailCrumbTitle.value;
+            },
+          },
         ],
       },
     },

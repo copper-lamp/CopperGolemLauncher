@@ -9,7 +9,7 @@
 // 文件卡片整卡可点击：CF 直接投递下载、lip 走安装确认弹窗；点击后由点击坐标发出圆点，
 // 沿抛物线飞向左侧「下载中心」图标，到达时触发水波纹提示。
 
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ExternalLink,
@@ -42,6 +42,7 @@ import {
   releaseBadgeLabel,
   releaseBadgeTone,
 } from "./badges";
+import { detailCrumbTitle } from "./detailCrumb";
 import { renderReadme, type ReadmeFormat } from "./readme";
 import {
   contentDownloadDetail,
@@ -201,22 +202,24 @@ function readmeBaseUrl(d: ContentDetail): string | null {
   return d.repoUrl || d.projectUrl || null;
 }
 
+/** 详情请求序号：同一组件实例内切 id 时，丢弃过期响应。 */
+let loadSeq = 0;
+
 async function load() {
+  const seq = ++loadSeq;
   loading.value = true;
   error.value = null;
   expanded.value = new Set();
+  detail.value = null;
+  // 先清空面包屑末级：上一个内容的名字绝不能留在新页面上。
+  detailCrumbTitle.value = "";
   const id = String(route.params.id ?? "");
   try {
     const data = await contentDownloadDetail(id);
+    if (seq !== loadSeq) return;
     detail.value = data;
-    // 面包屑末级写入具体内容名（TitleBar 优先取字面量 title）。
-    const crumbs = route.meta.breadcrumb;
-    if (Array.isArray(crumbs) && crumbs.length > 0) {
-      const last = crumbs[crumbs.length - 1];
-      if (last && typeof last === "object") {
-        (last as { title?: string }).title = data.item.name;
-      }
-    }
+    // 面包屑末级取当前内容名（响应式引用，见 detailCrumb.ts）。
+    detailCrumbTitle.value = data.item.name;
     if (data.item.source === "lip") {
       contentDownloadLipEnv().then((env) => (lipEnv.value = env)).catch(() => null);
     }
@@ -463,15 +466,20 @@ async function confirmInstall() {
 
 /** 离开页面时清掉面包屑中的动态标题，避免影响其它路由复用。 */
 function resetCrumbTitle() {
-  const crumbs = route.meta.breadcrumb;
-  if (!Array.isArray(crumbs) || crumbs.length === 0) return;
-  const last = crumbs[crumbs.length - 1];
-  if (last && typeof last === "object") delete (last as { title?: string }).title;
+  detailCrumbTitle.value = "";
 }
 
 function goList() {
   void router.push("/content");
 }
+
+// 同一路由记录内切换 id（详情 → 详情）时组件会被复用，必须自己监听参数变化。
+watch(
+  () => route.params.id,
+  (next, prev) => {
+    if (next && next !== prev) void load();
+  },
+);
 
 onMounted(async () => {
   await load();
