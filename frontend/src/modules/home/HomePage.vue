@@ -32,6 +32,7 @@ import CoRingProgress from "../../components/ui/CoRingProgress.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
 import CoPage from "../../components/layout/CoPage.vue";
+import DefaultHome from "./DefaultHome.vue";
 import {
   homeGameKill,
   homeLaunch,
@@ -230,6 +231,39 @@ async function stop() {
   }
 }
 
+/** 默认模式：从磁贴直接启动 / 结束指定实例。 */
+async function launchNamed(name: string) {
+  if (!name || launching.value || stopping.value) return;
+  if (selectedName.value !== name) selectedName.value = name;
+  beginLaunch(name);
+  try {
+    await homeLaunch(name);
+  } catch (e) {
+    endSession();
+    showToast(t("module.home.toast.launch_failed", { message: String(e) }), "error");
+  }
+}
+
+async function stopNamed(name: string) {
+  if (!name || stopping.value) return;
+  stopping.value = true;
+  try {
+    await homeGameKill(name);
+    showToast(t("module.home.toast.stopped"), "success");
+  } catch (e) {
+    showToast(t("module.home.toast.stop_failed", { message: String(e) }), "error");
+    void syncSessionState(name);
+  } finally {
+    stopping.value = false;
+  }
+}
+
+/** 默认模式：按磁贴 / 启动条指定的实例进入设置页。 */
+function openVersionSettingsFor(name: string) {
+  if (!name) return;
+  void router.push({ path: "/version-settings", query: { name } });
+}
+
 function openVersionSettings() {
   if (!current.value) return;
   void router.push({
@@ -245,7 +279,7 @@ function goDownload() {
 
 <template>
   <CoPage :scroll="false">
-    <div class="home-simple">
+    <div :class="['home-simple', { 'home-simple--default': mode === 'default' }]">
       <div v-if="showAccountBanner" class="home-simple__account">
         <span>{{ accountBannerText }}</span>
         <CoButton
@@ -269,10 +303,21 @@ function goDownload() {
         <CoSegmented v-model="mode" :options="modeOptions" />
       </Teleport>
 
-      <!-- 默认模式占位（后续阶段实现） -->
-      <div v-if="mode === 'default'" class="home-simple__placeholder">
-        <p>{{ t("module.home.mode.default_placeholder") }}</p>
-      </div>
+      <!-- 默认模式：启动区 / 列表区 / 小组件区 -->
+      <DefaultHome
+        v-if="mode === 'default'"
+        :versions="versions"
+        :selected-name="selectedName"
+        :session="session"
+        :launching="launching"
+        :running="running"
+        :stopping="stopping"
+        :welcome="welcome"
+        @select="selectedName = $event"
+        @launch="launchNamed"
+        @stop="stopNamed"
+        @detail="openVersionSettingsFor"
+      />
 
       <div v-else class="home-simple__center">
         <template v-if="loading">
@@ -485,6 +530,13 @@ function goDownload() {
   color: var(--copper-text-disabled);
   font-size: var(--copper-font-size-sm);
   text-align: center;
+}
+
+.home-simple--default {
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow-y: auto;
+  padding-bottom: var(--copper-space-5);
 }
 
 .home-simple__placeholder {

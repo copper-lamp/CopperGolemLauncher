@@ -57,6 +57,24 @@ export interface ContentItem {
   path: string;
 }
 
+/** 默认模式列表区条目类型。 */
+export type DashboardKind = "world" | "server";
+
+/** 默认模式列表区条目（与后端 `DashboardEntry` 同构）。 */
+export interface DashboardEntry {
+  id: string;
+  kind: DashboardKind;
+  name: string;
+  version: string;
+  detail: string;
+  image_data_url: string | null;
+}
+
+/** 跨实例扫描本地世界与外部服务器。 */
+export function homeDashboardEntries(): Promise<DashboardEntry[]> {
+  return call<DashboardEntry[]>("home_dashboard_entries");
+}
+
 /** 版本清单（按创建时间倒序，新版本在前）。 */
 export function homeVersionsList(): Promise<VersionView[]> {
   return call<VersionView[]>("home_versions_list");

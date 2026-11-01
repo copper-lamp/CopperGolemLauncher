@@ -13,6 +13,26 @@
     "default": "Default",
     "default_placeholder": "Default mode is under development"
   },
+  "default": {
+    "launch": "Launch",
+    "list": "Worlds & servers",
+    "widgets": "Widgets",
+    "world": "Local world",
+    "server": "Server",
+    "drag_hint": "Drag to reorder",
+    "list_hint": "Click a card to expand",
+    "rescan": "Rescan",
+    "scanning": "Scanning worlds and servers…",
+    "scan_failed": "Scan failed: {message}",
+    "empty": "No worlds or servers found yet",
+    "account": "Account",
+    "offline": "Signed out",
+    "instances": "Instances",
+    "none": "None selected",
+    "downloads": "Downloads",
+    "downloads_active": "{count} active",
+    "downloads_idle": "No active downloads"
+  },
   "detail": "Details",
   "welcome": {
     "friend": "Traveler",

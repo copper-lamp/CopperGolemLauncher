@@ -13,6 +13,26 @@
     "default": "默认",
     "default_placeholder": "默认模式开发中，敬请期待"
   },
+  "default": {
+    "launch": "启动",
+    "list": "世界与服务器",
+    "widgets": "小组件",
+    "world": "本地世界",
+    "server": "服务器",
+    "drag_hint": "拖拽可调整顺序",
+    "list_hint": "点击卡片展开",
+    "rescan": "重新扫描",
+    "scanning": "正在扫描世界与服务器…",
+    "scan_failed": "扫描失败：{message}",
+    "empty": "还没有扫描到世界或服务器",
+    "account": "账户",
+    "offline": "未登录",
+    "instances": "实例",
+    "none": "未选择",
+    "downloads": "下载",
+    "downloads_active": "{count} 个进行中",
+    "downloads_idle": "没有进行中的下载"
+  },
   "detail": "详情",
   "welcome": {
     "friend": "旅行者",
