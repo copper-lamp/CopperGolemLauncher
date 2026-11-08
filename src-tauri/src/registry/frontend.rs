@@ -140,11 +140,14 @@ pub fn serve_asset(
     ctx: &tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Cow<'static, [u8]>> {
+    let origin = request.headers().get(tauri::http::header::ORIGIN);
     let not_found = || {
-        tauri::http::Response::builder()
-            .status(tauri::http::StatusCode::NOT_FOUND)
-            .body(Cow::Borrowed(&b"not found"[..]))
-            .expect("构造 404 响应")
+        asset_response(
+            origin,
+            tauri::http::StatusCode::NOT_FOUND,
+            "text/plain",
+            Cow::Borrowed(&b"not found"[..]),
+        )
     };
 
     let kernel = ctx.app_handle().state::<KernelContext>();
@@ -164,13 +167,43 @@ pub fn serve_asset(
     // 只允许读取模块的 frontend 目录。
     let file = modules_dir.join(id).join("frontend").join(&relative);
     match std::fs::read(&file) {
-        Ok(bytes) => tauri::http::Response::builder()
-            .status(tauri::http::StatusCode::OK)
-            .header(tauri::http::header::CONTENT_TYPE, mime_for(&relative))
-            .body(Cow::Owned(bytes))
-            .unwrap_or_else(|_| not_found()),
+        Ok(bytes) => asset_response(
+            origin,
+            tauri::http::StatusCode::OK,
+            mime_for(&relative),
+            Cow::Owned(bytes),
+        ),
         Err(_) => not_found(),
     }
+}
+
+// Request-page origins, not the cglmod resource origin. Tauri 2.11.5 uses
+// http://tauri.localhost on Windows/Android with the current default HTTP scheme,
+// and tauri://localhost elsewhere. Only debug builds admit the configured Vite
+// devUrl (tauri.conf.json); release does not grant local development servers.
+fn allowed_asset_origin(origin: &tauri::http::HeaderValue) -> bool {
+    match origin.to_str().ok() {
+        Some("http://tauri.localhost" | "tauri://localhost") => true,
+        #[cfg(debug_assertions)]
+        Some("http://localhost:1420") => true,
+        _ => false,
+    }
+}
+
+fn asset_response(
+    origin: Option<&tauri::http::HeaderValue>,
+    status: tauri::http::StatusCode,
+    content_type: &'static str,
+    body: Cow<'static, [u8]>,
+) -> tauri::http::Response<Cow<'static, [u8]>> {
+    let mut response = tauri::http::Response::builder()
+        .status(status)
+        .header(tauri::http::header::CONTENT_TYPE, content_type)
+        .header(tauri::http::header::VARY, "Origin");
+    if let Some(origin) = origin.filter(|value| allowed_asset_origin(value)) {
+        response = response.header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+    }
+    response.body(body).expect("构造模块资源响应")
 }
 
 /// 按扩展名给出 Content-Type（未知回退 `application/octet-stream`）。
@@ -190,6 +223,43 @@ fn mime_for(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_cors_allows_only_launcher_page_origins() {
+        use tauri::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, VARY};
+        use tauri::http::{HeaderValue, StatusCode};
+
+        for origin in ["http://tauri.localhost", "tauri://localhost"] {
+            assert!(allowed_asset_origin(&HeaderValue::from_str(origin).unwrap()));
+        }
+        assert_eq!(
+            allowed_asset_origin(&HeaderValue::from_static("http://localhost:1420")),
+            cfg!(debug_assertions),
+        );
+        for origin in [
+            "null",
+            "http://cglmod.localhost",
+            "http://localhost:1421",
+            "http://127.0.0.1:1420",
+            "http://localhost:1420.evil.example",
+            "https://evil.example",
+        ] {
+            let origin = HeaderValue::from_str(origin).unwrap();
+            assert!(!allowed_asset_origin(&origin));
+            let response = asset_response(Some(&origin), StatusCode::OK, "text/javascript", Cow::Borrowed(b"export {}"));
+            assert!(response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+            assert_eq!(response.headers()[VARY], "Origin");
+        }
+        let origin = HeaderValue::from_static("http://tauri.localhost");
+        for status in [StatusCode::OK, StatusCode::NOT_FOUND] {
+            let response = asset_response(Some(&origin), status, "text/javascript", Cow::Borrowed(b"export {}"));
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], origin);
+            assert_eq!(response.headers()[VARY], "Origin");
+        }
+        let response = asset_response(None, StatusCode::OK, "text/javascript", Cow::Borrowed(b"export {}"));
+        assert!(response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
 
     #[test]
     fn mime_covers_expected_extensions() {

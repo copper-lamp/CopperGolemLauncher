@@ -7,7 +7,7 @@
   <p>为 Minecraft Bedrock 打造的现代化模块化启动器：把版本、账户与游戏内容，收进一个干净、迅捷的入口。</p>
 
   <p>
-    <img src="https://img.shields.io/badge/release-0.0.3--pre-4c8bf5?style=flat-square" alt="release v0.0.3 pre-release">
+    <img src="https://img.shields.io/badge/release-0.0.4--pre-4c8bf5?style=flat-square" alt="release v0.0.4 pre-release">
     <img src="https://img.shields.io/badge/Minecraft%20Bedrock-Windows%20x64-62b47a?style=flat-square" alt="Windows x64 Minecraft Bedrock">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 许可证"></a>
   </p>
@@ -64,7 +64,7 @@
 
 | 平台 | 版本 | 状态 |
 | --- | --- | --- |
-| Windows x64 · Minecraft Bedrock（基岩版） | `0.0.3` | 预发布（内测版，NSIS 安装包） |
+| Windows x64 · Minecraft Bedrock（基岩版） | `0.0.4` | 预发布（内测版，NSIS 安装包） |
 
 > [!NOTE]
 > Android 端仍在适配，本版不提供安装包；CI 的 APK 打包暂时禁用，恢复条件见 `release` 工作流注释。
@@ -96,8 +96,8 @@
 
 ## 开发状态与计划
 
-- **已具备** — 铜内核能力服务与模块化桌面骨架；游戏版本下载与安装、实例隔离与启动（含 LeviLamina 加载器）、正版账户登录、内容中心（CurseForge / LIP / addon）、统一下载中心与更新系统。
-- **进行中** — 安卓端适配、附加模块（Agent / MCP）的动态装载与隔离、下载与安装链路的持续打磨。
+- **已具备** — 铜内核能力服务与模块化桌面骨架；游戏版本下载与安装、实例隔离与启动（含 LeviLamina 加载器）、正版账户登录、内容中心（CurseForge / LIP / addon）、统一下载中心与更新系统；外部模块本地导入、安装/卸载与重启加载。
+- **进行中** — 安卓端适配、附加模块（Agent / MCP）隔离与兼容性持续完善、下载与安装链路的持续打磨。
 - **规划** — 整合包导出与导入、更多内容源与镜像策略、Linux 端的可行性评估。
 
 > [!TIP]
@@ -107,7 +107,7 @@
 
 - 项目处于早期阶段，界面与能力仍在积极开发，不代表最终形态；预发布版本之间可能存在不兼容变更。
 - 桌面端仅支持 Windows x64 平台的基岩版；Android 端仍在适配、本版不提供产物（CI 的 APK 打包暂时禁用）；Linux 有 CI 构建产物但启动链路尚未适配；macOS 暂无产物。
-- 附加模块尚未提供一键下载安装，动态装载仍在开发中。
+- 附加模块支持本地 `.cglm` 导入和已审批来源安装，安装后需重启；只安装可信代码。独立整合包工坊不内置于启动器，外部模块的发布/扫描及工具授权不在本版完整性承诺内。
 - 真实 Windows Store 账户的端到端安装验收覆盖有限，异常账户状态的问题定位仍依赖用户日志。
 - 不同的 Minecraft 或系统更新后，可能需要重新确认兼容性。
 

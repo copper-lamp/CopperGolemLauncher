@@ -7,7 +7,7 @@
   <p>A modern, modular launcher for Minecraft Bedrock — bringing versions, accounts, and game content together in one clean, fast entry point.</p>
 
   <p>
-    <img src="https://img.shields.io/badge/release-0.0.3--pre-4c8bf5?style=flat-square" alt="release v0.0.3 pre-release">
+    <img src="https://img.shields.io/badge/release-0.0.4--pre-4c8bf5?style=flat-square" alt="release v0.0.4 pre-release">
     <img src="https://img.shields.io/badge/Minecraft%20Bedrock-Windows%20x64-62b47a?style=flat-square" alt="Windows x64 Minecraft Bedrock">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 License"></a>
   </p>
@@ -64,7 +64,7 @@ CopperGolem follows semantic versioning. Current release status:
 
 | Platform | Version | Status |
 | --- | --- | --- |
-| Windows x64 · Minecraft Bedrock | `0.0.3` | Pre-release (closed beta, NSIS installer) |
+| Windows x64 · Minecraft Bedrock | `0.0.4` | Pre-release (closed beta, NSIS installer) |
 
 > [!NOTE]
 > Android is still being adapted and ships no installer in this release; the CI APK job is disabled for now (see the `release` workflow comment for how to re-enable it).
@@ -97,8 +97,8 @@ Always get builds from this repository's [Releases](https://github.com/copper-la
 
 ## Status & Roadmap
 
-- **Available now** — core kernel services and a modular desktop shell; game version download and install, isolated instances and launching (including the LeviLamina loader), genuine account sign-in, a content center (CurseForge / LIP / addons), a unified download center, and self-update.
-- **In progress** — Android support, dynamic loading and isolation for addon modules (Agent / MCP), and ongoing hardening of the download and install pipelines.
+- **Available now** — core kernel services and a modular desktop shell; game version download and install, isolated instances and launching (including the LeviLamina loader), genuine account sign-in, a content center (CurseForge / LIP / addons), a unified download center, self-update, and external-module import/install/uninstall with restart-based loading.
+- **In progress** — Android support, continued isolation and compatibility hardening for addon modules (Agent / MCP), and ongoing hardening of the download and install pipelines.
 - **Planned** — modpack export and import, more content sources and mirror policies, and a feasibility study for Linux.
 
 > [!TIP]
@@ -108,7 +108,7 @@ Always get builds from this repository's [Releases](https://github.com/copper-la
 
 - The project is in early development; the interface and capabilities are actively changing and do not represent the final form. Pre-release builds may introduce incompatible changes.
 - The desktop build supports Windows x64 Bedrock only; Android is still being adapted and ships no artifact in this release (the CI APK job is disabled); Linux has CI build artifacts but its launch path is not adapted yet; no macOS builds.
-- Addon modules cannot be installed from the launcher yet; dynamic loading is still in development.
+- External modules support local `.cglm` import and approved-source installation, followed by a restart. Install trusted code only. The independent Pack Workshop is not bundled; its publishing/scanning pipeline and tool licensing are not claimed complete by this launcher release.
 - End-to-end install verification with real Windows Store accounts is limited, so diagnosing abnormal account states still relies on user logs.
 - Compatibility may need to be re-verified after Minecraft or system updates.
 
