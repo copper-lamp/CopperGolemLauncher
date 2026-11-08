@@ -385,7 +385,19 @@
     "launch_preload_count": "{count} native modules",
     "launch_preload_external": "Handled by an external preloader",
     "launch_unavailable": "Launch file state is unavailable on this platform.",
-    "mode_no_client": "Client mode is on, but no client is selected. Click a client in the list below."
+    "mode_no_client": "Client mode is on, but no client is selected. Click a client in the list below.",
+    "no_match": "No matching clients.",
+    "search_placeholder": "Search clients…",
+    "panel_empty": "Select a client on the left, or drop a DLL here to install one.",
+    "drop_title": "Drop a DLL to install a client",
+    "drop_hint": "Or click to choose a file",
+    "importing": "Importing…",
+    "drop_not_dll": "Only DLL files can be imported.",
+    "inject_title": "Injection",
+    "inject_hint": "Wait {seconds} seconds after the game starts, then inject the client DLL. Changes apply on the next launch.",
+    "inject_unit": "s",
+    "inject_range": "Injection delay must be between 1 and 120 seconds.",
+    "inject_saved": "Injection delay updated"
   },
   "widget": {
     "mods": {

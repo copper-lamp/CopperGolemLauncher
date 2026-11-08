@@ -503,6 +503,7 @@ pub fn run() {
             commands::home::home_clients_list,
             commands::home::home_client_import,
             commands::home::home_client_delete,
+            commands::home::home_client_set_inject_delay,
             commands::home::home_client_reinject,
             // 游戏下载模块（game-download）
             commands::game_download::game_download_manifest,

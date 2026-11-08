@@ -17,7 +17,8 @@
 //! # 注入时机
 //!
 //! 客户端不随游戏进程启动加载：游戏主模块与图形初始化尚未完成时，第三方客户端
-//! （Latite 等）的挂钩会找不到目标符号。启动器在游戏进程起来 5 秒后通过远程线程
+//! （Latite 等）的挂钩会找不到目标符号。启动器在游戏进程起来后等待一段延迟
+//! （每个客户端各自保存，默认 10 秒、可在「管理客户端」页调整）再通过远程线程
 //! LoadLibraryW 注入，并在注入后核对模块表；失败时开始页提供「重新注入」入口。
 //! 注入失败**不终止游戏**。
 //!
@@ -45,28 +46,40 @@ use crate::services::database::{DatabaseService, Migration};
 use crate::services::paths::Paths;
 
 /// 客户端库表迁移（作用域 module:home）。
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "module_home_client",
-    sql: "CREATE TABLE IF NOT EXISTS module_home_client (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            file_name   TEXT NOT NULL,
-            sha256      TEXT NOT NULL,
-            size        INTEGER NOT NULL,
-            imported_at INTEGER NOT NULL
-          );
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_module_home_client_name
-            ON module_home_client(name COLLATE NOCASE);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_module_home_client_sha256
-            ON module_home_client(sha256);",
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "module_home_client",
+        sql: "CREATE TABLE IF NOT EXISTS module_home_client (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                file_name   TEXT NOT NULL,
+                sha256      TEXT NOT NULL,
+                size        INTEGER NOT NULL,
+                imported_at INTEGER NOT NULL
+              );
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_module_home_client_name
+                ON module_home_client(name COLLATE NOCASE);
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_module_home_client_sha256
+                ON module_home_client(sha256);",
+    },
+    Migration {
+        version: 2,
+        name: "module_home_client_inject_delay",
+        sql: "ALTER TABLE module_home_client
+                ADD COLUMN inject_delay_ms INTEGER NOT NULL DEFAULT 10000;",
+    },
+];
 
-/// 客户端注入前等待多久（毫秒）。
+/// 客户端注入的默认等待时长（毫秒）。
 ///
-/// 用户的验收口径是「游戏启动后 5s」；数值写死在这里而不是设置项：时机是
-/// 客户端能否成功挂钩的硬约束，交给用户调只会制造「调坏了还不知道」的故障。
-pub const INJECTION_DELAY_MS: u64 = 5_000;
+/// 时机是客户端能否成功挂钩的硬约束，但不同客户端对初始化阶段的敏感度不同
+/// （有的等主菜单、有的等图形设备就绪），所以延迟按客户端记录各自保存：
+/// 默认 10 秒，允许在「管理客户端」页调整。
+pub const DEFAULT_INJECTION_DELAY_MS: u64 = 10_000;
+/// 注入延迟允许的上下界（毫秒）。
+pub const MIN_INJECTION_DELAY_MS: u64 = 1_000;
+pub const MAX_INJECTION_DELAY_MS: u64 = 120_000;
 
 /// 单个客户端文件的大小上限（512 MiB）。超过这个体积的 DLL 不可能是客户端。
 const MAX_CLIENT_BYTES: u64 = 512 * 1024 * 1024;
@@ -83,6 +96,8 @@ pub struct ClientView {
     pub sha256: String,
     pub size: u64,
     pub imported_at: i64,
+    /// 启动后等待多久再注入（毫秒）。按客户端保存，默认 10 秒。
+    pub inject_delay_ms: u64,
     /// 客户端 DLL 的绝对路径（排障 / 打开目录用）。
     pub path: String,
     /// 文件是否仍在客户端目录里（被外部删掉时置 false）。
@@ -239,6 +254,7 @@ fn row_to_view(paths: &Paths, row: &rusqlite::Row<'_>) -> Result<ClientView, rus
     let sha256: String = row.get(3)?;
     let size: i64 = row.get(4)?;
     let imported_at: i64 = row.get(5)?;
+    let inject_delay_ms: i64 = row.get(6)?;
     let path = client_path(paths, &id, &file_name);
     Ok(ClientView {
         id,
@@ -247,6 +263,7 @@ fn row_to_view(paths: &Paths, row: &rusqlite::Row<'_>) -> Result<ClientView, rus
         sha256,
         size: size.max(0) as u64,
         imported_at,
+        inject_delay_ms: inject_delay_ms.max(0) as u64,
         available: path.is_file(),
         path: path.to_string_lossy().into_owned(),
     })
@@ -260,7 +277,7 @@ fn client_path(paths: &Paths, id: &str, file_name: &str) -> PathBuf {
 pub fn list(paths: &Paths, db: &DatabaseService) -> Result<Vec<ClientView>, KernelError> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, name, file_name, sha256, size, imported_at
+            "SELECT id, name, file_name, sha256, size, imported_at, inject_delay_ms
                FROM module_home_client
               ORDER BY imported_at DESC, name COLLATE NOCASE",
         )?;
@@ -281,7 +298,7 @@ pub fn get(
     db.with_conn(|conn| {
         Ok(conn
             .query_row(
-                "SELECT id, name, file_name, sha256, size, imported_at
+                "SELECT id, name, file_name, sha256, size, imported_at, inject_delay_ms
                    FROM module_home_client WHERE id = ?1",
                 [id],
                 |row| row_to_view(paths, row),
@@ -292,6 +309,38 @@ pub fn get(
 
 fn publish_changed(events: &EventBus) {
     events.publish("clients.changed", serde_json::json!({}));
+}
+
+/// 调整某个客户端的注入延迟（毫秒）。
+///
+/// 延迟按客户端保存而不是按实例：同一个 DLL 在不同实例里的初始化节奏没有差别，
+/// 按实例存只会让人误以为「换个实例设置就丢了」。
+pub fn set_inject_delay(
+    paths: &Paths,
+    db: &DatabaseService,
+    events: &EventBus,
+    id: &str,
+    delay_ms: u64,
+) -> Result<ClientView, KernelError> {
+    if !(MIN_INJECTION_DELAY_MS..=MAX_INJECTION_DELAY_MS).contains(&delay_ms) {
+        return Err(KernelError::InvalidArgument(format!(
+            "注入时机需要在 {} 到 {} 秒之间",
+            MIN_INJECTION_DELAY_MS / 1000,
+            MAX_INJECTION_DELAY_MS / 1000
+        )));
+    }
+    if get(paths, db, id)?.is_none() {
+        return Err(KernelError::InvalidArgument("客户端不存在".into()));
+    }
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE module_home_client SET inject_delay_ms = ?1 WHERE id = ?2",
+            rusqlite::params![delay_ms as i64, id],
+        )?;
+        Ok(())
+    })?;
+    publish_changed(events);
+    get(paths, db, id)?.ok_or_else(|| KernelError::Database(rusqlite::Error::QueryReturnedNoRows))
 }
 
 /// 导入一个客户端 DLL。
@@ -472,10 +521,11 @@ pub fn launch_plan(
             client.name
         )));
     }
+    let delay_ms = client.inject_delay_ms;
     Ok(Some(ClientLaunchPlan {
         client,
         dll,
-        delay_ms: INJECTION_DELAY_MS,
+        delay_ms,
     }))
 }
 
@@ -497,7 +547,7 @@ fn generation_is(instance: &str, expected: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// 启动后 5s 自动注入（后台线程，不阻塞启动命令）。
+/// 启动后按客户端配置的延迟自动注入（后台线程，不阻塞启动命令）。
 #[cfg(windows)]
 pub fn schedule_injection(
     events: Arc<EventBus>,
@@ -822,7 +872,18 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(plan.client.id, view.id);
-        assert_eq!(plan.delay_ms, INJECTION_DELAY_MS);
+        assert_eq!(view.inject_delay_ms, DEFAULT_INJECTION_DELAY_MS);
+        assert_eq!(plan.delay_ms, DEFAULT_INJECTION_DELAY_MS);
+
+        // 注入延迟按客户端保存，越界值被拒绝。
+        assert!(set_inject_delay(&paths, &db, &events, &view.id, 500).is_err());
+        assert!(set_inject_delay(&paths, &db, &events, &view.id, 600_000).is_err());
+        let adjusted = set_inject_delay(&paths, &db, &events, &view.id, 15_000).unwrap();
+        assert_eq!(adjusted.inject_delay_ms, 15_000);
+        let plan = launch_plan(&paths, &db, Some("client"), Some(&view.id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.delay_ms, 15_000);
 
         // 文件被外部删掉：计划拒绝，而不是加载不存在的路径。
         std::fs::remove_file(&view.path).unwrap();

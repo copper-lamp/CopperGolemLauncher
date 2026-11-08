@@ -385,7 +385,19 @@
     "launch_preload_count": "{count} 个原生模块",
     "launch_preload_external": "外部预加载器接管",
     "launch_unavailable": "该平台读不到启动文件状态。",
-    "mode_no_client": "客户端模式已开启，但还没有选择客户端；请点击下方本地列表选择。"
+    "mode_no_client": "客户端模式已开启，但还没有选择客户端；请点击下方本地列表选择。",
+    "no_match": "没有匹配的客户端。",
+    "search_placeholder": "搜索客户端…",
+    "panel_empty": "在左侧选择一个客户端，或直接拖入 DLL 安装新的客户端。",
+    "drop_title": "拖入 DLL 安装客户端",
+    "drop_hint": "也可以点击选择文件",
+    "importing": "正在导入…",
+    "drop_not_dll": "只支持导入 DLL 文件。",
+    "inject_title": "注入设置",
+    "inject_hint": "游戏启动后等待 {seconds} 秒，再把客户端 DLL 注入进程。修改后下次启动生效。",
+    "inject_unit": "秒",
+    "inject_range": "注入时机需要在 1 到 120 秒之间。",
+    "inject_saved": "注入时机已更新"
   },
   "widget": {
     "mods": {

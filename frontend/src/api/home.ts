@@ -470,6 +470,8 @@ export interface ClientView {
   sha256: string;
   size: number;
   imported_at: number;
+  /** 启动后等待多久再注入（毫秒），按客户端保存，默认 10000。 */
+  inject_delay_ms: number;
   /** 客户端 DLL 的绝对路径。 */
   path: string;
   /** 文件是否还在客户端目录里。 */
@@ -496,6 +498,11 @@ export function homeClientsList(): Promise<ClientView[]> {
 /** 导入客户端 DLL（会复制进启动器数据目录并写库）。 */
 export function homeClientImport(sourcePath: string, name: string): Promise<ClientView> {
   return call<ClientView>("home_client_import", { sourcePath, name });
+}
+
+/** 调整客户端注入延迟（毫秒）；后端会校验 1–120 秒并返回更新后的记录。 */
+export function homeClientSetInjectDelay(id: string, delayMs: number): Promise<ClientView> {
+  return call<ClientView>("home_client_set_inject_delay", { id, delayMs });
 }
 
 /** 删除客户端（数据库记录 + 文件；游戏正在使用该 DLL 时会失败）。 */

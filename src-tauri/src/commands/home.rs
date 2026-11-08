@@ -243,6 +243,21 @@ pub fn home_client_delete(kernel: State<'_, KernelContext>, id: String) -> Comma
     Ok(())
 }
 
+/// 调整某个客户端的注入延迟（毫秒），返回更新后的记录。
+///
+/// 延迟按客户端保存：同一个 DLL 在不同实例里的初始化节奏一致，按实例存只会
+/// 让用户以为「换个实例设置就丢了」。
+#[tauri::command]
+pub fn home_client_set_inject_delay(
+    kernel: State<'_, KernelContext>,
+    id: String,
+    delay_ms: u64,
+) -> CommandResult<client::ClientView> {
+    client::ensure_supported().map_err(into_command_error)?;
+    client::set_inject_delay(kernel.paths(), kernel.db(), kernel.events(), &id, delay_ms)
+        .map_err(into_command_error)
+}
+
 /// 客户端删除后，把各实例里指向它的 client_id 清掉，避免留下悬空引用。
 fn clear_client_references(versions_root: &std::path::Path, client_id: &str) {
     for mut version in meta::scan_versions(versions_root) {
