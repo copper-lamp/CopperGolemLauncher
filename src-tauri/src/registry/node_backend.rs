@@ -377,15 +377,32 @@ impl Module for NodeAgentProxyModule {
     }
 
     fn invoke(&self, command: &str, args: Value) -> Result<Value, KernelError> {
-        // 白名单：只转发受监管 Agent 协议里已定义的方法，不做任意方法透传。
-        // 模块自带脚本无法经此通道让内核执行计划外的方法。
-        if !AGENT_METHODS.iter().any(|method| *method == command) {
+        // 既有 Agent 方法保持原有线格式；普通附加模块命令不能冒充控制面 wire 方法。
+        if AGENT_METHODS.contains(&command) {
+            return self.with_session(|session| session.request(command, args));
+        }
+        let reserved = ["agent", "module", "capability", "event", "intent", "hello", "fatal"];
+        if command.is_empty()
+            || command.len() > 256
+            || command.chars().any(char::is_whitespace)
+            || command.chars().any(char::is_control)
+            || reserved.iter().any(|namespace| command == *namespace || command.starts_with(&format!("{namespace}.")))
+        {
             return Err(KernelError::Module(format!(
-                "模块 `{}` 不接受命令 `{command}`：不在受监管 Agent 方法白名单内",
+                "模块 `{}` 不接受命令 `{command}`：保留控制面或无效模块业务命令",
                 self.id
             )));
         }
-        self.with_session(|session| session.request(command, args))
+        let params = serde_json::to_value(copper_module_abi::ipc::InvokeRequest {
+            command: command.to_owned(),
+            args,
+        }).map_err(|error| KernelError::Module(format!("模块命令编码失败: {error}")))?;
+        let response = self.with_session(|session| {
+            session.request(copper_module_abi::ipc::METHOD_MODULE_INVOKE, params)
+        })?;
+        let envelope: copper_module_abi::ipc::InvokeResponse = serde_json::from_value(response)
+            .map_err(|error| KernelError::Module(format!("Node module.invoke 响应结构无效: {error}")))?;
+        Ok(envelope.result)
     }
 }
 
@@ -537,6 +554,58 @@ mod tests {
             "错误应指出被拒的命令名：{}",
             error.friendly()
         );
+    }
+
+    #[test]
+    fn generic_module_invoke_roundtrips_and_rejects_invalid_envelopes() {
+        let temp = TempDir::new();
+        let entry = temp.0.join("generic.mjs");
+        fs::write(&entry, r#"import readline from 'node:readline';
+let calls = 0;
+const send = value => process.stdout.write(JSON.stringify(value) + '\n');
+readline.createInterface({input:process.stdin}).on('line', line => {
+  const f = JSON.parse(line);
+  if (f.kind === 'hello') {
+    const agent = ['agent.credentials.set','agent.credentials.clear','agent.model.set','agent.session.load','agent.prompt','agent.cancel','agent.ping','agent.shutdown'];
+    if (JSON.stringify(f.capabilities) !== JSON.stringify([...agent,'module.invoke'])) process.exit(9);
+    send({kind:'hello',version:2,protocol:'copper-addon.ndjson',supported_versions:[2],runtime:'generic-test',capabilities:['module.invoke']});
+  } else if (f.method === 'agent.ping') {
+    send({kind:'response',version:2,id:f.id,result:{pong:true,calls}});
+  } else if (f.method === 'agent.shutdown') {
+    send({kind:'response',version:2,id:f.id,result:{}}); process.exit(0);
+  } else if (f.method === 'module.invoke') {
+    calls++;
+    const {command,args} = f.params;
+    if (command === 'example.bad') send({kind:'response',version:2,id:f.id,result:{ok:true}});
+    else if (command === 'example.extra') send({kind:'response',version:2,id:f.id,result:{result:1,unexpected:true}});
+    else if (command === 'example.wireError') send({kind:'response',version:2,id:f.id,error:{code:'TEST_DENIED',message:'denied'}});
+    else send({kind:'response',version:2,id:f.id,result:{result:{ok:!args.fail,command,args}}});
+  } else process.exit(10);
+});"#).unwrap();
+        let executable = resolve_node_executable(None, &std::env::var_os("PATH").unwrap_or_default(), cfg!(windows))
+            .expect("本用例要求本机装有 Node");
+        let module = NodeAgentProxyModule::new(
+            &runtime_manifest(">=22.19.0"), executable, entry,
+            semver::Version::new(22, 19, 0), Arc::new(NoCapabilities), Arc::new(EventBus::new()),
+        );
+        module.init_module().expect("真实Node完成握手并校验能力顺序");
+        module.start_module().unwrap();
+        let args = json!({"method":"config.get","params":{"nested":[1,true,null]}});
+        let result = module.invoke("example.dispatch", args.clone()).unwrap();
+        assert_eq!(result, json!({"ok":true,"command":"example.dispatch","args":args}));
+        assert_eq!(module.invoke("example.dispatch", json!({"fail":true})).unwrap()["ok"], false);
+        for command in ["example.bad", "example.extra"] {
+            let error = module.invoke(command, json!({})).unwrap_err().friendly();
+            assert!(error.contains("响应结构无效"), "{error}");
+        }
+        assert!(module.invoke("example.wireError", json!({})).unwrap_err().friendly().contains("TEST_DENIED"));
+        for command in ["agent.evil", "module.invoke", "module.handshake", "capability.request", "event.dispatch", "intent.handle", "hello", "fatal", "", "bad command", "bad\ncommand"] {
+            assert!(module.invoke(command, json!({})).unwrap_err().friendly().contains("不接受命令"));
+        }
+        let ping = module.invoke(METHOD_AGENT_PING, json!({})).unwrap();
+        assert_eq!(ping, json!({"pong":true,"calls":5}), "被拒控制面不能发往Node；Agent返回值保持原样");
+        module.stop_module().unwrap();
+        assert!(!module.is_running());
     }
 
     #[test]

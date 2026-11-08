@@ -49,7 +49,9 @@ pub(crate) fn host_hello_frame() -> WireFrame {
         protocol: WIRE_PROTOCOL_ID.to_owned(),
         supported_versions: vec![PROTOCOL_VERSION],
         runtime: "copper-core".to_owned(),
-        capabilities: AGENT_METHODS.iter().map(|method| (*method).to_owned()).collect(),
+        capabilities: AGENT_METHODS.iter().copied()
+            .chain(std::iter::once(copper_module_abi::ipc::METHOD_MODULE_INVOKE))
+            .map(str::to_owned).collect(),
     }
 }
 
