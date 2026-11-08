@@ -1,6 +1,6 @@
 [package]
 name = "copper-core-hook"
-version = "0.0.2"
+version = "0.0.3"
 description = "铜傀儡注入侧 hook DLL：实例隔离（目录重定向）与原生预加载清单执行"
 edition.workspace = true
 license.workspace = true

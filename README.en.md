@@ -7,7 +7,7 @@
   <p>A modern, modular launcher for Minecraft Bedrock — bringing versions, accounts, and game content together in one clean, fast entry point.</p>
 
   <p>
-    <img src="https://img.shields.io/badge/release-0.0.2--pre-4c8bf5?style=flat-square" alt="release v0.0.2 pre-release">
+    <img src="https://img.shields.io/badge/release-0.0.3--pre-4c8bf5?style=flat-square" alt="release v0.0.3 pre-release">
     <img src="https://img.shields.io/badge/Minecraft%20Bedrock-Windows%20x64-62b47a?style=flat-square" alt="Windows x64 Minecraft Bedrock">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 License"></a>
   </p>
@@ -64,7 +64,7 @@ CopperGolem follows semantic versioning. Current release status:
 
 | Platform | Version | Status |
 | --- | --- | --- |
-| Windows x64 · Minecraft Bedrock | `0.0.2` | Pre-release (closed beta, NSIS installer) |
+| Windows x64 · Minecraft Bedrock | `0.0.3` | Pre-release (closed beta, NSIS installer) |
 
 > [!NOTE]
 > Android is still being adapted and ships no installer in this release; the CI APK job is disabled for now (see the `release` workflow comment for how to re-enable it).

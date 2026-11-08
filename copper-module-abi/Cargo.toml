@@ -1,6 +1,6 @@
 [package]
 name = "copper-module-abi"
-version = "0.0.2"
+version = "0.0.3"
 description = "铜傀儡 · 附加模块稳定契约层：模块 id 规则、宿主 IPC 协议、插件 ABI 与 helper 运行时"
 edition.workspace = true
 license.workspace = true

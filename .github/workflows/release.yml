@@ -71,7 +71,9 @@ jobs:
           tagName: ${{ steps.changelog.outputs.tag }}
           releaseName: '铜傀儡 ${{ steps.changelog.outputs.tag }}'
           releaseBody: ${{ steps.changelog.outputs.body }}
-          releaseDraft: true
+          # 直接发布，不留草稿：草稿需要再手动点一次「发布」，容易漏、也容易把
+          # 半成品链接发给别人。构建成功即对外可见，失败则由工作流自身报错。
+          releaseDraft: false
           # 内测阶段：自动发布一律标记为预发布（Pre-release）。
           # 转为正式版时改回 false，并同步调整 README / CHANGELOG.md 的状态描述。
           prerelease: true
@@ -81,7 +83,7 @@ jobs:
   # 为什么不用 upload-artifact：GitHub 的 artifact 一律被打包成 zip（这是它的固定
   # 行为），想要「下载下来就是一个 apk、不套一层 zip」只能挂成 Release 资产。
   #
-  # 与桌面版共用同一个草稿 Release：两个 job 用同一个 tagName，谁先到谁建，
+  # 与桌面版共用同一个 Release：两个 job 用同一个 tagName，谁先到谁建，
   # 后到的把文件追加进去；`gh release upload --clobber` 保证重跑不冲突。
   #
   # 暂时禁用（2026-11-01）：CI 的 `tauri android build` 长期在「打包 Android APK」
@@ -144,7 +146,7 @@ jobs:
           npm ci
           npm --prefix frontend ci
 
-      # 与桌面 job 同一个事实源：Android 资产挂到同一个草稿 Release，
+      # 与桌面 job 同一个事实源：Android 资产挂到同一个 Release，
       # 若由本 job 先创建 Release，正文同样取 CHANGELOG.md。
       - name: 读取 CHANGELOG 发布说明
         id: changelog
@@ -175,19 +177,19 @@ jobs:
           cp "${files[0]}" "dist/CopperGolem-${GITHUB_REF_NAME}-android-arm64-debug.apk"
           ls -l dist
 
-      - name: 创建草稿 Release
+      - name: 创建 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ steps.changelog.outputs.tag }}
         run: |
           set -e
           if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            gh release create "$TAG_NAME" --draft --prerelease --title "铜傀儡 $TAG_NAME" --notes-file release-notes.md
+            gh release create "$TAG_NAME" --prerelease --title "铜傀儡 $TAG_NAME" --notes-file release-notes.md
           fi
           {
             echo "## Android APK"
             echo ""
-            echo "草稿 Release \`$TAG_NAME\` 的资产（发布后即为直链下载）："
+            echo "Release \`$TAG_NAME\` 的资产（发布后即为直链下载）："
             echo "\`CopperGolem-$TAG_NAME-android-arm64-debug.apk\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
