@@ -426,16 +426,22 @@ function onUpdated(updated: VersionView) {
 .entry {
   height: 100%;
   min-height: 0;
+  display: flex;
   overflow-y: auto;
   padding: var(--copper-space-4);
 }
 
-/* 6:4：左侧信息卡，右侧动作栏。动作列有上限宽度，窗口拉宽时不会变成一把横条。 */
+/* 主栏吃掉剩余宽度，动作栏固定一档副栏宽度（与全站副栏同宽），
+ * 这样中间不会留下一条谁都不属于的空白；卡片纵向拉伸填满内容区。 */
 .entry__grid {
+  flex: 1;
+  /* min-content 而不是 0：内容比视口高时让页面滚动、卡片跟着长高，
+   * 否则卡片被压成视口高度、内容溢出到卡片外面。 */
+  min-height: min-content;
   display: grid;
-  grid-template-columns: minmax(0, 6fr) minmax(180px, 4fr);
+  grid-template-columns: minmax(0, 1fr) var(--copper-aside-w-narrow);
   gap: var(--copper-space-5);
-  align-items: start;
+  align-items: stretch;
 }
 
 /* 信息卡不描边：表面色比页面底色高一档，再加一道很浅的投影就够了。
@@ -560,11 +566,13 @@ function onUpdated(updated: VersionView) {
   line-height: 1.5;
 }
 
+/* 行与行之间不画分隔线：行本身有 52px 的高度和悬停底色，
+ * 线是第二重边界，去掉后卡片内部只剩一层"表面 + 间距"的语言。 */
 .entry__rows {
   list-style: none;
   display: flex;
   flex-direction: column;
-  margin: 0;
+  margin: 0 calc(-1 * var(--copper-space-2));
   padding: 0;
 }
 
@@ -574,8 +582,13 @@ function onUpdated(updated: VersionView) {
   justify-content: space-between;
   gap: var(--copper-space-3);
   min-height: 52px;
-  padding: var(--copper-space-2) 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--copper-border) 55%, transparent);
+  padding: 0 var(--copper-space-2);
+  border-radius: var(--copper-radius-md);
+  transition: background-color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.entry__row:hover {
+  background-image: linear-gradient(var(--copper-hover), var(--copper-hover));
 }
 
 .entry__row-label {
@@ -589,8 +602,7 @@ function onUpdated(updated: VersionView) {
   flex-direction: column;
   gap: var(--copper-space-5);
   width: 100%;
-  max-width: 240px;
-  justify-self: end;
+  justify-self: stretch;
 }
 
 .entry__group {
@@ -690,7 +702,6 @@ function onUpdated(updated: VersionView) {
   }
 
   .entry__actions {
-    max-width: none;
     flex-direction: row;
     flex-wrap: wrap;
     gap: var(--copper-space-3);
