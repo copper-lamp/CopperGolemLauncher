@@ -386,6 +386,39 @@ pub fn home_mods_remove(
     mods::remove_mod(kernel.inner(), &name, &folder).map_err(into_command_error)
 }
 
+/// 批量启用 / 停用模组（多选面板用），返回实际处理的数量。
+#[tauri::command]
+pub fn home_mods_set_enabled_many(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folders: Vec<String>,
+    enabled: bool,
+) -> CommandResult<usize> {
+    mods::set_mods_enabled(kernel.inner(), &name, &folders, enabled).map_err(into_command_error)
+}
+
+/// 批量删除模组（多选面板用），返回实际删除的数量。
+#[tauri::command]
+pub fn home_mods_remove_many(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folders: Vec<String>,
+) -> CommandResult<usize> {
+    mods::remove_mods(kernel.inner(), &name, &folders).map_err(into_command_error)
+}
+
+/// 应用更新：把选中的模组按目录最新版本重新投递到下载队列，返回投递任务数。
+#[tauri::command]
+pub async fn home_mods_apply_updates(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folders: Vec<String>,
+) -> CommandResult<usize> {
+    mods::apply_updates(kernel.inner(), &name, &folders)
+        .await
+        .map_err(into_command_error)
+}
+
 /// 编辑模组清单。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]

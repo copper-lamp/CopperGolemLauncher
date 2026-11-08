@@ -239,7 +239,29 @@
     "saved": "模组清单已保存",
     "removed": "模组已删除",
     "author_none": "未署名",
-    "empty_filter": "该分类下没有模组"
+    "empty_filter": "该分类下没有模组",
+    "filters": {
+      "all": "全部",
+      "enabled": "启用",
+      "disabled": "禁用",
+      "updatable": "可更新"
+    },
+    "detail": "详情",
+    "detail_unavailable": "该模组不是从内容目录安装的，没有详情页",
+    "drop_title": "拖入 ZIP 安装模组",
+    "drop_hint": "也可以点击打开模组文件夹",
+    "drop_not_zip": "只支持拖入 ZIP 压缩包",
+    "importing": "正在安装…",
+    "update_all": "一键更新",
+    "apply_update": "更新",
+    "download": "下载模组",
+    "selected": "已选择 {count} 个文件",
+    "clear_selection": "取消选择",
+    "update_queued": "已投递 {count} 个更新任务",
+    "enabled_many": "已启用 {count} 个模组",
+    "disabled_many": "已停用 {count} 个模组",
+    "removed_many": "已删除 {count} 个模组",
+    "remove_many_confirm": "确定删除选中的 {count} 个模组吗？模组文件夹将被移除。"
   },
   "toast": {
     "launch_failed": "启动失败：{message}",

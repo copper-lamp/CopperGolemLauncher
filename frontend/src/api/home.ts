@@ -236,6 +236,12 @@ export interface ModView {
   enabled: boolean;
   /** 模组文件夹绝对路径。 */
   path: string;
+  /** 模组介绍（清单可选扩展字段，缺省为空）。 */
+  description: string;
+  /** 模组图标（data URL；清单未声明且目录里没有图标文件时为 null）。 */
+  icon: string | null;
+  /** 来源内容 id：从内容目录安装的模组才有，手动导入为 null（详情页跳转用）。 */
+  source_id: string | null;
 }
 
 /** 模组清单结果（`skipped` 为缺少清单被跳过的目录数）。 */
@@ -253,6 +259,8 @@ export function homeModsList(name: string): Promise<ModListResult> {
 export interface ModUpdate {
   folder: string;
   latest_version: string;
+  /** 来源下载记录 id（一键更新时后端据此重新投递，前端只用来判断归属）。 */
+  record_id: string;
 }
 
 /**
@@ -305,6 +313,25 @@ export function homeModsSetEnabled(
 /** 删除模组（移除整个模组文件夹）。 */
 export function homeModsRemove(name: string, folder: string): Promise<void> {
   return call<void>("home_mods_remove", { name, folder });
+}
+
+/** 批量启用 / 停用，返回实际处理的数量（多选面板用）。 */
+export function homeModsSetEnabledMany(
+  name: string,
+  folders: string[],
+  enabled: boolean,
+): Promise<number> {
+  return call<number>("home_mods_set_enabled_many", { name, folders, enabled });
+}
+
+/** 批量删除，返回实际删除的数量（多选面板用）。 */
+export function homeModsRemoveMany(name: string, folders: string[]): Promise<number> {
+  return call<number>("home_mods_remove_many", { name, folders });
+}
+
+/** 应用更新：把选中的模组按目录最新版本重新投递到下载队列，返回投递任务数。 */
+export function homeModsApplyUpdates(name: string, folders: string[]): Promise<number> {
+  return call<number>("home_mods_apply_updates", { name, folders });
 }
 
 /** 编辑模组清单，返回更新后的视图。 */

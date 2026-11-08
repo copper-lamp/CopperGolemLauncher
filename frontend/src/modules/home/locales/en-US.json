@@ -238,8 +238,30 @@
     "imported": "Mod imported",
     "saved": "Mod manifest saved",
     "removed": "Mod removed",
-    "author_none": "Unknown author",
-    "empty_filter": "No mods in this category"
+    "author_none": "Uncredited",
+    "empty_filter": "No mods in this filter",
+    "filters": {
+      "all": "All",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "updatable": "Updatable"
+    },
+    "detail": "Details",
+    "detail_unavailable": "This mod was not installed from the content catalog, so it has no detail page",
+    "drop_title": "Drop a ZIP to install a mod",
+    "drop_hint": "Or click to open the mods folder",
+    "drop_not_zip": "Only ZIP archives are supported",
+    "importing": "Installing…",
+    "update_all": "Update all",
+    "apply_update": "Update",
+    "download": "Download mods",
+    "selected": "{count} selected",
+    "clear_selection": "Clear selection",
+    "update_queued": "Queued {count} update downloads",
+    "enabled_many": "Enabled {count} mods",
+    "disabled_many": "Disabled {count} mods",
+    "removed_many": "Removed {count} mods",
+    "remove_many_confirm": "Remove the {count} selected mods? Their folders will be deleted."
   },
   "toast": {
     "launch_failed": "Launch failed: {message}",

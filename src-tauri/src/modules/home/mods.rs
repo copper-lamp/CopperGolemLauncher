@@ -50,6 +50,12 @@ pub struct ModManifest {
     /// 空作者不落盘（与 LeviLauncher 一致）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub author: String,
+    /// 介绍文案（可选扩展，LeviLauncher 清单里没有这一项，缺省为空）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// 图标文件名（可选扩展，相对模组目录；缺省时回退 pack_icon.png / icon.png）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
 }
 
 /// 模组视图（前端列表用）。
@@ -66,6 +72,12 @@ pub struct ModView {
     pub enabled: bool,
     /// 模组文件夹绝对路径。
     pub path: String,
+    /// 介绍文案；清单里没有时为空串。
+    pub description: String,
+    /// 图标 data URL；没有图标为 None，前端回退到默认图标。
+    pub icon: Option<String>,
+    /// 该模组对应的内容下载记录 id（手动导入的模组为 None，「详情」入口据此启用）。
+    pub source_id: Option<String>,
 }
 
 /// 模组清单结果。
@@ -100,9 +112,60 @@ pub fn mods_dir(kernel: &KernelContext, name: &str, create: bool) -> Result<Path
 }
 
 /// 列出模组。
+///
+/// 顺手把每个模组对应的内容下载记录 id 填进 `source_id`：详情页跳转要用它，
+/// 但记录查询在数据库层，纯文件层的 `list_mods_at` 不碰。
 pub fn list_mods(kernel: &KernelContext, name: &str) -> Result<ModListResult, KernelError> {
     let dir = mods_dir(kernel, name, true)?;
-    list_mods_at(&dir)
+    let mut result = list_mods_at(&dir)?;
+    let records = crate::modules::content_download::records(kernel).unwrap_or_default();
+    for view in &mut result.mods {
+        let mod_path = Path::new(&view.path);
+        view.source_id = records
+            .iter()
+            .find(|record| {
+                record.state == "installed" && record_covers(record.dest.as_deref(), mod_path)
+            })
+            .map(|record| record.id.clone());
+    }
+    Ok(result)
+}
+
+/// 批量启用 / 停用（多选操作）。只广播一次变更事件。
+pub fn set_mods_enabled(
+    kernel: &KernelContext,
+    name: &str,
+    folders: &[String],
+    enabled: bool,
+) -> Result<usize, KernelError> {
+    let root = mods_dir(kernel, name, false)?;
+    let mut changed = 0usize;
+    for folder in folders {
+        set_enabled_at(&root, folder, enabled)?;
+        changed += 1;
+    }
+    if changed > 0 {
+        publish_changed(kernel, name);
+    }
+    Ok(changed)
+}
+
+/// 批量删除（多选操作）。只广播一次变更事件。
+pub fn remove_mods(
+    kernel: &KernelContext,
+    name: &str,
+    folders: &[String],
+) -> Result<usize, KernelError> {
+    let root = mods_dir(kernel, name, false)?;
+    let mut removed = 0usize;
+    for folder in folders {
+        remove_mod_at(&root, folder)?;
+        removed += 1;
+    }
+    if removed > 0 {
+        publish_changed(kernel, name);
+    }
+    Ok(removed)
 }
 
 /// 从 ZIP 导入模组（`source` 为本地压缩包路径）。
@@ -299,19 +362,11 @@ fn save_manifest_at(
         write_manifest_map(path, &map)?;
     }
 
-    let manifest = ModManifest {
-        name: mod_name.into(),
-        entry: entry.into(),
-        version: version.into(),
-        mod_type: mod_type.into(),
-        author: author.into(),
-    };
-    Ok(to_view(
-        &dir,
-        folder.trim().to_string(),
-        manifest,
-        targets.iter().any(|(_, enabled)| *enabled),
-    ))
+    // 视图从磁盘重读：编辑只覆盖 5 个字段，介绍 / 图标等扩展字段要跟着清单走，
+    // 不能在内存里拼一个缺字段的结构体。
+    let (manifest, enabled) = load_manifest(&dir)
+        .ok_or_else(|| KernelError::InvalidArgument("模组清单缺失".into()))?;
+    Ok(to_view(&dir, folder.trim().to_string(), manifest, enabled))
 }
 
 /// ZIP 导入核心：解包 → 校验 → staging → 原子替换。
@@ -397,6 +452,8 @@ fn import_dll_at(
             mod_type.trim().into()
         },
         author: String::new(),
+        description: String::new(),
+        icon: String::new(),
     };
 
     let staging = staging_dir(root);
@@ -753,6 +810,7 @@ fn write_bytes_atomic(path: &Path, raw: &[u8]) -> Result<(), KernelError> {
 
 /// 构建前端视图。
 fn to_view(dir: &Path, folder: String, manifest: ModManifest, enabled: bool) -> ModView {
+    let icon = mod_icon(dir, &manifest.icon);
     ModView {
         folder,
         name: manifest.name,
@@ -762,7 +820,41 @@ fn to_view(dir: &Path, folder: String, manifest: ModManifest, enabled: bool) -> 
         entry: manifest.entry,
         enabled,
         path: dir.to_string_lossy().into_owned(),
+        description: manifest.description,
+        icon,
+        source_id: None,
     }
+}
+
+/// 模组图标的候选文件名（清单未指定时按顺序找第一个存在的）。
+const ICON_CANDIDATES: [&str; 3] = ["pack_icon.png", "icon.png", "logo.png"];
+/// 模组图标字节上限：列表里每个模组一张，过大宁可回退默认图标。
+const MOD_ICON_MAX_BYTES: u64 = 1024 * 1024;
+
+/// 读取模组图标并转成 data URL。
+///
+/// 清单里的 `icon` 只接受**单段文件名**：模组目录是外部可写的，允许相对路径就等于
+/// 让清单把启动器带到任意位置读文件。
+fn mod_icon(dir: &Path, declared: &str) -> Option<String> {
+    let declared = declared.trim();
+    if !declared.is_empty()
+        && !declared.contains(['/', '\\'])
+        && !declared.contains(':')
+        && !declared.contains("..")
+    {
+        if let Ok(Some(icon)) =
+            crate::modules::home::content::read_image_data_url(&dir.join(declared), MOD_ICON_MAX_BYTES)
+        {
+            return Some(icon);
+        }
+    }
+    ICON_CANDIDATES
+        .iter()
+        .find_map(|name| {
+            crate::modules::home::content::read_image_data_url(&dir.join(name), MOD_ICON_MAX_BYTES)
+                .ok()
+                .flatten()
+        })
 }
 
 // ---------------------------------------------------------------- 更新检查
@@ -775,6 +867,8 @@ pub struct ModUpdateView {
     pub folder: String,
     /// 目录里的最新版本号（仅用于提示，不代替用户确认）。
     pub latest_version: String,
+    /// 来源记录 id（`一键更新` 据此重新投递）。
+    pub record_id: String,
 }
 
 /// 检查可更新的模组。
@@ -817,9 +911,74 @@ pub async fn check_updates(
         out.push(ModUpdateView {
             folder: view.folder,
             latest_version: latest,
+            record_id: record.id.clone(),
         });
     }
     Ok(out)
+}
+
+/// 应用更新：把选中的模组按目录里的最新版本重新投递到下载队列。
+///
+/// 只处理**有更新来源**的模组（见 [`check_updates`]）；投递成功返回任务数，
+/// 单个模组失败不打断其它模组，失败原因汇总后一次性返回。
+pub async fn apply_updates(
+    kernel: &KernelContext,
+    name: &str,
+    folders: &[String],
+) -> Result<usize, KernelError> {
+    let updates = check_updates(kernel, name).await?;
+    let selected: Vec<ModUpdateView> = updates
+        .into_iter()
+        .filter(|update| folders.iter().any(|folder| folder == &update.folder))
+        .collect();
+    if selected.is_empty() {
+        return Err(KernelError::InvalidArgument(
+            "没有可更新的模组（只有从内容目录安装的模组才有更新来源）".into(),
+        ));
+    }
+    let mut queued = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for update in &selected {
+        let detail = crate::modules::content_download::ContentDownloadModule::detail(
+            kernel,
+            &update.record_id,
+        )
+        .await;
+        let Ok(detail) = detail else {
+            failures.push(format!("{}: 目录详情不可用", update.folder));
+            continue;
+        };
+        // 按最新版本挑文件：同一版本可能有多个文件（不同加载器变体），取第一个有直链的。
+        let Some(file) = detail
+            .files
+            .iter()
+            .find(|file| file.version == update.latest_version && !file.download_url.trim().is_empty())
+        else {
+            failures.push(format!("{}: 最新版本没有可用直链", update.folder));
+            continue;
+        };
+        match crate::modules::content_download::ContentDownloadModule::download(
+            kernel,
+            &update.record_id,
+            &file.id,
+            Some(name),
+        )
+        .await
+        {
+            Ok(_) => queued += 1,
+            Err(error) => failures.push(format!("{}: {error}", update.folder)),
+        }
+    }
+    if queued == 0 {
+        return Err(KernelError::InvalidArgument(format!(
+            "更新投递失败：{}",
+            failures.join("；")
+        )));
+    }
+    if !failures.is_empty() {
+        log::warn!("[mods] 部分更新投递失败: {}", failures.join("；"));
+    }
+    Ok(queued)
 }
 
 /// 下载记录的落点是否就是该模组目录（或其内部）。

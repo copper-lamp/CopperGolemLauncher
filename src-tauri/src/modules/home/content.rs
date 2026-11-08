@@ -490,7 +490,7 @@ fn preview_for_item(item: &ContentItem) -> Result<Option<String>, KernelError> {
 }
 
 /// 读图片文件并转成 data URL；文件不存在 / 过大 / 不是图片都返回 None。
-fn read_image_data_url(path: &Path, max_bytes: u64) -> Result<Option<String>, KernelError> {
+pub(crate) fn read_image_data_url(path: &Path, max_bytes: u64) -> Result<Option<String>, KernelError> {
     let Some(mime) = image_mime(&path.to_string_lossy()) else {
         return Ok(None);
     };
