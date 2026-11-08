@@ -300,7 +300,7 @@ impl NodeRuntimeSession {
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(KernelError::Module("Node runtime 已退出".into()));
+                    return Err(self.disconnected_error());
                 }
             };
             match frame {
@@ -334,6 +334,17 @@ impl NodeRuntimeSession {
             }
         }
         Ok(delivered)
+    }
+
+    fn disconnected_error(&mut self) -> KernelError {
+        let status = self.child.try_wait().ok().flatten()
+            .map(|status| status.to_string()).unwrap_or_else(|| "unknown".into());
+        let tail = self.stderr_tail();
+        KernelError::Module(if tail.trim().is_empty() {
+            format!("Node runtime 已退出（status: {status}）")
+        } else {
+            format!("Node runtime 已退出（status: {status}）；stderr tail: {}", tail.trim())
+        })
     }
 
     fn stderr_tail(&self) -> String {
@@ -391,7 +402,7 @@ impl NodeRuntimeSession {
             Ok(Ok(frame)) => Ok(frame),
             Ok(Err(error)) => Err(KernelError::Module(format!("Node runtime NDJSON 无效: {error}"))),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(KernelError::Module("等待 Node runtime 响应超时".into())),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(KernelError::Module("Node runtime 已退出".into())),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(self.disconnected_error()),
         }
     }
 }
@@ -583,6 +594,34 @@ pub fn resolve_runtime_entry(module_dir: &Path, runtime: &RuntimeSpec) -> Result
             "runtime 入口不在模块目录内或不是文件: {}",
             entry.display()
         )));
+    }
+    // Windows canonicalize returns verbatim paths (\\?\...), which Node's main
+    // entry resolver cannot reliably consume. Only normalize the representation
+    // after the canonical file and module-root containment checks above.
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let units: Vec<u16> = real_entry.as_os_str().encode_wide().collect();
+        let disk_prefix: Vec<u16> = r"\\?\".encode_utf16().collect();
+        let unc_prefix: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+        let normalized = if units.starts_with(&unc_prefix) {
+            let mut path = vec![b'\\' as u16, b'\\' as u16];
+            path.extend_from_slice(&units[unc_prefix.len()..]);
+            Some(path)
+        } else if units.starts_with(&disk_prefix) && units.get(5) == Some(&(b':' as u16)) {
+            Some(units[disk_prefix.len()..].to_vec())
+        } else {
+            None
+        };
+        if let Some(units) = normalized {
+            let node_entry = PathBuf::from(std::ffi::OsString::from_wide(&units));
+            let resolved = std::fs::canonicalize(&node_entry)
+                .map_err(|error| KernelError::Module(format!("解析 Node 兼容入口失败: {error}")))?;
+            if resolved != real_entry {
+                return Err(KernelError::Module("Node 兼容入口与已验证文件不一致".into()));
+            }
+            return Ok(node_entry);
+        }
     }
     Ok(real_entry)
 }

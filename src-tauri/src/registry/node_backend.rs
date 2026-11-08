@@ -283,6 +283,9 @@ impl NodeAgentProxyModule {
     /// 这条链路无法在真实子进程上被测试（与 [`crate::registry::helper_backend`] 同一
     /// 考虑）。`Module::init` 只是转调本方法。
     pub fn init_module(&self) -> Result<(), KernelError> {
+        log::info!("[addon/{}] 启动 Node（version: {}, executable: {}, argv: [{}], cwd: {}）",
+            self.id, self.node_version, self.executable.display(), self.entry.display(),
+            std::env::current_dir().map(|path| path.display().to_string()).unwrap_or_else(|_| "unknown".into()));
         let session = NodeRuntimeSession::launch(
             &self.executable,
             &self.entry,
