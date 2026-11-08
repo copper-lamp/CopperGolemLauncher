@@ -44,6 +44,26 @@ const LOCAL_CATALOGS: Record<string, Record<string, JsonValue>> = {
   "en-US": withModulePacks("en-US", enUS as unknown as Record<string, JsonValue>),
 };
 
+/** Runtime addon packs keyed by descriptor namespace; never overlay host namespaces. */
+const addonPacks = new Map<string, Record<string, Record<string, string>>>();
+export function registerAddonI18n(namespace: string, packs: Record<string, Record<string, string>>): void {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(namespace) || Object.keys(MODULE_LOCALES).includes(namespace)) throw new Error("Invalid or reserved module namespace");
+  const clean: Record<string, Record<string, string>> = {};
+  for (const [language, values] of Object.entries(packs)) {
+    if (!/^[a-zA-Z0-9-]+$/.test(language)) throw new Error("Invalid locale");
+    clean[language] = Object.fromEntries(Object.entries(values).map(([key, value]) => {
+      if (!key || typeof value !== "string") throw new Error("Invalid module translation");
+      return [key, value];
+    }));
+  }
+  addonPacks.set(namespace, clean);
+}
+export function translateAddon(namespace: string, key: string, params?: Record<string, string | number>): string {
+  const packs = addonPacks.get(namespace);
+  const text = packs?.[currentLocale.value]?.[key] ?? packs?.[FALLBACK_LOCALE]?.[key] ?? key;
+  return text.replace(/\{(\w+)\}/g, (match, name: string) => params && name in params ? String(params[name]) : match);
+}
+
 const currentLocale = ref<string>(FALLBACK_LOCALE);
 const catalog = ref<Record<string, JsonValue>>(
   LOCAL_CATALOGS[FALLBACK_LOCALE],
@@ -165,6 +185,13 @@ function lookup(root: Record<string, JsonValue>, key: string): JsonValue | undef
 }
 
 function rawText(key: string): string | undefined {
+  if (key.startsWith("module.")) {
+    const [, namespace, ...parts] = key.split(".");
+    const flat = parts.join(".");
+    const packs = addonPacks.get(namespace);
+    const value = packs?.[currentLocale.value]?.[flat] ?? packs?.[FALLBACK_LOCALE]?.[flat];
+    if (typeof value === "string") return value;
+  }
   const direct = lookup(catalog.value, key);
   if (typeof direct === "string") return direct;
   if (currentLocale.value !== FALLBACK_LOCALE) {

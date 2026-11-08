@@ -50,6 +50,8 @@ pub struct AddonFrontendView {
     pub entry_url: String,
     /// 需随入口一并加载的样式表 URL（模块 `frontend/` 下的全部 `.css`）。
     pub style_urls: Vec<String>,
+    /// Derived from actual manifest event declarations, not frontend self-report.
+    pub frontend_events: Vec<String>,
 }
 
 /// 列举可用的附加模块前端入口（已启用、且磁盘上确实存在入口脚本）。
@@ -100,6 +102,7 @@ pub fn list_frontends(kernel: &KernelContext) -> Vec<AddonFrontendView> {
             namespace: manifest.i18n_namespace.clone(),
             entry_url: format!("{URL_PREFIX}/{id}/{}", register.replace('\\', "/")),
             style_urls,
+            frontend_events: manifest.events.subscribe.iter().chain(manifest.events.publish.iter()).map(|name| name.replace('.', "-")).collect(),
         });
     }
 

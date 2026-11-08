@@ -11,6 +11,7 @@ import { computed, ref } from "vue";
 
 import {
   modulesList,
+  modulesInstalledAddons,
   type ModuleInfo,
 } from "../api/modules";
 import {
@@ -69,6 +70,8 @@ export function compareSemver(a: string, b: string): number | null {
 
 /** 条目为何不可安装（空数组表示可安装）。 */
 export type BlockReason =
+  | "approval"
+  | "asset"
   | "yanked"
   | "platform"
   | "min_launcher"
@@ -150,6 +153,9 @@ function entryBlockedBy(
 ): BlockReason[] {
   const reasons: BlockReason[] = [];
 
+  if (entry.status !== "approved") reasons.push("approval");
+  const asset = entry.assets?.find((a) => a.platform === currentPlatform());
+  if (!asset || !/^[a-f0-9]{64}$/i.test(asset.sha256 ?? "")) reasons.push("asset");
   if (entry.yanked === true) reasons.push("yanked");
 
   if (typeof schemaVersion === "number" && schemaVersion > SUPPORTED_SCHEMA_VERSION) {
@@ -270,7 +276,10 @@ export function setLauncherVersion(version: string | null): void {
 async function loadLocal(): Promise<void> {
   localLoading.value = true;
   try {
-    localModules.value = await modulesList();
+    const [registered, installed] = await Promise.all([modulesList(), modulesInstalledAddons()]);
+    const merged = new Map(installed.map((item) => [item.id, item]));
+    for (const item of registered) merged.set(item.id, item);
+    localModules.value = [...merged.values()];
   } finally {
     localLoading.value = false;
   }

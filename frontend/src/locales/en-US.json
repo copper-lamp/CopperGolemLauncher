@@ -229,7 +229,9 @@
         "min_launcher": "Requires launcher {version} or newer.",
         "max_launcher": "Supports launcher up to {version}.",
         "api_version": "This module targets a module API version the current kernel does not support.",
-        "schema": "The metadata schema version is not supported."
+        "schema": "The metadata schema version is not supported.",
+        "approval": "This entry is not approved.",
+        "asset": "A SHA-256-verified asset for this platform is missing."
       },
       "version": {
         "installed": "Installed {version}",
@@ -269,7 +271,14 @@
         "uninstall": "Uninstall",
         "details": "Details",
         "not_supported": "Cannot install now"
-      }
+      },
+      "import_local": "Import local .cglm",
+      "trust_registry": "Install {name}? Module code runs with your user privileges in the host. Only install code you trust. Restart is required.",
+      "trust_local": "Choose and install a local .cglm? It is not registry reviewed; its SHA-256 identifies bytes, not publisher trust. Backend code has your user privileges and frontend code shares the host WebView. Install only trusted packages. Restart is required.",
+      "uninstall_confirm": "Permanently uninstall {name}? Module files will be removed.",
+      "uninstall_running": "Disable this module and restart before uninstalling.",
+      "restart_required": "Module changes are saved. Restart the launcher to apply them.",
+      "working": "Working; please wait. Installation does not hot-load code."
     },
     "about": {
       "app_info": "About",

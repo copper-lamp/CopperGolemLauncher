@@ -99,6 +99,22 @@ pub async fn modules_install(
         .map_err(into_command_error)
 }
 
+/// 本地导入仅接受原生文件选择结果；调用方不能传入任意路径。
+#[tauri::command]
+pub async fn modules_import_local(app: tauri::AppHandle, kernel: State<'_, KernelContext>) -> CommandResult<Option<crate::registry::install::InstallOutcome>> {
+    use tauri_plugin_dialog::DialogExt;
+    let selected = app.dialog().file().add_filter("Copper module", &["cglm"]).blocking_pick_file();
+    let Some(selected) = selected else { return Ok(None) };
+    let selected = selected.into_path().map_err(|e| into_command_error(KernelError::Module(format!("无法读取所选模块包: {e}"))))?;
+    let outcome = crate::registry::install::install_local_package(&selected, kernel.paths().modules_dir(), |id| {
+        if kernel.modules().is_registered(id) && (kernel.modules().origin_of(id).is_builtin() || kernel.modules().is_running(id)) {
+            return Err(KernelError::Module("不能替换内置或正在运行的模块，请禁用并重启后重试".into()));
+        }
+        Ok(())
+    }).map_err(into_command_error)?;
+    Ok(Some(outcome))
+}
+
 /// 附加模块前端入口清单（供前端 Shell 运行期装配）。
 ///
 /// 只读磁盘，不装载：返回已启用、且磁盘上确有入口脚本的模块。
@@ -167,6 +183,7 @@ pub fn modules_installed_addons(kernel: State<'_, KernelContext>) -> CommandResu
 /// 3. 模块正在运行 —— 运行中的模块必须先停止，否则会留下无法回收的幽灵模块。
 #[tauri::command]
 pub fn modules_uninstall(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    let _operation = crate::registry::install::begin_mutation().map_err(into_command_error)?;
     let kernel = kernel.inner();
     let id = id.trim().to_string();
 

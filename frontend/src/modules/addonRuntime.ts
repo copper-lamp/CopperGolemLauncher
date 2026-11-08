@@ -4,7 +4,7 @@
 //
 // 模块代码在宿主 WebView 内执行，这是规格认可的**信任边界**——安装即信任代码。
 // 但信任不等于放任，宿主只暴露一个窄化桥：
-// - 模块拿不到内核注册表，也拿不到 Tauri 命令表；
+// - 桥不提供内核注册表或任意命令；同一 WebView 的可信代码不具备安全隔离；
 // - `invoke` 只允许调用**本模块自己**的命令：模块 id 由宿主绑定，不由模块声明。
 //
 // # 错误隔离
@@ -18,7 +18,9 @@
 // Vue 会让组件无法互操作。因此模板把 `vue` / `vue-router` 标记为外部依赖，由
 // `index.html` 的 import map 指向宿主提供的 vendor 文件（见 scripts/copy-vendor.mjs）。
 
-import type { Component } from "vue";
+import { watch, type Component } from "vue";
+import { listen } from "@tauri-apps/api/event";
+import { registerAddonI18n, translateAddon, useLocaleRef } from "../i18n";
 import type { RouteRecordRaw, Router } from "vue-router";
 
 import { invoke } from "@tauri-apps/api/core";
@@ -31,6 +33,8 @@ export interface AddonFrontendDescriptor {
   namespace: string;
   entry_url: string;
   style_urls: string[];
+  /** From real manifest subscribe/publish declarations, dot-to-hyphen mapped. */
+  frontend_events?: string[];
 }
 
 /** 模块提交的登记内容（模块 id 由宿主绑定，模块无权声明）。 */
@@ -49,6 +53,11 @@ export interface CopperHostBridge {
   registerModule(registration: AddonModuleRegistration): void;
   /** 调用**本模块自身**的命令。 */
   invoke(command: string, args?: unknown): Promise<unknown>;
+  registerI18n(packs: Record<string, Record<string, string>>): void;
+  t(key: string, params?: Record<string, string | number>): string;
+  locale(): string;
+  onLocaleChange(handler: (locale: string) => void): () => void;
+  listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void>;
 }
 
 declare global {
@@ -117,6 +126,17 @@ function injectStyles(descriptor: AddonFrontendDescriptor): void {
 
 function installHostBridge(descriptor: AddonFrontendDescriptor, router: Router): void {
   window.__COPPER_HOST__ = {
+    registerI18n(packs) { registerAddonI18n(descriptor.namespace, packs); },
+    t(key, params) { return translateAddon(descriptor.namespace, key, params); },
+    locale() { return useLocaleRef().value; },
+    onLocaleChange(handler) { return watch(useLocaleRef(), (value) => handler(value)); },
+    listen<T>(event: string, handler: (event: { payload: T }) => void) {
+      // Exact declarations and suffix wildcards only, matching the kernel manifest rules.
+      const allowed = descriptor.frontend_events?.some((pattern) => pattern.endsWith("*")
+        ? event.startsWith(pattern.slice(0, -1)) : pattern === event);
+      if (!allowed || !/^[a-zA-Z0-9_:/-]+$/.test(event)) return Promise.reject(new Error("Event not declared by this module"));
+      return listen<T>(event, handler);
+    },
     registerModule(registration) {
       registerModule({
         id: descriptor.id,

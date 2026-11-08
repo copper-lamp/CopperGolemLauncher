@@ -51,6 +51,9 @@ pub fn extract_package(archive_path: &Path, dest: &Path) -> Result<ExtractedPack
     std::fs::create_dir_all(dest)
         .map_err(|e| KernelError::Module(format!("创建解包临时目录失败: {e}")))?;
 
+    if zip.len() > 10_000 { return Err(KernelError::Module("模块包条目超过上限".into())); }
+    let mut names = std::collections::HashSet::new();
+    let mut unpacked = 0u64;
     // 逐条目解包并做路径安全校验。
     for index in 0..zip.len() {
         let mut entry = zip
@@ -64,6 +67,12 @@ pub fn extract_package(archive_path: &Path, dest: &Path) -> Result<ExtractedPack
         let relative = safe_relative_path(&raw_name).ok_or_else(|| {
             KernelError::Module(format!("模块包内含非法路径: {raw_name}"))
         })?;
+        let key = relative.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+        if !names.insert(key) { return Err(KernelError::Module("模块包含重复或大小写冲突路径".into())); }
+        unpacked = unpacked.checked_add(entry.size()).ok_or_else(|| KernelError::Module("模块包大小溢出".into()))?;
+        if unpacked > 1024 * 1024 * 1024 || entry.size() > 512 * 1024 * 1024 {
+            return Err(KernelError::Module("模块包解压大小超过上限".into()));
+        }
         if entry.is_dir() {
             std::fs::create_dir_all(dest.join(relative))
                 .map_err(|e| KernelError::Module(format!("创建解包目录失败: {e}")))?;
@@ -81,8 +90,8 @@ pub fn extract_package(archive_path: &Path, dest: &Path) -> Result<ExtractedPack
             .map_err(|e| KernelError::Module(format!("解包写入失败: {e}")))?;
     }
 
-    // 包内逐文件校验（存在则校验，缺失只告警——外层整包 sha256 已由下载引擎保证）。
-    verify_inner_checksums(dest);
+    // 声明了内层摘要就必须完全匹配；缺失时只有外层字节摘要，没有发布者认证。
+    verify_inner_checksums(dest)?;
 
     // 容器根清单：必须存在且可解析。
     let manifest_path = dest.join(MANIFEST_FILE);
@@ -138,50 +147,24 @@ pub fn promote_extracted(tmp_dir: &Path, modules_dir: &Path, id: &str) -> Result
 }
 
 /// 校验包内 `manifest.sha256` 列出的每个文件（存在则校验）。
-fn verify_inner_checksums(dest: &Path) {
+fn verify_inner_checksums(dest: &Path) -> Result<(), KernelError> {
     let checksum_path = dest.join(CHECKSUM_FILE);
-    let Ok(text) = std::fs::read_to_string(&checksum_path) else {
-        log::warn!(
-            "[package] 模块包缺少 {}，跳过包内逐文件校验（整包 sha256 已由下载引擎保证）",
-            CHECKSUM_FILE
-        );
-        return;
-    };
-
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.splitn(2, char::is_whitespace);
-        let Some(expected) = parts.next() else { continue };
-        let Some(rel) = parts.next().map(str::trim) else {
-            continue;
-        };
-        if rel.is_empty() || rel == CHECKSUM_FILE {
-            continue;
-        }
-        let Some(relative) = safe_relative_path(rel) else {
-            log::warn!("[package] 校验清单含非法路径，跳过: {rel}");
-            continue;
-        };
-        let file = dest.join(&relative);
-        match std::fs::read(&file) {
-            Ok(bytes) => {
-                let got = hex_digest(&bytes);
-                if !got.eq_ignore_ascii_case(expected) {
-                    log::warn!(
-                        "[package] 包内文件 {} sha256 与 manifest.sha256 不符（期望 {expected}，实际 {got}）",
-                        relative.display()
-                    );
-                }
-            }
-            Err(e) => log::warn!(
-                "[package] 校验清单列出的文件不存在 {}: {e}",
-                file.display()
-            ),
-        }
+    if !checksum_path.exists() {
+        log::warn!("[package] no inner checksums; outer digest is identity, not publisher authentication");
+        return Ok(());
     }
+    let text = std::fs::read_to_string(checksum_path)?;
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines().filter(|v| !v.trim().is_empty()) {
+        let (expected, rel) = line.split_once("  ").ok_or_else(|| KernelError::Module("模块包校验清单格式错误".into()))?;
+        if expected.len() != 64 || !expected.bytes().all(|v| v.is_ascii_hexdigit()) || rel == CHECKSUM_FILE || !seen.insert(rel.to_ascii_lowercase()) {
+            return Err(KernelError::Module("模块包校验清单摘要或重复条目错误".into()));
+        }
+        let relative = safe_relative_path(rel).ok_or_else(|| KernelError::Module("模块包校验清单含非法路径".into()))?;
+        let bytes = std::fs::read(dest.join(relative))?;
+        if !hex_digest(&bytes).eq_ignore_ascii_case(expected) { return Err(KernelError::Module(format!("模块包文件校验失败: {rel}"))); }
+    }
+    Ok(())
 }
 
 /// 计算字节的 sha256 十六进制串。
@@ -221,6 +204,7 @@ pub(crate) fn safe_relative_path(raw: &str) -> Option<PathBuf> {
             return None;
         }
         // 盘符形态（`C:`）或含冒号的组件一律拒绝（Windows ADS / 盘符）。
+        if part.ends_with('.') || part.ends_with(' ') || part.chars().any(|c| c.is_control()) { return None; }
         if part.contains(':') {
             return None;
         }
@@ -366,7 +350,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_paths_and_wrong_inner_hash() {
+        let pkg = build_package("duplicate", &[("module.json", MANIFEST.as_bytes()), ("MODULE.JSON", MANIFEST.as_bytes())]);
+        let dest = temp_dest("duplicate");
+        assert!(extract_package(&pkg, &dest).is_err());
+        let _ = std::fs::remove_dir_all(pkg.parent().unwrap()); let _ = std::fs::remove_dir_all(dest);
+        let hashline = format!("{}  module.json\n", "0".repeat(64));
+        let pkg = build_package("hash", &[("module.json", MANIFEST.as_bytes()), ("manifest.sha256", hashline.as_bytes())]);
+        let dest = temp_dest("hash"); assert!(extract_package(&pkg, &dest).is_err());
+        let _ = std::fs::remove_dir_all(pkg.parent().unwrap()); let _ = std::fs::remove_dir_all(dest);
+    }
+
+    #[test]
     fn safe_relative_path_rules() {
+        assert!(safe_relative_path("file.").is_none());
+        assert!(safe_relative_path("file ").is_none());
         assert!(safe_relative_path("frontend/register.js").is_some());
         assert!(safe_relative_path("a\\b.js").is_some());
         assert!(safe_relative_path("../x").is_none());

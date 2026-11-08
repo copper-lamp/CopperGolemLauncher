@@ -229,7 +229,9 @@
         "min_launcher": "需要启动器 {version} 或更高版本。",
         "max_launcher": "最高支持启动器 {version}。",
         "api_version": "该模块使用了当前内核不支持的模块 API 版本。",
-        "schema": "元数据格式版本不受支持。"
+        "schema": "元数据格式版本不受支持。",
+        "approval": "该条目尚未通过审核。",
+        "asset": "缺少当前平台具有 SHA-256 的资产。"
       },
       "version": {
         "installed": "已装 {version}",
@@ -269,7 +271,14 @@
         "uninstall": "卸载",
         "details": "详情",
         "not_supported": "当前不可安装"
-      }
+      },
+      "import_local": "导入本地 .cglm",
+      "trust_registry": "确认安装「{name}」？模块代码拥有当前用户权限，并在宿主中运行。请仅安装信任的代码，安装后需重启。",
+      "trust_local": "选择并安装本地 .cglm？本地包未经索引审核，SHA-256 仅标识字节而非发布者可信性。后端代码拥有当前用户权限，前端共享宿主 WebView。请仅安装信任的包，安装后需重启。",
+      "uninstall_confirm": "确认永久卸载「{name}」？模块文件将被删除。",
+      "uninstall_running": "请先禁用此模块并重启，再执行卸载。",
+      "restart_required": "模块变更已保存，请重启启动器后生效。",
+      "working": "正在处理，请稍候；安装不会热加载代码。"
     },
     "about": {
       "app_info": "关于本软件",

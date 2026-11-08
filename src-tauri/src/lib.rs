@@ -442,6 +442,7 @@ pub fn run() {
             commands::modules::modules_uninstall,
             // 附加模块：安装链路 + 前端入口清单 + 后端命令分发
             commands::modules::modules_install,
+            commands::modules::modules_import_local,
             commands::modules::modules_frontends,
             commands::modules::module_invoke,
             commands::intents::intents_request,

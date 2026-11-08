@@ -24,6 +24,15 @@ use crate::registry::package;
 use crate::services::registry::model::Platform;
 use crate::state::KernelContext;
 
+static MUTATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) struct MutationGuard;
+impl Drop for MutationGuard { fn drop(&mut self) { MUTATING.store(false, std::sync::atomic::Ordering::Release); } }
+pub(crate) fn begin_mutation() -> Result<MutationGuard, KernelError> {
+    MUTATING.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire)
+        .map_err(|_| KernelError::Module("另一个模块安装或卸载正在进行".into()))?;
+    Ok(MutationGuard)
+}
+
 /// 等待下载完成的最长时间（防止异常情况下命令永不返回）。
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 轮询下载状态的间隔。
@@ -37,10 +46,13 @@ pub struct InstallOutcome {
     pub version: String,
     /// 是否需要重启才能生效（当前恒为 true）。
     pub restart_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_sha256: Option<String>,
 }
 
 /// 安装一个远端条目。返回安装结果或明确错误。
 pub async fn install_addon(kernel: &KernelContext, id: &str) -> Result<InstallOutcome, KernelError> {
+    let _operation = begin_mutation()?;
     let id = id.trim();
     if !is_valid_module_id(id) {
         return Err(KernelError::Module(format!(
@@ -48,6 +60,9 @@ pub async fn install_addon(kernel: &KernelContext, id: &str) -> Result<InstallOu
         )));
     }
 
+    if kernel.modules().is_registered(id) && (kernel.modules().origin_of(id).is_builtin() || kernel.modules().is_running(id)) {
+        return Err(KernelError::Module("不能替换内置或正在运行的模块，请禁用并重启后重试".into()));
+    }
     let registry = kernel
         .registry()
         .ok_or_else(|| KernelError::Config("元数据服务未初始化".into()))?;
@@ -153,6 +168,7 @@ pub async fn install_addon(kernel: &KernelContext, id: &str) -> Result<InstallOu
                 id: id.to_string(),
                 version: entry.version,
                 restart_required: true,
+                package_sha256: Some(asset.sha256.clone()),
             })
         }
         Err(e) => {
@@ -186,5 +202,86 @@ async fn await_download(kernel: &KernelContext, task_id: u64) -> Result<(), Kern
             }
             _ => tokio::time::sleep(DOWNLOAD_POLL_INTERVAL).await,
         }
+    }
+}
+
+/// 安装用户选择的本地文件。摘要只绑定快照字节，不代表来源已审核。
+/// 可被受控集成测试调用；生产命令不暴露 path 参数。
+pub fn install_local_package(
+    archive: &std::path::Path,
+    modules_dir: &std::path::Path,
+    validate_target: impl Fn(&str) -> Result<(), KernelError>,
+) -> Result<InstallOutcome, KernelError> {
+    use std::io::{Read, Write};
+    use sha2::{Digest, Sha256};
+    let _operation = begin_mutation()?;
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    if !archive.extension().is_some_and(|v| v.eq_ignore_ascii_case("cglm")) {
+        return Err(KernelError::Module("请选择 .cglm 模块包".into()));
+    }
+    let mut source = std::fs::File::open(archive)?;
+    if !source.metadata()?.is_file() || source.metadata()?.len() > 512 * 1024 * 1024 {
+        return Err(KernelError::Module("模块包不是普通文件或超过 512 MiB".into()));
+    }
+    std::fs::create_dir_all(modules_dir)?;
+    let name = format!(".import-{}-{}", std::process::id(), SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let work = modules_dir.join(name);
+    std::fs::create_dir(&work)?;
+    let result = (|| {
+        let snapshot = work.join("package.cglm");
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&snapshot)?;
+        let mut hash = Sha256::new();
+        let mut total = 0u64;
+        let mut buf = [0u8; 65536];
+        loop {
+            let n = source.read(&mut buf)?; if n == 0 { break; }
+            total += n as u64;
+            if total > 512 * 1024 * 1024 { return Err(KernelError::Module("模块包超过 512 MiB".into())); }
+            hash.update(&buf[..n]); file.write_all(&buf[..n])?;
+        }
+        file.sync_all()?; drop(file);
+        let digest = format!("{:x}", hash.finalize());
+        let staging = work.join("extracted");
+        let extracted = package::extract_package(&snapshot, &staging)?;
+        let m = extracted.manifest;
+        m.validate()?;
+        if !is_valid_module_id(&m.id) || !m.supports_current_platform() || !m.accepts_launcher(env!("CARGO_PKG_VERSION")) {
+            return Err(KernelError::Module("模块清单身份、平台或启动器版本不兼容".into()));
+        }
+        validate_target(&m.id)?;
+        let target = modules_dir.join(&m.id);
+        if std::fs::symlink_metadata(&target).is_ok_and(|v| v.file_type().is_symlink()) {
+            return Err(KernelError::Module("模块目标不能是符号链接".into()));
+        }
+        package::promote_extracted(&staging, modules_dir, &m.id)?;
+        Ok(InstallOutcome { id: m.id, version: m.version, restart_required: true, package_sha256: Some(digest) })
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "requires COPPER_TEST_CGLM generated by independent template owner"]
+    fn installs_external_fixture() {
+        let input = std::env::var_os("COPPER_TEST_CGLM").expect("COPPER_TEST_CGLM");
+        let root = std::env::temp_dir().join(format!("copper-external-install-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let result = super::install_local_package(std::path::Path::new(&input), &root, |_| Ok(())).unwrap();
+        let installed = root.join(&result.id);
+        let manifest = crate::registry::manifest::ModuleManifest::parse(&std::fs::read(installed.join("module.json")).unwrap()).unwrap();
+        assert_eq!(manifest.id, result.id); assert_eq!(manifest.version, result.version);
+        assert!(installed.join("frontend").join(&manifest.frontend.register).is_file());
+        use sha2::{Digest, Sha256};
+        let expected = format!("{:x}", Sha256::digest(std::fs::read(&input).unwrap()));
+        assert_eq!(result.package_sha256.as_deref(), Some(expected.as_str())); assert!(result.restart_required);
+        // A fresh disk enumeration sees the promoted id, never .import/.tmp workdirs.
+        let scanned: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().filter_map(|v| v.file_name().into_string().ok()).filter(|id| crate::registry::modules::is_valid_module_id(id)).collect();
+        assert_eq!(scanned, vec![result.id.clone()]);
+        assert!(std::fs::read_dir(&root).unwrap().flatten().all(|v| !v.file_name().to_string_lossy().starts_with('.')));
+        println!("real local transaction installed {}@{}; manifest and frontend entry re-read from disk", result.id, result.version);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

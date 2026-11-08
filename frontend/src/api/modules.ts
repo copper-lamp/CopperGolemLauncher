@@ -43,6 +43,13 @@ export function modulesSetEnabled(id: string, enabled: boolean): Promise<void> {
   return call<void>("modules_set_enabled", { id, enabled });
 }
 
+export interface ModuleInstallOutcome { id: string; version: string; restart_required: boolean; package_sha256?: string; }
+export function modulesInstalledAddons(): Promise<ModuleInfo[]> { return call("modules_installed_addons"); }
+export function modulesInstall(id: string): Promise<ModuleInstallOutcome> { return call("modules_install", { id }); }
+/** 原生选择器在内核打开；不接受前端传入任意路径。取消返回 null。 */
+export function modulesImportLocal(): Promise<ModuleInstallOutcome | null> { return call("modules_import_local"); }
+export function modulesUninstall(id: string): Promise<void> { return call("modules_uninstall", { id }); }
+
 /** 模块是否为内置（容忍内核侧 `source` 尚未合并的情况）。 */
 export function isBuiltinModule(module: ModuleInfo): boolean {
   if (module.source !== undefined) return module.source === "builtin";

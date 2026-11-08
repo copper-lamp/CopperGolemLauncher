@@ -1104,6 +1104,8 @@ mod tests {
             version: "1.2.3".into(),
             mod_type: "preload-native".into(),
             author: "tester".into(),
+            description: String::new(),
+            icon: String::new(),
         })
         .unwrap();
 

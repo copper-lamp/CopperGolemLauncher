@@ -24,7 +24,7 @@ import SettingSection from "./SettingSection.vue";
 import CoBadge, { type BadgeTone } from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
-import { modulesSetEnabled } from "../../api/modules";
+import { modulesInstall, modulesImportLocal, modulesUninstall, modulesSetEnabled } from "../../api/modules";
 import { kernelInfo } from "../../api/theme";
 import type { RegistryPermission } from "../../api/registry";
 import {
@@ -57,6 +57,29 @@ const expandedPermissions = ref<Record<string, boolean>>({});
 const enabledOverride = ref<Record<string, boolean>>({});
 
 const M = "settings.modules";
+const actionId = ref<string | null>(null);
+const actionError = ref("");
+const restartRequired = ref(false);
+
+async function runInstall(row?: ModuleRowView) {
+  if (busy.value || (row && row.blockedBy.length)) return;
+  if (!window.confirm(t(row ? M + ".trust_registry" : M + ".trust_local", { name: row?.displayName ?? "" }))) return;
+  actionId.value = row?.id ?? "local-import";
+  actionError.value = "";
+  try {
+    const result = row ? await modulesInstall(row.id) : await modulesImportLocal();
+    if (result) { restartRequired.value = result.restart_required; await refresh(); }
+  } catch (error) { actionError.value = String(error); showToast(String(error), "error"); }
+  finally { actionId.value = null; }
+}
+async function uninstall(row: ModuleRowView) {
+  if (busy.value || row.builtin || row.local?.state === "running") return;
+  if (!window.confirm(t(M + ".uninstall_confirm", { name: row.displayName }))) return;
+  actionId.value = row.id; actionError.value = "";
+  try { await modulesUninstall(row.id); await refresh(); }
+  catch (error) { actionError.value = String(error); showToast(String(error), "error"); }
+  finally { actionId.value = null; }
+}
 
 /** 初始化：注入启动器版本供兼容性判定，并加载两侧数据。 */
 onMounted(async () => {
@@ -85,7 +108,7 @@ function isEnabled(row: ModuleRowView): boolean {
 
 /** 开关是否可用：仅已安装模块可启停。 */
 function canToggle(row: ModuleRowView): boolean {
-  return row.local !== null;
+  return row.local !== null && !busy.value;
 }
 
 async function toggleEnabled(row: ModuleRowView, enabled: boolean) {
@@ -95,6 +118,7 @@ async function toggleEnabled(row: ModuleRowView, enabled: boolean) {
   enabledOverride.value = { ...enabledOverride.value, [row.id]: enabled };
   try {
     await modulesSetEnabled(local.id, enabled);
+    restartRequired.value = true;
   } catch (e) {
     // 失败回滚，避免 UI 与内核状态不一致。
     enabledOverride.value = { ...enabledOverride.value, [row.id]: previous };
@@ -145,6 +169,8 @@ function badgesOf(row: ModuleRowView): RowBadge[] {
 /** 单条不可安装原因的文案。 */
 function reasonText(reason: BlockReason, row: ModuleRowView): string {
   switch (reason) {
+    case "approval": return t(`${M}.reason.approval`);
+    case "asset": return t(`${M}.reason.asset`);
     case "yanked":
       return row.yankReason
         ? `${t(`${M}.reason.yanked`)} ${row.yankReason}`
@@ -219,7 +245,7 @@ const showDegradedBanner = computed(() => degraded.value && phase.value !== "loa
 const statusError = computed(() => status.value?.error ?? "");
 
 /** 请求中的统一标志（刷新或首次加载）。 */
-const busy = computed(() => refreshing.value || phase.value === "loading");
+const busy = computed(() => actionId.value !== null || refreshing.value || phase.value === "loading");
 
 /** 可安装区块的空态文案：区分「确实没有」与「元数据未就绪」。 */
 const availableEmptyText = computed(() =>
@@ -231,6 +257,9 @@ const availableEmptyText = computed(() =>
 
 <template>
   <div class="modules-tab">
+    <div v-if="restartRequired" role="status" class="modules-tab__banner modules-tab__banner--info">{{ t(M + ".restart_required") }}</div>
+    <div v-if="actionId" role="status" class="modules-tab__banner modules-tab__banner--info"><LoaderCircle :size="15" class="spin" />{{ t(M + ".working") }}</div>
+    <div v-if="actionError" role="alert" class="modules-tab__banner modules-tab__banner--warning">{{ actionError }}</div>
     <!-- 元数据状态条：加载中 / 降级 / 陈旧必须可见，不得以空列表代替 -->
     <div v-if="phase === 'loading'" class="modules-tab__banner modules-tab__banner--info">
       <LoaderCircle :size="15" class="spin" />
@@ -278,6 +307,7 @@ const availableEmptyText = computed(() =>
 
     <SettingSection :title-key="`${M}.installed_section`">
       <div class="modules-tab__toolbar">
+        <CoButton size="sm" :disabled="busy" @click="runInstall()"><PackageCheck :size="14" />{{ t(M + ".import_local") }}</CoButton>
         <CoButton size="sm" :disabled="busy" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: refreshing }" />
           {{ refreshing ? t(`${M}.refreshing`) : t(`${M}.refresh`) }}
@@ -382,6 +412,7 @@ const availableEmptyText = computed(() =>
           </div>
 
           <div class="modules-tab__control">
+            <CoButton v-if="!row.builtin" size="sm" :disabled="busy || row.local?.state === 'running'" :title="row.local?.state === 'running' ? t(M + '.uninstall_running') : ''" @click="uninstall(row)">{{ t(M + ".actions.uninstall") }}</CoButton>
             <CoSwitch
               :model-value="isEnabled(row)"
               :disabled="!canToggle(row)"
@@ -485,14 +516,12 @@ const availableEmptyText = computed(() =>
           </div>
 
           <div class="modules-tab__control">
-            <!--
-              安装动作（差距项 G4）的内核命令 modules_install 尚未合并：
-              按钮置灰并给出原因，不做假实现。
-            -->
+            <!-- 后端再次校验审核、平台与资产 SHA。 -->
             <CoButton
               size="sm"
               variant="primary"
-              disabled
+              :disabled="busy || row.blockedBy.length > 0"
+              @click="runInstall(row)"
               :title="reasonsOf(row)[0] ?? t(`${M}.actions.not_supported`)"
             >
               <PackageCheck :size="14" />
@@ -516,7 +545,8 @@ const availableEmptyText = computed(() =>
   gap: var(--copper-space-2);
   padding: var(--copper-space-3);
   margin-bottom: var(--copper-space-4);
-  border: 1px solid var(--copper-border);
+  border: none;
+  box-shadow: var(--copper-shadow-sm, 0 2px 8px rgb(0 0 0 / 8%));
   border-radius: var(--copper-radius-md);
   font-size: var(--copper-font-size-sm);
 }
@@ -528,7 +558,6 @@ const availableEmptyText = computed(() =>
 
 .modules-tab__banner--warning {
   background: color-mix(in srgb, var(--copper-warning) 10%, var(--copper-surface));
-  border-color: color-mix(in srgb, var(--copper-warning) 40%, var(--copper-border));
   color: var(--copper-warning);
 }
 
@@ -572,7 +601,8 @@ const availableEmptyText = computed(() =>
 }
 
 .modules-tab__row {
-  border-top: 1px solid var(--copper-border);
+  border-top: none;
+  box-shadow: 0 -1px 8px rgb(0 0 0 / 3%);
 }
 
 .modules-tab__main {
