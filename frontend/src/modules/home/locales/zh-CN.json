@@ -186,14 +186,26 @@
       "resources": "资源包",
       "behavior": "行为包",
       "worlds": "世界",
-      "templates": "模板"
+      "templates": "模板",
+      "screenshots": "截图"
     },
     "enabled": "已启用",
     "disabled": "已停用",
     "enable": "启用",
     "disable": "停用",
     "remove": "删除",
-    "remove_confirm": "确定删除内容「{name}」吗？"
+    "remove_confirm": "确定删除内容「{name}」吗？",
+    "detail": {
+      "empty": "选择左侧的内容查看详情",
+      "type": "类型",
+      "path": "位置",
+      "size": "大小",
+      "modified": "修改时间",
+      "open_folder": "打开文件夹",
+      "folder": "文件夹",
+      "file": "文件",
+      "loading": "正在读取…"
+    }
   },
   "mods": {
     "empty": "该版本暂无模组",

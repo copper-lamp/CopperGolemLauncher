@@ -57,15 +57,25 @@ export type LaunchOutcome = "spawned" | "protocol";
  * `templates` 对应 `development_behavior_packs`：MCBE 不自动加载它，
  * 但内容下载装进去的模板必须看得见，否则用户会以为「装完就消失」。
  */
-export type ContentKind = "resources" | "behavior" | "worlds" | "templates";
+export type ContentKind =
+  | "resources"
+  | "behavior"
+  | "worlds"
+  | "templates"
+  | "screenshots";
 
 /** 内容条目（与后端 `ContentItem` 同构，snake_case）。 */
 export interface ContentItem {
   id: string;
   kind: ContentKind;
   name: string;
-  enabled: boolean;
   path: string;
+  /** 目录还是单个文件（压缩包、截图）。 */
+  is_dir: boolean;
+  /** 字节数；读取失败时为 null。 */
+  size: number | null;
+  /** 修改时间，Unix 毫秒；读取失败时为 null。 */
+  modified: number | null;
 }
 
 /** 默认模式列表区条目类型。 */
@@ -191,18 +201,25 @@ export function homeContentList(name: string): Promise<ContentItem[]> {
   return call<ContentItem[]>("home_content_list", { name });
 }
 
-/** 启用 / 禁用内容条目。 */
-export function homeContentSetEnabled(
-  name: string,
-  itemId: string,
-  enabled: boolean,
-): Promise<void> {
-  return call<void>("home_content_set_enabled", { name, itemId, enabled });
-}
-
 /** 删除内容条目。 */
 export function homeContentRemove(name: string, itemId: string): Promise<void> {
   return call<void>("home_content_remove", { name, itemId });
+}
+
+/** 内容条目预览图（data URL）；没有图标时返回 null。 */
+export function homeContentPreview(
+  name: string,
+  itemId: string,
+): Promise<string | null> {
+  return call<string | null>("home_content_preview", { name, itemId });
+}
+
+/** 在文件管理器中定位内容条目，返回其绝对路径。 */
+export function homeContentOpenFolder(
+  name: string,
+  itemId: string,
+): Promise<string> {
+  return call<string>("home_content_open_folder", { name, itemId });
 }
 
 // ---------------------------------------------------------------- 模组管理

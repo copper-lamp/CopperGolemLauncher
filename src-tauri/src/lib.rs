@@ -483,6 +483,8 @@ pub fn run() {
             commands::home::home_dashboard_entries,
             commands::home::home_content_set_enabled,
             commands::home::home_content_remove,
+            commands::home::home_content_preview,
+            commands::home::home_content_open_folder,
             commands::home::home_controls_get,
             commands::home::home_controls_save,
             commands::home::home_mods_list,

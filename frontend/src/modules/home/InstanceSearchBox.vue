@@ -10,10 +10,15 @@ import { Search, X } from "@lucide/vue";
 import { useI18n } from "../../i18n";
 import CoTextField from "../../components/ui/CoTextField.vue";
 
-defineProps<{
-  modelValue: string;
-  placeholder: string;
-}>();
+withDefaults(
+  defineProps<{
+    modelValue: string;
+    placeholder: string;
+    /** 紧凑模式：隐藏「搜索」小标题，用于放在页面标题栏里。 */
+    compact?: boolean;
+  }>(),
+  { compact: false },
+);
 
 const emit = defineEmits<{
   "update:modelValue": [value: string];
@@ -23,8 +28,8 @@ const { t } = useI18n();
 </script>
 
 <template>
-  <div class="search-box">
-    <span class="search-box__label">{{ t("common.search") }}</span>
+  <div :class="['search-box', { 'search-box--compact': compact }]">
+    <span v-if="!compact" class="search-box__label">{{ t("common.search") }}</span>
     <div class="search-box__field">
       <Search :size="14" class="search-box__icon" />
       <CoTextField
@@ -50,6 +55,10 @@ const { t } = useI18n();
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-2);
+}
+
+.search-box--compact {
+  gap: 0;
 }
 
 .search-box__label {

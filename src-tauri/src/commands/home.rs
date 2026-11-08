@@ -184,6 +184,26 @@ pub fn home_content_remove(
     content::remove_content(kernel.inner(), &name, &item_id).map_err(into_command_error)
 }
 
+/// 读取内容条目预览图（data URL，没有图标时为 None）。
+#[tauri::command]
+pub fn home_content_preview(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    item_id: String,
+) -> CommandResult<Option<String>> {
+    content::content_preview(kernel.inner(), &name, &item_id).map_err(into_command_error)
+}
+
+/// 在文件管理器中定位内容条目。
+#[tauri::command]
+pub fn home_content_open_folder(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    item_id: String,
+) -> CommandResult<String> {
+    content::open_content_folder(kernel.inner(), &name, &item_id).map_err(into_command_error)
+}
+
 // ---------------------------------------------------------------- 客户端库（开始页模块内部）
 
 /// 本地客户端列表（开始页模块 · 实例「管理客户端」页使用）。

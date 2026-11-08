@@ -186,14 +186,26 @@
       "resources": "Resource Packs",
       "behavior": "Behavior Packs",
       "worlds": "Worlds",
-      "templates": "Templates"
+      "templates": "Templates",
+      "screenshots": "Screenshots"
     },
     "enabled": "Enabled",
     "disabled": "Disabled",
     "enable": "Enable",
     "disable": "Disable",
     "remove": "Remove",
-    "remove_confirm": "Remove content \"{name}\"? "
+    "remove_confirm": "Remove content \"{name}\"? ",
+    "detail": {
+      "empty": "Select an item to inspect it",
+      "type": "Type",
+      "path": "Location",
+      "size": "Size",
+      "modified": "Modified",
+      "open_folder": "Open folder",
+      "folder": "Folder",
+      "file": "File",
+      "loading": "Loading…"
+    }
   },
   "mods": {
     "empty": "No mods for this version",
