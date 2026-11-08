@@ -40,7 +40,26 @@
   /* 轻微阴影：给「白底无描边」的卡片用。它与 --copper-shadow 的差别只有浓度，
    * 不改变阴影的方向与扩散，保证同一屏卡片之间的投影语言一致。 */
   --copper-shadow-subtle: 0 1px 3px rgba(0, 0, 0, 0.28);
+  /* 抬起阴影：给不描边、但要读成"可按的实体"的控件（如动作按钮）用。
+   * 比 subtle 多一层扩散，浅色下才不会被页面底色吃掉。 */
+  --copper-shadow-raised:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.22);
   --copper-overlay: rgba(0, 0, 0, 0.6);
+
+  /* 分段控件（胶囊轨道 + 滑动滑块）。
+   *
+   * 轨道只比所在表面亮/暗一档（微色阶），滑块用表面色 + 细阴影浮起来，
+   * 因此整条控件不需要描边，项与项之间也不需要分隔线 —— 边界由明度差和
+   * 投影给出。滑块影子比卡片影子更紧，因为它的尺寸只有几十像素。 */
+  --copper-segment-track: rgba(255, 255, 255, 0.06);
+  --copper-segment-thumb: #2a313b;
+  --copper-segment-thumb-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.45),
+    0 1px 1px rgba(0, 0, 0, 0.25);
+  /* 滑块顶端的一道亚像素高光，等价于 planes 的 inset 0.5px 白环；
+   * 它不是描边：只在深色里提亮边缘，浅色里几乎不可见。 */
+  --copper-segment-thumb-ring: inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
 
   /* 圆角 */
   --copper-radius-sm: 6px;
@@ -192,7 +211,18 @@ html[data-theme="light"] {
   --copper-shadow: 0 4px 16px rgba(31, 35, 40, 0.12);
   /* 浅色下的「轻微阴影」必须更淡：白底上同样的浓度看起来会发灰、显脏。 */
   --copper-shadow-subtle: 0 1px 2px rgba(31, 35, 40, 0.06);
+  --copper-shadow-raised:
+    0 1px 2px rgba(31, 35, 40, 0.08),
+    0 2px 8px rgba(31, 35, 40, 0.06);
   --copper-overlay: rgba(31, 35, 40, 0.45);
+
+  /* 浅色：轨道压暗一档（白底上「更亮」是看不见的），滑块是纯白 + 更淡的影子。 */
+  --copper-segment-track: rgba(31, 35, 40, 0.06);
+  --copper-segment-thumb: #ffffff;
+  --copper-segment-thumb-shadow:
+    0 1px 3px rgba(31, 35, 40, 0.14),
+    0 1px 1px rgba(31, 35, 40, 0.06);
+  --copper-segment-thumb-ring: inset 0 0 0 0.5px rgba(31, 35, 40, 0.04);
 
   --copper-success: #1a7f37;
   --copper-warning: #9a6700;

@@ -260,6 +260,9 @@
       "manage": "管理",
       "maintain": "维护"
     },
+    "options": {
+      "label": "启动选项"
+    },
     "action": {
       "content": "管理资源",
       "content_hint": "资源包 / 行为包 / 世界",

@@ -65,6 +65,46 @@ export async function initI18n(): Promise<void> {
   await loadCatalog(currentLocale.value);
 }
 
+/** 深层覆盖：远程对象覆盖本地同键；两边都是对象时递归，避免整包替换。 */
+function deepOverlay(
+  local: Record<string, JsonValue>,
+  remote: Record<string, JsonValue>,
+): Record<string, JsonValue> {
+  const result: Record<string, JsonValue> = { ...local };
+  for (const [key, value] of Object.entries(remote)) {
+    const current = result[key];
+    result[key] =
+      current && typeof current === "object" && !Array.isArray(current) &&
+      value && typeof value === "object" && !Array.isArray(value)
+        ? deepOverlay(
+            current as Record<string, JsonValue>,
+            value as Record<string, JsonValue>,
+          )
+        : value;
+  }
+  return result;
+}
+
+/** 合并模块语言包：逐模块、逐键覆盖，远程缺失的键保留本地文案。 */
+function mergeModulePacks(
+  local: Record<string, JsonValue>,
+  remote: Record<string, JsonValue>,
+): Record<string, JsonValue> {
+  const result: Record<string, JsonValue> = { ...local };
+  for (const [moduleId, pack] of Object.entries(remote)) {
+    const current = result[moduleId];
+    result[moduleId] =
+      current && typeof current === "object" && !Array.isArray(current) &&
+      pack && typeof pack === "object" && !Array.isArray(pack)
+        ? deepOverlay(
+            current as Record<string, JsonValue>,
+            pack as Record<string, JsonValue>,
+          )
+        : pack;
+  }
+  return result;
+}
+
 /** 加载某语言目录（本地兜底 + 内核覆盖）。 */
 async function loadCatalog(locale: string): Promise<void> {
   const base: Record<string, JsonValue> = {
@@ -73,14 +113,17 @@ async function loadCatalog(locale: string): Promise<void> {
   try {
     const remote = await i18nCatalog(locale);
     const merged: Record<string, JsonValue> = { ...base };
-    // `module` 命名空间按模块深度合并：内核缺失某模块包时保留本地包，
-    // 避免远程 module 整体覆盖导致模块文案丢失（回退英文）。
+    // `module` 命名空间按模块逐键合并：模块语言包被内核 `include_str!` 编进二进制，
+    // dev 下改了 JSON 而内核没重编时，远程包会比本地包旧。若整包覆盖，新增键会掉到
+    // en-US 兜底（中文界面冒出英文），所以这里逐层合并、本地包补远程缺失的键。
     const remoteModule = remote?.module;
     if (remoteModule && typeof remoteModule === "object") {
-      merged.module = {
-        ...(base.module && typeof base.module === "object" ? base.module : {}),
-        ...(remoteModule as Record<string, JsonValue>),
-      };
+      merged.module = mergeModulePacks(
+        base.module && typeof base.module === "object"
+          ? (base.module as Record<string, JsonValue>)
+          : {},
+        remoteModule as Record<string, JsonValue>,
+      );
     }
     // 其余顶层键用内核目录覆盖。
     for (const key of Object.keys(remote)) {

@@ -54,6 +54,13 @@ interface EntryAction {
   run: () => void;
 }
 
+/** 右栏按语义分组：管理（进子页）与维护（改实例本身）。 */
+interface EntryActionGroup {
+  key: string;
+  label: string;
+  items: EntryAction[];
+}
+
 const { t } = useI18n();
 const router = useRouter();
 const { isMobile, isWindows } = usePlatform();
@@ -103,6 +110,19 @@ const modeWarning = computed(() => {
   if (view.mode === "client") {
     if (!isWindows.value) return t("module.home.instance.mode.hint_client_unsupported");
     if (!view.client_id) return t("module.home.instance.mode.hint_client_unset");
+  }
+  return "";
+});
+
+/** 当前模式的说明：只在说明得清时占一行，缺条件的情况交给上面的警告。 */
+const modeHint = computed(() => {
+  const view = current.value;
+  if (!view) return "";
+  if (view.mode === "original") {
+    return t("module.home.instance.mode.hint_original");
+  }
+  if (view.mode === "levi" && view.loader) {
+    return t("module.home.instance.mode.hint_levi_installed", { loader: view.loader });
   }
   return "";
 });
@@ -191,62 +211,74 @@ function go(section: "content" | "mods" | "client" | "controls") {
   });
 }
 
-const actions = computed<EntryAction[]>(() => {
+/**
+ * 右栏动作按语义分两组：管理（进子页）与维护（改实例本身）。
+ * 分组不是为了好看：还原 / 修改 / 删除都不可逆，混在"管理资源"里点错代价很高。
+ */
+const actionGroups = computed<EntryActionGroup[]>(() => {
   const view = current.value;
   if (!view) return [];
-  const list: EntryAction[] = [];
+
+  const manage: EntryAction[] = [];
   // 中间那格随模式变化：原版不显示，模组模式进模组页，客户端模式进客户端页。
   if (view.mode === "levi") {
-    list.push({
+    manage.push({
       key: "mods",
       icon: Puzzle,
       label: t("module.home.instance.action.mods"),
       run: () => go("mods"),
     });
   } else if (view.mode === "client") {
-    list.push({
+    manage.push({
       key: "client",
       icon: PlugZap,
       label: t("module.home.instance.action.client"),
       run: () => go("client"),
     });
   }
-  list.push({
+  manage.push({
     key: "content",
     icon: Boxes,
     label: t("module.home.instance.action.content"),
     run: () => go("content"),
   });
-  list.push({
-    key: "restore",
-    icon: RotateCcw,
-    label: t("module.home.instance.action.restore"),
-    reason: restoreReason.value,
-    disabled: !canRestore.value,
-    run: () => void restoreVersion(),
-  });
   if (isMobile.value) {
-    list.push({
+    manage.push({
       key: "controls",
       icon: MonitorSmartphone,
       label: t("module.home.instance.action.controls"),
       run: () => go("controls"),
     });
   }
-  list.push({
-    key: "edit",
-    icon: Settings2,
-    label: t("module.home.instance.action.edit"),
-    run: () => (editDialogOpen.value = true),
-  });
-  list.push({
-    key: "delete",
-    icon: Trash2,
-    label: t("module.home.instance.action.delete"),
-    danger: true,
-    run: () => void deleteVersion(),
-  });
-  return list;
+
+  const maintain: EntryAction[] = [
+    {
+      key: "restore",
+      icon: RotateCcw,
+      label: t("module.home.instance.action.restore"),
+      reason: restoreReason.value,
+      disabled: !canRestore.value,
+      run: () => void restoreVersion(),
+    },
+    {
+      key: "edit",
+      icon: Settings2,
+      label: t("module.home.instance.action.edit"),
+      run: () => (editDialogOpen.value = true),
+    },
+    {
+      key: "delete",
+      icon: Trash2,
+      label: t("module.home.instance.action.delete"),
+      danger: true,
+      run: () => void deleteVersion(),
+    },
+  ];
+
+  return [
+    { key: "manage", label: t("module.home.instance.group.manage"), items: manage },
+    { key: "maintain", label: t("module.home.instance.group.maintain"), items: maintain },
+  ];
 });
 
 // ---------------------------------------------------------------- 生命周期
@@ -300,62 +332,72 @@ function onUpdated(updated: VersionView) {
           </div>
         </header>
 
-        <div class="entry__mode">
-          <CoSegmented
-            :model-value="current.mode"
-            :options="modeOptions"
-            :disabled="switching"
-            @update:model-value="changeMode"
-          />
+        <div class="entry__section">
+          <span class="entry__section-label">{{ t("module.home.instance.mode.label") }}</span>
+          <div class="entry__mode">
+            <CoSegmented
+              :model-value="current.mode"
+              :options="modeOptions"
+              :disabled="switching"
+              @update:model-value="changeMode"
+            />
+          </div>
           <p v-if="modeWarning" class="entry__warning">{{ modeWarning }}</p>
+          <p v-else-if="modeHint" class="entry__hint">{{ modeHint }}</p>
         </div>
 
-        <ul class="entry__rows">
-          <li class="entry__row">
-            <span class="entry__row-label">{{ t("module.home.meta.isolation") }}</span>
-            <CoSwitch :model-value="true" disabled />
-          </li>
-          <li class="entry__row">
-            <span class="entry__row-label">{{ t("module.home.meta.console") }}</span>
-            <CoSwitch
-              :model-value="current.enable_console"
-              :disabled="saving"
-              @update:model-value="(value: boolean) => void saveToggle({ enable_console: value })"
-            />
-          </li>
-          <li class="entry__row">
-            <span class="entry__row-label">{{ t("module.home.meta.editor_mode") }}</span>
-            <CoSwitch
-              :model-value="current.enable_editor_mode && current.editor_supported"
-              :disabled="saving || !current.editor_supported"
-              :title="current.editor_supported ? '' : t('module.home.basic.editor_unsupported')"
-              @update:model-value="
-                (value: boolean) => void saveToggle({ enable_editor_mode: value })
-              "
-            />
-          </li>
-        </ul>
+        <div class="entry__section">
+          <span class="entry__section-label">{{ t("module.home.instance.options.label") }}</span>
+          <ul class="entry__rows">
+            <li class="entry__row">
+              <span class="entry__row-label">{{ t("module.home.meta.isolation") }}</span>
+              <CoSwitch :model-value="true" disabled />
+            </li>
+            <li class="entry__row">
+              <span class="entry__row-label">{{ t("module.home.meta.console") }}</span>
+              <CoSwitch
+                :model-value="current.enable_console"
+                :disabled="saving"
+                @update:model-value="(value: boolean) => void saveToggle({ enable_console: value })"
+              />
+            </li>
+            <li class="entry__row">
+              <span class="entry__row-label">{{ t("module.home.meta.editor_mode") }}</span>
+              <CoSwitch
+                :model-value="current.enable_editor_mode && current.editor_supported"
+                :disabled="saving || !current.editor_supported"
+                :title="current.editor_supported ? '' : t('module.home.basic.editor_unsupported')"
+                @update:model-value="
+                  (value: boolean) => void saveToggle({ enable_editor_mode: value })
+                "
+              />
+            </li>
+          </ul>
+        </div>
       </section>
 
       <aside class="entry__actions">
-        <button
-          v-for="action in actions"
-          :key="action.key"
-          type="button"
-          :class="[
-            'entry__action',
-            {
-              'entry__action--danger': action.danger,
-              'entry__action--disabled': action.disabled,
-            },
-          ]"
-          :disabled="action.disabled"
-          :title="action.reason || ''"
-          @click="action.run()"
-        >
-          <component :is="action.icon" :size="15" :stroke-width="1.7" />
-          <span>{{ action.label }}</span>
-        </button>
+        <section v-for="group in actionGroups" :key="group.key" class="entry__group">
+          <span class="entry__group-label">{{ group.label }}</span>
+          <button
+            v-for="action in group.items"
+            :key="action.key"
+            type="button"
+            :class="[
+              'entry__action',
+              {
+                'entry__action--danger': action.danger,
+                'entry__action--disabled': action.disabled,
+              },
+            ]"
+            :disabled="action.disabled"
+            :title="action.reason || ''"
+            @click="action.run()"
+          >
+            <component :is="action.icon" :size="15" :stroke-width="1.7" />
+            <span>{{ action.label }}</span>
+          </button>
+        </section>
       </aside>
     </div>
 
@@ -388,19 +430,26 @@ function onUpdated(updated: VersionView) {
   padding: var(--copper-space-4);
 }
 
-/* 6:4：左侧信息，右侧动作。右侧按钮列有最大宽度，窗口拉宽时不会变成一把横条。 */
+/* 6:4：左侧信息卡，右侧动作栏。动作列有上限宽度，窗口拉宽时不会变成一把横条。 */
 .entry__grid {
   display: grid;
-  grid-template-columns: minmax(0, 6fr) minmax(160px, 4fr);
+  grid-template-columns: minmax(0, 6fr) minmax(180px, 4fr);
   gap: var(--copper-space-5);
   align-items: start;
 }
 
+/* 信息卡不描边：表面色比页面底色高一档，再加一道很浅的投影就够了。
+ * 卡片的作用是把「封面 + 模式 + 开关」收成一组 —— 之前它们直接铺在页面底色上，
+ * 三块内容各自与边距对齐，视线没有落点，所以看起来"散"。 */
 .entry__main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--copper-space-4);
+  gap: var(--copper-space-5);
+  padding: var(--copper-space-5);
+  border-radius: var(--copper-radius-lg);
+  background: var(--copper-surface);
+  box-shadow: var(--copper-shadow-subtle);
 }
 
 .entry__hero {
@@ -410,14 +459,14 @@ function onUpdated(updated: VersionView) {
 }
 
 .entry__cover {
-  width: 84px;
-  height: 84px;
+  width: 76px;
+  height: 76px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-md);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
   cursor: pointer;
@@ -443,9 +492,10 @@ function onUpdated(updated: VersionView) {
 }
 
 .entry__name {
-  font-size: var(--copper-font-size-2xl, 22px);
+  font-size: 24px;
   font-weight: 600;
-  line-height: 1.25;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
   overflow-wrap: anywhere;
 }
 
@@ -453,7 +503,23 @@ function onUpdated(updated: VersionView) {
   display: flex;
   flex-wrap: wrap;
   gap: var(--copper-space-3);
+  font-size: var(--copper-font-size-md);
+  color: var(--copper-text-secondary);
+}
+
+/* 每组 = 一个标签 + 一组控件。标签是排版锚点：没有它，分段条与开关行在卡片里
+ * 只是上下两坨，读不出「这是一组设置」。 */
+.entry__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-3);
+  min-width: 0;
+}
+
+.entry__section-label {
   font-size: var(--copper-font-size-sm);
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--copper-text-secondary);
 }
 
@@ -461,8 +527,11 @@ function onUpdated(updated: VersionView) {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-2);
+  min-width: 0;
 }
 
+/* 分段条铺满卡片内容宽度（planes 的 w-full），与下方开关行的分隔线同宽对齐 ——
+ * 宽度不一的两块元素并排时，视线会读成"没对齐"，这是页面显散的来源之一。 */
 .entry__mode :deep(.co-segmented) {
   display: flex;
   width: 100%;
@@ -472,6 +541,14 @@ function onUpdated(updated: VersionView) {
   flex: 1;
 }
 
+.entry__hint {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--copper-font-size-sm);
+  line-height: 1.6;
+  color: var(--copper-text-secondary);
+}
+
 /* 模式缺条件时的提醒：不是错误，是"切过去也不会生效"。 */
 .entry__warning {
   padding: var(--copper-space-2) var(--copper-space-3);
@@ -479,7 +556,7 @@ function onUpdated(updated: VersionView) {
   border: 1px solid color-mix(in srgb, var(--copper-warning) 45%, var(--copper-border));
   background: color-mix(in srgb, var(--copper-warning) 10%, transparent);
   color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-xs);
+  font-size: var(--copper-font-size-sm);
   line-height: 1.5;
 }
 
@@ -487,6 +564,8 @@ function onUpdated(updated: VersionView) {
   list-style: none;
   display: flex;
   flex-direction: column;
+  margin: 0;
+  padding: 0;
 }
 
 .entry__row {
@@ -494,50 +573,75 @@ function onUpdated(updated: VersionView) {
   align-items: center;
   justify-content: space-between;
   gap: var(--copper-space-3);
-  padding: var(--copper-space-3) 0;
-  border-bottom: 1px solid var(--copper-border);
-}
-
-.entry__row:first-child {
-  border-top: 1px solid var(--copper-border);
+  min-height: 52px;
+  padding: var(--copper-space-2) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--copper-border) 55%, transparent);
 }
 
 .entry__row-label {
-  font-size: var(--copper-font-size-md);
+  /* 比正文（13px）大一档：52px 的行高里 13px 显得发虚，这一页又是低频操作页，
+   * 不需要为了塞信息而压字号。 */
+  font-size: 14px;
 }
 
 .entry__actions {
   display: flex;
   flex-direction: column;
-  gap: var(--copper-space-2);
+  gap: var(--copper-space-5);
   width: 100%;
   max-width: 240px;
   justify-self: end;
 }
 
-/* 动作按钮：整列同宽同高，与稿子一致；悬停只提亮底色。 */
+.entry__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--copper-space-1);
+}
+
+.entry__group-label {
+  padding: 0 var(--copper-space-2) var(--copper-space-1);
+  font-size: var(--copper-font-size-sm);
+  font-weight: 500;
+  color: var(--copper-text-secondary);
+}
+
+/* 动作按钮：不描边 —— 靠「表面色 + 细阴影」浮在页面底色上，悬停叠一层主题中性
+ * 薄雾（--copper-hover），按下交给全局按压反馈。左右留白 16px，图标与文字之间
+ * 留一个间距单位，文字不会贴到边上。 */
 .entry__action {
   display: flex;
   align-items: center;
   gap: var(--copper-space-2);
-  height: var(--copper-control-h);
-  padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
+  height: 36px;
+  padding: 0 var(--copper-space-4);
+  border: none;
   border-radius: var(--copper-radius-md);
-  background: var(--copper-surface-2);
+  background: var(--copper-surface);
   color: var(--copper-text);
+  box-shadow: var(--copper-shadow-raised);
   font-family: inherit;
-  font-size: var(--copper-font-size-sm);
+  font-size: 14px;
+  text-align: left;
   cursor: pointer;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
-    border-color var(--copper-duration-fast) var(--copper-easing),
+    box-shadow var(--copper-duration-fast) var(--copper-easing),
     color var(--copper-duration-fast) var(--copper-easing);
 }
 
+.entry__action svg {
+  flex-shrink: 0;
+  color: var(--copper-text-secondary);
+  transition: color var(--copper-duration-fast) var(--copper-easing);
+}
+
 .entry__action:hover:not(:disabled) {
-  background: var(--copper-surface-3);
-  border-color: var(--copper-accent);
+  background-image: linear-gradient(var(--copper-hover), var(--copper-hover));
+}
+
+.entry__action:hover:not(:disabled) svg {
+  color: var(--copper-text);
 }
 
 .entry__action:active:not(:disabled) {
@@ -546,16 +650,20 @@ function onUpdated(updated: VersionView) {
 
 .entry__action--danger {
   color: var(--copper-danger);
-  border-color: color-mix(in srgb, var(--copper-danger) 40%, var(--copper-border));
+}
+
+.entry__action--danger svg {
+  color: var(--copper-danger);
 }
 
 .entry__action--danger:hover:not(:disabled) {
-  border-color: var(--copper-danger);
-  background: color-mix(in srgb, var(--copper-danger) 10%, var(--copper-surface-2));
+  background-image: none;
+  background-color: color-mix(in srgb, var(--copper-danger) 10%, var(--copper-surface));
 }
 
 .entry__action--disabled {
-  opacity: 0.5;
+  opacity: 0.45;
+  box-shadow: none;
   cursor: not-allowed;
 }
 
@@ -585,7 +693,12 @@ function onUpdated(updated: VersionView) {
     max-width: none;
     flex-direction: row;
     flex-wrap: wrap;
+    gap: var(--copper-space-3);
     justify-self: stretch;
+  }
+
+  .entry__group {
+    flex: 1 1 100%;
   }
 
   .entry__action {

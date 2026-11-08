@@ -260,6 +260,9 @@
       "manage": "Manage",
       "maintain": "Maintain"
     },
+    "options": {
+      "label": "Launch options"
+    },
     "action": {
       "content": "Manage content",
       "content_hint": "Resource packs / behavior packs / worlds",
