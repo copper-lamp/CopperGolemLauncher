@@ -72,10 +72,22 @@ impl NodeRuntimeSession {
         module_id: &str,
         data_directory: Option<&Path>,
     ) -> Result<Self, KernelError> {
+        Self::launch_with_host_context(executable, entry, capabilities, module_id, data_directory, None)
+    }
+
+    pub(crate) fn launch_with_host_context(
+        executable: &Path, entry: &Path, capabilities: Arc<dyn CapabilityDispatcher>,
+        module_id: &str, data_directory: Option<&Path>, versions_root: Option<&Path>,
+    ) -> Result<Self, KernelError> {
         validate_runtime_platform()?;
         let mut command = Command::new(executable);
         // The host owns this per-module context; never inherit another module's value.
         command.env_remove("COPPER_MODULE_DATA_DIR");
+        command.env_remove("COPPER_HOST_VERSIONS_ROOT");
+        if let Some(root) = versions_root {
+            if !root.is_absolute() { return Err(KernelError::Module("无效的宿主版本目录上下文".into())); }
+            command.env("COPPER_HOST_VERSIONS_ROOT", root);
+        }
         if let Some(directory) = data_directory {
             if !directory.is_absolute() || !crate::registry::modules::is_valid_module_id(module_id) {
                 return Err(KernelError::Module("无效的模块持久化目录上下文".into()));

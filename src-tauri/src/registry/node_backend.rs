@@ -69,6 +69,7 @@ pub struct NodeBackend {
     /// 模块私有存储。全体附加模块共用一个实例，因此命名空间与配额判定全局一致。
     storage: Arc<ModuleStorage>,
     data_dir: PathBuf,
+    versions_root: Option<PathBuf>,
     /// 事件总线：`events.publish` 能力的落点。
     event_bus: Arc<EventBus>,
     /// 模块沙箱：需要权限的能力在此逐次授权。
@@ -94,6 +95,7 @@ impl NodeBackend {
             intents,
             storage: Arc::new(ModuleStorage::new(&data_dir)),
             data_dir,
+            versions_root: None,
             event_bus: events,
             sandbox,
             explicit_node,
@@ -101,6 +103,7 @@ impl NodeBackend {
     }
 }
 
+impl NodeBackend { pub fn with_versions_root(mut self, root: PathBuf) -> Self { self.versions_root = Some(root); self } }
 impl ModuleLoadBackend for NodeBackend {
     fn name(&self) -> &'static str {
         "node"
@@ -152,7 +155,7 @@ impl ModuleLoadBackend for NodeBackend {
             // 事件总线随模块注入：Agent 经 `event` 帧上行的流式事件最终发布到它上面，
             // 进而桥接给前端（`agent.event` → `agent-event`）。
             Arc::clone(&self.event_bus),
-        ).with_data_dir(self.data_dir.clone())))
+        ).with_data_dir(self.data_dir.clone()).with_versions_root(self.versions_root.clone())))
     }
 }
 
@@ -227,6 +230,7 @@ pub struct NodeAgentProxyModule {
     executable: PathBuf,
     entry: PathBuf,
     data_dir: Option<PathBuf>,
+    versions_root: Option<PathBuf>,
     /// 已通过校验的 Node 版本，仅用于日志（装载期已经确认满足要求）。
     node_version: semver::Version,
     capabilities: Arc<dyn CapabilityDispatcher>,
@@ -256,6 +260,7 @@ impl NodeAgentProxyModule {
             executable,
             entry,
             data_dir: None,
+            versions_root: None,
             node_version,
             capabilities,
             events,
@@ -263,6 +268,8 @@ impl NodeAgentProxyModule {
             pump: Mutex::new(None),
         }
     }
+
+    fn with_versions_root(mut self, root: Option<PathBuf>) -> Self { self.versions_root = root; self }
 
     fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
         self.data_dir = Some(data_dir);
@@ -296,12 +303,13 @@ impl NodeAgentProxyModule {
             self.id, self.node_version, self.executable.display(), self.entry.display(),
             std::env::current_dir().map(|path| path.display().to_string()).unwrap_or_else(|_| "unknown".into()));
         let directory = self.data_dir.as_ref().map(|root| root.join("module_data").join(&self.id));
-        let session = NodeRuntimeSession::launch_with_data_directory(
+        let session = NodeRuntimeSession::launch_with_host_context(
             &self.executable,
             &self.entry,
             Arc::clone(&self.capabilities),
             &self.id,
             directory.as_deref(),
+            self.versions_root.as_deref(),
         )?;
         log::info!(
             "[addon/{}] 受监管 Node 会话已就绪（Node {}，入口 {}）",
@@ -593,7 +601,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     if (command === 'example.bad') send({kind:'response',version:2,id:f.id,result:{ok:true}});
     else if (command === 'example.extra') send({kind:'response',version:2,id:f.id,result:{result:1,unexpected:true}});
     else if (command === 'example.wireError') send({kind:'response',version:2,id:f.id,error:{code:'TEST_DENIED',message:'denied'}});
-    else if (command === 'example.context') send({kind:'response',version:2,id:f.id,result:{result:{directory:process.env.COPPER_MODULE_DATA_DIR}}});
+    else if (command === 'example.context') send({kind:'response',version:2,id:f.id,result:{result:{directory:process.env.COPPER_MODULE_DATA_DIR,versionsRoot:process.env.COPPER_HOST_VERSIONS_ROOT}}});
     else send({kind:'response',version:2,id:f.id,result:{result:{ok:!args.fail,command,args}}});
   } else process.exit(10);
 });"#).unwrap();
@@ -603,11 +611,13 @@ readline.createInterface({input:process.stdin}).on('line', line => {
             &runtime_manifest(">=22.19.0"), executable, entry,
             semver::Version::new(22, 19, 0), Arc::new(NoCapabilities), Arc::new(EventBus::new()),
         );
-        let module = module.with_data_dir(temp.0.join("host-profile"));
+        let host_versions = temp.0.join("authoritative-versions");
+        let module = module.with_data_dir(temp.0.join("host-profile")).with_versions_root(Some(host_versions.clone()));
         module.init_module().expect("真实Node完成握手并校验能力顺序");
         let context = module.invoke("example.context", json!({})).unwrap();
         let expected = fs::canonicalize(temp.0.join("host-profile/module_data/copper-lamp.agent")).unwrap();
         assert_eq!(fs::canonicalize(context["directory"].as_str().unwrap()).unwrap(), expected);
+        assert_eq!(PathBuf::from(context["versionsRoot"].as_str().unwrap()), host_versions);
         module.start_module().unwrap();
         let args = json!({"method":"config.get","params":{"nested":[1,true,null]}});
         let result = module.invoke("example.dispatch", args.clone()).unwrap();

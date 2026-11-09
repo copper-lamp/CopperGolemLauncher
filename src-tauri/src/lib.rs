@@ -356,7 +356,7 @@ pub fn run() {
                     paths_for_addons.data_dir().clone(),
                     // 显式 Node 路径留作后续设置项；本批按 `PATH` 自动定位。
                     None,
-                )),
+                ).with_versions_root(kernel.versions_root())),
             )));
             let reports = loader.load_installed(&kernel);
             let loaded = reports.iter().filter(|r| r.loaded).count();
