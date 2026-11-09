@@ -62,8 +62,42 @@ impl NodeRuntimeSession {
         capabilities: Arc<dyn CapabilityDispatcher>,
         module_id: &str,
     ) -> Result<Self, KernelError> {
+        Self::launch_with_data_directory(executable, entry, capabilities, module_id, None)
+    }
+
+    pub(crate) fn launch_with_data_directory(
+        executable: &Path,
+        entry: &Path,
+        capabilities: Arc<dyn CapabilityDispatcher>,
+        module_id: &str,
+        data_directory: Option<&Path>,
+    ) -> Result<Self, KernelError> {
         validate_runtime_platform()?;
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        // The host owns this per-module context; never inherit another module's value.
+        command.env_remove("COPPER_MODULE_DATA_DIR");
+        if let Some(directory) = data_directory {
+            if !directory.is_absolute() || !crate::registry::modules::is_valid_module_id(module_id) {
+                return Err(KernelError::Module("无效的模块持久化目录上下文".into()));
+            }
+            std::fs::create_dir_all(directory).map_err(|error|
+                KernelError::Module(format!("模块 `{module_id}` 持久化目录初始化失败: {error}")))?;
+            let directory = std::fs::canonicalize(directory).map_err(|error|
+                KernelError::Module(format!("模块 `{module_id}` 持久化目录规范化失败: {error}")))?;
+            // Node accepts ordinary absolute Windows paths; avoid leaking Win32 device syntax
+            // into the module's component-wise path validation.
+            #[cfg(windows)]
+            let directory = {
+                let text = directory.to_string_lossy();
+                if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+                    PathBuf::from(format!(r"\\{}", unc))
+                } else if let Some(drive) = text.strip_prefix(r"\\?\") {
+                    PathBuf::from(drive)
+                } else { directory }
+            };
+            command.env("COPPER_MODULE_DATA_DIR", directory);
+        }
+        let mut child = command
             .arg(entry)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
