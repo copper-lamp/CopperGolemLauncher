@@ -18,6 +18,7 @@ import VersionTab from "./settings/VersionTab.vue";
 import LaunchTab from "./settings/LaunchTab.vue";
 import AppearanceTab from "./settings/AppearanceTab.vue";
 import ModulesTab from "./settings/ModulesTab.vue";
+import ComponentsTab from "./settings/ComponentsTab.vue";
 import AboutTab from "./settings/AboutTab.vue";
 import CoPage from "../components/layout/CoPage.vue";
 import CoSplitLayout from "../components/layout/CoSplitLayout.vue";
@@ -32,6 +33,7 @@ const tabs = [
   { id: "launch", titleKey: "settings.tabs.launch", icon: Rocket },
   { id: "appearance", titleKey: "settings.tabs.appearance", icon: Palette },
   { id: "modules", titleKey: "settings.tabs.modules", icon: Blocks },
+  { id: "components", titleKey: "components.title", icon: Blocks },
   { id: "about", titleKey: "settings.tabs.about", icon: Info },
 ] as const;
 
@@ -47,6 +49,7 @@ const active = ref<(typeof tabs)[number]["id"]>("general");
         <LaunchTab v-else-if="active === 'launch'" />
         <AppearanceTab v-else-if="active === 'appearance'" />
         <ModulesTab v-else-if="active === 'modules'" />
+        <ComponentsTab v-else-if="active === 'components'" />
         <AboutTab v-else />
       </div>
 

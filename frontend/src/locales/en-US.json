@@ -1,4 +1,15 @@
 {
+  "components": {
+    "title": "External components", "description": "Launcher-managed dependencies, verified against official release digests.",
+    "automatic": "Update components in the background", "automaticDescription": "Enabled by default. Existing healthy versions remain available; first installation requires your action.",
+    "names": {"lip": "lip daemon", "dotnet10": ".NET 10 runtime"},
+    "states": {"installed":"Installed", "missing":"Missing", "unsupported":"Unsupported platform", "installing":"Installing", "failed":"Action failed", "update-available":"Update available"},
+    "stages": {"metadata":"Checking official release", "downloading":"Downloading", "extracting":"Extracting", "health-check":"Verifying health"},
+    "notInstalled":"Not installed", "check":"Check updates", "install":"Install", "update":"Update / repair",
+    "compatibility":"lip is restricted to the compatible 0.37 daemon protocol. Newer incompatible CLI releases are not selected automatically. Private .NET components do not change the system runtime.",
+    "requiredTitle":"Install required components", "requiredBody":"This operation needs the managed lip daemon and .NET 10 runtime. Download and verify the official packages, then continue this operation once.",
+    "installing":"Installing and checking components…", "cancel":"Cancel", "installContinue":"Install and continue"
+  },
   "app": {
     "name": "Copper Golem",
     "tagline": "Copper Golem Launcher"

@@ -35,13 +35,16 @@ use super::model::{TYPE_BEHAVIOR_PACK, TYPE_SHADER, TYPE_TEXTURE_PACK};
 /// 加载目录名（与 `home/content.rs` 的枚举口径一致）。
 const BEHAVIOR_PACKS: &str = "behavior_packs";
 const RESOURCE_PACKS: &str = "resource_packs";
-const DEVELOPMENT_BEHAVIOR_PACKS: &str = "development_behavior_packs";
+const WORLD_TEMPLATES: &str = "world_templates";
 const WORLDS_DIR: &str = "minecraftWorlds";
 const SHARED_GAME_DIR: &str = "games/com.mojang";
 const MANIFEST_FILE: &str = "manifest.json";
 
 /// 解包中间目录名（置于 `com.mojang` 下，与目标同卷；点开头使游戏扫描时忽略）。
 const EXTRACT_DIR: &str = ".copper-extract";
+#[path = "install_transaction.rs"]
+mod transaction;
+static INSTALL_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 /// addon 内层扫描的最大深度：真实包普遍是「顶层目录 / manifest」，少数会多套一层；
 /// 再深就可能是包内资源目录，继续递归既慢又可能把子包误当独立包。
 const ADDON_SCAN_DEPTH: usize = 4;
@@ -355,11 +358,13 @@ pub fn install_staged(
     //
     // 放在 `com.mojang` 下而不是加载目录里：`.copper-extract` 落在
     // `behavior_packs/` 内会被游戏当成一个坏掉的包扫到。
-    let extract_root = roots.com_mojang.join(EXTRACT_DIR);
-    let _ = std::fs::remove_dir_all(&extract_root);
+    let _lock = INSTALL_LOCK.lock();
+    let _process_lock = transaction::lock(&roots.com_mojang.join(".copper-transactions"))?;
+    transaction::recover(&roots.com_mojang.join(".copper-transactions"))?;
+    let extract_root = roots.com_mojang.join(format!("{EXTRACT_DIR}-{}", uuid::Uuid::new_v4()));
     ensure_writable_dir(&extract_root, "内容解包")?;
     let outcome = extract_archive(archive, &extract_root)
-        .and_then(|extracted| dispatch(extracted, ext, content_type, roots, dir_name_hint));
+        .and_then(|extracted| dispatch(extracted, ext, content_type, roots, dir_name_hint, true));
     // 解包中间态无价值，无论成败都清掉。
     let _ = std::fs::remove_dir_all(&extract_root);
     let placed = outcome?;
@@ -369,6 +374,18 @@ pub fn install_staged(
     Ok(placed)
 }
 
+/// Import commit: explicit replacement, and worlds always receive a fresh directory.
+pub fn install_confirmed(archive: &Path, ext: ExtKind, roots: &content::ContentRoots, hint: &str, replace: bool) -> Result<PathBuf, KernelError> {
+    let _lock = INSTALL_LOCK.lock();
+    let _process_lock = transaction::lock(&roots.com_mojang.join(".copper-transactions"))?;
+    transaction::recover(&roots.com_mojang.join(".copper-transactions"))?;
+    let work = roots.com_mojang.join(format!("{EXTRACT_DIR}-{}", uuid::Uuid::new_v4()));
+    ensure_writable_dir(&work, "内容导入")?;
+    let result = extract_archive(archive, &work).and_then(|extracted| dispatch(extracted, ext, "", roots, hint, replace));
+    let _ = std::fs::remove_dir_all(work);
+    result
+}
+
 /// 按后缀名与解出结构决定落点并落位。
 fn dispatch(
     extracted: PathBuf,
@@ -376,6 +393,7 @@ fn dispatch(
     content_type: &str,
     roots: &content::ContentRoots,
     dir_name_hint: &str,
+    replace: bool,
 ) -> Result<PathBuf, KernelError> {
     match ext {
         ExtKind::World => {
@@ -384,15 +402,17 @@ fn dispatch(
                 load_dir: worlds_dir_for(roots),
                 dir_name,
             };
-            place_one(&extracted, &target)
+            let mut target = target;
+            target.dir_name = format!("{}-{}", target.dir_name, uuid::Uuid::new_v4());
+            place_transaction(&extracted, &target, roots, false)
         }
         ExtKind::Template => {
             let dir_name = read_pack_name(&extracted).unwrap_or_else(|| dir_name_hint.to_string());
             let target = InstallTargetPath {
-                load_dir: roots.com_mojang.join(DEVELOPMENT_BEHAVIOR_PACKS),
+                load_dir: roots.com_mojang.join(WORLD_TEMPLATES),
                 dir_name,
             };
-            place_one(&extracted, &target)
+            place_transaction(&extracted, &target, roots, replace)
         }
         ExtKind::Pack | ExtKind::Zip => {
             let root = resolve_pack_root(&extracted).ok_or_else(|| {
@@ -401,17 +421,17 @@ fn dispatch(
                 )
             })?;
             let load_dir = match manifest_module_type(&root, content_type) {
-                Some(ModuleType::Data) => roots.com_mojang.join(RESOURCE_PACKS),
-                _ => roots.com_mojang.join(BEHAVIOR_PACKS),
+                Some(ModuleType::Data) => roots.com_mojang.join(BEHAVIOR_PACKS),
+                _ => roots.com_mojang.join(RESOURCE_PACKS),
             };
             let dir_name = read_pack_name(&root).unwrap_or_else(|| dir_name_hint.to_string());
             let target = InstallTargetPath {
                 load_dir,
                 dir_name,
             };
-            place_one(&root, &target)
+            place_transaction(&root, &target, roots, replace)
         }
-        ExtKind::Addon => place_addon(&extracted, content_type, roots, dir_name_hint),
+        ExtKind::Addon => place_addon_confirmed(&extracted, content_type, roots, dir_name_hint, replace),
         ExtKind::Llp => Err(KernelError::InvalidArgument(
             "安卓模组归档不由本路径安装".into(),
         )),
@@ -428,11 +448,17 @@ fn dispatch(
 /// 2. 用 manifest 的 `modules[].type` 判定行为（data / script）还是材质
 ///    （resources / shader），缺失时用 CF 类别兜底；
 /// 3. 逐个原子落位，任一失败回滚本次已落位的包——只装一半比不装更糟。
-fn place_addon(
+#[cfg(test)]
+fn place_addon(extracted: &Path, content_type: &str, roots: &content::ContentRoots, hint: &str) -> Result<PathBuf, KernelError> {
+    place_addon_confirmed(extracted, content_type, roots, hint, true)
+}
+
+fn place_addon_confirmed(
     extracted: &Path,
     content_type: &str,
     roots: &content::ContentRoots,
     dir_name_hint: &str,
+    replace: bool,
 ) -> Result<PathBuf, KernelError> {
     let pack_roots = discover_addon_pack_roots(extracted);
     if pack_roots.is_empty() {
@@ -476,20 +502,9 @@ fn place_addon(
     behavior_targets.extend(resource_targets);
     let targets = behavior_targets;
 
-    let mut placed: Vec<PathBuf> = Vec::new();
-    for (source, target) in targets {
-        match place_one(&source, &target) {
-            Ok(path) => placed.push(path),
-            Err(e) => {
-                // 回滚本次已落位的包。place_one 成功后旧内容已删，
-                // 这里只能撤掉新内容；但至少不会留下「一半新一半旧」。
-                for path in placed.iter() {
-                    let _ = std::fs::remove_dir_all(path);
-                }
-                return Err(e);
-            }
-        }
-    }
+    let targets: Vec<_> = targets.into_iter().map(|(source, target)| (source, target.full_path())).collect();
+    if !replace && targets.iter().any(|(_, target)| target.exists()) { return Err(KernelError::Conflict("Existing resource requires explicit replacement confirmation".into())); }
+    let placed = transaction::commit(&targets, &roots.com_mojang.join(".copper-transactions"), || Ok(()))?;
     if placed.is_empty() {
         return Err(KernelError::InvalidArgument(
             "插件包内未找到可安装的行为包或材质包".into(),
@@ -571,11 +586,19 @@ fn discover_addon_pack_roots(root: &Path) -> Vec<PathBuf> {
     roots
 }
 
+fn place_transaction(src: &Path, target: &InstallTargetPath, roots: &content::ContentRoots, replace: bool) -> Result<PathBuf, KernelError> {
+    let path = target.full_path();
+    if path.exists() && !replace { return Err(KernelError::Conflict("Existing resource requires explicit replacement confirmation".into())); }
+    transaction::commit(&[(src.to_path_buf(), path.clone())], &roots.com_mojang.join(".copper-transactions"), || Ok(()))?;
+    Ok(path)
+}
+
 /// 把 `src` 目录内容原子搬到 `target`。
 ///
 /// 流程：目标已存在 → 改名为 `.<name>.bak`；`src` 改名为目标；成功后删 `.bak`。
 /// 中途失败回滚 `.bak`，绝不留下「目录不存在」的窗口——加载目录里条目
 /// 忽有忽无会让游戏侧的行为不可预测。
+#[cfg(test)]
 fn place_one(src: &Path, target: &InstallTargetPath) -> Result<PathBuf, KernelError> {
     let load_dir = target.load_dir.as_path();
     let final_path = target.full_path();
@@ -676,13 +699,19 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), KernelError> {
 /// 双层防护：先 `enclosed_name()` 拒绝穿越路径，再 [`sanitize_relative`] 拒绝
 /// 绝对路径 / 盘符 / `..`。单层防护不够——`enclosed_name` 只规范化分隔符，
 /// `C:/x` 这类带盘符的条目在 Windows 上仍能拼出越界路径。
-fn extract_archive(archive: &Path, out_dir: &Path) -> Result<PathBuf, KernelError> {
+pub(crate) fn extract_archive(archive: &Path, out_dir: &Path) -> Result<PathBuf, KernelError> {
     let file = std::fs::File::open(archive)?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| {
         KernelError::InvalidArgument(format!("内容归档不是有效的 zip：{e}"))
     })?;
+    use std::io::Read;
+    const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const MAX_FILE: u64 = 512 * 1024 * 1024;
+    if zip.len() > 10_000 { return Err(KernelError::InvalidArgument("Archive has too many entries".into())); }
+    let mut total = 0u64;
+    let mut seen = std::collections::HashSet::new();
     for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(|e| {
+        let entry = zip.by_index(index).map_err(|e| {
             KernelError::InvalidArgument(format!("读取归档条目失败：{e}"))
         })?;
         let Some(raw_name) = entry.enclosed_name() else {
@@ -690,9 +719,7 @@ fn extract_archive(archive: &Path, out_dir: &Path) -> Result<PathBuf, KernelErro
                 "归档含越界路径条目，已拒绝安装".into(),
             ));
         };
-        if entry.is_dir() {
-            continue;
-        }
+        let is_dir = entry.is_dir();
         // 符号链接在 Windows 上不常用，但 Unix 打包的包可能带；
         // 其目标路径同样可能越界，直接拒绝而不是按普通文件写出去。
         if entry
@@ -709,12 +736,18 @@ fn extract_archive(archive: &Path, out_dir: &Path) -> Result<PathBuf, KernelErro
                 "归档含非法路径条目 `{rel}`，已拒绝安装"
             )));
         };
+        if !seen.insert(safe.to_lowercase()) || entry.size() > MAX_FILE {
+            return Err(KernelError::InvalidArgument("Archive duplicate path or oversized file".into()));
+        }
         let target = out_dir.join(&safe);
+        if is_dir { std::fs::create_dir_all(&target)?; continue; }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut output = std::fs::File::create(&target)?;
-        std::io::copy(&mut entry, &mut output)?;
+        let copied = std::io::copy(&mut entry.take(MAX_FILE.min(MAX_BYTES.saturating_sub(total)) + 1), &mut output)?;
+        total = total.checked_add(copied).ok_or_else(|| KernelError::InvalidArgument("Archive size overflow".into()))?;
+        if copied > MAX_FILE || total > MAX_BYTES { return Err(KernelError::InvalidArgument("Archive expanded size limit exceeded".into())); }
     }
     Ok(out_dir.to_path_buf())
 }
@@ -726,7 +759,8 @@ fn sanitize_relative(rel: &str) -> Option<String> {
         match part {
             "" | "." => continue,
             ".." => return None,
-            p if p.contains(':') => return None,
+            p if p.contains(':') || p.ends_with('.') || p.ends_with(' ') || p.chars().any(|c| c.is_control() || matches!(c, '<'|'>'|'"'|'|'|'?'|'*')) => return None,
+            p if { let base = p.split('.').next().unwrap_or("").to_ascii_uppercase(); matches!(base.as_str(), "CON"|"PRN"|"AUX"|"NUL") || (base.len() == 4 && (base.starts_with("COM") || base.starts_with("LPT")) && matches!(base.as_bytes()[3], b'1'..=b'9')) } => return None,
             p => parts.push(p),
         }
     }
@@ -1129,6 +1163,43 @@ mod tests {
         assert!(load.join("Same").is_dir());
         assert!(load.join("Same (2)").is_dir());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn confirmed_pack_requires_replace_and_data_goes_to_behavior() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join(format!("import-pack-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("pack.mcpack");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        writer.start_file("manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(br#"{"header":{"name":"Data Pack"},"modules":[{"type":"data"}]}"#).unwrap(); writer.finish().unwrap();
+        let roots = content::ContentRoots { com_mojang: base.join("mojang"), users_root: base.join("users"), worlds: None };
+        let target = install_confirmed(&archive, ExtKind::Pack, &roots, "fallback", false).unwrap();
+        assert_eq!(target, roots.com_mojang.join(BEHAVIOR_PACKS).join("Data Pack"));
+        std::fs::write(target.join("old"), b"old bytes").unwrap();
+        assert!(matches!(install_confirmed(&archive, ExtKind::Pack, &roots, "fallback", false), Err(KernelError::Conflict(_))));
+        assert_eq!(std::fs::read(target.join("old")).unwrap(), b"old bytes");
+        install_confirmed(&archive, ExtKind::Pack, &roots, "fallback", true).unwrap();
+        assert!(!target.join("old").exists());
+        let template = install_confirmed(&archive, ExtKind::Template, &roots, "fallback", false).unwrap();
+        assert_eq!(template, roots.com_mojang.join(WORLD_TEMPLATES).join("Data Pack"));
+        assert!(template.join(MANIFEST_FILE).is_file());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn archive_rejects_case_collisions_and_reserved_names() {
+        use std::io::Write;
+        for names in [["a.txt", "A.txt"], ["CON.txt", "good.txt"], ["../escape", "good.txt"]] {
+            let base = std::env::temp_dir().join(format!("import-archive-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&base).unwrap();
+            let archive = base.join("a.zip"); let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            for name in names { writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap(); writer.write_all(b"x").unwrap(); }
+            writer.finish().unwrap();
+            assert!(extract_archive(&archive, &base.join("out")).is_err());
+            std::fs::remove_dir_all(base).unwrap();
+        }
     }
 
     /// 端到端：真实 addon 结构（任意命名多包）经 `install_staged` 解包、落位，

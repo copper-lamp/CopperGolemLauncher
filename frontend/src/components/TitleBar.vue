@@ -3,7 +3,7 @@
 // Existing route metadata supplies localized/dynamic labels; pages inject actions via Teleport.
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, Upload, ChevronRight, Stethoscope } from "@lucide/vue";
 import { useNavigationTrail } from "../composables/useNavigationTrail";
 import { showToast } from "../composables/useToast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -16,6 +16,9 @@ import { useBootDiagnostics } from "../boot";
 import { useI18n } from "../i18n";
 import { usePlatform } from "../composables/usePlatform";
 
+import { importPicking, pickGlobalImport } from '../services/import-queue';
+import { useImportText } from '../services/import-messages';
+const importText = useImportText();
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
@@ -159,6 +162,7 @@ function close() {
       </button>
       <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" @click="showToast(t('titlebar.search_pending'))"><Search :size="16" /></button>
       <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="16" /></button>
+      <button class="titlebar__back" :disabled="importPicking" :title="importText(importPicking ? 'picking' : 'open')" :aria-label="importText('open')" @click="pickGlobalImport"><Upload :size="16" /></button>
       <AccountMenu />
       <template v-if="!isMobile">
         <div class="titlebar__sep" />

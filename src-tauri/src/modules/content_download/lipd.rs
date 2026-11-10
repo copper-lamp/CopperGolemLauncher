@@ -56,12 +56,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 2. LeviLauncher 安装目录下的 `lipd.exe`（`<AppData>/levilauncher.exe/bin/lip/`，
 ///    及旧版 `<AppData>/levilauncher.exe/bin/`），便于复用用户已装好的 lip。
 pub fn find_lip_executable() -> Option<PathBuf> {
-    for name in ["lipd", "lip"] {
-        if let Some(path) = super::find_executable(name) {
-            return Some(path);
-        }
-    }
-    levi_launcher_candidates().into_iter().find(|p| p.is_file())
+    None // Discovery is owned by ExternalComponentService; never borrow PATH/other launchers.
 }
 
 /// lipd 可执行文件名（Windows 为 `lipd.exe`）。
@@ -472,7 +467,12 @@ pub async fn call_with_sink(
     params: Value,
     sink: Option<&CallbackSink>,
 ) -> Result<DaemonOutput, DaemonFailure> {
-    if let Err(message) = ensure_runtime_config() {
+    let managed = exe.ancestors().find(|p|p.join("dotnet10/current.json").is_file());
+    let Some(components_root) = managed else { return Err(DaemonFailure { timed_out:false, message:"component_managed_path_required".into(), logs:Vec::new() }); };
+    let user_home = components_root.join("lip-user");
+    let runtime = std::fs::read(components_root.join("dotnet10/current.json")).ok().and_then(|b|serde_json::from_slice::<Value>(&b).ok()).and_then(|v|v["directory"].as_str().map(str::to_owned)).filter(|s|!s.contains(['/', '\\', ':']) && s != "." && s != "..").map(|d|components_root.join("dotnet10/versions").join(d));
+    let Some(runtime) = runtime else {return Err(DaemonFailure { timed_out:false,message:"component_dotnet_missing".into(),logs:Vec::new() });};
+    if let Err(message) = std::fs::create_dir_all(&user_home).map_err(|e|e.to_string()) {
         return Err(DaemonFailure {
             timed_out: false,
             message,
@@ -489,9 +489,8 @@ pub async fn call_with_sink(
         .kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    if let Some(root) = find_dotnet_root() {
-        cmd.env("DOTNET_ROOT", root);
-    }
+    cmd.env("DOTNET_ROOT", &runtime).env("DOTNET_ROOT_X64", &runtime).env("DOTNET_ROOT_ARM64", &runtime)
+        .env("DOTNET_MULTILEVEL_LOOKUP", "0").env("APPDATA", &user_home).env("XDG_CONFIG_HOME", &user_home);
 
     let mut child = cmd.spawn().map_err(|e| DaemonFailure {
         timed_out: false,

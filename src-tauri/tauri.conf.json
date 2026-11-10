@@ -29,6 +29,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "fileAssociations": [
+      { "ext": ["mcpack", "mcaddon", "addon", "mcworld", "mctemplate", "cglm"], "name": "Minecraft / Copper resource", "role": "Editor" }
+    ],
     "windows": {
       "nsis": {
         "installerHooks": "./nsis-hooks.nsh"

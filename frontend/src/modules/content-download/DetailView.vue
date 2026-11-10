@@ -29,6 +29,7 @@ import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
 import { flyToDownloads } from "../../composables/useDownloadFeedback";
+import { ensureLipComponents } from '../../composables/useComponentPrerequisites';
 import { homeVersionsList, type VersionView } from "../../api/home";
 import TipsRotator from "../../components/TipsRotator.vue";
 import CoPage from "../../components/layout/CoPage.vue";
@@ -386,10 +387,7 @@ function cancelDownloadOnly() {
 /** 打开安装确认弹窗（lip 装 BDS 包 / 安卓装 .so 包）。 */
 async function openInstall(file: ContentFile) {
   // lip 环境探测只对 lip 生效：安卓模组不经 lipd，无需 lipd 可用。
-  if (isLip.value && !lipEnv.value?.lipAvailable) {
-    showToast(t(`${KB}.lipNotFound`), "error");
-    return;
-  }
+  if (isLip.value && !await ensureLipComponents()) return;
   try {
     await resolveTargetVersion();
   } catch {

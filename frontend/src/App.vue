@@ -24,6 +24,8 @@ import LoadingScreen from "./components/LoadingScreen.vue";
 import UpdateDialog from "./components/update/UpdateDialog.vue";
 import DiagnosticOverlay from "./components/DiagnosticOverlay.vue";
 import ErrorTipsHost from "./components/ErrorTipsHost.vue";
+import GlobalImportHost from "./components/GlobalImportHost.vue";
+import ComponentPrerequisitesHost from "./components/ComponentPrerequisitesHost.vue";
 import { useKernelReady } from "./composables/useKernelReady";
 import { usePlatform } from "./composables/usePlatform";
 
@@ -61,10 +63,12 @@ const { isMobile, isLandscape } = usePlatform();
 
   <!-- 更新弹窗：与两态布局平级，仅在用户点击标题栏的更新按钮后出现 -->
   <UpdateDialog />
+  <ComponentPrerequisitesHost />
 
   <!-- 启动诊断面板：覆盖在最上层，引导失败时自动出现 -->
   <DiagnosticOverlay />
   <ErrorTipsHost />
+  <GlobalImportHost />
 </template>
 
 <style scoped>

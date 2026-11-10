@@ -50,8 +50,8 @@ pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: O
 
 /// 某版本可选的加载器清单（详情页「加载器」下拉）。
 #[tauri::command]
-pub async fn game_download_loaders(id: String) -> CommandResult<installer::LoaderOptions> {
-    installer::loader_options(&id).await.map_err(into_command_error)
+pub async fn game_download_loaders(kernel: State<'_, KernelContext>, id: String) -> CommandResult<installer::LoaderOptions> {
+    installer::loader_options(kernel.inner(), &id).await.map_err(into_command_error)
 }
 
 /// 为该版本推荐一个可用实例名（安装确认弹窗的初值）。

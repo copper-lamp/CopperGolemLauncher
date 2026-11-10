@@ -190,7 +190,16 @@ const DEFAULT_CONCURRENCY: usize = 3;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_logging();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        let base = std::path::PathBuf::from(cwd);
+        if let Some(imports) = app.try_state::<commands::imports::ImportCoordinator>() {
+            imports.receive(argv.into_iter().skip(1).map(|arg| { let path = std::path::PathBuf::from(arg); if path.is_absolute() { path } else { base.join(path) } }));
+        }
+        if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
+    }));
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // 附加模块前端产物经自定义协议暴露（Windows/安卓映射为 http://cglmod.localhost）。
@@ -374,8 +383,14 @@ pub fn run() {
             // 先克隆一份 `Arc`：`manage` 会取走 `kernel` 本体，而这一步要在
             // `manage` 之后发起，确保此时状态已注册、事件总线已绑定前端。
             let updater_for_boot = Arc::clone(kernel.updater());
+            let imports = commands::imports::ImportCoordinator::default();
+            #[cfg(not(target_os = "android"))]
+            imports.receive(std::env::args_os().skip(1).map(std::path::PathBuf::from));
+            app.manage(imports);
             app.manage(kernel);
             updater_for_boot.spawn_background_check();
+            let kernel = app.state::<KernelContext>();
+            kernel.components().spawn_background(kernel.runtime());
 
             Ok(())
         })
@@ -383,6 +398,15 @@ pub fn run() {
             commands::kernel::kernel_info,
             commands::kernel::paths_snapshot,
             commands::kernel::debug_log,
+            commands::imports::imports_pick,
+            commands::imports::imports_pending,
+            commands::imports::imports_drop,
+            commands::imports::imports_cancel,
+            commands::imports::imports_commit,
+            commands::components::components_list,
+            commands::components::components_probe,
+            commands::components::components_check,
+            commands::components::components_install,
             commands::settings::settings_all,
             commands::settings::settings_get,
             commands::settings::settings_set,

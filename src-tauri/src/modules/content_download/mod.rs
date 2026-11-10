@@ -328,8 +328,9 @@ impl ContentDownloadModule {
     }
 
     /// 探测 lip 环境：lipd 可执行是否可用。
-    pub fn lip_env() -> LipEnv {
-        let available = lipd::find_lip_executable();
+    pub fn lip_env(kernel: &KernelContext) -> LipEnv {
+        let available = kernel.components().installed_path(crate::services::components::ComponentId::Lip)
+            .filter(|_|kernel.components().installed_path(crate::services::components::ComponentId::Dotnet10).is_some());
         LipEnv {
             lip_available: available.is_some(),
             message: if available.is_some() {

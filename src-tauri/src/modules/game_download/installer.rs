@@ -72,6 +72,7 @@ pub struct Ctx {
     pub paths: Arc<Paths>,
     pub settings: Arc<SettingsService>,
     pub download: Arc<DownloadService>,
+    pub components: Arc<crate::services::components::ExternalComponentService>,
     pub account: Arc<AccountService>,
     /// 商店授权专用客户端：不跟随重定向（与 LeviLauncher 的 `CheckRedirect` 一致），
     /// 避免票据被转发到非目标主机。
@@ -89,6 +90,7 @@ impl Ctx {
             paths: kernel.paths().clone(),
             settings: kernel.settings().clone(),
             download: kernel.download().clone(),
+            components: kernel.components().clone(),
             account: kernel.account().clone(),
             store_http: Arc::new(
                 crate::services::http_client::client_builder(std::time::Duration::from_secs(40))
@@ -1410,8 +1412,8 @@ pub fn cancel(ctx: &Ctx, instance: &str) -> Result<(), KernelError> {
 ///
 /// `lip_available` 为假表示本机没有 lipd：加载器下拉仍列出候选项，但选中后装不上，
 /// 前端据此提前提示，而不是让用户在下完几个 G 之后才在安装末期失败。
-pub async fn loader_options(version_id: &str) -> Result<LoaderOptions, KernelError> {
-    let lip_available = lipd::find_lip_executable().is_some();
+pub async fn loader_options(kernel: &KernelContext, version_id: &str) -> Result<LoaderOptions, KernelError> {
+    let lip_available = kernel.components().lip_runtime().await.is_ok();
     // UWP 实例不支持加载器（见 `enqueue_uwp`）：下拉里给出空集，前端按既有逻辑
     // 显示「无可用加载器」，而不是列出一串选了必然失败的选项。
     if uwp_catalog::is_uwp(version_id) {
@@ -1986,11 +1988,8 @@ async fn install_loader(
     loader: &str,
     progress: &mut InstallProgress,
 ) -> Result<(), KernelError> {
-    let Some(exe) = lipd::find_lip_executable() else {
-        return Err(KernelError::Config(
-            "未检测到 lipd，无法安装加载器（需要先安装 lip 与 .NET 10 运行时）".into(),
-        ));
-    };
+    let runtime = ctx.components.lip_runtime().await?;
+    let exe = runtime.exe;
     let handle = progress.loader_handle();
     let sink: lipd::CallbackSink = Arc::new(move |callback: lipd::DaemonCallback| {
         let Some(handle) = handle.as_ref() else { return };

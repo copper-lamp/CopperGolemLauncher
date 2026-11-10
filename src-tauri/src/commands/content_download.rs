@@ -131,8 +131,8 @@ pub fn content_download_records_clear(kernel: State<'_, KernelContext>) -> Comma
 
 /// 探测 lip 环境（是否安装 lipd 可执行文件）。
 #[tauri::command]
-pub async fn content_download_lip_env() -> CommandResult<LipEnv> {
-    Ok(ContentDownloadModule::lip_env())
+pub async fn content_download_lip_env(kernel: State<'_, KernelContext>) -> CommandResult<LipEnv> {
+    Ok(ContentDownloadModule::lip_env(kernel.inner()))
 }
 
 /// 经 lipd 安装 / 更新 LL 模组到目标版本目录。

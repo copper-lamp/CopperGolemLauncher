@@ -8,7 +8,8 @@
 // 左侧不套卡片、不设页头：分组标题直接落在页面底色上，条目铺满整列宽度，
 // 靠 surface-2 / surface-3 的色阶与 hover 区分层次（与入口页同一套「微色阶」语言）。
 
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { listen } from '@tauri-apps/api/event';
 import { Box, FileBox, Globe, Image, PackageOpen } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -96,6 +97,13 @@ function select(item: ContentItem) {
 }
 
 watch(currentName, () => void refresh(), { immediate: true });
+let disposed = false;
+let offContentChanged: (() => void) | undefined;
+onMounted(async () => {
+  const off = await listen('home.content-changed', () => { void refresh(); });
+  if (disposed) off(); else offContentChanged = off;
+});
+onUnmounted(() => { disposed = true; offContentChanged?.(); });
 </script>
 
 <template>

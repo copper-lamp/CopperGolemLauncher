@@ -241,12 +241,11 @@ pub async fn install(
         _ => identifier,
     };
 
-    let Some(exe) = lipd::find_lip_executable() else {
-        return LipInstallOutcome::failure(
-            ERR_LIP_NOT_INSTALLED,
-            "未检测到 lipd，请先安装 lip（需要 .NET 10 运行时）",
-        );
+    let runtime = match kernel.components().lip_runtime().await {
+        Ok(runtime) => runtime,
+        Err(_) => return LipInstallOutcome::failure(ERR_LIP_NOT_INSTALLED, "受管 lip / .NET 10 未安装或健康检查失败"),
     };
+    let exe = runtime.exe;
 
     let Some((_normalized, package_ref_base)) = build_package_ref_base(&identifier) else {
         return LipInstallOutcome::failure(

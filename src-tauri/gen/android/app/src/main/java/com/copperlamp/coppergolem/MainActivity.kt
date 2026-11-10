@@ -34,11 +34,25 @@ class MainActivity : TauriActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         handleGameIntent(intent)
+        handleResourceIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleGameIntent(intent)
+        handleResourceIntent(intent)
+    }
+
+    private fun handleResourceIntent(intent: Intent?) {
+        if (intent?.data?.scheme == "coppergolem" && intent.data?.host == "import-resource") {
+            ResourceInbox.pick(this)
+        } else ResourceInbox.receive(this, intent)
+    }
+
+    @Deprecated("Activity result bridge retained for native SAF picker")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == ResourceInbox.REQUEST && resultCode == RESULT_OK) ResourceInbox.receive(this, data)
     }
 
     /**

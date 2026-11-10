@@ -1,4 +1,15 @@
 {
+  "components": {
+    "title": "外部组件", "description": "启动器独立管理依赖，并按官方发布摘要校验完整性。",
+    "automatic": "后台更新组件", "automaticDescription": "默认开启。更新时旧的健康版本继续可用；首次安装需要主动操作。",
+    "names": {"lip": "lip 守护进程", "dotnet10": ".NET 10 运行时"},
+    "states": {"installed":"已安装", "missing":"未安装", "unsupported":"当前平台不支持", "installing":"安装中", "failed":"操作失败", "update-available":"有可用更新"},
+    "stages": {"metadata":"检查官方发布", "downloading":"下载中", "extracting":"解压中", "health-check":"验证组件健康"},
+    "notInstalled":"未安装", "check":"检查更新", "install":"安装", "update":"更新 / 修复",
+    "compatibility":"lip 限定使用兼容的 0.37 daemon 协议，不会自动选择协议不兼容的新 CLI。私有 .NET 组件不会更改系统运行时。",
+    "requiredTitle":"安装所需组件", "requiredBody":"此操作需要受管的 lip 守护进程和 .NET 10 运行时。下载并验证官方组件后，将继续本次操作一次。",
+    "installing":"正在安装并检查组件…", "cancel":"取消", "installContinue":"安装并继续"
+  },
   "app": {
     "name": "铜傀儡",
     "tagline": "铜傀儡启动器"

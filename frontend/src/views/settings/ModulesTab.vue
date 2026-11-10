@@ -20,11 +20,13 @@ import {
   ShieldAlert,
 } from "@lucide/vue";
 
+import { listen } from '@tauri-apps/api/event';
+import { pickGlobalImport } from '../../services/import-queue';
 import SettingSection from "./SettingSection.vue";
 import CoBadge, { type BadgeTone } from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
-import { modulesInstall, modulesImportLocal, modulesUninstall, modulesSetEnabled } from "../../api/modules";
+import { modulesInstall, modulesUninstall, modulesSetEnabled } from "../../api/modules";
 import { kernelInfo } from "../../api/theme";
 import type { RegistryPermission } from "../../api/registry";
 import {
@@ -63,11 +65,12 @@ const restartRequired = ref(false);
 
 async function runInstall(row?: ModuleRowView) {
   if (busy.value || (row && row.blockedBy.length)) return;
-  if (!window.confirm(t(row ? M + ".trust_registry" : M + ".trust_local", { name: row?.displayName ?? "" }))) return;
+  if (!row) { await pickGlobalImport(); return; }
+  if (!window.confirm(t(M + ".trust_registry", { name: row.displayName }))) return;
   actionId.value = row?.id ?? "local-import";
   actionError.value = "";
   try {
-    const result = row ? await modulesInstall(row.id) : await modulesImportLocal();
+    const result = await modulesInstall(row.id);
     if (result) { restartRequired.value = result.restart_required; await refresh(); }
   } catch (error) { actionError.value = String(error); showToast(String(error), "error"); }
   finally { actionId.value = null; }
@@ -81,6 +84,12 @@ async function uninstall(row: ModuleRowView) {
   finally { actionId.value = null; }
 }
 
+let disposed = false;
+let offModulesChanged: (() => void) | undefined;
+onMounted(async () => {
+  const off = await listen('modules.changed', () => { restartRequired.value = true; void refresh(); });
+  if (disposed) off(); else offModulesChanged = off;
+});
 /** 初始化：注入启动器版本供兼容性判定，并加载两侧数据。 */
 onMounted(async () => {
   try {
@@ -96,7 +105,8 @@ onMounted(async () => {
 watch(locale, () => void reloadForLocale());
 
 onUnmounted(() => {
-  // 单例状态刻意保留（Tab 切换不应重复拉取元数据），此处无需清理。
+  disposed = true; offModulesChanged?.();
+  // 单例数据保留，事件监听随当前视图卸载。
 });
 
 /** 行的启用状态（本地覆盖优先）。 */

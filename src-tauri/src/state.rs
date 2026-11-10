@@ -41,6 +41,7 @@ pub struct KernelContext {
         /// LLM 配置（内核内任何 AI 相关服务的单一访问器）。
         llm: Arc<LlmConfigService>,
     updater: Arc<UpdaterService>,
+    components: Arc<crate::services::components::ExternalComponentService>,
     events: Arc<EventBus>,
     intents: Arc<IntentRegistry>,
     modules: Arc<ModuleRegistry>,
@@ -72,7 +73,9 @@ impl KernelContext {
         sandbox: Arc<ModuleSandbox>,
         registry: Option<Arc<RegistryService>>,
     ) -> Self {
+        let components = Arc::new(crate::services::components::ExternalComponentService::new(&paths, settings.clone(), events.clone()));
         Self {
+            components,
             runtime,
             paths,
             db,
@@ -154,6 +157,10 @@ impl KernelContext {
 
     pub fn updater(&self) -> &Arc<UpdaterService> {
         &self.updater
+    }
+
+    pub fn components(&self) -> &Arc<crate::services::components::ExternalComponentService> {
+        &self.components
     }
 
     pub fn events(&self) -> &Arc<EventBus> {

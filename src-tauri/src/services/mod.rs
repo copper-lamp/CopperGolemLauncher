@@ -4,6 +4,7 @@
 //! 但不允许反向依赖命令层。
 
 pub mod account;
+pub mod components;
 pub mod database;
 pub mod download;
 pub mod http_client;
