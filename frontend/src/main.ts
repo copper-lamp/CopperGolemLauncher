@@ -27,6 +27,7 @@ import { initTheme } from "./theme";
 import { initPlatform } from "./composables/usePlatform";
 import { initSettings } from "./composables/useSettings";
 import { initDownloads } from "./composables/useDownloads";
+import { initComponentUpdates } from "./composables/initComponentUpdates";
 import { initDownloadFeedback } from "./composables/useDownloadFeedback";
 import { initNavigationTrail } from "./composables/useNavigationTrail";
 
@@ -193,6 +194,8 @@ await Promise.race([
 
 app.mount("#app");
 markKernelReady();
+// Never await component updates in the boot chain; backend runs once per process.
+void initComponentUpdates().catch((error: unknown) => logBoot('warn', `component observation: ${String(error)}`));
 logBoot("info", "界面已挂载，开始装配内核能力");
 
 // 2) 内核能力并行装配：任何一项失败 / 超时都只影响它自己的能力。

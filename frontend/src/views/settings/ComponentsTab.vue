@@ -20,9 +20,9 @@ onUnmounted(()=>stop?.());
 <template>
   <SettingSection title-key="components.title">
     <p class="components-note">{{t('components.description')}}</p>
-    <SettingRow label-key="components.automatic" hint-key="components.automaticDescription"><CoSwitch v-model="automatic" disabled /></SettingRow>
+    <SettingRow label-key="components.automatic" hint-key="components.automaticDescription"><CoSwitch v-model="automatic" /></SettingRow>
     <SettingRow v-for="row in rows" :key="row.id" :label-key="`components.names.${row.id}`">
-      <span>{{row.version ?? t('components.notInstalled')}} · {{t(`components.states.${row.state}`)}} <template v-if="row.stage">· {{t(`components.stages.${row.stage}`)}}</template></span>
+      <span>{{row.version ?? t('components.notInstalled')}} · {{t(`components.states.${row.state}`)}}<template v-if="row.availableVersion"> · {{row.availableVersion}}</template> <template v-if="row.stage">· {{t(`components.stages.${row.stage}`)}}</template></span>
       <LoaderCircle v-if="row.state==='installing'" :size="16" class="components-spin" />
       <CoButton v-if="row.state==='installing'" @click="componentsCancel()">{{t('components.cancel')}}</CoButton>
       <CoButton :disabled="busy || !row.supported || row.state==='installing'" @click="run(row.id,'check')">{{t('components.check')}}</CoButton>

@@ -1,9 +1,10 @@
 {
   "components": {
     "title": "外部组件", "description": "启动器独立管理依赖，并按官方发布摘要校验完整性。",
-    "automatic": "后台检查等待目标确认", "automaticDescription": "周期检查暂未启用。已安装工具和运行库仅在业务需要或手动操作时检查。",
+    "automatic": "启动后更新兼容的 lipd", "automaticDescription": "每次启动启动器后在后台检查一次。其他运行库和 lipr 索引不自动扫描；关闭后可手动检查。",
+    "updatedNotice":"兼容的 lip 守护进程已在后台更新。",
     "names": {"lip": "lip 守护进程", "dotnet10": ".NET 10 运行时"},
-    "states": {"installed":"已安装", "missing":"未安装", "unsupported":"当前平台不支持", "installing":"安装中", "failed":"操作失败", "update-available":"有可用更新"},
+    "states": {"installed":"已安装", "missing":"未安装", "unsupported":"当前平台不支持", "installing":"安装中", "failed":"操作失败", "update-available":"有可用更新", "incompatible-update":"新版协议不兼容，已保留当前版本", "background-check-failed":"后台检查未完成，当前版本仍可用"},
     "stages": {"metadata":"检查官方发布", "downloading":"下载中", "extracting":"解压中", "health-check":"验证组件健康"},
     "notInstalled":"未安装", "check":"检查更新", "install":"安装", "update":"更新 / 修复",
     "compatibility":"lip 限定使用兼容的 0.37 daemon 协议，不会自动选择协议不兼容的新 CLI。私有 .NET 组件不会更改系统运行时。",

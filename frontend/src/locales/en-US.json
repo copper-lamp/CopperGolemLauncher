@@ -1,9 +1,10 @@
 {
   "components": {
     "title": "External components", "description": "Launcher-managed dependencies, verified against official release digests.",
-    "automatic": "Background checks awaiting target confirmation", "automaticDescription": "Periodic checks are paused. Installed tools and runtimes are checked only when needed or manually.",
+    "automatic": "Update compatible lipd after startup", "automaticDescription": "Check once in the background after each launcher startup. Other runtimes and the lipr index are not scanned. Turn off to check manually.",
+    "updatedNotice":"The compatible lip daemon was updated in the background.",
     "names": {"lip": "lip daemon", "dotnet10": ".NET 10 runtime"},
-    "states": {"installed":"Installed", "missing":"Missing", "unsupported":"Unsupported platform", "installing":"Installing", "failed":"Action failed", "update-available":"Update available"},
+    "states": {"installed":"Installed", "missing":"Missing", "unsupported":"Unsupported platform", "installing":"Installing", "failed":"Action failed", "update-available":"Update available", "incompatible-update":"Newer protocol is incompatible; current version retained", "background-check-failed":"Background check did not finish; current version retained"},
     "stages": {"metadata":"Checking official release", "downloading":"Downloading", "extracting":"Extracting", "health-check":"Verifying health"},
     "notInstalled":"Not installed", "check":"Check updates", "install":"Install", "update":"Update / repair",
     "compatibility":"lip is restricted to the compatible 0.37 daemon protocol. Newer incompatible CLI releases are not selected automatically. Private .NET components do not change the system runtime.",

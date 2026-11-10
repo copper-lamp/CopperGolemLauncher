@@ -389,8 +389,7 @@ pub fn run() {
             app.manage(imports);
             app.manage(kernel);
             updater_for_boot.spawn_background_check();
-            let kernel = app.state::<KernelContext>();
-            kernel.components().spawn_background(kernel.runtime());
+            // lipd更新只由界面挂载后的components_ui_ready触发，启动不等待任何检查。
 
             Ok(())
         })
@@ -407,6 +406,7 @@ pub fn run() {
             commands::components::components_probe,
             commands::components::components_check,
             commands::components::components_install,
+            commands::components::components_ui_ready,
             commands::components::components_cancel,
             commands::components::game_dependencies_probe,
             commands::components::game_dependencies_install,

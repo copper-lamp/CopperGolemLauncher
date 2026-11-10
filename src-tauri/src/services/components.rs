@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256, Sha512};
 use crate::{error::KernelError, registry::events::EventBus};
 use super::{paths::Paths, settings::SettingsService};
 #[path="component_lifecycle.rs"] pub mod lifecycle;
-use std::sync::atomic::{AtomicU64,Ordering};
-#[derive(Default)] struct JobControl { generation:AtomicU64, foreground:AtomicU64 }
+use std::sync::atomic::{AtomicBool,AtomicU64,Ordering};
+#[derive(Default)] struct JobControl { generation:AtomicU64, foreground:AtomicU64, background:AtomicBool, background_generation:AtomicU64 }
 struct Foreground<'a>(&'a AtomicU64);
 impl Drop for Foreground<'_>{fn drop(&mut self){self.0.fetch_sub(1,Ordering::SeqCst);}}
 
@@ -36,13 +36,13 @@ pub struct LipRuntime { pub exe: PathBuf, pub dotnet_root: PathBuf, pub user_hom
 pub struct ExternalComponentService {
     root: PathBuf, settings: Arc<SettingsService>, events: Arc<EventBus>,
     gates: HashMap<ComponentId, tokio::sync::Mutex<()>>,
-    states: Mutex<HashMap<ComponentId, ComponentStatus>>, client: reqwest::Client, control:JobControl,
+    states: Mutex<HashMap<ComponentId, ComponentStatus>>, client: reqwest::Client, control:JobControl, boot_started:AtomicBool,
 }
 impl ExternalComponentService {
     pub fn new(paths: &Paths, settings: Arc<SettingsService>, events: Arc<EventBus>) -> Self {
         Self { root: paths.data_dir().join("components"), settings, events,
             gates: [(ComponentId::Lip, tokio::sync::Mutex::new(())), (ComponentId::Dotnet10, tokio::sync::Mutex::new(()))].into(),
-            states: Mutex::new(HashMap::new()), control:JobControl::default(), client: super::http_client::client_builder(Duration::from_secs(180)).user_agent("CopperGolem-components").redirect(reqwest::redirect::Policy::custom(|attempt| { if attempt.previous().len()>=8 || !download_host(attempt.url()) {attempt.error("component_redirect_rejected")} else {attempt.follow()} })).build().expect("component HTTP client") }
+            states: Mutex::new(HashMap::new()), control:JobControl::default(), boot_started:AtomicBool::new(false), client: super::http_client::client_builder(Duration::from_secs(180)).user_agent("CopperGolem-components").redirect(reqwest::redirect::Policy::custom(|attempt| { if attempt.previous().len()>=8 || !download_host(attempt.url()) {attempt.error("component_redirect_rejected")} else {attempt.follow()} })).build().expect("component HTTP client") }
     }
     pub fn supported() -> bool { cfg!(windows) && matches!(std::env::consts::ARCH, "x86_64" | "aarch64") }
     fn rid() -> &'static str { if cfg!(target_arch="aarch64") { "win-arm64" } else { "win-x64" } }
@@ -76,6 +76,7 @@ impl ExternalComponentService {
         self.health(id, &dir, &active.version).await
     }
     pub async fn lip_runtime(&self) -> Result<LipRuntime, KernelError> {
+        self.cancel(); // 实际业务立即抢占启动后台请求，不等待更新。
         self.probe(ComponentId::Dotnet10).await?;
         self.probe(ComponentId::Lip).await?;
         let lip=self.active(ComponentId::Lip)?.1;let dotnet=self.active(ComponentId::Dotnet10)?.1;
@@ -84,16 +85,19 @@ impl ExternalComponentService {
     }
     pub async fn check(&self, id: ComponentId) -> Result<ComponentStatus, KernelError> {
         if !Self::supported() { return Err(failure("component_platform_unsupported")); }
-        let asset = self.resolve(id).await?;
+        let (asset,incompatible_version)=if id==ComponentId::Lip{
+            let data:Value=serde_json::from_slice(&self.fetch_bytes(LIP_RELEASES,8*1024*1024).await?)?;
+            let asset=resolve_lip(&data,Self::rid())?;let newer=newest_incompatible_lip(&data,&asset.version);(asset,newer)
+        }else{(self.resolve(id).await?,None)};
         let current = self.active(id).ok().map(|(a,_)|a.version);
         let newer = current.as_deref().and_then(|v|semver::Version::parse(v).ok()).map(|v| semver::Version::parse(&asset.version).map(|a|a>v).unwrap_or(false)).unwrap_or(true);
-        self.report(id, if newer { "update-available" } else { "installed" }, None, Some(asset.version), None);
+        if !newer && incompatible_version.is_some(){self.report(id,"incompatible-update",None,incompatible_version,None);}else{self.report(id, if newer { "update-available" } else { "installed" }, None, Some(asset.version), None);}
         Ok(self.snapshot().into_iter().find(|s|s.id==id).unwrap())
     }
     pub fn cancel(&self){self.control.generation.fetch_add(1,Ordering::SeqCst);}
     async fn controlled<T>(&self,generation:u64,future:impl std::future::Future<Output=Result<T,KernelError>>)->Result<T,KernelError>{
         tokio::pin!(future);
-        loop{tokio::select!{result=&mut future=>return result,_=tokio::time::sleep(Duration::from_millis(100))=>{if self.control.generation.load(Ordering::SeqCst)!=generation{return Err(failure("component_cancelled"));}}}}
+        loop{tokio::select!{result=&mut future=>return result,_=tokio::time::sleep(Duration::from_millis(100))=>{if self.control.generation.load(Ordering::SeqCst)!=generation || (self.control.background.load(Ordering::SeqCst) && self.control.background_generation.load(Ordering::SeqCst)==generation && !self.automatic_enabled()){return Err(failure("component_cancelled"));}}}}
     }
     pub async fn install(&self, id: ComponentId) -> Result<(), KernelError> {
         self.control.foreground.fetch_add(1,Ordering::SeqCst);let _foreground=Foreground(&self.control.foreground);
@@ -116,10 +120,13 @@ impl ExternalComponentService {
     async fn install_locked(&self, id: ComponentId) -> Result<(), KernelError> {
         let generation=self.control.generation.load(Ordering::SeqCst);
         let asset = self.controlled(generation,self.resolve(id)).await?;
+        self.install_asset(id,asset,generation).await
+    }
+    async fn install_asset(&self,id:ComponentId,asset:Asset,generation:u64)->Result<(),KernelError>{
         if let Ok((active,dir)) = self.active(id) {
             let old = semver::Version::parse(&active.version).map_err(|_|failure("component_version_invalid"))?;
             let new = semver::Version::parse(&asset.version).map_err(|_|failure("component_version_invalid"))?;
-            if old >= new && self.health(id,&dir,&active.version).await.is_ok() { return Ok(()); }
+            if old >= new && self.controlled(generation,self.health(id,&dir,&active.version)).await.is_ok() { return Ok(()); }
         }
         let base = self.component_dir(id);
         let stage = base.join(format!("staging-{}", uuid::Uuid::new_v4()));
@@ -133,8 +140,9 @@ impl ExternalComponentService {
         tokio::task::spawn_blocking(move || extract_zip(&bytes,&unpack)).await.map_err(|_|failure("component_extract_join"))??;
         lifecycle::create_lease(&stage)?;
         self.report(id,"installing",Some("health-check"),Some(asset.version.clone()),None);
-        if self.control.generation.load(Ordering::SeqCst)!=generation{return Err(failure("component_cancelled"));}
+        if self.control.generation.load(Ordering::SeqCst)!=generation || (self.control.background.load(Ordering::SeqCst) && self.control.background_generation.load(Ordering::SeqCst)==generation && !self.automatic_enabled()){return Err(failure("component_cancelled"));}
         self.controlled(generation,self.health(id,&stage,&asset.version)).await?;
+        if self.control.generation.load(Ordering::SeqCst)!=generation || (self.control.background.load(Ordering::SeqCst)&&self.control.background_generation.load(Ordering::SeqCst)==generation&&!self.automatic_enabled()){return Err(failure("component_cancelled"));}
         // 唯一不可变版本目录避免维修同版本时覆写现用 exe。
         let directory = format!("{}-{}-{}",asset.version,asset.rid,uuid::Uuid::new_v4());
         let versions = base.join("versions"); fs::create_dir_all(&versions)?;
@@ -190,10 +198,43 @@ impl ExternalComponentService {
         while let Some(chunk)=response.chunk().await? { if bytes.len()+chunk.len()>limit {return Err(failure("component_download_too_large"));} bytes.extend_from_slice(&chunk); }
         Ok(bytes)
     }
+    fn automatic_enabled(&self)->bool{self.settings.get::<bool>("components.auto_update_enabled").unwrap_or(true)}
+    /// 仅由已挂载界面的命令触发；CAS保证WebView重载/多窗口不重复。
     pub fn spawn_background(self:&Arc<Self>, runtime:&tokio::runtime::Handle) {
-        // 调度对象待用户明确；独立安全批不启动周期网络，不检查任何已安装组件。
-        // 完整待定调度方案保存在 docs/铜核心/外部组件后台调度待定.md。
-        let _ = (runtime,&self.settings);
+        if self.boot_started.swap(true,Ordering::SeqCst){return;}
+        let service=Arc::clone(self);
+        runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if !service.automatic_enabled() || !Self::supported() || service.control.foreground.load(Ordering::SeqCst)>0{return;}
+            // 未安装lip不自动安装；不读取.NET官方元数据，更不修复系统运行库。
+            if service.active(ComponentId::Lip).is_err(){return;}
+            let generation=service.control.generation.load(Ordering::SeqCst);
+            service.control.background_generation.store(generation,Ordering::SeqCst);
+            service.control.background.store(true,Ordering::SeqCst);
+            let result=service.boot_lip_update(generation).await;
+            service.control.background.store(false,Ordering::SeqCst);
+            if let Err(error)=result{service.report(ComponentId::Lip,"background-check-failed",None,None,Some(error.to_string()));}
+        });
+    }
+    async fn boot_lip_update(&self,generation:u64)->Result<(),KernelError>{
+        let bytes=self.controlled(generation,self.fetch_bytes(LIP_RELEASES,8*1024*1024)).await?;
+        let data:Value=serde_json::from_slice(&bytes)?;
+        let (active,_)=self.active(ComponentId::Lip)?;
+        let newest=newest_incompatible_lip(&data,&active.version);
+        let asset=match resolve_lip(&data,Self::rid()){
+            Ok(asset)=>asset,
+            Err(error)=>{if let Some(version)=newest{self.report(ComponentId::Lip,"incompatible-update",None,Some(version),None);return Ok(());}return Err(error);}
+        };
+        if semver::Version::parse(&asset.version).ok()>semver::Version::parse(&active.version).ok(){
+            // 只取得lip临界区，不走install(Lip)隐式升级.NET。
+            let _gate=self.gates[&ComponentId::Lip].try_lock().map_err(|_|failure("component_foreground_busy"))?;
+            let _lock=lock_component(&self.component_dir(ComponentId::Lip).join("install.lock"))?;
+            self.install_asset(ComponentId::Lip,asset,generation).await?;
+            self.report(ComponentId::Lip,"installed",None,None,None);
+            self.events.publish("components.auto-updated",serde_json::json!({"id":"lip"}));
+        }
+        if let Some(version)=newest{self.report(ComponentId::Lip,"incompatible-update",None,Some(version),None);}
+        Ok(())
     }
 }
 fn failure(code:&str)->KernelError {KernelError::Module(code.into())}
@@ -201,6 +242,10 @@ fn safe_segment(s:&str)->bool {!s.is_empty() && s.chars().all(|c|c.is_ascii_alph
 fn compatible(id:ComponentId,v:&str)->bool { semver::Version::parse(v).is_ok_and(|v| v.pre.is_empty() && match id {ComponentId::Lip=>v.major==0&&v.minor==37,ComponentId::Dotnet10=>v.major==10}) }
 fn download_host(u:&reqwest::Url)->bool { u.scheme()=="https" && matches!(u.host_str(),Some("github.com"|"api.github.com"|"builds.dotnet.microsoft.com"|"download.visualstudio.microsoft.com"|"release-assets.githubusercontent.com"|"objects.githubusercontent.com")) }
 fn official_url(raw:&str)->bool { reqwest::Url::parse(raw).is_ok_and(|u|u.scheme()=="https" && matches!(u.host_str(),Some("github.com"|"api.github.com"|"builds.dotnet.microsoft.com"|"download.visualstudio.microsoft.com"|"ci.dot.net"))) }
+fn newest_incompatible_lip(data:&Value,compatible_version:&str)->Option<String>{
+    let current=semver::Version::parse(compatible_version).ok()?;
+    data.as_array()?.iter().filter(|r|r["draft"]!=true&&r["prerelease"]!=true).filter_map(|r|semver::Version::parse(r["tag_name"].as_str()?.trim_start_matches('v')).ok()).filter(|v|v.pre.is_empty()&&*v>current&&!compatible(ComponentId::Lip,&v.to_string())).max().map(|v|v.to_string())
+}
 fn resolve_lip(data:&Value,rid:&str)->Result<Asset,KernelError> {
     let releases=data.as_array().ok_or_else(||failure("component_metadata_invalid"))?;
     let mut candidates=Vec::new();
@@ -260,6 +305,7 @@ fn atomic_json(path:&Path,value:&impl Serialize)->Result<(),KernelError>{
 }
 struct Staging(PathBuf);impl Drop for Staging{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
 
+#[cfg(test)] #[path="component_boot_tests.rs"] mod boot_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

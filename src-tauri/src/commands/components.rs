@@ -18,6 +18,8 @@ pub async fn game_dependencies_install(kernel:State<'_,KernelContext>,name:Strin
     crate::services::system_runtime::install_packages(&status,&cache).await.map_err(into_command_error)
 }
 #[tauri::command]
+pub fn components_ui_ready(kernel:State<'_,KernelContext>){kernel.components().spawn_background(kernel.runtime());}
+#[tauri::command]
 pub fn components_cancel(kernel:State<'_,KernelContext>){kernel.components().cancel();}
 #[tauri::command]
 pub fn components_list(kernel:State<'_,KernelContext>)->Vec<ComponentStatus>{kernel.components().snapshot()}
