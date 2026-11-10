@@ -27,6 +27,10 @@ import { initTheme } from "./theme";
 import { initPlatform } from "./composables/usePlatform";
 import { initSettings } from "./composables/useSettings";
 import { initDownloads } from "./composables/useDownloads";
+import { initDownloadFeedback } from "./composables/useDownloadFeedback";
+import { initNavigationTrail } from "./composables/useNavigationTrail";
+
+initNavigationTrail(router);
 import { initUpdate } from "./composables/useUpdate";
 import { initAccount } from "./composables/useAccount";
 import { markKernelReady } from "./composables/useKernelReady";
@@ -199,7 +203,7 @@ void Promise.all([
   withTimeout("i18n", "boot.error.step.i18n", initI18n),
   withTimeout("platform", "boot.error.step.platform", initPlatform),
   withTimeout("settings", "boot.error.step.settings", initSettings),
-  withTimeout("downloads", "boot.error.step.downloads", initDownloads),
+  withTimeout("downloads", "boot.error.step.downloads", async () => { await Promise.all([initDownloadFeedback(), initDownloads()]); }),
   // 更新：只接状态与进度，不在此发起检查 —— 启动期的静默检查由内核在后台跑，
   // 失败也不打扰用户（见 services::updater::spawn_background_check）。
   withTimeout("update", "boot.error.step.update", initUpdate),

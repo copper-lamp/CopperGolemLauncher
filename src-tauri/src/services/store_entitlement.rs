@@ -304,7 +304,7 @@ pub fn classify_license_response(data: &[u8]) -> Result<EntitlementState, StoreE
     let parsed: LicenseResponse = bounded_json(data)?;
     if let Some(failure) = parsed.satisfaction_failure.as_ref() {
         log::warn!("[store-entitlement] license request refused: {}", failure.reason());
-        return Ok(EntitlementState::NotEntitled);
+        return Err(StoreEntitlementError::ServiceRefused(failure.reason()));
     }
     let license = parsed
         .license
@@ -460,6 +460,8 @@ mod tests {
     #[test]
     fn service_refusal_keeps_the_server_reason() {
         let body = br#"{"satisfactionFailure":{"alternateContentIds":[],"code":501,"data":[],"description":"Device group is full, please remove a device and try again.","remediationAction":"PresentUpsell","remediationProductSkus":[]}}"#;
+        assert!(matches!(classify_license_response(body), Err(StoreEntitlementError::ServiceRefused(_))),
+            "a service refusal must not be reported as NotEntitled");
         let error = extract_content_key(body, "bdb9e791-c97c-3734-e1a8-bc602552df06", &[0u8; 8], &[0u8; 16])
             .unwrap_err();
         match error {

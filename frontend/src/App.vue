@@ -23,6 +23,7 @@ import ToastHost from "./components/ToastHost.vue";
 import LoadingScreen from "./components/LoadingScreen.vue";
 import UpdateDialog from "./components/update/UpdateDialog.vue";
 import DiagnosticOverlay from "./components/DiagnosticOverlay.vue";
+import ErrorTipsHost from "./components/ErrorTipsHost.vue";
 import { useKernelReady } from "./composables/useKernelReady";
 import { usePlatform } from "./composables/usePlatform";
 
@@ -63,6 +64,7 @@ const { isMobile, isLandscape } = usePlatform();
 
   <!-- 启动诊断面板：覆盖在最上层，引导失败时自动出现 -->
   <DiagnosticOverlay />
+  <ErrorTipsHost />
 </template>
 
 <style scoped>

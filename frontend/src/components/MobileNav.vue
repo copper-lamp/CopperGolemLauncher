@@ -8,7 +8,11 @@
 //   两态布局不产生第二套导航定义。
 
 import { RouterLink } from "vue-router";
-import { Settings, ArrowDownToLine } from "@lucide/vue";
+import { useRoute } from "vue-router";
+import NavIcon from "./NavIcon.vue";
+import DownloadNavIcon from "./DownloadNavIcon.vue";
+const route = useRoute();
+import { navigationScopeOf } from "../composables/useNavigationTrail";
 
 import { useI18n } from "../i18n";
 import { getModuleNav } from "../modules/registry";
@@ -25,15 +29,15 @@ const moduleNav = getModuleNav();
       :to="item.path"
       class="mobile-nav__item"
     >
-      <component :is="item.icon" :size="22" />
+      <NavIcon :id="item.id" :fallback="item.icon" :size="22" :active="navigationScopeOf(route) === `module:${item.id}`" />
       <span class="mobile-nav__label">{{ t(item.titleKey) }}</span>
     </RouterLink>
     <RouterLink to="/downloads" class="mobile-nav__item">
-      <ArrowDownToLine :size="22" />
+      <DownloadNavIcon :size="22" :active="route.path === '/downloads'" />
       <span class="mobile-nav__label">{{ t("nav.downloads") }}</span>
     </RouterLink>
     <RouterLink to="/settings" class="mobile-nav__item">
-      <Settings :size="22" />
+      <NavIcon id="settings" :size="22" :active="route.path === '/settings'" />
       <span class="mobile-nav__label">{{ t("nav.settings") }}</span>
     </RouterLink>
   </nav>
@@ -48,7 +52,8 @@ const moduleNav = getModuleNav();
   gap: var(--copper-space-1);
   padding-bottom: var(--copper-safe-bottom);
   background: var(--copper-surface);
-  border-top: 1px solid var(--copper-border);
+  box-shadow: 0 -2px 10px color-mix(in srgb, #000 4%, transparent);
+  overflow-x: auto;
 }
 
 .mobile-nav__item {

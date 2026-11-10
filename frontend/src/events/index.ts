@@ -172,9 +172,21 @@ export interface ContentDownloadLocation {
 export function onContentDownloadLocation(
   handler: (payload: ContentDownloadLocation) => void,
 ): Promise<Unlisten> {
-  return listen<ContentDownloadLocation>("content-download.location", (e) =>
+  return listen<ContentDownloadLocation>("content-download-location", (e) =>
     handler(e.payload),
   );
+}
+
+export function onContentInstallProgress(
+  handler: (payload: import("../modules/content-download/api").ContentInstallProgress) => void,
+): Promise<Unlisten> {
+  return listen<import("../modules/content-download/api").ContentInstallProgress>("content-download-install-progress", e => handler(e.payload));
+}
+export function onContentRecordsChanged(handler: () => void): Promise<Unlisten> {
+  return listen("content-download-records-changed", handler);
+}
+export function onContentInstallFinished(handler: (payload: { operationId: string; outcome: import("../modules/content-download/api").LipInstallOutcome }) => void): Promise<Unlisten> {
+  return listen<{ operationId: string; outcome: import("../modules/content-download/api").LipInstallOutcome }>("content-download-install-finished", e => handler(e.payload));
 }
 
 /** 订阅更新状态。 */

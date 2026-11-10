@@ -2000,6 +2000,9 @@ async fn install_loader(
                 // 而不是起点——报起点会让进度条看起来停死在这 28% 上。
                 handle.report(percent.map(|p| p / 100.0), Some(item));
             }
+            lipd::DaemonCallback::Stage(stage) => {
+                handle.report(None, Some(stage.to_string()));
+            }
             lipd::DaemonCallback::Log(text) => {
                 // 步骤文本比百分比更细，但也更吵：这里只留诊断日志。
                 if !text.trim().is_empty() {
@@ -2123,7 +2126,11 @@ async fn store_content_key(
         Err(error) => {
             // 错误文本不含票据或密钥；透传给前端定位是哪一步挂了。
             log::warn!("[game-download] 商店授权失败: {error}");
-            Err(auth_error("online", error.to_string()))
+            Err(match error {
+                native_install::NativeInstallError::Entitlement(source) => KernelError::StoreEntitlement(source),
+                native_install::NativeInstallError::MissingContentKey => KernelError::StoreEntitlement(crate::services::store_entitlement::StoreEntitlementError::NoContentKey),
+                other => auth_error("online", other.to_string()),
+            })
         }
     }
 }

@@ -28,7 +28,6 @@ const coreTasks = ref<DownloadTask[]>([]);
  * 这里补一条 installing 行，让下载列表仍出现该项目并播放安装动画，只是跳过下载。
  */
 const installOverlays = ref<DownloadTask[]>([]);
-const installTimers = new Map<number, ReturnType<typeof setInterval>>();
 let overlaySeq = 1;
 
 const tasks = computed<DownloadTask[]>(() => [
@@ -55,36 +54,21 @@ export function announceInstall(instance: string): void {
     filename: instance,
     url: `install://${instance}`,
     dest: "",
-    total_bytes: 1,
-    downloaded_bytes: 1,
+    total_bytes: 0,
+    downloaded_bytes: 0,
     speed_bytes_per_sec: 0,
     status: "installing",
     error: null,
     retry_count: 0,
     created_at_ms: Date.now(),
-    phase_progress: 0.02,
+    phase_progress: null,
     stage: "download.stage.install_reusing",
     stage_detail: instance,
   };
   installOverlays.value = [...installOverlays.value, task];
-  const timer = setInterval(() => {
-    const current = installOverlays.value.find((item) => item.id === id);
-    if (!current) {
-      clearInterval(timer);
-      return;
-    }
-    // 后端没有复用路径的逐帧进度；用一个缓慢逼近 95% 的动画表达“正在安装”，
-    // 真正的完成/失败由 game-download.installed / failed 事件收尾。
-    current.phase_progress = Math.min(0.95, (current.phase_progress ?? 0) + 0.02);
-    installOverlays.value = [...installOverlays.value];
-  }, 600);
-  installTimers.set(id, timer);
 }
 
 function dropInstallOverlay(id: number): void {
-  const timer = installTimers.get(id);
-  if (timer !== undefined) clearInterval(timer);
-  installTimers.delete(id);
   installOverlays.value = installOverlays.value.filter((item) => item.id !== id);
 }
 
@@ -113,21 +97,23 @@ async function refresh(): Promise<void> {
 export async function initDownloads(): Promise<void> {
   if (initialized.value) return;
   initialized.value = true;
-  try {
-    coreTasks.value = await downloadTasks();
-  } catch {
-    // 内核未就绪时为空列表。
-  }
+  const buffered = new Map<number, DownloadTask>();
+  let loading = true;
+  const receive = (task: DownloadTask) => {
+    if (loading) buffered.set(task.id, task);
+    else upsert(task);
+  };
+  await Promise.all([
+    onDownload("created", receive), onDownload("progress", receive), onDownload("status", receive),
+  ]);
+  try { coreTasks.value = await downloadTasks(); } catch { /* retain event state */ }
+  loading = false;
+  for (const task of buffered.values()) upsert(task);
   try {
     concurrency.value = await downloadConcurrency();
   } catch {
     // 内核未就绪时保留默认值。
   }
-  await Promise.all([
-    onDownload("created", upsert),
-    onDownload("progress", upsert),
-    onDownload("status", upsert),
-  ]);
 }
 
 /** 活跃任务数（下载中 + 排队中）。 */

@@ -3,7 +3,11 @@
 // 单 icon 无文字，不展开。下载为全量列表页（/downloads），无悬浮窗。
 
 import { RouterLink } from "vue-router";
-import { Settings, ArrowDownToLine } from "@lucide/vue";
+import { useRoute } from "vue-router";
+import NavIcon from "./NavIcon.vue";
+import DownloadNavIcon from "./DownloadNavIcon.vue";
+const route = useRoute();
+import { navigationScopeOf } from "../composables/useNavigationTrail";
 
 import { useI18n } from "../i18n";
 import { getModuleNav } from "../modules/registry";
@@ -25,7 +29,7 @@ const moduleNav = getModuleNav();
         class="side-nav__item"
         :title="t(item.titleKey)"
       >
-        <component :is="item.icon" :size="20" />
+        <NavIcon :id="item.id" :fallback="item.icon" :active="navigationScopeOf(route) === `module:${item.id}`" />
       </RouterLink>
     </div>
     <div class="side-nav__bottom">
@@ -35,14 +39,14 @@ const moduleNav = getModuleNav();
         class="side-nav__item"
         :title="t('nav.downloads')"
       >
-        <ArrowDownToLine :size="20" />
+        <DownloadNavIcon :active="route.path === '/downloads'" />
       </RouterLink>
       <RouterLink
         to="/settings"
         class="side-nav__item"
         :title="t('nav.settings')"
       >
-        <Settings :size="20" />
+        <NavIcon id="settings" :active="route.path === '/settings'" />
       </RouterLink>
     </div>
   </nav>
@@ -58,7 +62,8 @@ const moduleNav = getModuleNav();
   flex-shrink: 0;
   padding: var(--copper-space-2) 0;
   background: var(--copper-surface);
-  border-right: 1px solid var(--copper-border);
+  box-shadow: 2px 0 10px color-mix(in srgb, #000 4%, transparent);
+  overflow-y: auto;
 }
 
 /*
@@ -139,7 +144,6 @@ html[data-form-factor="mobile"] .side-nav {
 }
 
 .side-nav__item.router-link-active {
-  background: color-mix(in srgb, var(--copper-accent) 16%, transparent);
   color: var(--copper-accent);
 }
 

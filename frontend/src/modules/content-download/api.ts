@@ -7,6 +7,7 @@ import { call } from "../../api/core";
 
 export interface ContentDownloadRecord {
   id: string;
+  contentId: string;
   source: ContentSource;
   contentType: ContentType;
   name: string;
@@ -29,7 +30,7 @@ export interface ContentDownloadRecord {
 /** lip 安装进度事件负载（后端 `content-download.install-progress`）。 */
 export interface ContentInstallProgress {
   id: string;
-  progress: number;
+  progress: number | null;
   stage: string;
   stageDetail: string | null;
 }
@@ -258,8 +259,10 @@ export function contentDownloadLipInstall(
   version: string,
   variant?: string,
   dir?: string,
-): Promise<LipInstallOutcome> {
-  return call<LipInstallOutcome>("content_download_lip_install", {
+  clientRequestId = crypto.randomUUID(),
+): Promise<{ operationId: string }> {
+  return call<{ operationId: string }>("content_download_lip_install", {
+    clientRequestId,
     id,
     version,
     variant,

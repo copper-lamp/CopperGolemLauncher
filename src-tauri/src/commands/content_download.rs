@@ -8,7 +8,7 @@ use crate::commands::into_command_error;
 use crate::error::CommandResult;
 use crate::modules::content_download::model::{ContentDetail, ContentListPage, ContentListQuery};
 use crate::modules::content_download::{
-    ContentDownloadModule, ContentDownloadRecord, ContentPlacement, LipEnv, LipInstallOutcome,
+    ContentDownloadModule, ContentDownloadRecord, ContentPlacement, LipEnv, LipInstallAccepted,
 };
 use crate::state::KernelContext;
 
@@ -141,18 +141,15 @@ pub async fn content_download_lip_env() -> CommandResult<LipEnv> {
 /// 域内失败以 `success=false` + `errorCode` 返回，不走命令错误通道。
 #[tauri::command]
 pub async fn content_download_lip_install(
+    app: tauri::AppHandle,
     kernel: State<'_, KernelContext>,
     id: String,
     version: String,
     variant: Option<String>,
     dir: Option<String>,
-) -> CommandResult<LipInstallOutcome> {
-    Ok(ContentDownloadModule::lip_install(
-        kernel.inner(),
-        &id,
-        &version,
-        variant.as_deref(),
-        dir.as_deref(),
-    )
-    .await)
+    client_request_id: String,
+) -> CommandResult<LipInstallAccepted> {
+    ContentDownloadModule::start_lip_install(
+        app, kernel.inner(), &id, &version, variant.as_deref(), dir.as_deref(), &client_request_id,
+    ).await.map_err(into_command_error)
 }

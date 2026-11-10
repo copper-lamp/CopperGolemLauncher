@@ -38,6 +38,7 @@ import {
 } from "@lucide/vue";
 
 import { useDownloads } from "../composables/useDownloads";
+import { useDownloadFeedback } from "../composables/useDownloadFeedback";
 import { usePlatform } from "../composables/usePlatform";
 import { useSettings } from "../composables/useSettings";
 import { useI18n } from "../i18n";
@@ -51,10 +52,8 @@ import {
 import { showToast } from "../composables/useToast";
 import {
   contentDownloadRecordRemove,
-  contentDownloadRecords,
   contentDownloadRecordsClear,
   type ContentDownloadRecord,
-  type ContentInstallProgress,
 } from "../modules/content-download/api";
 import { gameRetryVersion, gameTaskBindings } from "../modules/game-download/api";
 import CoSelect from "../components/ui/CoSelect.vue";
@@ -106,11 +105,11 @@ const historyLimit = computed(() => get<number>("download.history_limit", 50));
  *
  * 上限为 0 时整区不渲染（用户选择「不显示」）。
  */
-const contentRecords = ref<ContentDownloadRecord[]>([]);
+const { contentRecords, installDetails, refreshRecords, setDownloadCenterVisible } = useDownloadFeedback();
 let refreshContentRecords: (() => void) | undefined;
 
 /** 记录 id → 当前阶段细节（lipd 的实时子步骤名，只活在本次会话里）。 */
-const installDetails = ref<Record<string, string>>({});
+
 
 /**
  * 下载任务 id → 游戏版本 id。
@@ -174,7 +173,7 @@ function contentRecordTask(record: ContentDownloadRecord, index: number): Downlo
     retry_count: 0,
     created_at_ms: (record.createdAt || record.updatedAt) * 1000,
     content_id: record.id,
-    phase_progress: record.progress ?? (record.state === "installing" ? 0 : null),
+    phase_progress: record.progress ?? null,
     stage: record.stage ?? null,
     stage_detail: installDetails.value[record.id] ?? null,
   };
@@ -313,7 +312,8 @@ async function handleInstall(task: DownloadTask) {
 async function viewContent(task: DownloadTask) {
   if (!task.content_id) return;
   try {
-    await router.push({ name: "content-detail", params: { id: task.content_id } });
+    const record = contentRecords.value.find(r => r.id === task.content_id);
+    await router.push({ name: "content-detail", params: { id: record?.contentId ?? task.content_id } });
   } catch (e) {
     showToast(String(e), "error");
   }
@@ -464,7 +464,7 @@ async function confirmClear() {
 
 async function loadRecords() {
   try {
-    contentRecords.value = await contentDownloadRecords();
+    await refreshRecords();
   } catch {
     // 内核未就绪时保留现有列表。
   }
@@ -477,21 +477,6 @@ async function loadRecords() {
  * 会白白占住数据库连接。列表挂载时与安装结束后（`content-download-records-updated`）
  * 各有一次全量刷新兜底。
  */
-function applyInstallProgress(event: Event) {
-  const detail = (event as CustomEvent).detail as Partial<ContentInstallProgress> | undefined;
-  if (!detail?.id) return;
-  if (typeof detail.stageDetail === "string" && detail.stageDetail) {
-    installDetails.value = { ...installDetails.value, [detail.id]: detail.stageDetail };
-  }
-  const index = contentRecords.value.findIndex((record) => record.id === detail.id);
-  if (index < 0) return;
-  const current = contentRecords.value[index];
-  contentRecords.value[index] = {
-    ...current,
-    progress: typeof detail.progress === "number" ? detail.progress : current.progress,
-    stage: detail.stage ?? current.stage,
-  };
-}
 
 onMounted(() => {
   const load = () => {
@@ -508,12 +493,12 @@ onMounted(() => {
   refreshContentRecords = load;
   load();
   window.addEventListener("content-download-records-updated", load);
-  window.addEventListener("content-download-install-progress", applyInstallProgress);
+  setDownloadCenterVisible(true);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("content-download-records-updated", refreshContentRecords ?? (() => null));
-  window.removeEventListener("content-download-install-progress", applyInstallProgress);
+  setDownloadCenterVisible(false);
   refreshContentRecords = undefined;
 });
 </script>
@@ -545,7 +530,7 @@ onBeforeUnmount(() => {
               :is="statusIcon(task).icon"
               :size="18"
               class="downloads__item-icon"
-              :class="[statusIcon(task).cls, { spin: task.status === 'downloading' || task.status === 'queued' }]"
+              :class="[statusIcon(task).cls, { spin: ACTIVE_STATUSES.has(task.status) }]"
             />
             <div class="downloads__item-body">
               <div class="downloads__item-row">

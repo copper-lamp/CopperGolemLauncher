@@ -69,7 +69,7 @@ impl LipInstallOutcome {
             package: package.to_string(),
             stdout: failure.logs.join("\n"),
             stderr: failure.message,
-            error_code: Some(code.to_string()),
+            error_code: Some(if failure.timed_out { "ERR_LIP_DAEMON_TIMEOUT" } else { code }.to_string()),
         }
     }
 
@@ -192,7 +192,7 @@ fn is_identifier_char(c: char) -> bool {
 ///
 /// - 显式 `dir` 非空：直接采用（要求已是目录）；
 /// - 否则取设置 `launch.default_version`，解析为版本根下的具体版本目录并要求存在。
-fn resolve_target_dir(kernel: &KernelContext, dir: Option<&str>) -> Result<PathBuf, &'static str> {
+pub(super) fn resolve_target_dir(kernel: &KernelContext, dir: Option<&str>) -> Result<PathBuf, &'static str> {
     if let Some(dir) = dir.map(str::trim).filter(|d| !d.is_empty()) {
         let path = PathBuf::from(dir);
         return if path.is_dir() {
@@ -299,6 +299,7 @@ pub async fn install_resolved(
     let mut install_packages = vec![package.clone()];
     let mut pinned_levilamina = false;
 
+    if let Some(sink) = sink { sink(lipd::DaemonCallback::Stage("download.stage.lip_querying")); }
     // 查询安装状态：失败仅记日志，不阻断安装（与 LeviLauncher 一致）。
     let states = match lipd::list_package_states(exe, target_dir).await {
         Ok(states) => states,
@@ -323,6 +324,7 @@ pub async fn install_resolved(
         .get(&package_ref_base.to_lowercase())
         .is_some_and(|state| state.explicit_installed);
 
+    if let Some(sink) = sink { sink(lipd::DaemonCallback::Stage("download.stage.lip_installing")); }
     if target_explicit {
         log::info!("[content-download] lip 更新 {package} → {}", target_dir.display());
         return match lipd::update_packages(exe, target_dir, &install_packages, sink).await {

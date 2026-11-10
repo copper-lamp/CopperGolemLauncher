@@ -2,6 +2,7 @@
 //! 通过 Tauri 命令层序列化后交由前端反馈。
 
 use serde::Serialize;
+pub mod errtips;
 
 /// 内核统一错误。
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +48,9 @@ pub enum KernelError {
 
     #[error("配置错误: {0}")]
     Config(String),
+
+    #[error("商店授权验证失败: {0}")]
+    StoreEntitlement(#[from] crate::services::store_entitlement::StoreEntitlementError),
 
     /// 启动装配失败：`step` 标出失败的步骤，`source` 保留底层原因。
     ///
@@ -96,6 +100,7 @@ impl KernelError {
             Self::Serde(e) => e.to_string(),
             Self::Http(e) => e.to_string(),
             Self::Download(e) => e.to_string(),
+            Self::StoreEntitlement(e) => e.to_string(),
             Self::EventBus(m) | Self::Intent(m) => m.clone(),
         }
     }
@@ -107,6 +112,7 @@ impl KernelError {
 pub struct CommandError {
     pub kind: String,
     pub message: String,
+    pub context: errtips::ErrorContext,
 }
 
 impl CommandError {
@@ -127,10 +133,12 @@ impl CommandError {
                 KernelError::Account(_) => "account",
                 KernelError::Updater(_) => "updater",
                 KernelError::Config(_) => "config",
+                KernelError::StoreEntitlement(_) => "store_entitlement",
                 KernelError::Startup { .. } => "startup",
             }
             .to_string(),
-            message: e.friendly(),
+            message: errtips::redact_message(&e.friendly()),
+            context: errtips::ErrorContext::from_kernel(e),
         }
     }
 }

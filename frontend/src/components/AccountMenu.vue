@@ -7,6 +7,8 @@ import { UserRound, LogOut, LoaderCircle, ShieldCheck } from "@lucide/vue";
 import { useAccount } from "../composables/useAccount";
 import { useI18n } from "../i18n";
 
+import { useNetworkStatus } from "../composables/useNetworkStatus";
+const { connected } = useNetworkStatus();
 const { t } = useI18n();
 const { account, loginWaiting, beginWamSignIn, logout } = useAccount();
 
@@ -66,6 +68,7 @@ async function handleLogout() {
       <span class="account-menu__label">
         {{ account ? account.gamertag : t("account.login") }}
       </span>
+      <span class="account-menu__network" :class="{ 'account-menu__network--connected': connected === true }" role="img" :title="t(connected === true ? 'account.network_available' : connected === false ? 'account.network_offline' : 'account.network_unknown')" :aria-label="t(connected === true ? 'account.network_available' : connected === false ? 'account.network_offline' : 'account.network_unknown')" />
     </button>
 
     <Transition name="pop">
@@ -127,6 +130,9 @@ async function handleLogout() {
 </template>
 
 <style scoped>
+.account-menu__network { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--copper-text-disabled); }
+.account-menu__network--connected { background: var(--copper-success); }
+.account-menu__label { max-width: 150px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .account-menu {
   position: relative;
   display: flex;
@@ -213,7 +219,7 @@ async function handleLogout() {
   width: 240px;
   padding: var(--copper-space-2);
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
+  max-width: calc(100vw - 16px);
   border-radius: var(--copper-radius-lg);
   box-shadow: var(--copper-shadow);
   z-index: 100;
@@ -302,4 +308,6 @@ async function handleLogout() {
 .account-menu__action:disabled:hover {
   background: transparent;
 }
+@media (max-width: 760px) { .account-menu__label { max-width: 75px; } }
+@media (max-width: 560px) { .account-menu__label { display: none; } .account-menu__trigger { padding-right: 3px; } }
 </style>

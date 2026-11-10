@@ -17,6 +17,7 @@
 //   否则会把正常的长任务误判为无响应。
 
 import { invoke } from "@tauri-apps/api/core";
+import { reportError, safeContext, type ErrorContext } from '../services/errtips';
 
 import { waitForIpcBridge } from "../boot";
 
@@ -24,16 +25,19 @@ import { waitForIpcBridge } from "../boot";
 export interface CommandErrorPayload {
   kind: string;
   message: string;
+  context?: ErrorContext;
 }
 
 /** 命令调用错误。 */
 export class KernelApiError extends Error {
   readonly kind: string;
+  readonly context: ErrorContext;
 
   constructor(payload: CommandErrorPayload) {
     super(payload.message);
     this.name = "KernelApiError";
     this.kind = payload.kind;
+    this.context = safeContext(payload.context ?? {});
   }
 }
 
@@ -126,6 +130,7 @@ export async function call<T>(
         new KernelApiError({
           kind: "timeout",
           message: `内核命令 ${cmd} 在 ${budget}ms 内没有响应`,
+          context: { code: 'ipc_timeout', source: 'frontend', timeout_scope: 'ipc', operation: cmd },
         }),
       );
     }, budget);
@@ -142,19 +147,17 @@ export async function call<T>(
       throw new KernelApiError({
         kind: "ipc-unavailable",
         message: `宿主 IPC 桥未注入，内核命令 ${cmd} 无法送达`,
+        context: { code: 'ipc_unavailable', source: 'frontend', operation: cmd },
       });
     }
     return await Promise.race([invoke<T>(cmd, args), timeout]);
   } catch (e) {
-    if (e instanceof KernelApiError) throw e;
-    if (typeof e === "object" && e !== null && "kind" in e && "message" in e) {
-      throw new KernelApiError(e as unknown as CommandErrorPayload);
-    }
-    // invoke 自身失败（如后端未就绪 / 参数错误）时兜底。
-    throw new KernelApiError({
-      kind: "invoke",
-      message: typeof e === "string" ? e : String(e),
-    });
+    const error = e instanceof KernelApiError ? e
+      : typeof e === 'object' && e !== null && 'kind' in e && 'message' in e
+        ? new KernelApiError(e as unknown as CommandErrorPayload)
+        : new KernelApiError({ kind: 'invoke', message: typeof e === 'string' ? e : String(e) });
+    reportError(error, { operation: cmd });
+    throw error;
   } finally {
     // 命令成功返回后必须清掉定时器：否则它会在后台把进程多留 30 秒，
     // 移动端还可能因此被系统判定为后台活跃。

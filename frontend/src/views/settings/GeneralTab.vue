@@ -9,6 +9,7 @@ import SettingRow from "./SettingRow.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
+import CoSwitch from "../../components/ui/CoSwitch.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -54,6 +55,10 @@ const presets = [
 
 // 下载页「历史下载」展示上限。0 = 不显示；数值取值为固定档位，避免自由输入产生
 // 无意义的展示窗口。仅影响显示，不删除任何记录（历史记录本身只在内存中）。
+const completionBadge = computed({
+  get: () => get<boolean>("download.completion_badge_enabled", true),
+  set: (value: boolean) => void set("download.completion_badge_enabled", value),
+});
 const historyLimit = computed({
   get: () => get<number>("download.history_limit", 50),
   set: (value: number) => void set("download.history_limit", value),
@@ -236,6 +241,12 @@ onMounted(loadLlmModels);
       </SettingRow>
       <SettingRow label-key="settings.general.theme_mode">
         <CoSegmented :model-value="mode" :options="modeOptions" @update:model-value="mode = $event as ThemeMode" />
+      </SettingRow>
+      <SettingRow
+        label-key="settings.general.completion_badge"
+        hint-key="settings.general.completion_badge_hint"
+      >
+        <CoSwitch v-model="completionBadge" />
       </SettingRow>
       <SettingRow
         label-key="settings.general.download_history"

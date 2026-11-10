@@ -28,7 +28,7 @@ import {
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
-import { onContentDownloadLocation, type ContentDownloadLocation } from "../../events";
+import { flyToDownloads } from "../../composables/useDownloadFeedback";
 import { homeVersionsList, type VersionView } from "../../api/home";
 import TipsRotator from "../../components/TipsRotator.vue";
 import CoPage from "../../components/layout/CoPage.vue";
@@ -56,14 +56,13 @@ import {
   type ContentDetail,
   type ContentFile,
   type LipEnv,
-  type LipInstallOutcome,
 } from "./api";
 
 const MB_KEY = "module.content-download";
 const KB = `${MB_KEY}.detail`;
 
 /** 下载中心的稳定 id（见 components/SideNav.vue）。 */
-const DOWNLOAD_NAV_ID = "copper-nav-downloads";
+
 
 const route = useRoute();
 const router = useRouter();
@@ -177,23 +176,7 @@ const targetLabel = computed(
 );
 
 /** lip 安装错误码 → 本地化提示键（未知码回退后端原文）。 */
-const LIP_ERROR_KEYS: Record<string, string> = {
-  ERR_LIP_NOT_INSTALLED: "lipNotFound",
-  ERR_LIP_PACKAGE_INVALID_IDENTIFIER: "lipErrInvalidIdentifier",
-  ERR_LIP_PACKAGE_VERSION_REQUIRED: "lipErrVersionRequired",
-  ERR_TARGET_NOT_FOUND: "lipErrTargetNotFound",
-};
 
-/** 把 lip 安装失败结果转成用户可读提示。 */
-function lipErrorMessage(outcome: LipInstallOutcome): string {
-  const key = LIP_ERROR_KEYS[outcome.errorCode ?? ""];
-  if (key) return t(`${KB}.${key}`);
-  // 安装类失败：附上 daemon 原文便于排查。
-  const detail = (outcome.stderr || outcome.stdout).trim();
-  return t(`${KB}.libInstallFailed`, {
-    message: detail || outcome.errorCode || "",
-  });
-}
 
 function typeIcon(ct: string) {
   switch (ct) {
@@ -318,53 +301,6 @@ async function loadReadme(id: string, data: ContentDetail) {
   await buildToc();
 }
 
-/** 圆点抛物线飞行：从点击坐标飞向下载中心，抵达时触发水波纹。 */
-function flyToDownloads(origin?: { x: number; y: number }) {
-  const nav = document.getElementById(DOWNLOAD_NAV_ID);
-  const target = nav ? rectCenter(nav) : { x: 40, y: window.innerHeight - 44 };
-  const start = origin ?? target;
-
-  const node = document.createElement("div");
-  node.className = "copper-fly-dot";
-  node.style.transform = `translate3d(${start.x}px, ${start.y}px, 0)`;
-  document.body.appendChild(node);
-
-  // 采样二次贝塞尔（控制点向上抬升形成弧线）。
-  const ctrl = { x: (start.x + target.x) / 2, y: Math.min(start.y, target.y) - 120 };
-  const frames: Keyframe[] = [];
-  const N = 32;
-  for (let i = 0; i <= N; i++) {
-    const a = i / N;
-    const x = (1 - a) * (1 - a) * start.x + 2 * (1 - a) * a * ctrl.x + a * a * target.x;
-    const y = (1 - a) * (1 - a) * start.y + 2 * (1 - a) * a * ctrl.y + a * a * target.y;
-    const scale = 1 - 0.35 * a;
-    frames.push({
-      transform: `translate3d(${x}px, ${y}px, 0) scale(${scale})`,
-      opacity: 1,
-    });
-  }
-  frames.push({
-    transform: `translate3d(${target.x}px, ${target.y}px, 0) scale(0.6)`,
-    opacity: 0.9,
-  });
-
-  const anim = node.animate(frames, { duration: 640, easing: "ease-in" });
-  anim.onfinish = () => {
-    node.remove();
-    pulseDownloadTarget(nav);
-  };
-}
-
-/** 下载中心水波纹提示（class 由 SideNav 定义，动画结束自动移除）。 */
-function pulseDownloadTarget(nav: HTMLElement | null) {
-  if (!nav) return;
-  const cls = "side-nav__item--pulse";
-  nav.classList.remove(cls);
-  // 强制回流以重启动画。
-  void nav.offsetWidth;
-  nav.classList.add(cls);
-  window.setTimeout(() => nav.classList.remove(cls), 700);
-}
 
 function rectCenter(el: Element): { x: number; y: number } {
   const r = el.getBoundingClientRect();
@@ -374,10 +310,13 @@ function rectCenter(el: Element): { x: number; y: number } {
 /** 点击文件卡片：CF 直链直接下载；lip / 安卓模组走目标版本确认。 */
 async function onPickFile(file: ContentFile, event: MouseEvent) {
   if (needsTargetConfirm.value) {
-    openInstall(file);
+    pendingOrigin.value = event.detail === 0 && event.currentTarget instanceof Element
+      ? rectCenter(event.currentTarget) : { x: event.clientX, y: event.clientY };
+    await openInstall(file);
     return;
   }
-  const origin = { x: event.clientX, y: event.clientY };
+  const origin = event.detail === 0 && event.currentTarget instanceof Element
+    ? rectCenter(event.currentTarget) : { x: event.clientX, y: event.clientY };
   await downloadFile(file, origin);
 }
 
@@ -442,19 +381,7 @@ function cancelDownloadOnly() {
  * 「落位成功 / 失败」两类结果提示——那些在用户已经离开详情页时也要看到，
  * 故由下载中心那条链路的调用方订阅更合适；本页订阅则覆盖「装完立刻看到」。
  */
-function reportLocation(payload: ContentDownloadLocation) {
-  if (payload.error) {
-    showToast(t(`${KB}.installFailed`, { message: payload.error }), "error");
-    return;
-  }
-  if (payload.kind === "download_only") {
-    showToast(t(`${KB}.downloadedTo`, { dir: payload.dir ?? "" }), "info");
-    return;
-  }
-  if (payload.kind === "installed" && payload.version) {
-    showToast(t(`${KB}.installedToVersion`, { version: payload.version }), "success");
-  }
-}
+
 
 /** 打开安装确认弹窗（lip 装 BDS 包 / 安卓装 .so 包）。 */
 async function openInstall(file: ContentFile) {
@@ -474,28 +401,11 @@ async function openInstall(file: ContentFile) {
     return;
   }
   installFile.value = file;
-  installing.value = true;
+  if (isLip.value) await confirmInstall();
+  else installing.value = true;
 }
 
-function publishInstallingRecord() {
-  if (!detail.value || !installFile.value) return;
-  window.dispatchEvent(
-    new CustomEvent("content-download-installing", {
-      detail: {
-        id: detail.value.item.id,
-        source: detail.value.item.source,
-        contentType: detail.value.item.contentType,
-        name: detail.value.item.name,
-        version: installFile.value.version,
-        state: "installing",
-        dest: targetFolder.value,
-        taskId: null,
-        error: null,
-        updatedAt: Date.now(),
-      },
-    }),
-  );
-}
+
 
 async function confirmInstall() {
   if (!detail.value || !installFile.value) return;
@@ -511,23 +421,18 @@ async function confirmInstall() {
     return;
   }
 
-  publishInstallingRecord();
   installRunning.value = true;
   try {
     // variant 必须独立下发：后端据此拼 `github.com/owner/repo#<variant>@<version>`。
-    const outcome = await contentDownloadLipInstall(
+    await contentDownloadLipInstall(
       detail.value.item.id,
       file.version,
       file.variant ?? undefined,
       targetFolder.value,
     );
-    window.dispatchEvent(new Event("content-download-records-updated"));
-    if (!outcome.success) {
-      showToast(lipErrorMessage(outcome), "error");
-    } else {
-      showToast(t(`${KB}.installStarted`), "success");
-      flyToDownloads();
-    }
+    showToast(t(`${KB}.installStarted`), "success");
+    flyToDownloads(pendingOrigin.value);
+    pendingOrigin.value = undefined;
   } catch (e) {
     showToast(String(e).replace(/^Error:\s*/, ""), "error");
   } finally {
@@ -553,15 +458,13 @@ watch(
 );
 
 onMounted(async () => {
-  await load();
-  unlistenLocation = await onContentDownloadLocation(reportLocation);
+  await Promise.all([load(), resolveTargetVersion().catch(() => {})]);
 });
 onUnmounted(() => {
-  unlistenLocation();
   resetCrumbTitle();
 });
 
-let unlistenLocation: () => void = () => {};
+
 </script>
 
 <template>
@@ -659,6 +562,7 @@ let unlistenLocation: () => void = () => {};
         <!-- ================= 下部：版本（按大版本折叠） ================= -->
         <section id="cd-sec-versions" class="cd-versions">
           <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
+          <p v-if="isLip" class="cd-doc__state">{{ t(`${KB}.installTarget`, { target: targetLabel }) }}</p>
 
           <p v-if="!versionTree.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
 

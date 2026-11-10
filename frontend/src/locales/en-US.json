@@ -26,6 +26,11 @@
     "unknown": "Unknown"
   },
   "titlebar": {
+    "forward": "Forward",
+    "search": "Search",
+    "notifications": "Notifications",
+    "search_pending": "Search is not available yet.",
+    "notifications_pending": "Notifications are not available yet.",
     "back": "Back",
     "minimize": "Minimize",
     "maximize": "Maximize",
@@ -91,6 +96,8 @@
       "theme_mode_auto": "Follow system",
       "accent_color": "Accent color",
       "accent_preset": "Presets",
+      "completion_badge": "Download completion count",
+      "completion_badge_hint": "Show new completed downloads on the navigation entry; opening Downloads clears the count.",
       "download_history": "Recent downloads shown",
       "download_history_hint": "Display limit for the history section on the downloads page; affects display only, records are not deleted",
       "download_history_none": "Do not show",
@@ -354,6 +361,7 @@
     "ready_toast": "Update v{version} is ready — restart to apply"
   },
   "download": {
+    "feedback_completed": "{name} completed",
     "title": "Downloads",
     "empty": "No active downloads",
     "all_pause": "Pause all",
@@ -382,6 +390,7 @@
       "install_verifying": "Verifying package integrity",
       "install_extracting": "Extracting the package",
       "install_finalizing": "Writing version metadata",
+      "lip_querying": "Querying installed packages",
       "lip_preparing": "Preparing the lip runtime",
       "lip_installing": "Installing the LL mod",
       "lip_finalizing": "Finishing up"
@@ -416,6 +425,9 @@
     "unknown_size": "Unknown size"
   },
   "account": {
+    "network_available": "Network connection available (Internet access not verified)",
+    "network_offline": "Network disconnected",
+    "network_unknown": "Network connection unknown",
     "login": "Sign in",
     "login_microsoft": "Sign in (Microsoft)",
     "store_sign_in": "Sign in with Microsoft (Xbox)",

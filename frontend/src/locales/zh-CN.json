@@ -26,6 +26,11 @@
     "unknown": "未知"
   },
   "titlebar": {
+    "forward": "前进",
+    "search": "搜索",
+    "notifications": "通知",
+    "search_pending": "搜索功能尚未开放。",
+    "notifications_pending": "通知功能尚未开放。",
     "back": "返回",
     "minimize": "最小化",
     "maximize": "最大化",
@@ -91,6 +96,8 @@
       "theme_mode_auto": "跟随系统",
       "accent_color": "强调色",
       "accent_preset": "预设",
+      "completion_badge": "下载完成数量角标",
+      "completion_badge_hint": "在下载入口显示新增完成数量；进入下载中心后清零。",
       "download_history": "最近下载显示条目",
       "download_history_hint": "下载页历史记录区的展示上限，仅影响显示，不删除记录",
       "download_history_none": "不显示",
@@ -354,6 +361,7 @@
     "ready_toast": "更新 v{version} 已下载完成，重启即可生效"
   },
   "download": {
+    "feedback_completed": "{name} 已完成",
     "title": "下载",
     "empty": "没有正在进行的下载",
     "all_pause": "全部暂停",
@@ -382,6 +390,7 @@
       "install_verifying": "正在校验安装包完整性",
       "install_extracting": "正在解包安装包",
       "install_finalizing": "正在写入版本信息",
+      "lip_querying": "正在查询已安装包",
       "lip_preparing": "正在准备 lip 运行环境",
       "lip_installing": "正在安装 LL 模组",
       "lip_finalizing": "正在收尾"
@@ -416,6 +425,9 @@
     "unknown_size": "未知大小"
   },
   "account": {
+    "network_available": "网络连接可用（未验证互联网连通性）",
+    "network_offline": "网络已断开",
+    "network_unknown": "网络连接状态未知",
     "login": "登录",
     "login_microsoft": "登录正版（Microsoft）",
     "store_sign_in": "登录 Microsoft 账户（Xbox）",

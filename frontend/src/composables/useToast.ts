@@ -1,6 +1,9 @@
 // Toast 轻提示：全局单例，业务代码经 `useToast().show(...)` 触发。
 
 import { reactive } from "vue";
+import { activeErrorReport, reportForMessage } from '../services/errtips';
+import { errtipText } from '../services/errtips-messages';
+import { useLocaleRef } from '../i18n';
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -28,8 +31,11 @@ let nextId = 1;
 /** 显示一条轻提示，自动消失。 */
 export function showToast(message: string, kind: ToastKind = "info", durationMs = 2600) {
   const id = nextId++;
-  state.items.push({ id, kind, message });
-  setTimeout(() => dismissToast(id), durationMs);
+  const report = kind === 'error' ? reportForMessage(message) : undefined;
+  const locale = useLocaleRef().value;
+  state.items.push({ id, kind, message: report ? errtipText(locale, report.rule) : message,
+    action: report ? { label: errtipText(locale, 'detail'), onClick: () => { activeErrorReport.value = report; } } : undefined });
+  setTimeout(() => dismissToast(id), report ? Math.max(durationMs, 10_000) : durationMs);
 }
 
 export interface ActionToastOptions {

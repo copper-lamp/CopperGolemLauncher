@@ -81,6 +81,8 @@ pub enum NativeInstallError {
     DeviceTicket(String),
     #[error("content license request failed: {0}")]
     License(String),
+    #[error("Store entitlement verification failed: {0}")]
+    Entitlement(#[from] crate::services::store_entitlement::StoreEntitlementError),
     #[error("content license does not contain the package KeyID")]
     MissingContentKey,
 }
@@ -626,7 +628,7 @@ pub(crate) async fn acquire_package_content_key(
         &request.market,
     )
     .await
-    .map_err(|error| NativeInstallError::License(error.to_string()))?;
+    .map_err(NativeInstallError::Entitlement)?;
 
     crate::services::store_entitlement::extract_content_key(
         &license_bytes,
@@ -639,7 +641,7 @@ pub(crate) async fn acquire_package_content_key(
         | crate::services::store_entitlement::StoreEntitlementError::KeyIdNotUnique => {
             NativeInstallError::MissingContentKey
         }
-        other => NativeInstallError::License(other.to_string()),
+        other => NativeInstallError::Entitlement(other),
     })
 }
 

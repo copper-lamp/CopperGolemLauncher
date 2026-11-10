@@ -14,6 +14,17 @@ use std::sync::{Arc, Mutex};
 
 use copper_downloader::DownloadOptions;
 use serde_json::Value;
+use rusqlite::OptionalExtension;
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LipInstallAccepted { pub operation_id: String }
+
+fn publish_records_changed(db: &DatabaseService, events: &EventBus) {
+    // The snapshot is fetched on lifecycle transitions only, never per progress tick.
+    let _ = db;
+    events.publish("content-download.records-changed", serde_json::json!({}));
+}
 
 use crate::error::KernelError;
 use crate::registry::events::{EventBus, Subscription};
@@ -45,6 +56,7 @@ fn android_ll_source() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct ContentDownloadRecord {
     pub id: String,
+    pub content_id: String,
     pub source: String,
     pub content_type: String,
     pub name: String,
@@ -328,55 +340,83 @@ impl ContentDownloadModule {
         }
     }
 
-    /// 经 lipd 安装 / 更新 LL 模组到目标版本目录。
-    ///
-    /// 目标目录取「具体已安装版本目录」：显式 `dir` 优先，否则解析设置
-    /// `launch.default_version`。域内失败以 `success=false` + `error_code` 表达。
-    pub async fn lip_install(
+    /// Freeze the target and persist before starting a job; a repeated request is idempotent.
+    pub async fn start_lip_install(
+        app: tauri::AppHandle,
         kernel: &KernelContext,
         id: &str,
         version: &str,
         variant: Option<&str>,
         dir: Option<&str>,
-    ) -> LipInstallOutcome {
-        let detail = Self::detail(kernel, id).await.ok();
-        if let Some(detail) = detail.as_ref() {
-            let _ = record_lip_install(kernel, &detail.item, version, dir);
+        request_id: &str,
+    ) -> Result<LipInstallAccepted, KernelError> {
+        let request = uuid::Uuid::parse_str(request_id)
+            .map_err(|_| KernelError::InvalidArgument("Invalid install request id".into()))?;
+        let operation_id = format!("lip-job:{request}");
+        let target = lip_install::resolve_target_dir(kernel, dir)
+            .map_err(|code| KernelError::InvalidArgument(code.into()))?;
+        let target = std::fs::canonicalize(target)?;
+        let dest = target.to_string_lossy().into_owned();
+        if version.trim().is_empty() {
+            return Err(KernelError::InvalidArgument("lip version is required".into()));
         }
-        // lipd 的步骤 / 进度实时写回记录并广播，下载中心据此画模拟进度条。
-        // 记录拿不到（详情拉取失败）时不挂 sink：没有可更新的行，上报只会白跑。
-        let sink = detail.as_ref().map(|detail| {
-            lip_progress_sink(
-                kernel.db().clone(),
-                kernel.events().clone(),
-                detail.item.id.clone(),
-            )
-        });
-        let outcome = lip_install::install(kernel, id, version, variant, dir, sink.as_ref()).await;
-        if let Some(detail) = detail.as_ref() {
-            if outcome.success {
-                // 收尾阶段：把进度补到 100% 再落「已安装」，否则进度条会停在
-                // lipd 报的最后一个百分比上，紧接着整条从列表里跳到历史区。
-                let _ = update_lip_progress(kernel.db(), &detail.item.id, 1.0, STAGE_LIP_FINALIZING);
-                kernel.events().publish(
-                    "content-download.install-progress",
-                    serde_json::json!({
-                        "id": detail.item.id,
-                        "progress": 1.0,
-                        "stage": STAGE_LIP_FINALIZING,
-                        "stageDetail": null,
-                    }),
-                );
+        let fingerprint = serde_json::to_string(&(id, version, variant.unwrap_or("client"), &dest))?;
+        let detail = Self::detail(kernel, id).await?;
+        let accepted = kernel.db().with_conn(|conn| {
+            let existing: Option<String> = conn.query_row(
+                "SELECT target FROM module_content_download_record WHERE id = ?1", [&operation_id],
+                |row| row.get(0),
+            ).optional()?;
+            if let Some(existing) = existing {
+                if existing != fingerprint { return Err(KernelError::InvalidArgument("Install request id reused with different parameters".into())); }
+                return Ok(false);
             }
-            let state = if outcome.success { "installed" } else { "failed" };
-            let _ = update_lip_record(
-                kernel,
-                &detail.item.id,
-                version,
-                state,
-                (!outcome.success).then_some(outcome.stderr.as_str()),
-            );
+            let busy: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM module_content_download_record WHERE source = 'lip' AND dest = ?1 AND state = 'installing')",
+                [&dest], |row| row.get(0),
+            )?;
+            if busy { return Err(KernelError::InvalidArgument("Target instance already has an active lip operation".into())); }
+            record_lip_install_conn(conn, &operation_id, &detail.item, version, &dest, &fingerprint)?;
+            Ok(true)
+        })?;
+        if accepted {
+            publish_records_changed(kernel.db(), kernel.events());
+            let id = id.to_string();
+            let version = version.to_string();
+            let variant = variant.map(str::to_string);
+            let job_id = operation_id.clone();
+            kernel.runtime().spawn(async move {
+                use tauri::Manager;
+                let state = app.state::<KernelContext>();
+                Self::lip_install(state.inner(), &job_id, &id, &version, variant.as_deref(), Some(&dest)).await;
+            });
         }
+        Ok(LipInstallAccepted { operation_id })
+    }
+
+    pub async fn lip_install(
+        kernel: &KernelContext,
+        operation_id: &str,
+        id: &str,
+        version: &str,
+        variant: Option<&str>,
+        dir: Option<&str>,
+    ) -> LipInstallOutcome {
+        let sink = lip_progress_sink(kernel.db().clone(), kernel.events().clone(), operation_id.to_string());
+        let mut outcome = lip_install::install(kernel, id, version, variant, dir, Some(&sink)).await;
+        if outcome.success { sink(lipd::DaemonCallback::Stage(STAGE_LIP_FINALIZING)); }
+        let state = if outcome.success { "installed" } else { "failed" };
+        if let Err(error) = update_lip_record(kernel, operation_id, version, state,
+            (!outcome.success).then_some(outcome.stderr.as_str())) {
+            outcome.success = false;
+            outcome.error_code = Some("ERR_INSTALL_RECORD_COMMIT".into());
+            outcome.stderr = error.to_string();
+            log::error!("[content-download] terminal record commit failed: {error}");
+        }
+        publish_records_changed(kernel.db(), kernel.events());
+        kernel.events().publish("content-download.install-finished", serde_json::json!({
+            "operationId": operation_id, "outcome": outcome,
+        }));
         outcome
     }
 }
@@ -875,6 +915,12 @@ crate::services::database::Migration {
     sql: "ALTER TABLE module_content_download_record ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
           UPDATE module_content_download_record SET created_at = updated_at WHERE created_at = 0;",
 },
+crate::services::database::Migration {
+    version: 8,
+    name: "content_download_operation_identity",
+    sql: "ALTER TABLE module_content_download_record ADD COLUMN content_id TEXT;
+          UPDATE module_content_download_record SET content_id = id WHERE content_id IS NULL;",
+},
 ];
 
 /// 安卓模组记录的附加信息（`target` 列内容；下载完成钩子据此解包落位）。
@@ -905,7 +951,7 @@ pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, Ker
     kernel.db().with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, source, content_type, name, version, state, dest, task_id, error, updated_at,
-                    progress, stage, created_at, size_bytes
+                    progress, stage, created_at, size_bytes, COALESCE(content_id, id)
              FROM module_content_download_record ORDER BY created_at DESC, updated_at DESC",
             // `target` 是内部列（安卓模组待落位信息），不对外暴露。
         )?;
@@ -925,6 +971,7 @@ pub fn records(kernel: &KernelContext) -> Result<Vec<ContentDownloadRecord>, Ker
                 stage: row.get(11)?,
                 created_at: row.get(12)?,
                 size_bytes: row.get::<_, i64>(13)?.max(0) as u64,
+                content_id: row.get(14)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1049,8 +1096,9 @@ fn record_ll_android_download(
     game_versions: Vec<String>,
     task_id: u64,
 ) -> Result<(), KernelError> {
+    let operation_id = format!("content-job:{}", uuid::Uuid::new_v4());
     let pending = AndroidModPending {
-        item_id: item.id.clone(),
+        item_id: operation_id.clone(),
         archive: archive.to_string(),
         mod_dir: target.mod_dir.to_string_lossy().into_owned(),
         version: target.version.clone(),
@@ -1063,12 +1111,12 @@ fn record_ll_android_download(
     let now = chrono_now();
     kernel.db().with_conn(|conn| {
         conn.execute(
-            "INSERT OR REPLACE INTO module_content_download_record
+            "INSERT INTO module_content_download_record
               (id, source, content_type, name, version, state, dest, task_id, target, placement,
-               size_bytes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, 'install', ?9, ?10, ?10)",
+               size_bytes, created_at, updated_at, content_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, 'install', ?9, ?10, ?10, ?11)",
             rusqlite::params![
-                item.id,
+                operation_id,
                 item.source,
                 item.content_type,
                 item.name,
@@ -1077,7 +1125,8 @@ fn record_ll_android_download(
                 task_id,
                 target,
                 size_bytes,
-                now
+                now,
+                item.id
             ],
         )?;
         Ok(())
@@ -1089,10 +1138,10 @@ pub const STAGE_LIP_PREPARING: &str = "download.stage.lip_preparing";
 pub const STAGE_LIP_INSTALLING: &str = "download.stage.lip_installing";
 pub const STAGE_LIP_FINALIZING: &str = "download.stage.lip_finalizing";
 
-/// lip 阶段的整体权重切分：准备（环境探测 / 查安装状态）5%，
-/// lipd 安装 93%，收尾（回写记录 / 广播）2%。三段相加为 1。
-const LIP_PREPARE_END: f64 = 0.05;
-const LIP_INSTALL_END: f64 = 0.98;
+/// Only daemon-reported substep progress is determinate. Reserve completion for
+/// the durable business terminal; preparation/query/finalization stay unknown.
+const LIP_PREPARE_END: f64 = 0.0;
+const LIP_INSTALL_END: f64 = 0.99;
 
 /// 把 lipd 的安装百分比映射到整体进度（安装段的内部进度）。
 fn lip_install_progress(percent: f64) -> f64 {
@@ -1100,39 +1149,31 @@ fn lip_install_progress(percent: f64) -> f64 {
     LIP_PREPARE_END + (LIP_INSTALL_END - LIP_PREPARE_END) * ratio
 }
 
-fn record_lip_install(
-    kernel: &KernelContext,
+fn record_lip_install_conn(
+    conn: &rusqlite::Connection,
+    operation_id: &str,
     item: &ContentItem,
     version: &str,
-    dest: Option<&str>,
+    dest: &str,
+    fingerprint: &str,
 ) -> Result<(), KernelError> {
     let now = chrono_now();
-    kernel.db().with_conn(|conn| {
-        conn.execute(
-            "INSERT OR REPLACE INTO module_content_download_record
-             (id, source, content_type, name, version, state, dest, task_id, error, size_bytes,
-              created_at, updated_at, progress, stage)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, 0, ?7, ?7, 0.0, ?8)",
-            rusqlite::params![
-                item.id,
-                item.source,
-                item.content_type,
-                item.name,
-                version,
-                dest,
-                now,
-                STAGE_LIP_PREPARING
-            ],
-        )?;
-        Ok(())
-    })
+    conn.execute(
+        "INSERT INTO module_content_download_record
+         (id, source, content_type, name, version, state, dest, task_id, error, size_bytes,
+          created_at, updated_at, progress, stage, target, content_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'installing', ?6, NULL, NULL, 0, ?7, ?7, NULL, ?8, ?9, ?10)",
+        rusqlite::params![operation_id, item.source, item.content_type, item.name, version,
+            dest, now, STAGE_LIP_PREPARING, fingerprint, item.id],
+    )?;
+    Ok(())
 }
 
 /// 更新 lip 安装的阶段与进度（`progress` 为 0~1 的整体进度）。
 fn update_lip_progress(
     db: &DatabaseService,
     id: &str,
-    progress: f64,
+    progress: Option<f64>,
     stage: &str,
 ) -> Result<(), KernelError> {
     db.with_conn(|conn| {
@@ -1140,7 +1181,7 @@ fn update_lip_progress(
             "UPDATE module_content_download_record
                 SET progress = ?1, stage = ?2
               WHERE id = ?3",
-            rusqlite::params![progress.clamp(0.0, 1.0), stage, id],
+            rusqlite::params![progress.map(|p| p.clamp(0.0, 1.0)), stage, id],
         )?;
         Ok(())
     })
@@ -1157,7 +1198,7 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
     const PERSIST_DELTA: f64 = 0.01;
 
     struct Tracker {
-        progress: f64,
+        progress: Option<f64>,
         stage: String,
         detail: Option<String>,
         last_emit: Option<std::time::Instant>,
@@ -1165,7 +1206,7 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
     }
 
     let tracker = Arc::new(parking_lot::Mutex::new(Tracker {
-        progress: 0.0,
+        progress: None,
         stage: STAGE_LIP_PREPARING.to_string(),
         detail: None,
         last_emit: None,
@@ -1174,8 +1215,9 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
 
     Arc::new(move |callback: lipd::DaemonCallback| {
         let (target, stage, detail) = match callback {
+            lipd::DaemonCallback::Stage(stage) => (None, stage.to_string(), None),
             lipd::DaemonCallback::Progress { item, percent } => (
-                percent.map(lip_install_progress).unwrap_or(LIP_PREPARE_END),
+                percent.map(lip_install_progress),
                 STAGE_LIP_INSTALLING.to_string(),
                 (!item.trim().is_empty()).then_some(item),
             ),
@@ -1188,9 +1230,9 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
         let now = std::time::Instant::now();
         let (snapshot_progress, snapshot_stage, snapshot_detail, persist) = {
             let mut t = tracker.lock();
-            // 进度只增不减：lipd 在依赖求解阶段会回退百分比，倒退的进度条
-            // 比停滞更让人怀疑「是不是坏了」。
-            t.progress = target.clamp(0.0, 1.0).max(t.progress);
+            // Daemon progress may restart for another dependency. Preserve that truth;
+            // absent percentages remain indeterminate rather than freezing a made-up value.
+            t.progress = target.map(|p| p.clamp(0.0, LIP_INSTALL_END));
             let stage_changed = t.stage != stage;
             t.stage = stage.to_string();
             t.detail = detail;
@@ -1203,10 +1245,9 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
             }
             t.last_emit = Some(now);
             let persist = stage_changed
-                || (t.progress - t.persisted_progress).abs() >= PERSIST_DELTA
-                || t.progress >= 1.0;
+                || t.progress.map(|p| (p - t.persisted_progress).abs() >= PERSIST_DELTA).unwrap_or(true);
             if persist {
-                t.persisted_progress = t.progress;
+                t.persisted_progress = t.progress.unwrap_or(0.0);
             }
             (t.progress, t.stage.clone(), t.detail.clone(), persist)
         };
@@ -1237,7 +1278,7 @@ fn update_lip_record(
 ) -> Result<(), KernelError> {
     kernel.db().with_conn(|conn| {
         conn.execute(
-            "UPDATE module_content_download_record SET version = ?1, state = ?2, error = ?3, updated_at = ?4 WHERE id = ?5",
+            "UPDATE module_content_download_record SET version = ?1, state = ?2, error = ?3, updated_at = ?4, progress = CASE WHEN ?2 = 'installed' THEN 1.0 ELSE progress END WHERE id = ?5",
             rusqlite::params![version, state, error, chrono_now(), id],
         )?;
         Ok(())
@@ -1257,10 +1298,11 @@ fn record_download(
     placement: &Placement,
     task_id: u64,
 ) -> Result<(), KernelError> {
+    let operation_id = format!("content-job:{}", uuid::Uuid::new_v4());
     let pending = match &placement.kind {
         PlacementKind::Install { version, roots, .. } => {
             let info = ContentPending {
-                item_id: item.id.clone(),
+                item_id: operation_id.clone(),
                 archive: dest.to_string(),
                 version: version.clone(),
                 filename: file.filename.clone(),
@@ -1274,6 +1316,7 @@ fn record_download(
     };
     record_download_inner(
         kernel,
+        &operation_id,
         item,
         &file.version,
         file.size,
@@ -1286,6 +1329,7 @@ fn record_download(
 
 fn record_download_inner(
     kernel: &KernelContext,
+    operation_id: &str,
     item: &ContentItem,
     version: &str,
     size_bytes: u64,
@@ -1297,12 +1341,12 @@ fn record_download_inner(
     let now = chrono_now();
     kernel.db().with_conn(|conn| {
         conn.execute(
-            "INSERT OR REPLACE INTO module_content_download_record
+            "INSERT INTO module_content_download_record
               (id, source, content_type, name, version, state, dest, task_id, target, placement,
-               size_bytes, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+               size_bytes, created_at, updated_at, content_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'downloading', ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)",
             rusqlite::params![
-                item.id,
+                operation_id,
                 item.source,
                 item.content_type,
                 item.name,
@@ -1312,7 +1356,8 @@ fn record_download_inner(
                 pending,
                 placement.install_kind,
                 size_bytes,
-                now
+                now,
+                item.id
             ],
         )?;
         Ok(())
@@ -1366,6 +1411,19 @@ fn apply_download_status(
             });
         }
     }
+    // A duplicated engine terminal must never re-run placement or turn an
+    // installation failure into success after its pending payload was consumed.
+    let active = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM module_content_download_record WHERE task_id = ?1 AND dest = ?2 AND state IN ('downloading', 'installing'))",
+            rusqlite::params![task_id, task_dest], |row| row.get::<_, bool>(0),
+        )?)
+    }).unwrap_or(false);
+    if !active { return; }
+    // Publish after every branch, including early returns during placement.
+    struct Changed<'a>(&'a DatabaseService, &'a EventBus);
+    impl Drop for Changed<'_> { fn drop(&mut self) { publish_records_changed(self.0, self.1); } }
+    let _changed = Changed(db, events);
     match payload.get("status").and_then(Value::as_str) {
         Some("done") => {
             // 下载完成 ≠ 安装完成：需要解包落位的内容都要在落位后才置 installed。
@@ -1810,7 +1868,30 @@ mod tests {
         assert_eq!(lip_install_progress(-1.0), LIP_PREPARE_END);
     }
 
-    /// 三段权重必须完整覆盖 0~1（准备 → lipd 安装 → 收尾）。
+    #[test]
+    fn independent_operations_preserve_content_and_unknown_progress() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for migration in MIGRATIONS { conn.execute_batch(migration.sql).unwrap(); }
+        let item: ContentItem = ContentItem {
+            id: "lip:github.com/example/pkg".into(), source: "lip".into(),
+            content_type: "ll_mod".into(), name: "Package".into(), description: String::new(),
+            author: None, icon_url: None, categories: vec![], min_game_version: None,
+            max_game_version: None, latest_version: "1.0.0".into(), download_count: 0,
+            latest_published_at: String::new(),
+        };
+        record_lip_install_conn(&conn, "job-a", &item, "1.0.0", "instance-a", "request-a").unwrap();
+        record_lip_install_conn(&conn, "job-b", &item, "1.0.0", "instance-b", "request-b").unwrap();
+        assert!(record_lip_install_conn(&conn, "job-a", &item, "2.0.0", "other", "other").is_err());
+        let rows: Vec<(String, String, Option<f64>)> = conn.prepare(
+            "SELECT content_id, dest, progress FROM module_content_download_record ORDER BY id"
+        ).unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (item.id.clone(), "instance-a".into(), None));
+        assert_eq!(rows[1], (item.id, "instance-b".into(), None));
+    }
+
+    /// Completion remains reserved for the committed terminal state.
     #[test]
     fn lip_phase_weights_are_complete() {
         let covered =

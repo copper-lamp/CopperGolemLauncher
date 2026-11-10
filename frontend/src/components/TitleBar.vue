@@ -1,13 +1,11 @@
 <script setup lang="ts">
-// 自定义标题栏：左侧为「返回按钮 + 当前页面标题」或「面包屑导航」，中部拖拽区，
-// 右侧为页面注入的操作区 + 账户头像 + 窗口控制按钮。
-// 标题 / 返回 / 面包屑均来自当前路由 meta，操作区由各页面经 Teleport 注入。
-//
-// 路由 meta 的 `breadcrumb` 为 `{ titleKey, path }[]`：声明后左侧渲染为导航栏样式，
-// 末段为当前页（不可点击）、其余段点击跳转，且不再显示返回箭头与独立标题。
+// Shell history controls are global. Breadcrumbs show only visits inside the current module.
+// Existing route metadata supplies localized/dynamic labels; pages inject actions via Teleport.
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft, ChevronRight, Stethoscope } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope } from "@lucide/vue";
+import { useNavigationTrail } from "../composables/useNavigationTrail";
+import { showToast } from "../composables/useToast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRoute, useRouter } from "vue-router";
 
@@ -41,9 +39,7 @@ const title = computed(() => {
   const key = route.meta.titleKey;
   return typeof key === "string" ? t(key) : "";
 });
-const backPath = computed(() =>
-  typeof route.meta.backPath === "string" ? route.meta.backPath : null,
-);
+const { visits, canBack, canForward } = useNavigationTrail();
 
 /** 面包屑单段。 */
 interface BreadcrumbItem {
@@ -58,15 +54,13 @@ interface BreadcrumbItem {
 /** 路由声明的面包屑（非数组 / 结构不合法时视为未声明）。 */
 const breadcrumb = computed<BreadcrumbItem[]>(() => {
   const raw = route.meta.breadcrumb;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (item): item is BreadcrumbItem =>
-      typeof item === "object" &&
-      item !== null &&
-      typeof (item as BreadcrumbItem).path === "string" &&
-      (typeof (item as BreadcrumbItem).title === "string" ||
-        typeof (item as BreadcrumbItem).titleKey === "string"),
-  );
+  const declaredLast = Array.isArray(raw) ? raw[raw.length - 1] as Partial<BreadcrumbItem> | undefined : undefined;
+  return visits.value.map((visit, index) => ({
+    path: visit.fullPath,
+    titleKey: visit.titleKey,
+    title: index === visits.value.length - 1 && typeof declaredLast?.title === "string" && declaredLast.title
+      ? declaredLast.title : visit.title || (visit.titleKey ? undefined : visit.fallback),
+  }));
 });
 
 /** 段标题文本：字面量优先，其次 i18n 键。 */
@@ -83,12 +77,7 @@ function goCrumb(path: string) {
 
 /** 有可退历史时优先 router.back()（保留内容列表滚动位置），否则回退到 backPath。 */
 function goBack() {
-  const canBack = router.options.history.state.back != null;
-  if (canBack) {
-    void router.back();
-  } else if (backPath.value) {
-    void router.replace(backPath.value);
-  }
+  if (canBack.value) router.back();
 }
 
 const maximized = ref(false);
@@ -127,6 +116,8 @@ function close() {
 <template>
   <header class="titlebar">
     <div class="titlebar__left">
+      <button class="titlebar__back" :disabled="!canBack" :title="t('titlebar.back')" :aria-label="t('titlebar.back')" @click="goBack"><ArrowLeft :size="15" /></button>
+      <button class="titlebar__back" :disabled="!canForward" :title="t('titlebar.forward')" :aria-label="t('titlebar.forward')" @click="router.forward()"><ArrowRight :size="15" /></button>
       <nav v-if="breadcrumb.length" class="titlebar__crumbs">
         <template v-for="(crumb, index) in breadcrumb" :key="`${index}-${crumb.path}`">
           <button
@@ -147,14 +138,6 @@ function close() {
         </template>
       </nav>
       <template v-else>
-        <button
-          v-if="backPath"
-          class="titlebar__back"
-          :title="t('titlebar.back')"
-          @click="goBack"
-        >
-          <ArrowLeft :size="15" />
-        </button>
         <h1 v-if="title" class="titlebar__title">{{ title }}</h1>
       </template>
     </div>
@@ -174,6 +157,8 @@ function close() {
       >
         <Stethoscope :size="15" />
       </button>
+      <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" @click="showToast(t('titlebar.search_pending'))"><Search :size="16" /></button>
+      <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="16" /></button>
       <AccountMenu />
       <template v-if="!isMobile">
         <div class="titlebar__sep" />
@@ -231,8 +216,9 @@ function close() {
   width: 30px;
   height: 30px;
   border: none;
-  border-radius: var(--copper-radius-sm);
-  background: transparent;
+  border-radius: var(--copper-radius-full);
+  flex-shrink: 0;
+  background: var(--copper-surface);
   color: var(--copper-text-secondary);
   cursor: pointer;
   transition:
@@ -313,28 +299,34 @@ button.titlebar__crumb:hover {
   padding: 0 var(--copper-space-2);
 }
 
-/* 窄竖屏：操作区浮动到底部胶囊里，避免与标题挤在一行。 */
-@media (max-width: 700px) and (orientation: portrait) {
-  .titlebar__actions {
-    position: fixed;
-    z-index: 20;
-    right: var(--copper-safe-right);
-    bottom: calc(var(--copper-safe-bottom) + var(--copper-space-3));
-    left: var(--copper-safe-left);
-    justify-content: center;
-    height: auto;
-    min-height: 56px;
-    padding: var(--copper-space-2);
-    border: 1px solid var(--copper-border);
-    border-radius: var(--copper-radius-lg);
-    background: color-mix(in srgb, var(--copper-surface) 94%, transparent);
-    box-shadow: 0 8px 24px color-mix(in srgb, #000 22%, transparent);
-    backdrop-filter: blur(12px);
-  }
+/* Keep injected controls in normal flow; a fixed footer would cover MobileNav. */
+.titlebar__back:disabled { opacity: .35; cursor: default; }
+.titlebar__left { flex: 1; overflow: hidden; }
+.titlebar__crumbs { overflow-x: auto; scrollbar-width: none; }
+.titlebar__crumb { max-width: 240px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; }
+.titlebar__right, .titlebar__controls { flex-shrink: 0; }
+.titlebar__spacer { flex: 0 0 24px; height: 100%; }
+@media (max-width: 560px) {
+  .titlebar { padding-left: 4px; }
+  .titlebar__left { gap: 4px; min-width: 68px !important; }
+  .titlebar__spacer { flex-basis: 8px; }
+  .titlebar__sep { display: none; }
+}
+@media (max-width: 1050px) {
+  .titlebar { flex-wrap: wrap; height: auto; min-height: var(--copper-titlebar-h); }
+  .titlebar__left, .titlebar__right { height: var(--copper-titlebar-h); }
+  .titlebar__left { min-width: 90px; }
+  .titlebar__actions { order: 10; width: 100%; height: auto; overflow-x: auto; }
+  .titlebar__actions:empty { display: none; }
+  .titlebar__actions:not(:empty) { padding: 4px 8px; min-height: 40px; }
+  .titlebar__btn { width: 32px; }
+  .titlebar__right { gap: 2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .titlebar * { transition: none; }
 }
 
-/* 横屏移动端沿用与桌面一致的左导航 + 行内操作区（见 App.vue 外壳说明），
- * 因此这里不再把操作区浮动成左侧竖列——那会压在左导航上。 */
+/* Window controls remain independent of the page action row. */
 
 .titlebar__right {
   display: flex;
@@ -398,4 +390,10 @@ button.titlebar__crumb:hover {
   background: var(--copper-danger);
   color: #ffffff;
 }
+/* Keep responsive overrides after base controls so narrow widths actually win. */
+@media (max-width: 1050px) {
+  .titlebar__btn { width: 32px; }
+  .titlebar__right { gap: 2px; height: var(--copper-titlebar-h); }
+}
+@media (max-width: 560px) { .titlebar__sep { display: none; } }
 </style>

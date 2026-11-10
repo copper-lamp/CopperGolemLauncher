@@ -404,6 +404,8 @@ pub async fn update_packages(
 /// 其余形态在 [`decode_callback`] 里已经退化成日志文本。
 #[derive(Debug, Clone)]
 pub enum DaemonCallback {
+    /// Real installation pipeline boundary, never inferred from elapsed time.
+    Stage(&'static str),
     /// 步骤级文本（`PrintInfo` / `PrintSuccess` / `PrintWarning` / `PrintError`）。
     Log(String),
     /// 进度回调（`ReportProgress`）：步骤名 + 百分比（0~100，缺省表示该步不可量化）。
@@ -433,6 +435,7 @@ pub struct DaemonOutput {
 /// daemon 调用失败。
 #[derive(Debug, Clone)]
 pub struct DaemonFailure {
+    pub timed_out: bool,
     /// 失败原因（含 RPC 错误 / 进程退出 / stderr 摘要）。
     pub message: String,
     /// 失败前收集到的 daemon 日志回调文本。
@@ -471,6 +474,7 @@ pub async fn call_with_sink(
 ) -> Result<DaemonOutput, DaemonFailure> {
     if let Err(message) = ensure_runtime_config() {
         return Err(DaemonFailure {
+            timed_out: false,
             message,
             logs: Vec::new(),
         });
@@ -490,6 +494,7 @@ pub async fn call_with_sink(
     }
 
     let mut child = cmd.spawn().map_err(|e| DaemonFailure {
+        timed_out: false,
         message: format!("启动 lipd 失败：{e}"),
         logs: Vec::new(),
     })?;
@@ -497,6 +502,7 @@ pub async fn call_with_sink(
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
         return Err(DaemonFailure {
+            timed_out: false,
             message: "无法接管 lipd 的标准输入输出管道".into(),
             logs: Vec::new(),
         });
@@ -510,6 +516,7 @@ pub async fn call_with_sink(
         String::from_utf8_lossy(&buf).trim().to_string()
     });
 
+    let mut timed_out = false;
     let exchange = match tokio::time::timeout(
         DAEMON_TIMEOUT,
         rpc_exchange(&mut stdin, stdout, method, &params, sink),
@@ -517,10 +524,9 @@ pub async fn call_with_sink(
     .await
     {
         Ok(exchange) => exchange,
-        Err(_) => Exchange {
-            result: None,
-            logs: Vec::new(),
-            error: Some(format!("lipd {method} 超时（{} 秒）", DAEMON_TIMEOUT.as_secs())),
+        Err(_) => {
+            timed_out = true;
+            Exchange { result: None, logs: Vec::new(), error: Some(format!("lipd {method} 超时（{} 秒）", DAEMON_TIMEOUT.as_secs())) }
         },
     };
 
@@ -543,6 +549,7 @@ pub async fn call_with_sink(
             logs: exchange.logs,
         }),
         Some(message) => Err(DaemonFailure {
+            timed_out,
             message: if stderr_text.is_empty() {
                 message
             } else {
@@ -720,6 +727,7 @@ fn id_matches(id: Option<&Value>, want: i64) -> bool {
 fn describe_callback(method: &str, params: Option<&Value>) -> Option<String> {
     if let Some(callback) = decode_callback(method, params) {
         return Some(match callback {
+            DaemonCallback::Stage(stage) => stage.to_string(),
             DaemonCallback::Log(text) => text,
             DaemonCallback::Progress { item, percent } => match percent {
                 Some(percentage) => format!("{item}（{percentage}%）"),
