@@ -1,7 +1,7 @@
 {
   "components": {
     "title": "外部组件", "description": "启动器独立管理依赖，并按官方发布摘要校验完整性。",
-    "automatic": "后台更新组件", "automaticDescription": "默认开启。更新时旧的健康版本继续可用；首次安装需要主动操作。",
+    "automatic": "后台检查等待目标确认", "automaticDescription": "周期检查暂未启用。已安装工具和运行库仅在业务需要或手动操作时检查。",
     "names": {"lip": "lip 守护进程", "dotnet10": ".NET 10 运行时"},
     "states": {"installed":"已安装", "missing":"未安装", "unsupported":"当前平台不支持", "installing":"安装中", "failed":"操作失败", "update-available":"有可用更新"},
     "stages": {"metadata":"检查官方发布", "downloading":"下载中", "extracting":"解压中", "health-check":"验证组件健康"},

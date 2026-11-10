@@ -480,6 +480,9 @@ pub async fn call_with_sink(
         });
     }
 
+    // 实际daemon从读取current到退出全程持有读租约；更新清理无法删除其版本。
+    let _lip_lease=crate::services::components::lifecycle::lease(exe.parent().unwrap_or(work_dir)).map_err(|e|DaemonFailure{timed_out:false,message:e.to_string(),logs:Vec::new()})?;
+    let _dotnet_lease=crate::services::components::lifecycle::lease(&runtime).map_err(|e|DaemonFailure{timed_out:false,message:e.to_string(),logs:Vec::new()})?;
     let mut cmd = tokio::process::Command::new(exe);
     cmd.arg("run")
         .current_dir(work_dir)

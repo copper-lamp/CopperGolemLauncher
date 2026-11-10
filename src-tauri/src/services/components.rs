@@ -6,6 +6,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256, Sha512};
 use crate::{error::KernelError, registry::events::EventBus};
 use super::{paths::Paths, settings::SettingsService};
+#[path="component_lifecycle.rs"] pub mod lifecycle;
+use std::sync::atomic::{AtomicU64,Ordering};
+#[derive(Default)] struct JobControl { generation:AtomicU64, foreground:AtomicU64 }
+struct Foreground<'a>(&'a AtomicU64);
+impl Drop for Foreground<'_>{fn drop(&mut self){self.0.fetch_sub(1,Ordering::SeqCst);}}
 
 const DOTNET_METADATA: &str = "https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json";
 const LIP_RELEASES: &str = "https://api.github.com/repos/LiteLDev/lip/releases?per_page=100";
@@ -27,17 +32,17 @@ struct Active { version: String, rid: String, directory: String, executable_sha2
 struct Asset { version: String, rid: String, url: String, hash: String, algorithm: String }
 /// 持有不可变版本路径即版本租约；服务不会覆盖/删除历史版本或运行中的文件。
 #[derive(Clone)]
-pub struct LipRuntime { pub exe: PathBuf, pub dotnet_root: PathBuf, pub user_home: PathBuf }
+pub struct LipRuntime { pub exe: PathBuf, pub dotnet_root: PathBuf, pub user_home: PathBuf, _leases:Arc<Vec<File>> }
 pub struct ExternalComponentService {
     root: PathBuf, settings: Arc<SettingsService>, events: Arc<EventBus>,
     gates: HashMap<ComponentId, tokio::sync::Mutex<()>>,
-    states: Mutex<HashMap<ComponentId, ComponentStatus>>, client: reqwest::Client,
+    states: Mutex<HashMap<ComponentId, ComponentStatus>>, client: reqwest::Client, control:JobControl,
 }
 impl ExternalComponentService {
     pub fn new(paths: &Paths, settings: Arc<SettingsService>, events: Arc<EventBus>) -> Self {
         Self { root: paths.data_dir().join("components"), settings, events,
             gates: [(ComponentId::Lip, tokio::sync::Mutex::new(())), (ComponentId::Dotnet10, tokio::sync::Mutex::new(()))].into(),
-            states: Mutex::new(HashMap::new()), client: super::http_client::client_builder(Duration::from_secs(180)).user_agent("CopperGolem-components").redirect(reqwest::redirect::Policy::custom(|attempt| { if attempt.previous().len()>=8 || !download_host(attempt.url()) {attempt.error("component_redirect_rejected")} else {attempt.follow()} })).build().expect("component HTTP client") }
+            states: Mutex::new(HashMap::new()), control:JobControl::default(), client: super::http_client::client_builder(Duration::from_secs(180)).user_agent("CopperGolem-components").redirect(reqwest::redirect::Policy::custom(|attempt| { if attempt.previous().len()>=8 || !download_host(attempt.url()) {attempt.error("component_redirect_rejected")} else {attempt.follow()} })).build().expect("component HTTP client") }
     }
     pub fn supported() -> bool { cfg!(windows) && matches!(std::env::consts::ARCH, "x86_64" | "aarch64") }
     fn rid() -> &'static str { if cfg!(target_arch="aarch64") { "win-arm64" } else { "win-x64" } }
@@ -47,6 +52,7 @@ impl ExternalComponentService {
         if active.rid != Self::rid() || !safe_segment(&active.directory) || !compatible(id, &active.version) { return Err(failure("component_manifest_invalid")); }
         let dir = self.component_dir(id).join("versions").join(&active.directory);
         if sha256_file(&dir.join(id.executable()))? != active.executable_sha256 { return Err(failure("component_hash_mismatch")); }
+        if !dir.join(".lease").is_file(){match lifecycle::create_lease(&dir){Ok(())=>{},Err(_) if dir.join(".lease").is_file()=>{},Err(e)=>return Err(e)}}
         Ok((active, dir))
     }
     pub fn installed_path(&self, id: ComponentId) -> Option<PathBuf> { self.active(id).ok().map(|(_,p)| p.join(id.executable())) }
@@ -72,7 +78,9 @@ impl ExternalComponentService {
     pub async fn lip_runtime(&self) -> Result<LipRuntime, KernelError> {
         self.probe(ComponentId::Dotnet10).await?;
         self.probe(ComponentId::Lip).await?;
-        Ok(LipRuntime { exe:self.active(ComponentId::Lip)?.1.join("lipd.exe"), dotnet_root:self.active(ComponentId::Dotnet10)?.1, user_home:self.root.join("lip-user") })
+        let lip=self.active(ComponentId::Lip)?.1;let dotnet=self.active(ComponentId::Dotnet10)?.1;
+        let leases=Arc::new(vec![lifecycle::lease(&lip)?,lifecycle::lease(&dotnet)?]);
+        Ok(LipRuntime { exe:lip.join("lipd.exe"), dotnet_root:dotnet, user_home:self.root.join("lip-user"),_leases:leases })
     }
     pub async fn check(&self, id: ComponentId) -> Result<ComponentStatus, KernelError> {
         if !Self::supported() { return Err(failure("component_platform_unsupported")); }
@@ -82,7 +90,14 @@ impl ExternalComponentService {
         self.report(id, if newer { "update-available" } else { "installed" }, None, Some(asset.version), None);
         Ok(self.snapshot().into_iter().find(|s|s.id==id).unwrap())
     }
+    pub fn cancel(&self){self.control.generation.fetch_add(1,Ordering::SeqCst);}
+    async fn controlled<T>(&self,generation:u64,future:impl std::future::Future<Output=Result<T,KernelError>>)->Result<T,KernelError>{
+        tokio::pin!(future);
+        loop{tokio::select!{result=&mut future=>return result,_=tokio::time::sleep(Duration::from_millis(100))=>{if self.control.generation.load(Ordering::SeqCst)!=generation{return Err(failure("component_cancelled"));}}}}
+    }
     pub async fn install(&self, id: ComponentId) -> Result<(), KernelError> {
+        self.control.foreground.fetch_add(1,Ordering::SeqCst);let _foreground=Foreground(&self.control.foreground);
+        self.cancel(); // 前台请求取消低优先级网络/健康检查，组件临界区仍串行。
         if !Self::supported() { return Err(failure("component_platform_unsupported")); }
         // 顺序固定；两个并发调用在组件锁内重新判断版本，合并重复安装。
         if id == ComponentId::Lip { self.install_one(ComponentId::Dotnet10).await?; }
@@ -93,12 +108,14 @@ impl ExternalComponentService {
         fs::create_dir_all(self.component_dir(id))?;
         let _process_lock = lock_component(&self.component_dir(id).join("install.lock"))?;
         self.report(id, "installing", Some("metadata"), None, None);
+        lifecycle::recover_staging(&self.component_dir(id));
         let result = self.install_locked(id).await;
         match &result { Ok(()) => self.report(id,"installed",None,None,None), Err(e) => self.report(id,"failed",None,None,Some(e.to_string())) }
         result
     }
     async fn install_locked(&self, id: ComponentId) -> Result<(), KernelError> {
-        let asset = self.resolve(id).await?;
+        let generation=self.control.generation.load(Ordering::SeqCst);
+        let asset = self.controlled(generation,self.resolve(id)).await?;
         if let Ok((active,dir)) = self.active(id) {
             let old = semver::Version::parse(&active.version).map_err(|_|failure("component_version_invalid"))?;
             let new = semver::Version::parse(&asset.version).map_err(|_|failure("component_version_invalid"))?;
@@ -109,13 +126,15 @@ impl ExternalComponentService {
         fs::create_dir_all(&stage)?;
         let cleanup = Staging(stage.clone());
         self.report(id,"installing",Some("downloading"),Some(asset.version.clone()),None);
-        let bytes = self.fetch_bytes(&asset.url, MAX_ARCHIVE).await?;
+        let bytes = self.controlled(generation,self.fetch_bytes(&asset.url, MAX_ARCHIVE)).await?;
         verify_hash(&bytes,&asset.hash,&asset.algorithm)?;
         self.report(id,"installing",Some("extracting"),Some(asset.version.clone()),None);
         let unpack = stage.clone();
         tokio::task::spawn_blocking(move || extract_zip(&bytes,&unpack)).await.map_err(|_|failure("component_extract_join"))??;
+        lifecycle::create_lease(&stage)?;
         self.report(id,"installing",Some("health-check"),Some(asset.version.clone()),None);
-        self.health(id,&stage,&asset.version).await?;
+        if self.control.generation.load(Ordering::SeqCst)!=generation{return Err(failure("component_cancelled"));}
+        self.controlled(generation,self.health(id,&stage,&asset.version)).await?;
         // 唯一不可变版本目录避免维修同版本时覆写现用 exe。
         let directory = format!("{}-{}-{}",asset.version,asset.rid,uuid::Uuid::new_v4());
         let versions = base.join("versions"); fs::create_dir_all(&versions)?;
@@ -123,9 +142,12 @@ impl ExternalComponentService {
         let executable_sha256 = sha256_file(&stage.join(id.executable()))?;
         fs::rename(&stage,&destination)?;
         drop(cleanup);
+        let previous=self.active(id).ok().map(|(a,_)|a.directory);
         let active = Active { version:asset.version, rid:asset.rid, directory, executable_sha256 };
         // 原子替换一个很小的指针。失败/崩溃时旧指针和旧版本保持可用。
         atomic_json(&base.join("current.json"),&active)?;
+        let mut keep=vec![active.directory.clone()];if let Some(previous)=previous{keep.push(previous);}
+        lifecycle::cleanup_versions(&base,&keep);
         Ok(())
     }
     async fn health(&self, id:ComponentId, dir:&Path, version:&str) -> Result<(),KernelError> {
@@ -169,20 +191,9 @@ impl ExternalComponentService {
         Ok(bytes)
     }
     pub fn spawn_background(self:&Arc<Self>, runtime:&tokio::runtime::Handle) {
-        let service=self.clone();
-        runtime.spawn(async move {
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            if !Self::supported() || !service.settings.get_or("components.auto_update_enabled",true) {return;}
-            // 仅更新已经安装的组件，首次安装始终由明确的用户操作触发。
-            for id in [ComponentId::Dotnet10,ComponentId::Lip] {
-                if !service.settings.get_or("components.auto_update_enabled",true) {break;}
-                if service.active(id).is_err() {continue;}
-                let result=service.check(id).await;
-                if let Ok(status)=result { if status.state=="update-available" {
-                    if let Err(e)=service.install(id).await { log::warn!("[components] background {}: {e}",id.key()); }
-                }}
-            }
-        });
+        // 调度对象待用户明确；独立安全批不启动周期网络，不检查任何已安装组件。
+        // 完整待定调度方案保存在 docs/铜核心/外部组件后台调度待定.md。
+        let _ = (runtime,&self.settings);
     }
 }
 fn failure(code:&str)->KernelError {KernelError::Module(code.into())}
@@ -253,6 +264,19 @@ struct Staging(PathBuf);impl Drop for Staging{fn drop(&mut self){let _=fs::remov
 mod tests {
     use super::*;
     use serde_json::json;
+    /// 手动运行：真实官方资产，所有current/配置均仅位于本测试独立临时树。
+    #[tokio::test] #[ignore = "downloads official assets and executes isolated health checks"]
+    async fn official_assets_health_in_isolated_directory(){
+        if !ExternalComponentService::supported(){return;}
+        let root=std::env::temp_dir().join(format!("copper-official-validation-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&root).unwrap();let _cleanup=Staging(root.clone());
+        let paths=Paths::with_root(root.clone());fs::create_dir_all(paths.data_dir()).unwrap();
+        let db=Arc::new(super::super::database::DatabaseService::open(&root.join("validation.sqlite")).unwrap());db.migrate_scope("core",super::super::database::CORE_MIGRATIONS).unwrap();
+        let events=Arc::new(EventBus::new());let settings=Arc::new(SettingsService::new(db,events.clone(),Default::default()).unwrap());
+        let service=ExternalComponentService::new(&paths,settings,events);
+        service.install(ComponentId::Lip).await.unwrap();
+        service.probe(ComponentId::Dotnet10).await.unwrap();service.probe(ComponentId::Lip).await.unwrap();
+        let runtime=service.lip_runtime().await.unwrap();println!("official isolated health passed: {}",runtime.exe.display());drop(runtime);
+    }
     #[test] fn compatibility_never_selects_daemon_removed_release(){
         let data=json!([
           {"tag_name":"v0.40.0","assets":[{"name":"lip-0.40.0-win-x64.zip","digest":format!("sha256:{}","a".repeat(64)),"browser_download_url":"https://github.com/LiteLDev/lip/releases/download/v0.40.0/lip-0.40.0-win-x64.zip"}]},

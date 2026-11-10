@@ -1,7 +1,7 @@
 {
   "components": {
     "title": "External components", "description": "Launcher-managed dependencies, verified against official release digests.",
-    "automatic": "Update components in the background", "automaticDescription": "Enabled by default. Existing healthy versions remain available; first installation requires your action.",
+    "automatic": "Background checks awaiting target confirmation", "automaticDescription": "Periodic checks are paused. Installed tools and runtimes are checked only when needed or manually.",
     "names": {"lip": "lip daemon", "dotnet10": ".NET 10 runtime"},
     "states": {"installed":"Installed", "missing":"Missing", "unsupported":"Unsupported platform", "installing":"Installing", "failed":"Action failed", "update-available":"Update available"},
     "stages": {"metadata":"Checking official release", "downloading":"Downloading", "extracting":"Extracting", "health-check":"Verifying health"},

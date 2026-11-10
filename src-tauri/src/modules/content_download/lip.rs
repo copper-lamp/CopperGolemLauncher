@@ -74,6 +74,11 @@ async fn index() -> Result<IndexData, KernelError> {
         }
     }
 
+    refresh_index().await?;
+    cache().lock().await.as_ref().map(|(_,data)|data.clone()).ok_or_else(||KernelError::Module("lipr_index_missing".into()))
+}
+/// 后台只刷新元数据；失败保留此前成功解析的索引，不影响已安装工具。
+pub(crate) async fn refresh_index() -> Result<(),KernelError> {
     let json: Value = super::http::client()
         .get(INDEX_URL)
         .send()
@@ -82,9 +87,13 @@ async fn index() -> Result<IndexData, KernelError> {
         .json()
         .await?;
 
-    let data = parse_index(&json);
-    *cache().lock().await = Some((std::time::Instant::now(), data.clone()));
-    Ok(data)
+    replace_index(&mut *cache().lock().await,&json)
+}
+fn replace_index(slot:&mut Option<(std::time::Instant,IndexData)>,json:&Value)->Result<(),KernelError>{
+    if json.get("packages").and_then(Value::as_object).is_none(){return Err(KernelError::Module("lipr_index_invalid".into()));}
+    let data=parse_index(json);
+    *slot=Some((std::time::Instant::now(),data));
+    Ok(())
 }
 
 // ---------------------------------------------------------------- 解析（可单测）
@@ -660,6 +669,13 @@ mod tests {
         })
     }
 
+    #[test]
+    fn invalid_refresh_preserves_last_good_index() {
+        let mut slot=None;replace_index(&mut slot,&sample_json()).unwrap();
+        let before=slot.as_ref().unwrap().0;let count=slot.as_ref().unwrap().1.packages.len();assert!(count>0);
+        for invalid in [serde_json::json!(null),serde_json::json!({"packages":[]}),serde_json::json!({"error":"upstream changed"})]{assert!(replace_index(&mut slot,&invalid).is_err());assert_eq!(slot.as_ref().unwrap().0,before);assert_eq!(slot.as_ref().unwrap().1.packages.len(),count);}
+        replace_index(&mut slot,&serde_json::json!({"packages":{}})).unwrap();assert!(slot.unwrap().1.packages.is_empty());
+    }
     #[test]
     fn parse_index_orders_versions_descending() {
         let data = parse_index(&sample_json());
