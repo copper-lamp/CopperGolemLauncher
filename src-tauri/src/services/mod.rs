@@ -5,6 +5,8 @@
 
 pub mod account;
 pub mod components;
+pub mod game_prerequisites;
+pub mod system_runtime;
 pub mod database;
 pub mod download;
 pub mod http_client;

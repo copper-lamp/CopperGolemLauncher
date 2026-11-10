@@ -7,6 +7,8 @@
     "stages": {"metadata":"检查官方发布", "downloading":"下载中", "extracting":"解压中", "health-check":"验证组件健康"},
     "notInstalled":"未安装", "check":"检查更新", "install":"安装", "update":"更新 / 修复",
     "compatibility":"lip 限定使用兼容的 0.37 daemon 协议，不会自动选择协议不兼容的新 CLI。私有 .NET 组件不会更改系统运行时。",
+    "gameRequiredTitle":"安装游戏运行依赖", "gameRequiredBody":"此游戏声明的 Windows 运行依赖尚未满足。安装微软官方组件后会重新检查，并继续本次启动一次。过程中可能需要系统权限确认或重新启动 Windows。",
+    "systemOutcome":{"restart-required":"请先重新启动 Windows，再启动此游戏。","elevation-cancelled":"已取消系统权限确认，可以重试安装。","signature-rejected":"无法确认安装器的微软签名，已阻止安装。","package-source-unsupported":"此声明包尚无已确认的官方自动安装来源。请通过微软商店或包发布者安装后重试。","package-install-failed":"Windows 未完成依赖包安装，请处理部署错误后重试。","dependency-still-missing":"安装已结束，但声明依赖仍缺失或未达到最低版本。","failed":"系统安装器执行失败，游戏尚未启动。"},
     "requiredTitle":"安装所需组件", "requiredBody":"此操作需要受管的 lip 守护进程和 .NET 10 运行时。下载并验证官方组件后，将继续本次操作一次。",
     "installing":"正在安装并检查组件…", "cancel":"取消", "installContinue":"安装并继续"
   },

@@ -407,6 +407,8 @@ pub fn run() {
             commands::components::components_probe,
             commands::components::components_check,
             commands::components::components_install,
+            commands::components::game_dependencies_probe,
+            commands::components::game_dependencies_install,
             commands::settings::settings_all,
             commands::settings::settings_get,
             commands::settings::settings_set,

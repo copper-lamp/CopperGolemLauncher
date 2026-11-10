@@ -15,6 +15,7 @@ import { useRouter } from "vue-router";
 import { ArrowRight, Download, Play, PlugZap, RefreshCw, Settings2, Square, Syringe } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
+import { ensureGamePrerequisites } from "../../composables/useGamePrerequisites";
 import { showToast } from "../../composables/useToast";
 import { useSettings } from "../../composables/useSettings";
 import { useAccount } from "../../composables/useAccount";
@@ -320,6 +321,7 @@ async function launch() {
   // 下面的 catch 里复位，不留「点不动」的按钮。
   beginLaunch(version.name);
   try {
+    if(!await ensureGamePrerequisites(version.name)){endSession();return;}
     await homeLaunch(version.name);
     launchSpawned.value = true;
   } catch (e) {
@@ -351,6 +353,7 @@ async function launchNamed(name: string) {
   if (selectedName.value !== name) selectedName.value = name;
   beginLaunch(name);
   try {
+    if(!await ensureGamePrerequisites(name)){endSession();return;}
     await homeLaunch(name);
     launchSpawned.value = true;
   } catch (e) {
@@ -394,18 +397,8 @@ function goDownload() {
 
 <template>
   <CoPage :scroll="false">
+    <div class="home-page">
     <div :class="['home-simple', { 'home-simple--default': mode === 'default' }]">
-      <!--
-        模式切换注入全局标题栏操作区。
-        必须 `defer`：内嵌资源（release / custom-protocol）下路由分包已在本地，
-        HomePage 会和外壳在同一次渲染里挂载，此时标题栏还没插进文档，
-        Teleport 找不到目标 → 整棵 vnode 树损坏（首页永远停在加载态）。
-        `defer` 把目标解析推迟到本次渲染结束后，等价于「只晚一个 tick」。
-      -->
-      <Teleport defer to="#copper-titlebar-actions">
-        <CoSegmented v-model="mode" :options="modeOptions" />
-      </Teleport>
-
       <!-- 默认模式：启动区 / 列表区 / 小组件区 -->
       <DefaultHome
         v-if="mode === 'default'"
@@ -528,12 +521,21 @@ function goDownload() {
         </div>
       </div>
     </div>
+    <footer class="home-page__mode"><CoSegmented v-model="mode" :options="modeOptions" /></footer>
+    </div>
   </CoPage>
 </template>
 
 <style scoped>
+.home-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.home-page__mode {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding: var(--copper-space-2) max(var(--copper-space-3), env(safe-area-inset-right, 0px)) max(var(--copper-space-2), env(safe-area-inset-bottom, 0px));
+}
 .home-simple {
-  height: 100%;
+  flex: 1;
   min-height: 0;
   /* 竖屏 / 矮窗口下允许整页滚动：欢迎语与操作条不能被裁掉。 */
   overflow-y: auto;

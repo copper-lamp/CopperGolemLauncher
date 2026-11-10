@@ -3,7 +3,7 @@
 // Existing route metadata supplies localized/dynamic labels; pages inject actions via Teleport.
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, Upload, ChevronRight, Stethoscope } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope } from "@lucide/vue";
 import { useNavigationTrail } from "../composables/useNavigationTrail";
 import { showToast } from "../composables/useToast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -16,9 +16,6 @@ import { useBootDiagnostics } from "../boot";
 import { useI18n } from "../i18n";
 import { usePlatform } from "../composables/usePlatform";
 
-import { importPicking, pickGlobalImport } from '../services/import-queue';
-import { useImportText } from '../services/import-messages';
-const importText = useImportText();
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
@@ -88,6 +85,15 @@ let unlistenMaximize: (() => void) | null = null;
 
 const appWindow = getCurrentWindow();
 
+/** Bubble from blank header surfaces only; controls and scrollable breadcrumbs own their gestures. */
+function startWindowDrag(event: PointerEvent) {
+  if (isMobile.value || !event.isPrimary || event.button !== 0) return;
+  const target = event.target;
+  if (!(target instanceof Element) || target.closest('button, a, input, select, textarea, [role="button"], [contenteditable], .titlebar__crumbs, .titlebar__actions, .titlebar__right')) return;
+  event.preventDefault();
+  void appWindow.startDragging().catch(error => showToast(String(error), 'error'));
+}
+
 onMounted(async () => {
   try {
     maximized.value = await appWindow.isMaximized();
@@ -117,7 +123,7 @@ function close() {
 </script>
 
 <template>
-  <header class="titlebar">
+  <header class="titlebar" @pointerdown="startWindowDrag">
     <div class="titlebar__left">
       <button class="titlebar__back" :disabled="!canBack" :title="t('titlebar.back')" :aria-label="t('titlebar.back')" @click="goBack"><ArrowLeft :size="15" /></button>
       <button class="titlebar__back" :disabled="!canForward" :title="t('titlebar.forward')" :aria-label="t('titlebar.forward')" @click="router.forward()"><ArrowRight :size="15" /></button>
@@ -144,7 +150,7 @@ function close() {
         <h1 v-if="title" class="titlebar__title">{{ title }}</h1>
       </template>
     </div>
-    <div class="titlebar__spacer" data-tauri-drag-region />
+    <div class="titlebar__spacer" aria-hidden="true" />
     <!-- 更新入口：位于操作按钮左侧，独立控件，不参与操作区的 flex 布局 -->
     <UpdateBadge />
     <!-- 页面注入操作区：各模块经 <Teleport to="#copper-titlebar-actions"> 放置按钮/切换。 -->
@@ -162,7 +168,6 @@ function close() {
       </button>
       <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" @click="showToast(t('titlebar.search_pending'))"><Search :size="16" /></button>
       <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="16" /></button>
-      <button class="titlebar__back" :disabled="importPicking" :title="importText(importPicking ? 'picking' : 'open')" :aria-label="importText('open')" @click="pickGlobalImport"><Upload :size="16" /></button>
       <AccountMenu />
       <template v-if="!isMobile">
         <div class="titlebar__sep" />
@@ -309,7 +314,11 @@ button.titlebar__crumb:hover {
 .titlebar__crumbs { overflow-x: auto; scrollbar-width: none; }
 .titlebar__crumb { max-width: 240px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; }
 .titlebar__right, .titlebar__controls { flex-shrink: 0; }
-.titlebar__spacer { flex: 0 0 24px; height: 100%; }
+.titlebar__spacer { flex: 0 0 24px; height: var(--copper-titlebar-h); }
+/* Prevent desktop touch gestures from becoming WebView panning before native drag starts. */
+.titlebar__spacer, .titlebar__title { touch-action: none; }
+.titlebar__crumbs, .titlebar__actions { touch-action: pan-x; }
+.titlebar__right { touch-action: manipulation; }
 @media (max-width: 560px) {
   .titlebar { padding-left: 4px; }
   .titlebar__left { gap: 4px; min-width: 68px !important; }

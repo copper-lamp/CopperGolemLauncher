@@ -58,6 +58,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  */
 const LONG_RUNNING_COMMANDS: Record<string, number> = {
   components_install: 600_000,
+  game_dependencies_probe: 120_000,
+  game_dependencies_install: 1_200_000,
   components_check: 180_000,
   components_probe: 30_000,
   // 商店 / 微软账户往返（含设备注册与重定向）。
