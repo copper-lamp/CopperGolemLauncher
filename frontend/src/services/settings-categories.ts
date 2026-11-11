@@ -2,8 +2,8 @@ import { computed } from 'vue';
 import { registerAddonI18n, useLocaleRef, translateAddon } from '../i18n';
 export const settingsCategories = ['general','appearance','storage','download','launch','translation','modules','components','privacy','update','about'] as const;
 export type SettingsCategory = typeof settingsCategories[number];
-registerAddonI18n('settingsHost', {
+registerAddonI18n('settings-host', {
  'zh-CN': { component_enter:'组件进入',component_exit:'组件退出',component_press:'组件按下',page_enter:'页面进入',page_exit:'页面退出',loading_enter:'加载进入',loading_exit:'加载退出',general:'通用设置',appearance:'个性化',storage:'储存位置',download:'下载设置',launch:'启动设置',translation:'翻译',modules:'模块管理',components:'外部组件',privacy:'隐私设置',update:'更新',about:'关于',retry:'重新下载并修复',radius:'控件与卡片圆角',motion:'动画时长（毫秒）',privacyBody:'翻译仅在主动操作时向所选服务发送文本；诊断需预览后手动复制。密钥由内核密钥服务保存，不进入普通设置。',extensions:'模块设置',save:'保存',failed:'保存失败',empty:'此类别暂无额外设置。' },
  'en-US': { component_enter:'Component enter',component_exit:'Component exit',component_press:'Component press',page_enter:'Page enter',page_exit:'Page exit',loading_enter:'Loading enter',loading_exit:'Loading exit',general:'General',appearance:'Personalization',storage:'Storage locations',download:'Downloads',launch:'Launch',translation:'Translation',modules:'Modules',components:'External components',privacy:'Privacy',update:'Updates',about:'About',retry:'Redownload and repair',radius:'Control and card radius',motion:'Animation duration (ms)',privacyBody:'Translation sends text to your selected service only when requested. Diagnostics require preview and manual copying. Keys are stored by the kernel secret service, outside general settings.',extensions:'Module settings',save:'Save',failed:'Could not save',empty:'No additional settings in this category.' }
 });
-export function useSettingsText() { const locale=useLocaleRef(); return computed(()=> (key:string)=>{void locale.value;return translateAddon('settingsHost',key);}); }
+export function useSettingsText() { const locale=useLocaleRef(); return computed(()=> (key:string)=>{void locale.value;return translateAddon('settings-host',key);}); }
