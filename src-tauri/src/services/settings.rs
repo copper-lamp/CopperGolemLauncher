@@ -79,7 +79,7 @@ impl SettingsService {
     /// 写入单个键并广播变更事件。
     pub fn set<T: Serialize>(&self, key: &str, value: &T) -> Result<(), KernelError> {
         let value = serde_json::to_value(value)?;
-        self.cache.write().insert(key.to_string(), value.clone());
+        let mut cache = self.cache.write();
         self.db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO core_settings (key, value) VALUES (?1, ?2)
@@ -89,6 +89,8 @@ impl SettingsService {
             Ok(())
         })?;
         let mut changed = HashMap::new();
+        cache.insert(key.to_string(), value.clone());
+        drop(cache);
         changed.insert(key.to_string(), value);
         self.events.publish("settings.changed", Value::Object(changed.into_iter().collect()));
         Ok(())
@@ -100,21 +102,22 @@ impl SettingsService {
         entries: &HashMap<String, Value>,
     ) -> Result<(), KernelError> {
         let mut changed = HashMap::new();
+        let mut cache = self.cache.write();
         self.db.with_conn(|conn| {
+            let tx = conn.transaction()?;
             for (key, value) in entries {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO core_settings (key, value) VALUES (?1, ?2)
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     rusqlite::params![key, value.to_string()],
                 )?;
                 changed.insert(key.clone(), value.clone());
             }
+            tx.commit()?;
             Ok(())
         })?;
-        {
-            let mut cache = self.cache.write();
-            cache.extend(changed.clone());
-        }
+        cache.extend(changed.clone());
+        drop(cache);
         self.events.publish("settings.changed", Value::Object(changed.into_iter().collect()));
         Ok(())
     }
@@ -128,6 +131,10 @@ impl SettingsService {
         map
     }
 }
+
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod tests;
 
 /// 默认设置（扁平点分键）。
 pub fn defaults() -> HashMap<String, Value> {
