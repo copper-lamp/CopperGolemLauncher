@@ -37,6 +37,15 @@ import {
 
 const manifest = ref<GameManifestView | null>(null);
 const loading = ref(false);
+const manifestError = ref<string | null>(null);
+const MANIFEST_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
+let lastManifestSuccess = 0;
+let lastManifestAttempt = 0;
+let manifestInflight: Promise<boolean> | null = null;
+/** Backend validated time remains authoritative; attempts only bound automatic retries. */
+function manifestNeedsValidation(now = Date.now()): boolean {
+  return now - Math.max(lastManifestSuccess, lastManifestAttempt) >= MANIFEST_CHECK_INTERVAL;
+}
 const initialized = ref(false);
 /** 版本 id → 加载器清单（按需拉取后在本次会话内缓存）。 */
 const loaderCatalogs = ref<Record<string, LoaderOptions>>({});
@@ -77,17 +86,27 @@ export async function initGameDownload(): Promise<void> {
   ]);
 }
 
-/** 拉取清单（`refresh=true` 强制网络刷新源）。 */
-export async function loadManifest(refresh = false): Promise<void> {
+/** Load through the backend freshness policy; concurrent callers share one request. */
+export function loadManifest(refresh = false): Promise<boolean> {
+  if (manifestInflight) return manifestInflight;
   loading.value = true;
-  try {
-    manifest.value = await gameManifest(refresh);
-    if (refresh) showToast(t("module.game-download.toast.refresh_ok"), "success");
-  } catch (e) {
-    showToast(String(e), "error");
-  } finally {
-    loading.value = false;
-  }
+  manifestError.value = null;
+  lastManifestAttempt = Date.now();
+  manifestInflight = (async () => {
+    try {
+      manifest.value = await gameManifest(refresh);
+      lastManifestSuccess = Date.now();
+      return true;
+    } catch (e) {
+      manifestError.value = String(e);
+      showToast(String(e), "error");
+      return false;
+    } finally {
+      loading.value = false;
+      manifestInflight = null;
+    }
+  })();
+  return manifestInflight;
 }
 
 /**
@@ -197,6 +216,8 @@ export function useGameDownload() {
   return {
     manifest: readonly(manifest),
     loading: readonly(loading),
+    manifestError: readonly(manifestError),
+    manifestNeedsValidation,
     loaderCatalogs: readonly(loaderCatalogs),
     loadManifest,
     loadLoaders,

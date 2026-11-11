@@ -14,7 +14,6 @@ import {
   CircleCheck,
   Layers,
   LoaderCircle,
-  RefreshCw,
   Search,
   SlidersHorizontal,
   Upload,
@@ -38,7 +37,8 @@ const { platform } = usePlatform();
 const MB_KEY = "module.game-download";
 
 const localLoading = ref(false);
-const loadError = ref<string | null>(null);
+const loadError = computed(() => gd.manifestError.value);
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
 /** 搜索关键字：只过滤两个「全部版本」列表，不改动顶部最新区块。 */
 const keyword = ref("");
 /** 正式版大卡片是否展开（默认展开）。 */
@@ -99,6 +99,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer);
   document.removeEventListener("mousedown", onDocumentPointerDown);
   document.removeEventListener("keydown", onDocumentKeydown);
 });
@@ -146,28 +147,22 @@ const previewExpanded = computed(
 );
 
 async function refresh() {
+  if (localLoading.value || gd.loading.value) return;
   localLoading.value = true;
-  loadError.value = null;
   try {
-    await gd.loadManifest(true);
-  } catch (e) {
-    loadError.value = String(e);
+    await gd.loadManifest(false);
   } finally {
     localLoading.value = false;
   }
 }
 
-onMounted(async () => {
-  await initGameDownload();
-  // 清单未加载过则拉取；已加载（模块事件已刷新）则仅回填。
-  localLoading.value = true;
-  try {
-    await gd.loadManifest(gd.manifest.value === null);
-  } catch (e) {
-    loadError.value = String(e);
-  } finally {
-    localLoading.value = false;
-  }
+onMounted(() => {
+  // Register synchronously so unmount always clears the mounted-page timer.
+  refreshTimer = setInterval(() => {
+    if (!gd.loading.value && gd.manifestNeedsValidation()) void refresh();
+  }, 60 * 1000);
+  void initGameDownload();
+  if (!gd.manifest.value || gd.manifestNeedsValidation()) void refresh();
 });
 
 watch(gd.manifest, () => (loadError.value = null));
@@ -248,8 +243,11 @@ async function importApk() {
       <CircleCheck v-else :size="13" />
       {{ importStatus }}
     </p>
-    <p v-if="loadError" class="gd-page__import-error" role="alert">{{ loadError }}</p>
-    <!-- 导入 / 刷新按钮注入全局标题栏操作区（defer 原因见 HomePage 同处注释） -->
+    <p v-if="loadError" class="gd-page__import-error" role="alert">
+      {{ loadError }}
+      <button v-if="gd.manifest.value" class="gd-page__retry" :disabled="localLoading || gd.loading.value" @click="refresh">{{ t(`${MB_KEY}.actions.retry`) }}</button>
+    </p>
+    <!-- 导入按钮注入全局标题栏；清单按24小时自动校验，错误状态保留重试。 -->
     <Teleport defer to="#copper-titlebar-actions">
       <button
         v-if="canImport"
@@ -260,14 +258,6 @@ async function importApk() {
       >
         <LoaderCircle v-if="importing" :size="15" class="spin" />
         <Upload v-else :size="15" />
-      </button>
-      <button
-        class="gd-page__refresh"
-        :title="t(`${MB_KEY}.actions.refresh`)"
-        :disabled="localLoading || gd.loading.value"
-        @click="refresh"
-      >
-        <RefreshCw :size="15" :class="{ spin: localLoading || gd.loading.value }" />
       </button>
     </Teleport>
 
@@ -293,7 +283,6 @@ async function importApk() {
       class="gd-page__state"
     >
       <p class="gd-page__state-text">{{ t(`${MB_KEY}.empty`) }}</p>
-      <button class="gd-page__retry" @click="refresh">{{ t(`${MB_KEY}.actions.refresh`) }}</button>
     </div>
 
     <!-- 内容 -->
