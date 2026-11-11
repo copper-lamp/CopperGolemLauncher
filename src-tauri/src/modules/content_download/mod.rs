@@ -126,6 +126,9 @@ async fn ll_list(
 
 // ---------------------------------------------------------------- 对外业务
 
+fn metadata_key(kernel:&KernelContext,kind:&str,query:&str)->String{
+    serde_json::json!(["content","cf-lip-lla","v1",kernel.backends().platform_id(),kernel.i18n().current_locale(),kind,query]).to_string()
+}
 impl ContentDownloadModule {
     /// 列表：按来源 / 类型过滤 + 关键字搜索 + 分页。
     ///
@@ -135,6 +138,10 @@ impl ContentDownloadModule {
         kernel: &KernelContext,
         query: &ContentListQuery,
     ) -> Result<ContentListPage, KernelError> {
+        let key = metadata_key(kernel,"list",&serde_json::to_string(query)?);
+        crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::list_uncached(kernel,query)).await
+    }
+    async fn list_uncached(kernel:&KernelContext,query:&ContentListQuery)->Result<ContentListPage,KernelError>{
         let source = query.source.as_deref();
         let ctype = query.content_type.as_deref();
         let result = if ll_mod_requested(source, ctype) {
@@ -177,25 +184,29 @@ impl ContentDownloadModule {
     /// 平铺筛选栏的标签 / 类别名。
     ///
     /// 未指定来源时合并三个来源（桌面端没有 lla，不会出现它的标签）。
-    /// 失败不抛错：筛选栏是辅助 UI，拿不到就少一排选项，不该把列表页打成错误态。
+    /// 上游失败保留72小时内旧成功值；首次失败向调用方报告，不把空标签写成成功缓存。
     pub async fn tags(
         kernel: &KernelContext,
         source: Option<&str>,
     ) -> Result<Vec<String>, KernelError> {
+        let key=metadata_key(kernel,"tags",source.unwrap_or("all"));
+        crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::tags_uncached(kernel,source)).await
+    }
+    async fn tags_uncached(kernel:&KernelContext,source:Option<&str>)->Result<Vec<String>,KernelError>{
         let mut out: Vec<String> = Vec::new();
         match source {
             Some(s) if s == SOURCE_CURSEFORGE => {
-                out.extend(curseforge::tags(kernel).await.unwrap_or_default())
+                out.extend(curseforge::tags(kernel).await?)
             }
-            Some(s) if s == SOURCE_LIP => out.extend(lip::tags(kernel).await.unwrap_or_default()),
+            Some(s) if s == SOURCE_LIP => out.extend(lip::tags(kernel).await?),
             Some(s) if s == SOURCE_LL_ANDROID => {
-                out.extend(ll_android::tags(kernel).await.unwrap_or_default())
+                out.extend(ll_android::tags(kernel).await?)
             }
             _ => {
-                out.extend(curseforge::tags(kernel).await.unwrap_or_default());
-                out.extend(lip::tags(kernel).await.unwrap_or_default());
+                out.extend(curseforge::tags(kernel).await?);
+                out.extend(lip::tags(kernel).await?);
                 if android_ll_source() {
-                    out.extend(ll_android::tags(kernel).await.unwrap_or_default());
+                    out.extend(ll_android::tags(kernel).await?);
                 }
             }
         }
@@ -206,6 +217,10 @@ impl ContentDownloadModule {
 
     /// 详情：按跨源 id（`cf:` / `lip:` / `lla:` 前缀）路由。
     pub async fn detail(kernel: &KernelContext, id: &str) -> Result<ContentDetail, KernelError> {
+        let key=metadata_key(kernel,"detail",id);
+        crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::detail_uncached(kernel,id)).await
+    }
+    async fn detail_uncached(kernel:&KernelContext,id:&str)->Result<ContentDetail,KernelError>{
         if let Some(cf_id) = id.strip_prefix("cf:") {
             let mod_id: i64 = cf_id
                 .parse()
@@ -234,6 +249,10 @@ impl ContentDownloadModule {
         id: &str,
         locale: &str,
     ) -> Result<Option<String>, KernelError> {
+        let key=metadata_key(kernel,"readme",&serde_json::json!([id,locale]).to_string());
+        crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::readme_uncached(kernel,id,locale)).await
+    }
+    async fn readme_uncached(kernel:&KernelContext,id:&str,locale:&str)->Result<Option<String>,KernelError>{
         if let Some(cf_id) = id.strip_prefix("cf:") {
             let mod_id: i64 = cf_id
                 .parse()
@@ -243,9 +262,9 @@ impl ContentDownloadModule {
             lip::readme(kernel, ident, locale).await
         } else if ll_android::parse_mod_id(id).is_some() {
             // 目录条目的 `homepage_url` 即发布仓库，复用 lip 的抓取器。
-            let repo_url = Self::detail(kernel, id).await.ok().and_then(|d| d.repo_url);
+            let repo_url = Self::detail_uncached(kernel, id).await?.repo_url;
             match repo_url {
-                Some(url) => Ok(lip::fetch_github_readme(&url, locale).await),
+                Some(url) => lip::fetch_github_readme(&url, locale).await.map(Some).ok_or_else(||KernelError::Module("readme_unavailable".into())),
                 None => Ok(None),
             }
         } else {
@@ -257,7 +276,8 @@ impl ContentDownloadModule {
     ///
     /// LL 模组无 MCBE 游戏版本元数据，故列表仅来自 CurseForge。
     pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
-        curseforge::game_versions(kernel).await
+        let key=metadata_key(kernel,"game-versions","all");
+        crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||curseforge::game_versions(kernel)).await
     }
 
     /// 落点预演：不投递任何东西，只解析这个文件下载后会落到哪。

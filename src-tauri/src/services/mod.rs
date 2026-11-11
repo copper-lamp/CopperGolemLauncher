@@ -14,6 +14,8 @@ pub mod i18n;
 pub mod llm;
 pub mod translation;
 pub mod paths;
+pub mod metadata_cache;
+pub mod storage;
 pub mod registry;
 pub mod settings;
 pub mod native_install;

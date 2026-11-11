@@ -64,7 +64,15 @@ struct Variant {
 }
 
 /// 拉取最新索引（带 TTL 缓存）。
-async fn index() -> Result<IndexData, KernelError> {
+async fn index(_kernel:&KernelContext) -> Result<IndexData, KernelError> {
+    // Only the normalized operation result is persisted. Layered caches must not
+    // give a stale source a fresh validation timestamp.
+    let raw:Value=super::http::client().get(INDEX_URL).send().await?.error_for_status()?.json().await?;
+    if raw.get("packages").and_then(Value::as_object).is_none(){return Err(KernelError::Module("lipr_index_invalid".into()));}
+    Ok(parse_index(&raw))
+}
+#[allow(dead_code)]
+async fn memory_index() -> Result<IndexData, KernelError> {
     {
         let g = cache().lock().await;
         if let Some((t, data)) = g.as_ref() {
@@ -248,7 +256,7 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
 /// 游戏版本元数据，因此指定 `game_version` 时返回空列表（不伪造匹配）。
 /// 索引里出现过的全部标签（升序去重），供前端平铺筛选栏。
 pub async fn tags(_kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
-    let data = index().await?;
+    let data = index(_kernel).await?;
     let mut out: Vec<String> = data
         .packages
         .values()
@@ -267,7 +275,7 @@ pub async fn list(
     // 旧实现直接返回空结果，于是用户一旦选过版本筛选，整个 LL 来源就"搜不到"。
     // 现在的语义是**不按版本过滤**（宁可多给，也不静默吞掉整个来源）。
 
-    let data = index().await?;
+    let data = index(_kernel).await?;
     let search = query.search.as_deref().unwrap_or("").to_lowercase();
 
     let mut matched: Vec<ContentItem> = data
@@ -320,7 +328,7 @@ pub async fn list(
 /// 详情：identifier → 版本文件 + 依赖。
 pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<ContentDetail, KernelError> {
     let key = identifier.split('#').next().unwrap_or(identifier).to_string();
-    let data = index().await?;
+    let data = index(_kernel).await?;
     let pkg = data
         .packages
         .get(&key)
@@ -388,7 +396,7 @@ pub async fn readme(
     let Some(url) = infer_project_url(key) else {
         return Ok(None);
     };
-    Ok(fetch_github_readme(&url, locale).await)
+    fetch_github_readme(&url, locale).await.map(Some).ok_or_else(||KernelError::Module("readme_unavailable".into()))
 }
 
 // ---------------------------------------------------------------- readme 抓取

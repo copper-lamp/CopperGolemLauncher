@@ -28,6 +28,9 @@ pub const VERSIONS_DIR_ENV: &str = "COPPER_VERSIONS_DIR";
 /// - logs:      `data/logs`（运行日志）
 #[derive(Debug, Clone)]
 pub struct Paths {
+    root: PathBuf,
+    locator_dir: PathBuf,
+    game_override: Option<PathBuf>,
     data_dir: PathBuf,
     versions_dir: PathBuf,
     modules_dir: PathBuf,
@@ -53,6 +56,9 @@ impl Paths {
         let logs_dir = data_dir.join("logs");
         let db_file = data_dir.join("copper.db");
         Self {
+            root: root.clone(),
+            locator_dir: root.join("bootstrap"),
+            game_override: None,
             data_dir,
             versions_dir,
             modules_dir,
@@ -73,21 +79,17 @@ impl Paths {
     /// `ProjectDirs::from` 通常返回 `None`，硬依赖会直接中断启动
     /// （见 docs/平台适配.md 3.1 风险 2）。
     pub fn resolve(app: &AppHandle) -> Result<Self, KernelError> {
-        if let Some(custom) = non_empty_env("COPPER_DATA_DIR") {
-            let mut paths = Self::with_root(custom);
-            paths.logs_dir = Self::resolve_logs_dir_for(&paths.data_dir);
-            return Ok(paths);
-        }
-        let root = app
-            .path()
-            .app_data_dir()
+        let legacy = app.path().app_data_dir()
             .map_err(|e| KernelError::Config(format!("无法解析应用数据目录 app_data_dir: {e}")))?;
-        // 桌面端保持既有布局：数据在 `app_data_dir`，缓存在宿主给的缓存目录
-        // （`%LOCALAPPDATA%`）下，避免大缓存挤占漫游数据目录。
+        let locator = legacy.join("bootstrap");
+        #[cfg(not(target_os = "android"))]
+        let default = std::env::current_exe()?.parent().ok_or_else(||KernelError::Config("无法解析启动器所在目录".into()))?.join(".cgl");
+        #[cfg(target_os = "android")]
+        let default = legacy.clone();
+        let root = super::storage::bootstrap(&locator,&default,&legacy,non_empty_env("COPPER_DATA_DIR"))?;
         let mut paths = Self::with_root(root);
-        if let Ok(cache) = app.path().app_cache_dir() {
-            paths.cache_dir = cache;
-        }
+        if non_empty_env("COPPER_DATA_DIR").is_none() { paths.game_override = super::storage::game_override(&locator)?; }
+        paths.locator_dir = if non_empty_env("COPPER_DATA_DIR").is_some() { paths.root.join("bootstrap") } else { locator };
         paths.logs_dir = Self::resolve_logs_dir_for(&paths.data_dir);
         Ok(paths)
     }
@@ -141,6 +143,15 @@ impl Paths {
         Ok(())
     }
 
+    pub fn launcher_root(&self) -> &PathBuf { &self.root }
+    pub fn locator_dir(&self) -> &PathBuf { &self.locator_dir }
+    pub fn game_root(&self, settings:&SettingsService) -> PathBuf {
+        if let Some(versions)=non_empty_env(VERSIONS_DIR_ENV){return versions.parent().unwrap_or(&versions).to_owned();}
+        if let Some(root)=self.game_override.clone().or_else(||settings.get::<String>("game.root").filter(|s|!s.trim().is_empty()).map(PathBuf::from)){return root;}
+        let versions=self.versions_root(settings); versions.parent().unwrap_or(&versions).to_owned()
+    }
+    pub fn package_root(&self, settings:&SettingsService) -> PathBuf { self.game_root(settings).join(".download") }
+
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
     }
@@ -164,6 +175,7 @@ impl Paths {
         if let Some(dir) = non_empty_env(VERSIONS_DIR_ENV) {
             return dir;
         }
+        if let Some(root) = self.game_override.as_ref().cloned().or_else(||settings.get::<String>("game.root").filter(|s|!s.trim().is_empty()).map(PathBuf::from)) { return root.join("versions"); }
         settings
             .get::<String>("game.directory")
             .filter(|s| !s.trim().is_empty())
@@ -503,6 +515,36 @@ mod tests {
 
         unsafe { std::env::remove_var(VERSIONS_DIR_ENV) };
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn game_and_package_roots_follow_versions_env_over_persistent_game_root() {
+        let _guard = env_lock();
+        struct RestoreEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.take() {
+                        Some(value) => std::env::set_var(VERSIONS_DIR_ENV, value),
+                        None => std::env::remove_var(VERSIONS_DIR_ENV),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(std::env::var_os(VERSIONS_DIR_ENV));
+        let root = temp_root("game-env-layout");
+        let paths = Paths::with_root(root.clone());
+        let settings = settings_with_dir(&root);
+        let persisted = root.join("persistent-game");
+        settings.set("game.root", &persisted.to_string_lossy().to_string()).unwrap();
+        let environment_game = root.join("environment-game");
+        unsafe { std::env::set_var(VERSIONS_DIR_ENV, environment_game.join("versions")) };
+        assert_eq!(paths.versions_root(&settings), environment_game.join("versions"));
+        assert_eq!(paths.game_root(&settings), environment_game);
+        assert_eq!(paths.package_root(&settings), environment_game.join(".download"));
+        assert_eq!(settings.get::<String>("game.root").as_deref(), Some(persisted.to_string_lossy().as_ref()));
+        drop(settings);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 覆盖生效时，失败提示必须指向环境变量。指向设置项会让用户去改一个被绕过、

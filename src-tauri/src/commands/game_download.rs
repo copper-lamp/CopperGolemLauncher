@@ -27,7 +27,7 @@ pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: O
             None
         }
     };
-    let catalog = match loader_catalog::LoaderCatalog::load().await {
+    let catalog = match loader_catalog::LoaderCatalog::load(kernel.paths().cache_dir()).await {
         Ok(catalog) => Some(catalog),
         Err(error) => {
             log::warn!("[game-download] 加载器目录拉取失败（加载器徽标不显示）: {error}");

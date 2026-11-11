@@ -223,33 +223,11 @@ pub struct VersionView {
 /// 载入清单（刷新或读缓存 + 可选网络），未联网时回退缓存。
 ///
 /// `refresh=true` 强制网络拉取并更新缓存；失败时回退缓存。
-pub async fn load_manifest(ctx: &Ctx, refresh: bool) -> Result<HistoricalVersions, KernelError> {
-    if refresh {
-        match fetch_manifest(ctx).await {
-            Ok(v) => {
-                cache_manifest(ctx, &v)?;
-                return Ok(v);
-            }
-            Err(e) => {
-                // 网络失败回退缓存；缓存也没有才报错。
-                if let Some(cached) = read_cache(ctx) {
-                    log::warn!("[game-download] 清单刷新失败，使用缓存: {e}");
-                    return Ok(cached);
-                }
-                return Err(e);
-            }
-        }
-    }
-    if let Some(cached) = read_cache(ctx) {
-        return Ok(cached);
-    }
-    match fetch_manifest(ctx).await {
-        Ok(v) => {
-            cache_manifest(ctx, &v)?;
-            Ok(v)
-        }
-        Err(e) => Err(e),
-    }
+pub async fn load_manifest(ctx: &Ctx, _refresh: bool) -> Result<HistoricalVersions, KernelError> {
+    crate::services::metadata_cache::load(
+        &ctx.cache_home(), "game-manifest/gdk/v1/windows/all/en", crate::services::metadata_cache::GAME_REFRESH,
+        || fetch_manifest(ctx)
+    ).await
 }
 
 /// 网络拉取清单（多镜像，内置换序）。
@@ -381,27 +359,6 @@ pub fn build_view(
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn b_numeric(v: &VersionView) -> (u32, u32, u32, u32) {
     parse_numeric(&v.game_version).unwrap_or((0, 0, 0, 0))
-}
-
-// ------------------------------------------------------------------ 缓存
-
-fn cache_path(ctx: &Ctx) -> std::path::PathBuf {
-    ctx.cache_home().join("historical_versions.json")
-}
-
-fn read_cache(ctx: &Ctx) -> Option<HistoricalVersions> {
-    let raw = std::fs::read(cache_path(ctx)).ok()?;
-    serde_json::from_slice(&raw).ok()
-}
-
-fn cache_manifest(ctx: &Ctx, v: &HistoricalVersions) -> Result<(), KernelError> {
-    let path = cache_path(ctx);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let raw = serde_json::to_vec_pretty(v)?;
-    std::fs::write(path, raw)?;
-    Ok(())
 }
 
 // ------------------------------------------------------------------ 测试

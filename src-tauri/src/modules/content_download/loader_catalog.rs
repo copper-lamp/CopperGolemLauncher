@@ -22,8 +22,7 @@
 //! `1.26.10.04`。
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -44,16 +43,6 @@ const VERSION_DB_URLS: [&str; 4] = [
     "https://raw.githubusercontent.com/LiteLDev/levilamina-client-version-db/refs/heads/main/v2/version-db.json",
 ];
 
-/// 目录缓存 TTL：清单命令每次都会问目录，不缓存等于每次刷新都多一次网络往返。
-const CACHE_TTL: Duration = Duration::from_secs(1800);
-
-type SharedCache = Mutex<Option<(Instant, LoaderCatalog)>>;
-
-fn cache() -> &'static SharedCache {
-    static CACHE: OnceLock<SharedCache> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
-}
-
 /// 一个可选加载器版本（前端下拉项）。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -65,32 +54,15 @@ pub struct LoaderOption {
 }
 
 /// 加载器目录：MCBE 版本 → 支持的 LeviLamina 版本（降序）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 pub struct LoaderCatalog {
     versions: HashMap<String, Vec<String>>,
 }
 
 impl LoaderCatalog {
     /// 拉取加载器版本库（带 TTL 缓存；刷新失败时回退陈旧缓存）。
-    pub async fn load() -> Result<Self, KernelError> {
-        if let Some(cached) = read_cache() {
-            return Ok(cached);
-        }
-        match fetch().await {
-            Ok(catalog) => {
-                write_cache(&catalog);
-                Ok(catalog)
-            }
-            Err(error) => {
-                // 拉取失败但手里有旧目录（上一次成功的结果）时继续用它：
-                // 「可装加载器」只是徽标与下拉，宁可显示上一次的事实，也不要整块消失。
-                if let Some(stale) = read_stale_cache() {
-                    log::warn!("[content-download] 加载器版本库刷新失败，用旧目录: {error}");
-                    return Ok(stale);
-                }
-                Err(error)
-            }
-        }
+    pub async fn load(cache_root:&std::path::Path) -> Result<Self, KernelError> {
+        crate::services::metadata_cache::load(cache_root,"levilamina-client-version-db/v2/windows/und/all",crate::services::metadata_cache::GAME_REFRESH,fetch).await
     }
 
     /// 该游戏版本是否至少有一个可用加载器（列表页徽标据此显示）。
@@ -167,27 +139,6 @@ impl LoaderCatalog {
                 })
                 .collect(),
         }
-    }
-}
-
-// ---------------------------------------------------------------- 缓存
-
-/// 命中且未过期时返回缓存。
-fn read_cache() -> Option<LoaderCatalog> {
-    let guard = cache().lock().ok()?;
-    let (stamp, catalog) = guard.as_ref()?;
-    (stamp.elapsed() < CACHE_TTL).then(|| catalog.clone())
-}
-
-/// 无论是否过期都返回缓存（刷新失败时的回退）。
-fn read_stale_cache() -> Option<LoaderCatalog> {
-    let guard = cache().lock().ok()?;
-    guard.as_ref().map(|(_, catalog)| catalog.clone())
-}
-
-fn write_cache(catalog: &LoaderCatalog) {
-    if let Ok(mut guard) = cache().lock() {
-        *guard = Some((Instant::now(), catalog.clone()));
     }
 }
 

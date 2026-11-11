@@ -1422,7 +1422,7 @@ pub async fn loader_options(kernel: &KernelContext, version_id: &str) -> Result<
             loaders: Vec::new(),
         });
     }
-    let catalog = loader_catalog::LoaderCatalog::load().await?;
+    let catalog = loader_catalog::LoaderCatalog::load(kernel.paths().cache_dir()).await?;
     Ok(LoaderOptions {
         lip_available,
         loaders: catalog.options_for(&meta_bridge::game_version_of(version_id)),

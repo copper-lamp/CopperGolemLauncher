@@ -101,7 +101,13 @@ fn cache() -> &'static SharedCache {
 }
 
 /// 拉取目录（带 TTL 缓存）。网络失败且无缓存时返回错误，不伪造空目录。
-async fn catalog() -> Result<Catalog, KernelError> {
+async fn catalog(_kernel:&KernelContext) -> Result<Catalog, KernelError> {
+    let json:Value=super::http::client().get(CATALOG_URL).send().await?.error_for_status()?.json().await?;
+    if !matches!(json.get("schema_version").and_then(Value::as_i64),Some(1)|Some(2))||json.get("mods").and_then(Value::as_array).is_none(){return Err(KernelError::Module("levimodhub_catalog_invalid".into()));}
+    Ok(parse_catalog(&json))
+}
+#[allow(dead_code)]
+async fn memory_catalog() -> Result<Catalog, KernelError> {
     {
         let guard = cache().lock().await;
         if let Some((at, data)) = guard.as_ref() {
@@ -510,7 +516,7 @@ pub fn resolve_install_target(
 /// 列表：关键字搜索 + 排序 + 页码分页；`game_version` 按 `minecraft_versions` 过滤。
 /// 目录里出现过的全部标签（升序去重），供前端平铺筛选栏。
 pub async fn tags(_kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
-    let data = catalog().await?;
+    let data = catalog(_kernel).await?;
     let mut out: Vec<String> = data
         .mods
         .iter()
@@ -525,7 +531,7 @@ pub async fn list(
     _kernel: &KernelContext,
     query: &ContentListQuery,
 ) -> Result<ContentListPage, KernelError> {
-    let data = catalog().await?;
+    let data = catalog(_kernel).await?;
     let search = query.search.as_deref().unwrap_or("").trim().to_lowercase();
     let game_version = query
         .game_version
@@ -587,7 +593,7 @@ pub async fn list(
 /// 详情：mod id → 全部发布（按发布时间倒序）。
 pub async fn detail(_kernel: &KernelContext, id: &str) -> Result<ContentDetail, KernelError> {
     let mod_id = id.trim();
-    let data = catalog().await?;
+    let data = catalog(_kernel).await?;
     let found = data
         .mods
         .iter()

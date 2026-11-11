@@ -29,9 +29,9 @@ use super::model::{
 const BASE_URL: &str = "https://api.curseforge.com";
 const GAME_ID: &str = "78022";
 /// 类别 / 分类表缓存 TTL（秒）。
-const CATEGORY_CACHE_TTL_SECS: u64 = 300;
+const CATEGORY_CACHE_TTL_SECS: u64 = 0; // Persistent operation cache owns freshness; never re-stamp old provider values.
 /// 游戏版本列表缓存 TTL（秒）。
-const VERSIONS_CACHE_TTL_SECS: u64 = 3600;
+const VERSIONS_CACHE_TTL_SECS: u64 = 0;
 
 /// 每请求最大条数（API 上限 50）。
 const PAGE_SIZE: usize = 40;

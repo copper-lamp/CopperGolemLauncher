@@ -400,6 +400,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::kernel::kernel_info,
             commands::kernel::paths_snapshot,
+            commands::storage::storage_status,
+            commands::storage::storage_preview,
+            commands::storage::storage_apply,
+            commands::storage::storage_cancel,
             commands::kernel::debug_log,
             commands::imports::imports_pick,
             commands::imports::imports_pending,

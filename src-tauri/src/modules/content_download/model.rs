@@ -45,7 +45,7 @@ pub fn normalize_sort(sort: Option<&str>) -> &'static str {
 }
 
 /// 列表卡片内容项。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentItem {
     /// 跨源唯一 id（`cf:<modId>` / `lip:<identifier>`）。
@@ -76,7 +76,7 @@ pub struct ContentItem {
 }
 
 /// 详情页内的一个可下载文件 / 版本。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentFile {
     pub id: String,
@@ -107,7 +107,7 @@ pub struct ContentFile {
 }
 
 /// 依赖项（前置模组跳转 / 可选依赖）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentDependency {
     /// 依赖项的跨源 id（可经详情命令跳转）。
@@ -119,7 +119,7 @@ pub struct ContentDependency {
 }
 
 /// 内容详情。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentDetail {
     /// 供前端立即派生的列表信息。
@@ -137,7 +137,7 @@ pub struct ContentDetail {
 }
 
 /// 列表查询参数（命令层入参，camelCase）。
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ContentListQuery {
     /// 按来源过滤（`curseforge` / `lip`）。
@@ -164,7 +164,7 @@ pub struct ContentListQuery {
 pub const PAGE_SIZE: u32 = 40;
 
 /// 列表返回。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentListPage {
     pub items: Vec<ContentItem>,

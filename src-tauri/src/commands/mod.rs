@@ -14,6 +14,7 @@ pub mod i18n;
 pub mod intents;
 pub mod imports;
 pub mod kernel;
+pub mod storage;
 pub mod llm;
 pub mod translation;
 pub mod modules;
