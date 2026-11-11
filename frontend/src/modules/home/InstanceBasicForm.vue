@@ -171,7 +171,7 @@ const dirShortcuts: Array<{
 
 async function openDir(kind: VersionDirKind) {
   const compatibility = props.version.compatibility;
-  if (compatibility && ((kind === "mods" && !compatibility.capabilities.mods) || (kind === "worlds" && !compatibility.capabilities.content))) return;
+  if (compatibility && ((kind === "mods" && !compatibility.capabilities.mods) || (kind === "worlds" && !compatibility.capabilities.shared_save))) return;
   try {
     await homeVersionOpenDir(props.version.name, kind);
   } catch (e) {
@@ -217,7 +217,7 @@ async function openDir(kind: VersionDirKind) {
         </div>
         <div class="basic__shortcuts">
           <button
-            v-for="item in dirShortcuts.filter(item => !version.compatibility || (item.kind !== 'mods' || version.compatibility.capabilities.mods) && (item.kind !== 'worlds' || version.compatibility.capabilities.content))"
+            v-for="item in dirShortcuts.filter(item => !version.compatibility || (item.kind !== 'mods' || version.compatibility.capabilities.mods) && (item.kind !== 'worlds' || version.compatibility.capabilities.shared_save))"
             :key="item.kind"
             type="button"
             class="basic__shortcut"

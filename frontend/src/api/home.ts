@@ -45,6 +45,7 @@ export interface CompatibilityStatus {
   source_dir: string;
   /** Informational only: source PreLoader.dll or mods exists; never executes it. */
   source_loader_present?: boolean;
+  content_disabled_reason?: string | null;
   data_mode: 'shared-source';
   data_dir: string | null;
   users_root: string | null;

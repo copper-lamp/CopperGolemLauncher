@@ -245,7 +245,7 @@ const actionGroups = computed<EntryActionGroup[]>(() => {
     icon: Boxes,
     label: t("module.home.instance.action.content"),
     disabled: !!view.compatibility && !view.compatibility.capabilities.content,
-    reason: view.compatibility && !view.compatibility.capabilities.content ? compatibilityReason(view.compatibility.disabled_reason, compatText) || compatText('sharedUnavailable') : undefined,
+    reason: view.compatibility && !view.compatibility.capabilities.content ? compatibilityReason(view.compatibility.content_disabled_reason ?? view.compatibility.disabled_reason, compatText) || compatText('sharedUnavailable') : undefined,
     run: () => go("content"),
   });
   if (isMobile.value) {

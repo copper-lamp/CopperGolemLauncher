@@ -23,7 +23,7 @@ const { t } = useI18n();
 const { currentName, current } = useVersionInstance();
 const compatText = useCompatibilityText();
 const contentAllowed = computed(() => !!current.value && (!current.value.compatibility || current.value.compatibility.capabilities.content));
-const blockedReason = computed(() => compatibilityReason(current.value?.compatibility?.disabled_reason, compatText) || compatText("sharedUnavailable"));
+const blockedReason = computed(() => compatibilityReason(current.value?.compatibility?.content_disabled_reason ?? current.value?.compatibility?.disabled_reason, compatText) || compatText("sharedUnavailable"));
 
 const search = ref("");
 const items = ref<ContentItem[]>([]);
