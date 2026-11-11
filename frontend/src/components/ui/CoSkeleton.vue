@@ -1,12 +1,17 @@
 <script setup lang="ts">
+import { onMounted, onBeforeUnmount, ref } from "vue";
+const visible = ref(false);
+let timer: ReturnType<typeof setTimeout> | undefined;
+onMounted(() => { timer = setTimeout(() => { visible.value = true; }, 150); });
+onBeforeUnmount(() => { clearTimeout(timer); });
 withDefaults(defineProps<{ variant?: "list" | "detail" | "settings" | "home"; rows?: number; label: string }>(), { variant: "list", rows: 3 });
 </script>
 <template>
-  <div class="co-skeleton" :class="`co-skeleton--${variant}`" role="status" :aria-label="label" aria-busy="true">
+  <Transition name="co-loading"><div v-if="visible" class="co-skeleton" :class="`co-skeleton--${variant}`" role="status" :aria-label="label" aria-busy="true">
     <span class="co-skeleton__sr">{{ label }}</span>
     <div v-if="variant === 'detail' || variant === 'home'" class="co-skeleton__hero" aria-hidden="true"><i /><i /><i /></div>
     <div class="co-skeleton__body" aria-hidden="true"><div v-if="variant === 'settings' || variant === 'detail'" class="co-skeleton__aside"><i v-for="n in 4" :key="n" /></div><div class="co-skeleton__rows"><div v-for="n in rows" :key="n" class="co-skeleton__row"><i class="co-skeleton__icon" /><div><i /><i /></div><i class="co-skeleton__action" /></div></div></div>
-  </div>
+  </div></Transition>
 </template>
 <style scoped>
 .co-skeleton { width:100%;display:flex;flex-direction:column;gap:20px; }

@@ -26,6 +26,7 @@ import SettingSection from "./SettingSection.vue";
 import CoBadge, { type BadgeTone } from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoSwitch from "../../components/ui/CoSwitch.vue";
+import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import { modulesInstall, modulesUninstall, modulesSetEnabled } from "../../api/modules";
 import { kernelInfo } from "../../api/theme";
 import type { RegistryPermission } from "../../api/registry";
@@ -324,7 +325,8 @@ const availableEmptyText = computed(() =>
         </CoButton>
       </div>
 
-      <div v-if="installedRows.length === 0" class="modules-tab__empty">
+      <CoSkeleton v-if="localLoading && installedRows.length === 0" variant="list" :rows="3" :label="t(`${M}.loading_metadata`)" />
+      <div v-else-if="installedRows.length === 0" class="modules-tab__empty">
         {{ t(`${M}.no_installed`) }}
       </div>
 
@@ -556,8 +558,8 @@ const availableEmptyText = computed(() =>
   padding: var(--copper-space-3);
   margin-bottom: var(--copper-space-4);
   border: none;
-  box-shadow: var(--copper-shadow-sm, 0 2px 8px rgb(0 0 0 / 8%));
-  border-radius: var(--copper-radius-md);
+  box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   font-size: var(--copper-font-size-sm);
 }
 
@@ -611,8 +613,13 @@ const availableEmptyText = computed(() =>
 }
 
 .modules-tab__row {
-  border-top: none;
-  box-shadow: 0 -1px 8px rgb(0 0 0 / 3%);
+  border: 0;
+  border-radius: var(--copper-radius-control);
+  padding-inline: var(--copper-space-3);
+  transition: background var(--copper-duration-fast);
+}
+.modules-tab__row:hover, .modules-tab__row:focus-within {
+  background: var(--copper-surface-2);
 }
 
 .modules-tab__main {
@@ -731,6 +738,8 @@ const availableEmptyText = computed(() =>
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-xs);
   cursor: pointer;
+  border-radius: var(--copper-radius-control);
+  min-height: 28px;
   transition: color var(--copper-duration-fast) var(--copper-easing);
 }
 
@@ -781,6 +790,9 @@ const availableEmptyText = computed(() =>
 .spin {
   animation: spin 1.2s linear infinite;
 }
+
+html[data-motion="reduced"] .spin { animation: none; }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
 @keyframes spin {
   to {

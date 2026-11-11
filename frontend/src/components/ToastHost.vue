@@ -79,9 +79,9 @@ function iconFor(kind: string) {
   max-width: 420px;
   padding: var(--copper-space-2) var(--copper-space-4);
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-md);
-  box-shadow: var(--copper-shadow);
+  border: 0;
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   font-size: var(--copper-font-size-sm);
   pointer-events: auto;
   cursor: pointer;
@@ -97,8 +97,8 @@ function iconFor(kind: string) {
   flex-shrink: 0;
   padding: 0 var(--copper-space-3);
   height: 24px;
-  border: 1px solid color-mix(in srgb, var(--copper-accent) 45%, transparent);
-  border-radius: var(--copper-radius-sm);
+  border: 0;
+  border-radius: var(--copper-radius-control);
   background: color-mix(in srgb, var(--copper-accent) 14%, transparent);
   color: var(--copper-accent);
   font-family: inherit;
@@ -142,7 +142,7 @@ function iconFor(kind: string) {
 
 .toast-enter-active,
 .toast-leave-active {
-  transition: all var(--copper-duration) var(--copper-easing);
+  transition: transform var(--copper-motion-component-enter) var(--copper-easing-jelly), opacity var(--copper-motion-component-enter);
 }
 
 .toast-enter-from,

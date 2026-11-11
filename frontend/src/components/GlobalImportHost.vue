@@ -7,6 +7,7 @@ import { importsCancel, importsCommit, importsDrop, importsPending } from '../ap
 import { homeVersionsList, type VersionView } from '../api/home';
 import { isKernelApiError } from '../api/core';
 import { useSettings } from '../composables/useSettings';
+import CoSelect from './ui/CoSelect.vue';
 import { useKernelReady } from '../composables/useKernelReady';
 import { showToast } from '../composables/useToast';
 import { enqueueImports, importQueue, retireImport } from '../services/import-queue';
@@ -138,7 +139,7 @@ onUnmounted(() => { releaseModal?.(); disposed = true; if (timer) clearInterval(
           <details v-if="current.sha256"><summary>{{ text('hash') }}</summary><code>{{ current.sha256 }}</code></details>
         </template>
         <template v-else>
-          <label for="global-import-instance">{{ text('instance') }}</label><select id="global-import-instance" v-model="instance" :disabled="busy || loading"><option value="" disabled>{{ text('choose') }}</option><option v-for="item in instances" :key="item.name" :value="item.name">{{ item.name }} — {{ item.game_version }}</option></select>
+          <CoSelect v-model="instance" :label="text('instance')" :placeholder="text('choose')" :options="instances.map(item => ({ value: item.name, label: `${item.name} — ${item.game_version}` }))" :disabled="busy || loading" />
           <p v-if="loading" role="status">{{ text('loading') }}</p><p v-else-if="!instances.length">{{ text('noInstances') }} <button :disabled="busy" @click="loadInstances">{{ text('retryInstances') }}</button></p>
           <p v-if="current.kind === 'world'">{{ text('worldCopy') }}</p>
         </template>
@@ -152,11 +153,11 @@ onUnmounted(() => { releaseModal?.(); disposed = true; if (timer) clearInterval(
 <style scoped>
 .import-mask,.import-drop { position:fixed; inset:0; z-index:1100; display:grid; place-items:center; padding:20px; background:rgb(0 0 0 / .3); backdrop-filter:blur(9px); }
 .import-drop { z-index:1090; pointer-events:none; align-content:center; justify-items:center; gap:16px; color:var(--copper-text); font-size:18px; }
-.import-panel { box-sizing:border-box; width:min(600px,100%); max-height:calc(100dvh - 40px); overflow:auto; padding:24px; background:var(--copper-surface); color:var(--copper-text); border-radius:var(--copper-radius-lg,16px); box-shadow:var(--copper-shadow); outline:none; }
+.import-panel { box-sizing:border-box; width:min(600px,100%); max-height:calc(100dvh - 40px); overflow:auto; padding:24px; background:var(--copper-surface); color:var(--copper-text); border-radius:var(--copper-radius-card,16px); box-shadow:var(--copper-shadow-card); outline:none; }
 header,footer { display:flex; align-items:center; gap:12px; } h2 { flex:1; margin:0; font-size:19px; } h3 { font-size:22px; margin:8px 0 18px; overflow-wrap:anywhere; } h4 { margin-bottom:8px; } p { line-height:1.6; overflow-wrap:anywhere; } .import-kind,dt { color:var(--copper-text-secondary); font-size:12px; }
 dl { display:grid; grid-template-columns:120px minmax(0,1fr); gap:10px; } dd { margin:0; overflow-wrap:anywhere; } label { display:flex; align-items:flex-start; gap:9px; line-height:1.6; } input { margin-top:5px; accent-color:var(--copper-accent); flex-shrink:0; } select { width:100%; box-sizing:border-box; margin-top:8px; background:var(--copper-bg); color:inherit; border:0; padding:11px; border-radius:8px; }
 .import-warning,.import-error { margin-top:16px; padding:14px; background:color-mix(in srgb,var(--copper-accent) 9%,var(--copper-surface)); border-radius:10px; } .import-warning strong { display:flex; gap:8px; align-items:center; } .import-error { background:color-mix(in srgb,var(--copper-danger) 9%,var(--copper-surface)); } code { display:block; overflow-wrap:anywhere; margin-top:10px; font-size:11px; } details { margin-top:16px; }
-footer { margin-top:22px; justify-content:flex-end; flex-wrap:wrap; } footer span { flex:1; color:var(--copper-text-secondary); font-size:12px; } button { display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; border:0; border-radius:8px; padding:10px 14px; color:inherit; background:color-mix(in srgb,var(--copper-text) 7%,var(--copper-surface)); } button:hover { background:color-mix(in srgb,var(--copper-accent) 16%,var(--copper-surface)); } button:disabled { opacity:.45; cursor:default; } .import-primary { background:var(--copper-accent); color:var(--copper-on-accent,#fff); } :is(button,input,select,summary):focus-visible { outline:2px solid var(--copper-accent); outline-offset:3px; }
+footer { margin-top:22px; justify-content:flex-end; flex-wrap:wrap; } footer span { flex:1; color:var(--copper-text-secondary); font-size:12px; } button { display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; border:0; border-radius:var(--copper-radius-control); padding:10px 14px; color:inherit; background:color-mix(in srgb,var(--copper-text) 7%,var(--copper-surface)); } button:hover { background:color-mix(in srgb,var(--copper-accent) 16%,var(--copper-surface)); } button:disabled { opacity:.45; cursor:default; } .import-primary { background:var(--copper-accent); color:var(--copper-on-accent,#fff); } :is(button,input,select,summary):focus-visible { outline:2px solid var(--copper-accent); outline-offset:3px; }
 @media(max-width:600px) { .import-mask { padding:10px; } .import-panel { padding:18px; max-height:calc(100dvh - 20px); } dl { grid-template-columns:1fr; gap:5px; } dd { margin-bottom:8px; } }
 @media(prefers-reduced-motion:reduce) { .import-mask,.import-drop { backdrop-filter:none; } }
 </style>

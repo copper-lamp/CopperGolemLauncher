@@ -56,9 +56,9 @@ function open() {
   width: 100%;
   min-width: 0;
   padding: var(--copper-space-3);
-  /* 无描边：保留透明边框占位，悬停出现阴影时卡片不会因边框出现而位移。 */
-  border: 1px solid transparent;
-  border-radius: var(--copper-radius-md);
+  /* 无描边；长列表保持透明，仅 hover/focus 时浮起。 */
+  border: 0;
+  border-radius: var(--copper-radius-card);
   background: transparent;
   color: var(--copper-text);
   text-align: left;
@@ -70,9 +70,10 @@ function open() {
 
 /* 悬停：只浮起阴影。底色已经是外层卡片的 `--copper-surface`，改成 surface-2 在
  * 浅色主题下就是「整行发灰」，不是高亮。 */
-.version-card:hover {
+.version-card:hover,
+.version-card:focus-visible {
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .version-card:focus-visible {

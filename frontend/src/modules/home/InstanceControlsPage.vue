@@ -43,8 +43,8 @@ const title = computed(() => t("module.home.instance.page.controls"));
   display: flex;
   flex-direction: column;
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0; box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   overflow: hidden;
 }
 

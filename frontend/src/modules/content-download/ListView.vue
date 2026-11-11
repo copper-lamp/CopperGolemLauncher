@@ -656,7 +656,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   gap: var(--copper-space-3);
   width: 100%;
   padding: var(--copper-space-3);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
 }
 
@@ -694,8 +694,8 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   padding: var(--copper-space-3);
   background: var(--copper-surface);
   border: none;
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow-subtle);
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   cursor: pointer;
   transition:
     transform var(--copper-duration-fast) var(--copper-easing),
@@ -703,7 +703,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 }
 
 .content-card:hover {
-  box-shadow: var(--copper-shadow);
+  box-shadow: var(--copper-shadow-card);
   transform: translateY(-1px);
 }
 
@@ -822,7 +822,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   padding: 0 var(--copper-space-3) 0 38px;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .rail__search:focus-within {
@@ -873,9 +873,9 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   flex-direction: column;
   gap: var(--copper-space-3);
   padding: var(--copper-space-3);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .rail__pager :deep(.co-pager) {

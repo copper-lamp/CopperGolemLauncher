@@ -195,9 +195,9 @@ async function confirm() {
 .name-dialog__card {
   width: min(420px, calc(100vw - 48px));
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow);
+  border: 0;
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   animation: name-dialog-pop var(--copper-duration) var(--copper-easing);
   overflow: hidden;
 }

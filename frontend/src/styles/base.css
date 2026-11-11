@@ -174,13 +174,4 @@ html :is(button, a, [role="button"], [role="tab"], [role="option"], summary):act
   outline-offset: 2px;
 }
 
-/* 视图切换过渡 */
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity var(--copper-duration) var(--copper-easing);
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
+/* 视图切换统一由 visual.css 的页面动画时长与果冻曲线控制。 */

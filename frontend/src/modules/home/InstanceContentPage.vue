@@ -13,13 +13,17 @@ import { listen } from '@tauri-apps/api/event';
 import { Box, FileBox, Globe, Image, PackageOpen } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
+import { compatibilityReason, useCompatibilityText } from "../../services/compatibility-messages";
 import ContentDetail from "./ContentDetail.vue";
 import InstanceSearchBox from "./InstanceSearchBox.vue";
 import { homeContentList, type ContentItem, type ContentKind } from "../../api/home";
 import { useVersionInstance } from "./useVersionInstance";
 
 const { t } = useI18n();
-const { currentName } = useVersionInstance();
+const { currentName, current } = useVersionInstance();
+const compatText = useCompatibilityText();
+const contentAllowed = computed(() => !!current.value && (!current.value.compatibility || current.value.compatibility.capabilities.content));
+const blockedReason = computed(() => compatibilityReason(current.value?.compatibility?.disabled_reason, compatText) || compatText("sharedUnavailable"));
 
 const search = ref("");
 const items = ref<ContentItem[]>([]);
@@ -72,18 +76,24 @@ const emptyText = computed(() =>
     : t("module.home.content.empty"),
 );
 
+let refreshToken = 0;
 async function refresh() {
+  const token = ++refreshToken;
   const name = currentName.value;
-  if (!name) return;
+  if (!name || !contentAllowed.value) { items.value = []; selectedId.value = null; loading.value = false; return; }
   loading.value = true;
   unavailable.value = false;
   try {
-    items.value = await homeContentList(name);
+    const listed = await homeContentList(name);
+    if (token !== refreshToken || name !== currentName.value || !contentAllowed.value) return;
+    items.value = listed;
   } catch {
+    if (token !== refreshToken) return;
     // 内容目录不可用（未安装 / 从未启动过游戏）时展示空态说明，不伪造数据。
     unavailable.value = true;
     items.value = [];
   } finally {
+    if (token !== refreshToken) return;
     loading.value = false;
     // 刷新后选中项可能已被删除。
     if (selectedId.value && !items.value.some((item) => item.id === selectedId.value)) {
@@ -96,7 +106,7 @@ function select(item: ContentItem) {
   selectedId.value = item.id;
 }
 
-watch(currentName, () => void refresh(), { immediate: true });
+watch([currentName, contentAllowed], () => void refresh(), { immediate: true });
 let disposed = false;
 let offContentChanged: (() => void) | undefined;
 onMounted(async () => {
@@ -110,7 +120,8 @@ onUnmounted(() => { disposed = true; offContentChanged?.(); });
   <div class="content">
     <section class="content__main">
       <div class="content__body">
-        <div v-if="loading" class="content__state">{{ t("common.loading") }}</div>
+        <div v-if="!contentAllowed" class="content__state" role="status">{{ blockedReason }}</div>
+        <div v-else-if="loading" class="content__state">{{ t("common.loading") }}</div>
         <div v-else-if="unavailable" class="content__state">
           {{ t("module.home.content.load_failed") }}
         </div>
@@ -154,7 +165,8 @@ onUnmounted(() => { disposed = true; offContentChanged?.(); });
         />
       </div>
       <ContentDetail
-        :item="selected"
+        :item="contentAllowed ? selected : null"
+        :can-manage="contentAllowed"
         :version-name="currentName"
         @removed="refresh"
       />

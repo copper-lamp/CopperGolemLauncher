@@ -855,8 +855,8 @@ onBeforeUnmount(() => {
   gap: var(--copper-space-3);
   padding: var(--copper-space-3) var(--copper-space-4);
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--copper-radius-lg);
+  border: 0;
+  border-radius: var(--copper-radius-card);
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
     box-shadow var(--copper-duration-fast) var(--copper-easing);
@@ -864,7 +864,7 @@ onBeforeUnmount(() => {
 
 .downloads__item:hover {
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow);
+  box-shadow: var(--copper-shadow-card);
 }
 
 /* 操作区默认隐藏，悬浮或键盘聚焦时才出现 */
@@ -1042,9 +1042,9 @@ onBeforeUnmount(() => {
 .downloads__dialog-card {
   width: min(480px, calc(100vw - 48px));
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow);
+  border: 0;
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   animation: downloads-pop var(--copper-duration) var(--copper-easing);
   overflow: hidden;
 }

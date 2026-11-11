@@ -210,9 +210,9 @@ async function remove() {
 .icon-dialog__card {
   width: min(360px, calc(100vw - 48px));
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  border: 0; box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   animation: copper-pop var(--copper-duration) var(--copper-easing);
   overflow: hidden;
 }
@@ -264,7 +264,7 @@ async function remove() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface-2);
   color: var(--copper-text-disabled);
   overflow: hidden;

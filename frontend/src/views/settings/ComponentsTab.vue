@@ -34,5 +34,5 @@ onUnmounted(()=>stop?.());
 </template>
 <style scoped>
 .components-note{color:var(--copper-text-secondary);font-size:var(--copper-font-size-sm);line-height:1.6;}
-.components-spin{animation:components-spin 1s linear infinite;}@keyframes components-spin{to{transform:rotate(360deg);}}@media(prefers-reduced-motion:reduce){.components-spin{animation:none;}}
+.components-spin{flex-shrink:0;animation:components-spin 1s linear infinite;}html[data-motion="reduced"] .components-spin{animation:none;}@keyframes components-spin{to{transform:rotate(360deg);}}@media(prefers-reduced-motion:reduce){.components-spin{animation:none;}}
 </style>

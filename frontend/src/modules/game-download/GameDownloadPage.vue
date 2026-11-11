@@ -24,6 +24,7 @@ import { homeLaunch } from "../../api/home";
 import { useI18n } from "../../i18n";
 import { usePlatform } from "../../composables/usePlatform";
 import TipsRotator from "../../components/TipsRotator.vue";
+import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import { gameImportApk } from "./api";
 import { pickApkViaHost, reportAndroidImportFailure } from "./apkImport";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
@@ -272,11 +273,7 @@ async function importApk() {
 
     <!-- 骨架 -->
     <div v-if="gd.loading.value && !gd.manifest.value" class="gd-page__scope">
-      <div class="gd-top gd-top--skeleton">
-        <div class="gd-skeleton-line" />
-        <div class="gd-skeleton-line gd-skeleton-line--short" />
-        <div class="gd-skeleton-line" />
-      </div>
+      <CoSkeleton variant="list" :rows="4" :label="t('common.loading')" />
       <!-- 清单拉取期间展示内核随机提示，骨架之外再给一点可读内容 -->
       <TipsRotator compact />
     </div>
@@ -507,7 +504,7 @@ async function importApk() {
   gap: 6px;
   height: var(--copper-control-h-sm);
   padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
+  border: 0;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface);
   color: var(--copper-text);
@@ -538,9 +535,9 @@ async function importApk() {
   gap: var(--copper-space-3);
   padding: var(--copper-space-4);
   border: none;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .gd-top__label {
@@ -592,7 +589,7 @@ async function importApk() {
   width: 100%;
   height: var(--copper-control-h);
   padding: 0 var(--copper-space-6) 0 calc(var(--copper-space-3) + 22px);
-  border: 1px solid var(--copper-border);
+  border: 0;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface);
   color: var(--copper-text);
@@ -651,7 +648,7 @@ async function importApk() {
   gap: 6px;
   height: var(--copper-control-h);
   padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
+  border: 0;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface);
   color: var(--copper-text-secondary);
@@ -723,8 +720,8 @@ async function importApk() {
   gap: 2px;
   background: var(--copper-surface);
   border: none;
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow);
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .gd-filter__option {
@@ -769,9 +766,9 @@ async function importApk() {
 .gd-group {
   overflow: hidden;
   border: none;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .gd-group__head {

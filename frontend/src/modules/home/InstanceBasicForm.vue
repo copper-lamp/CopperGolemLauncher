@@ -170,6 +170,8 @@ const dirShortcuts: Array<{
 ];
 
 async function openDir(kind: VersionDirKind) {
+  const compatibility = props.version.compatibility;
+  if (compatibility && ((kind === "mods" && !compatibility.capabilities.mods) || (kind === "worlds" && !compatibility.capabilities.content))) return;
   try {
     await homeVersionOpenDir(props.version.name, kind);
   } catch (e) {
@@ -215,7 +217,7 @@ async function openDir(kind: VersionDirKind) {
         </div>
         <div class="basic__shortcuts">
           <button
-            v-for="item in dirShortcuts.filter(item => !version.compatibility || item.kind !== 'mods')"
+            v-for="item in dirShortcuts.filter(item => !version.compatibility || (item.kind !== 'mods' || version.compatibility.capabilities.mods) && (item.kind !== 'worlds' || version.compatibility.capabilities.content))"
             :key="item.kind"
             type="button"
             class="basic__shortcut"
@@ -284,8 +286,8 @@ async function openDir(kind: VersionDirKind) {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0; box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
   cursor: pointer;
@@ -379,7 +381,7 @@ async function openDir(kind: VersionDirKind) {
   gap: var(--copper-space-2);
   height: var(--copper-control-h-sm);
   padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
+  border: 0; box-shadow: var(--copper-shadow-card);
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);

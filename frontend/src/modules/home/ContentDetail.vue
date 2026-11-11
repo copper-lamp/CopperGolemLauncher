@@ -33,6 +33,7 @@ import {
 const props = defineProps<{
   item: ContentItem | null;
   versionName: string;
+  canManage?: boolean;
 }>();
 
 const emit = defineEmits<{ removed: [] }>();
@@ -120,7 +121,7 @@ async function openFolder() {
 
 async function remove() {
   const item = props.item;
-  if (!item || busy.value) return;
+  if (!item || busy.value || props.canManage === false) return;
   if (!window.confirm(t("module.home.content.remove_confirm", { name: item.name }))) return;
   busy.value = true;
   try {
@@ -192,7 +193,7 @@ async function remove() {
           <FolderOpen :size="15" />
           <span>{{ t("module.home.content.detail.open_folder") }}</span>
         </CoButton>
-        <CoButton variant="danger" :disabled="busy" @click="remove">
+        <CoButton variant="danger" :disabled="busy || canManage === false" @click="remove">
           <Trash2 :size="15" />
           <span>{{ t("module.home.content.remove") }}</span>
         </CoButton>
@@ -208,8 +209,8 @@ async function remove() {
   display: flex;
   flex-direction: column;
   background: var(--copper-surface);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow-subtle);
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   overflow: hidden;
 }
 

@@ -43,8 +43,11 @@ export interface CompatibilityStatus {
   state: 'bound' | 'disabled';
   disabled_reason: string | null;
   source_dir: string;
-  data_mode: 'private-save';
-  capabilities: { launch: boolean; detach: boolean; rename: boolean; shared_save: boolean; loader: boolean; client: boolean; source_write: boolean };
+  data_mode: 'shared-source';
+  data_dir: string | null;
+  users_root: string | null;
+  shared_content_root: string | null;
+  capabilities: { launch: boolean; detach: boolean; rename: boolean; shared_save: boolean; content: boolean; mods: boolean; loader: boolean; client: boolean; source_write: boolean };
 }
 export interface CompatibilityProbe {
   supported: boolean;

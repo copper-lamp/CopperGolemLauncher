@@ -62,7 +62,7 @@ async function bind() {
     <CoButton v-if="!expanded" variant="secondary" @click="discover"><Link :size="16" />{{ text('bind') }}</CoButton>
     <form v-else class="binding__panel" :aria-busy="busy" @submit.prevent="bind">
       <strong>{{ text('title') }}</strong>
-      <p>{{ text('privateSave') }}</p>
+      <p>{{ text('sharedData') }}</p>
       <div v-if="candidates.length" class="binding__candidates"><span>{{ text('discovered') }}</span><CoButton v-for="candidate in candidates" :key="candidate" :disabled="busy" @click="chooseSource(candidate)">{{ candidate }}</CoButton></div>
       <label>{{ text('source') }}<input :value="source" readonly /></label>
       <div class="binding__actions"><CoButton variant="secondary" :disabled="busy" @click="pick"><FolderOpen :size="16" />{{ text('pick') }}</CoButton><CoButton v-if="source" variant="secondary" :disabled="busy" @click="probe">{{ text('probe') }}</CoButton></div>

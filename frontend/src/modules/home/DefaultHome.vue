@@ -33,6 +33,7 @@ import {
 import { useI18n } from "../../i18n";
 import { useSettings } from "../../composables/useSettings";
 import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
+import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import McText from "./McText.vue";
 import {
   homeDashboardEntries,
@@ -382,7 +383,7 @@ watch(
       </section>
 
       <!-- 列表区 -->
-      <section class="list">
+      <section class="list" :aria-busy="loading">
         <header class="list__head">
           <h2 class="list__title">{{ t("module.home.default.list") }}</h2>
           <span class="list__hint">{{ t("module.home.default.list_hint") }}</span>
@@ -391,7 +392,7 @@ watch(
           </button>
         </header>
 
-        <p v-if="loading" class="list__state">{{ t("module.home.default.scanning") }}</p>
+        <CoSkeleton v-if="loading && !entries.length" variant="list" :rows="3" :label="t('module.home.default.scanning')" />
         <p v-else-if="loadError" class="list__state list__state--error">
           {{ t("module.home.default.scan_failed", { message: loadError }) }}
         </p>
@@ -509,9 +510,7 @@ watch(
           </button>
         </header>
 
-        <p v-if="modsLoading && mods.length === 0" class="widget__state">
-          {{ t("common.loading") }}
-        </p>
+        <CoSkeleton v-if="modsLoading && mods.length === 0" variant="list" :rows="2" :label="t('common.loading')" />
         <p v-else-if="mods.length === 0" class="widget__state">
           {{ t("module.home.mods.empty") }}
         </p>
@@ -570,9 +569,9 @@ watch(
   flex-direction: column;
   gap: var(--copper-space-2);
   padding: var(--copper-space-4);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .launch__selects {
@@ -735,7 +734,7 @@ watch(
 
 .list__state {
   padding: var(--copper-space-5);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-sm);
@@ -837,12 +836,12 @@ watch(
 .card {
   position: relative;
   height: 240px;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background-color: var(--copper-surface-2);
   background-position: center;
   background-size: cover;
   overflow: hidden;
-  box-shadow: var(--copper-shadow);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .card__shade {
@@ -950,7 +949,7 @@ watch(
   padding: 6px;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .card__menu-item {
@@ -1015,9 +1014,9 @@ watch(
   flex-direction: column;
   gap: var(--copper-space-2);
   padding: var(--copper-space-4);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .widget__head {

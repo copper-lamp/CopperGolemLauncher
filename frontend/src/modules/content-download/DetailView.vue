@@ -748,8 +748,9 @@ onUnmounted(() => {
 /* 副栏：本页版本锚点。卡片语言与主栏一致，吸顶由 CoSplitLayout 负责。 */
 .cd-rail {
   padding: var(--copper-space-3);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0;
+  box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
 }
 
@@ -812,8 +813,9 @@ onUnmounted(() => {
 }
 
 .cd-card {
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0;
+  box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
   padding: var(--copper-space-4);
 }
@@ -835,7 +837,7 @@ onUnmounted(() => {
   width: 96px;
   height: 96px;
   flex-shrink: 0;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface-2);
   overflow: hidden;
 }
@@ -1184,8 +1186,9 @@ onUnmounted(() => {
 }
 
 .cd-version-card {
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0;
+  box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
   margin-bottom: var(--copper-space-3);
   overflow: hidden;
@@ -1333,9 +1336,9 @@ onUnmounted(() => {
   gap: var(--copper-space-1);
   height: var(--copper-control-h-sm);
   padding: 0 var(--copper-space-4);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-md);
-  background: var(--copper-surface);
+  border: 0;
+  border-radius: var(--copper-radius-control);
+  background: var(--copper-surface-2);
   color: var(--copper-text);
   font-size: var(--copper-font-size-sm);
   cursor: pointer;
@@ -1359,7 +1362,7 @@ onUnmounted(() => {
 .cd-detail__skeleton-hero {
   width: 96px;
   height: 96px;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface-3);
 }
 
@@ -1406,10 +1409,10 @@ onUnmounted(() => {
   position: relative;
   width: min(420px, calc(100vw - var(--copper-space-6)));
   padding: var(--copper-space-4);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  box-shadow: var(--copper-shadow-lg, 0 16px 48px rgba(0, 0, 0, 0.3));
+  border: 0;
+  box-shadow: var(--copper-shadow-card);
 }
 
 .cd-modal__title {
@@ -1450,9 +1453,9 @@ onUnmounted(() => {
   gap: var(--copper-space-1);
   height: var(--copper-control-h-sm);
   padding: 0 var(--copper-space-4);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-md);
-  background: var(--copper-surface);
+  border: 0;
+  border-radius: var(--copper-radius-control);
+  background: var(--copper-surface-2);
   color: var(--copper-text);
   font-size: var(--copper-font-size-sm);
   cursor: pointer;
@@ -1798,7 +1801,7 @@ onUnmounted(() => {
   width: 132px;
   height: 132px;
   flex-shrink: 0;
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface-2);
   overflow: hidden;
 }

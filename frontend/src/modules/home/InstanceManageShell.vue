@@ -66,8 +66,8 @@ withDefaults(
   min-width: 0;
   min-height: 0;
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0; box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
   overflow: hidden;
 }
 
@@ -124,8 +124,8 @@ withDefaults(
   gap: var(--copper-space-2);
   padding: var(--copper-space-3);
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0; box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
 }
 
 /* 窄窗口：副栏收一档，主栏保持可读宽度。 */

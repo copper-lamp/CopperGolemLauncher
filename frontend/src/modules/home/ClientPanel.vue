@@ -264,9 +264,9 @@ function formatDate(millis: number): string {
   flex-direction: column;
   gap: var(--copper-space-4);
   padding: var(--copper-space-4);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 /* 虚线框：安装快捷方式。虚线本身就是「可以扔进来」的提示，不用实线描边。 */
@@ -358,7 +358,7 @@ function formatDate(millis: number): string {
   width: 100%;
   height: var(--copper-control-h);
   padding: 0 var(--copper-space-3);
-  border: 1px solid var(--copper-border);
+  border: 0; box-shadow: var(--copper-shadow-card);
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface);
   color: var(--copper-text);

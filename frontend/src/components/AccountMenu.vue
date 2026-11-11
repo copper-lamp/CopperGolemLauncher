@@ -220,8 +220,8 @@ async function handleLogout() {
   padding: var(--copper-space-2);
   background: var(--copper-surface);
   max-width: calc(100vw - 16px);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: var(--copper-shadow);
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   z-index: 100;
 }
 

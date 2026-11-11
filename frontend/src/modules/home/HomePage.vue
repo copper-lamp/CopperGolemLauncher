@@ -30,6 +30,7 @@ import {
 } from "../../composables/useGameSession";
 import TipsRotator from "../../components/TipsRotator.vue";
 import CoButton from "../../components/ui/CoButton.vue";
+import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import CoRingProgress from "../../components/ui/CoRingProgress.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
@@ -407,7 +408,7 @@ function goDownload() {
     <div :class="['home-simple', { 'home-simple--default': mode === 'default' }]">
       <!-- 默认模式：启动区 / 列表区 / 小组件区 -->
       <DefaultHome
-        v-if="mode === 'default'"
+        v-if="mode === 'default' && !loading"
         :versions="versions"
         :selected-name="selectedName"
         :session="session"
@@ -430,7 +431,7 @@ function goDownload() {
 
       <div v-else class="home-simple__center">
         <template v-if="loading">
-          <p class="home-simple__hint">{{ t("common.loading") }}</p>
+          <CoSkeleton variant="home" :rows="3" :label="t('common.loading')" />
           <!-- 版本清单扫描期间展示内核随机提示，避免空白等待 -->
           <TipsRotator compact />
         </template>
@@ -527,7 +528,7 @@ function goDownload() {
         </div>
       </div>
     </div>
-    <p v-if="current?.compatibility" role="status">{{ compatText('bound') }} · {{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText('privateSave') }}</p>
+    <p v-if="current?.compatibility" role="status">{{ compatText('bound') }} · {{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
     <CompatibilityBinding v-if="isWindows" @bound="async (version) => { versions = await homeVersionsList(); selectedName = version.name; }" />
     <footer class="home-page__mode"><CoSegmented v-model="mode" :options="modeOptions" /></footer>
     </div>

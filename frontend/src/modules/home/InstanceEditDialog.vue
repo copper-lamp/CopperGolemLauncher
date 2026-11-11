@@ -79,9 +79,9 @@ function close() {
   display: flex;
   flex-direction: column;
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  border: 0; box-shadow: var(--copper-shadow-card);
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
   animation: copper-pop var(--copper-duration) var(--copper-easing);
   overflow: hidden;
 }

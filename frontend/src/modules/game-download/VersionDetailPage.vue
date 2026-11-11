@@ -223,15 +223,14 @@ function goBack() {
   flex: 0 1 auto;
 }
 
-/* 下拉框自身变长后可能超出视口，这一层负责滚动。 */
+/* 列表浮层独立定位；窄高视口仅让表单本体滚动。 */
 .gd-detail__form-scroll {
   display: flex;
   flex-direction: column;
   gap: var(--copper-space-3);
   min-height: 0;
   overflow-y: auto;
-  /* 滚动条贴着卡片边缘，右侧留一点内边距避免压住圆角。 */
-  padding-right: var(--copper-space-1);
+  padding: 2px;
 }
 
 .gd-detail__warn {

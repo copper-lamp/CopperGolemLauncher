@@ -61,11 +61,11 @@ async function copy() {
 </template>
 <style scoped>
 .errtips-mask { position:fixed; inset:0; z-index:1200; display:grid; place-items:center; padding:20px; background:rgb(0 0 0 / .34); backdrop-filter:blur(6px); }
-.errtips-panel { width:min(620px,100%); max-height:90dvh; overflow:auto; box-sizing:border-box; padding:24px; border-radius:var(--copper-radius-lg,16px); background:var(--copper-surface); color:var(--copper-text); box-shadow:var(--copper-shadow); outline:none; }
+.errtips-panel { width:min(620px,100%); max-height:90dvh; overflow:auto; box-sizing:border-box; padding:24px; border-radius:var(--copper-radius-card,16px); background:var(--copper-surface); color:var(--copper-text); box-shadow:var(--copper-shadow-card); outline:none; }
 header,footer { display:flex; align-items:center; gap:12px; } header h2 { flex:1; font-size:18px; margin:0; } header>svg { color:var(--copper-danger); }
 p { line-height:1.6; overflow-wrap:anywhere; } .errtips-muted { color:var(--copper-text-secondary); font-size:12px; }
-label { display:block; margin-bottom:8px; } textarea { box-sizing:border-box; width:100%; min-height:180px; resize:vertical; border:0; border-radius:8px; padding:12px; background:var(--copper-bg); color:inherit; font-size:12px; }
-footer { justify-content:flex-end; margin-top:18px; flex-wrap:wrap; } button { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:0; border-radius:8px; padding:9px 12px; color:inherit; background:color-mix(in srgb,var(--copper-text) 7%,var(--copper-surface)); cursor:pointer; } button:hover { background:color-mix(in srgb,var(--copper-accent) 18%,var(--copper-surface)); } button:focus-visible,textarea:focus-visible { outline:2px solid var(--copper-accent); outline-offset:2px; }
+label { display:block; margin-bottom:8px; } textarea { box-sizing:border-box; width:100%; min-height:180px; resize:vertical; border:0; border-radius:var(--copper-radius-control); padding:12px; background:var(--copper-bg); color:inherit; font-size:12px; }
+footer { justify-content:flex-end; margin-top:18px; flex-wrap:wrap; } button { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:0; border-radius:var(--copper-radius-control); padding:9px 12px; color:inherit; background:color-mix(in srgb,var(--copper-text) 7%,var(--copper-surface)); cursor:pointer; } button:hover { background:color-mix(in srgb,var(--copper-accent) 18%,var(--copper-surface)); } button:focus-visible,textarea:focus-visible { outline:2px solid var(--copper-accent); outline-offset:2px; }
 @media(prefers-reduced-motion:reduce) { .errtips-mask { backdrop-filter:none; } }
 @media(max-width:600px) { .errtips-panel { padding:18px; } .errtips-mask { padding:10px; } }
 </style>

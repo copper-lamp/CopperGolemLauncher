@@ -39,7 +39,8 @@ withDefaults(
 .setting-section__card {
   padding: var(--copper-space-1) var(--copper-space-4);
   background: var(--copper-surface);
-  border: 1px solid var(--copper-border);
-  border-radius: var(--copper-radius-lg);
+  border: 0;
+  border-radius: var(--copper-radius-card);
+  box-shadow: var(--copper-shadow-card);
 }
 </style>

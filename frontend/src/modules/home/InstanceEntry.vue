@@ -244,6 +244,8 @@ const actionGroups = computed<EntryActionGroup[]>(() => {
     key: "content",
     icon: Boxes,
     label: t("module.home.instance.action.content"),
+    disabled: !!view.compatibility && !view.compatibility.capabilities.content,
+    reason: view.compatibility && !view.compatibility.capabilities.content ? compatibilityReason(view.compatibility.disabled_reason, compatText) || compatText('sharedUnavailable') : undefined,
     run: () => go("content"),
   });
   if (isMobile.value) {
@@ -341,7 +343,10 @@ function onUpdated(updated: VersionView) {
         <div v-if="current.compatibility" class="entry__section" role="status">
           <strong>{{ compatText('bound') }}</strong>
           <p>{{ compatText('source') }}: {{ current.compatibility.source_dir }}</p>
-          <p>{{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText('privateSave') }}</p>
+          <p>{{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
+          <p v-if="current.compatibility.data_dir">{{ compatText('dataPath') }}: {{ current.compatibility.data_dir }}</p>
+          <p v-if="current.compatibility.users_root">{{ compatText('usersPath') }}: {{ current.compatibility.users_root }}</p>
+          <p v-if="current.compatibility.shared_content_root">{{ compatText('contentPath') }}: {{ current.compatibility.shared_content_root }}</p>
           <button type="button" class="entry__action" @click="refresh">{{ compatText('probe') }}</button>
         </div>
         <div class="entry__section">
@@ -465,9 +470,9 @@ function onUpdated(updated: VersionView) {
   flex-direction: column;
   gap: var(--copper-space-5);
   padding: var(--copper-space-5);
-  border-radius: var(--copper-radius-lg);
+  border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  box-shadow: var(--copper-shadow-subtle);
+  box-shadow: var(--copper-shadow-card);
 }
 
 .entry__hero {
