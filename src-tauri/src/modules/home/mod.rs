@@ -17,6 +17,7 @@ use crate::registry::modules::Module;
 use crate::state::KernelContext;
 
 pub mod content;
+pub mod compatibility;
 /// 默认模式列表区：跨实例的世界与外部服务器扫描。
 pub mod dashboard;
 /// 触控层布局（屏幕控件）的事实源：`<版本目录>/controls.json`。
@@ -93,6 +94,7 @@ pub struct VersionView {
     pub logo_data_url: Option<String>,
     /// 版本目录绝对路径（前端打开文件夹用）。
     pub folder: String,
+    pub compatibility: Option<compatibility::CompatibilityStatus>,
 }
 
 /// 版本设置部分更新（仅覆盖提供的字段）。
@@ -193,6 +195,7 @@ impl HomeModule {
         let dir = meta::resolve_version_dir(&root, name)?;
         let mut meta = VersionMeta::read(&dir)
             .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 不存在")))?;
+        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
         if let Some(v) = update.enable_editor_mode {
             meta.enable_editor_mode = v;
         }
@@ -245,6 +248,7 @@ impl HomeModule {
         if !new_name.eq_ignore_ascii_case(old_name) {
             meta::validate_version_name(&root, new_name)?;
         }
+        if launch::is_process_running_at_path(&launch::game_exe_path(&old_dir)) { return Err(KernelError::InvalidArgument("compat_game_running".into())); }
         let new_dir = root.join(new_name);
         if new_dir.exists() && new_dir != old_dir {
             return Err(KernelError::InvalidArgument("同名版本已存在".into()));
@@ -279,7 +283,7 @@ impl HomeModule {
                 uwp_launch::cleanup(&dir, &meta);
             }
         }
-        std::fs::remove_dir_all(&dir)?;
+        if compatibility::is_bound(&dir) { compatibility::detach(&dir)?; } else { std::fs::remove_dir_all(&dir)?; }
         kernel
             .events()
             .publish("version.removed", serde_json::json!({ "name": name }));
@@ -329,6 +333,7 @@ impl HomeModule {
         if launch::is_process_running_at_path(&exe) {
             return Err(KernelError::InvalidArgument("游戏运行中，无法还原启动文件".into()));
         }
+        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
         inject::restore_original(&exe)
     }
 
@@ -336,6 +341,7 @@ impl HomeModule {
     pub fn delete_launch_backup(kernel: &KernelContext, name: &str) -> Result<(), KernelError> {
         let root = kernel.versions_root();
         let dir = meta::resolve_version_dir(&root, name)?;
+        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
         inject::delete_backup(&launch::game_exe_path(&dir))
     }
 
@@ -378,6 +384,7 @@ fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
         client_dll: meta.client_dll.clone(),
         logo_data_url: meta::logo_data_url(&dir),
         folder: dir.to_string_lossy().into_owned(),
+        compatibility: compatibility::status(&dir),
     }
 }
 

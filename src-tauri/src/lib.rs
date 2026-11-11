@@ -508,6 +508,9 @@ pub fn run() {
             commands::content_download::content_download_lip_install,
             // 开始页模块（home）
             commands::home::home_versions_list,
+            commands::home::home_compat_probe,
+            commands::home::home_compat_discover,
+            commands::home::home_compat_bind,
             commands::home::home_versions_root,
             commands::home::home_version_get,
             commands::home::home_version_save_meta,

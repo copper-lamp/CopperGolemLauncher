@@ -123,7 +123,7 @@ pub fn launch_file_state(version_dir: &Path, exe: &Path, meta: &VersionMeta) -> 
 
 /// 确保实例目录里有最新版本的 hook DLL，按 SHA256 比对决定是否重写。
 #[cfg(windows)]
-fn ensure_hook_dll(version_dir: &Path) -> Result<bool, KernelError> {
+pub(super) fn ensure_hook_dll(version_dir: &Path) -> Result<bool, KernelError> {
     let target = hook_dll_path(version_dir);
     if let Ok(existing) = std::fs::read(&target) {
         if sha256(&existing) == sha256(HOOK_DLL_BYTES) {
@@ -139,7 +139,7 @@ fn ensure_hook_dll(version_dir: &Path) -> Result<bool, KernelError> {
 
 /// 非 Windows 没有 hook DLL 落位这一步。
 #[cfg(not(windows))]
-fn ensure_hook_dll(_version_dir: &Path) -> Result<bool, KernelError> {
+pub(super) fn ensure_hook_dll(_version_dir: &Path) -> Result<bool, KernelError> {
     Ok(false)
 }
 

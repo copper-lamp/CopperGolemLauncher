@@ -195,6 +195,15 @@ fn host_image_name() -> String {
 /// 宿主是否在白名单内。
 fn host_is_game() -> bool {
     let name = host_image_name();
+    if let Ok(expected) = std::env::var("COPPER_HOOK_HOST_EXE") {
+        let mut buffer = vec![0u16; 32768];
+        let length = unsafe { sys::GetModuleFileNameW(ptr::null_mut(), buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length > 0 && (length as usize) < buffer.len() {
+            let actual = String::from_utf16_lossy(&buffer[..length as usize]);
+            if actual.eq_ignore_ascii_case(&expected) && name.starts_with("minecraft.copper.") && name.ends_with(".exe") { return true; }
+        }
+        return false;
+    }
     if HOST_EXE_NAMES.contains(&name.as_str()) {
         return true;
     }
@@ -295,6 +304,8 @@ extern "system" fn worker_main() -> u32 {
     //
     // PeEditor 原本把 PreLoader.dll 写进 exe 导入表来强制加载；这里改由
     // hook 在远程注入后、游戏主线程恢复前手动 LoadLibrary，exe 保持原版。
+    // Bound originals never execute a loader or preload manifest, including inherited environment values.
+    if std::env::var_os("COPPER_HOOK_HOST_EXE").is_some() { return 0; }
     load_preloader(&plan);
 
     // 7) 预加载

@@ -15,6 +15,18 @@ use crate::modules::home::mods;
 use crate::modules::home::{meta, OpenDirKind, VersionMetaUpdate, VersionView};
 use crate::state::KernelContext;
 
+#[tauri::command]
+pub fn home_compat_discover()->Vec<String>{crate::modules::home::compatibility::discover()}
+#[tauri::command]
+pub async fn home_compat_probe(source_dir:String)->CommandResult<crate::modules::home::compatibility::CompatibilityProbe> { tauri::async_runtime::spawn_blocking(move ||crate::modules::home::compatibility::probe(std::path::Path::new(&source_dir))).await.map_err(|e|into_command_error(KernelError::Module(e.to_string()))) }
+#[tauri::command]
+pub async fn home_compat_bind(kernel:State<'_,KernelContext>,source_dir:String,alias:String)->CommandResult<VersionView>{
+ let root=kernel.versions_root();let task_alias=alias.clone();
+ tauri::async_runtime::spawn_blocking(move ||crate::modules::home::compatibility::bind(&root,std::path::Path::new(&source_dir),&task_alias)).await.map_err(|e|into_command_error(KernelError::Module(e.to_string())))?.map_err(into_command_error)?;
+ kernel.events().publish("version.installed",serde_json::json!({"name":alias}));
+ crate::modules::home::HomeModule::get_version(kernel.inner(),&alias).map_err(into_command_error)
+}
+
 /// 版本清单。
 #[tauri::command]
 pub fn home_versions_list(kernel: State<'_, KernelContext>) -> CommandResult<Vec<VersionView>> {
@@ -72,8 +84,9 @@ pub fn home_version_delete(kernel: State<'_, KernelContext>, name: String) -> Co
 
 /// 启动游戏（成功后后台确认进程并广播 `game.launched` / `game.exited`）。
 #[tauri::command]
-pub fn home_launch(kernel: State<'_, KernelContext>, name: String) -> CommandResult<LaunchOutcome> {
-    crate::modules::home::HomeModule::launch(kernel.inner(), &name).map_err(into_command_error)
+pub async fn home_launch(kernel: State<'_, KernelContext>, name: String) -> CommandResult<LaunchOutcome> {
+    let ctx=crate::modules::home::launch::LaunchCtx::from_kernel(kernel.inner());
+    tauri::async_runtime::spawn_blocking(move ||crate::modules::home::launch::launch_game(&ctx,&name,true)).await.map_err(|e|into_command_error(KernelError::Module(e.to_string())))?.map_err(into_command_error)
 }
 
 /// 该版本的游戏进程是否在运行（开始页「启动 / 退出」按钮形态的依据）。

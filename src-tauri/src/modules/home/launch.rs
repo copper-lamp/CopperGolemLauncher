@@ -299,6 +299,7 @@ pub fn launch_game(
     if let Some(android) = meta.android.as_ref() {
         return launch_android(ctx, name, &dir, android);
     }
+    if super::compatibility::is_bound(&dir) { return launch_compatibility(ctx, name, &dir, &meta); }
     let exe = game_exe_path(&dir);
     if !exe.is_file() {
         return Err(KernelError::InvalidArgument(format!(
@@ -438,6 +439,22 @@ pub fn launch_game(
     Ok(LaunchOutcome::Spawned)
 }
 
+fn launch_compatibility(ctx:&LaunchCtx,name:&str,dir:&std::path::Path,meta:&VersionMeta)->Result<LaunchOutcome,KernelError>{
+    if meta.is_uwp() || meta.mode.as_deref()!=Some("original") || meta.loader.is_some() || meta.client_id.is_some() || meta.enable_console || meta.enable_editor_mode { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
+    static BOUND_LAUNCH:std::sync::Mutex<()>=std::sync::Mutex::new(());
+    let _guard=BOUND_LAUNCH.lock().map_err(|_|KernelError::Module("compat_launch_lock".into()))?;
+    let spec=super::compatibility::resolve(dir)?;
+    if is_process_running_at_path(&spec.executable){return Err(KernelError::InvalidArgument("compat_game_running".into()));}
+    std::fs::create_dir_all(super::isolate::data_dir(dir,meta))?;
+    super::inject::ensure_hook_dll(dir)?;
+    let mut env=hook_env(dir,meta); env.retain(|(k,_)|k!="COPPER_HOOK_LOAD_PRELOADER");
+    env.push(("COPPER_HOOK_HOST_EXE".into(),spec.executable.to_string_lossy().into_owned()));
+    let pid=spawn_game(&spec.executable,&spec.source_root,&[],&env,&super::inject::hook_dll_path(dir),true,false)?;
+    // Source leases deny ordinary replacement during this process; another launcher has no cooperative lock contract.
+    ctx.runtime.spawn(async move {let _leases=spec.leases;while super::monitor::is_process_alive(pid){tokio::time::sleep(std::time::Duration::from_secs(1)).await;}});
+    monitor_after_launch(ctx,name,dir.to_path_buf(),pid);Ok(LaunchOutcome::Spawned)
+}
+
 /// 以松散包身份启动实例（与 LeviLauncher 一致）。
 ///
 /// 注册幂等：包已指向本目录时 `register` 只回读校验。激活由 AppModel 完成，
@@ -527,6 +544,7 @@ fn spawn_game(
 /// 结束游戏、删除实例三处都要用同一个判定，签名统一才不会出现「某条链路按 GDK 名字
 /// 找进程，于是永远找不到」的分叉。
 pub fn game_exe_path(version_dir: &std::path::Path) -> PathBuf {
+    if super::compatibility::is_bound(version_dir) { return super::compatibility::executable(version_dir); }
     if let Some(meta) = VersionMeta::read(version_dir) {
         if meta.is_uwp() {
             if let Ok(manifest) =
@@ -554,7 +572,7 @@ pub fn game_exe_path(version_dir: &std::path::Path) -> PathBuf {
 /// 两个名字都要认：UWP 老版本用 `Minecraft.Win10.DX11.exe`，新版本与 GDK 用
 /// `Minecraft.Windows.exe`。注入侧的宿主白名单也是这两个名字。
 fn is_game_exe_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case(GAME_EXE) || name.eq_ignore_ascii_case("Minecraft.Win10.DX11.exe")
+    name.eq_ignore_ascii_case(GAME_EXE) || name.eq_ignore_ascii_case("Minecraft.Win10.DX11.exe") || (name.starts_with("Minecraft.Copper.") && name.ends_with(".exe") && uuid::Uuid::parse_str(&name[17..name.len()-4]).is_ok())
 }
 
 /// 组装启动参数。

@@ -122,7 +122,7 @@ impl Ctx {
     ///
     /// 路径按**版本**而不是实例命名：同一版本的多个实例共用这一份整包。
     pub fn dest_for(&self, slug: &str) -> PathBuf {
-        self.download_dir().join(format!("{slug}.msixvc"))
+        self.package_path(slug,"msixvc")
     }
 
     /// UWP 整包暂存路径（`versions_root/.download/<slug>.appx`）。
@@ -130,7 +130,7 @@ impl Ctx {
     /// 与 GDK 用不同后缀：两个渠道的包格式不同（XVC 容器 / ZIP），解包入口据此分流；
     /// 也让「本地已有整包」这类目录扫描能一眼看出包属于哪个渠道。
     pub fn dest_for_uwp(&self, slug: &str) -> PathBuf {
-        self.download_dir().join(format!("{slug}.appx"))
+        self.package_path(slug,"appx")
     }
 
     /// 某实例安装目录（`versions_root/<实例名>`，根按设置动态解析）。
@@ -143,9 +143,16 @@ impl Ctx {
         self.paths.versions_root(&self.settings)
     }
 
-    /// 整包暂存目录（`versions_root/.download`）。
+    /// 新整包写入游戏根 `.download`；旧 versions/.download 仅发现和复用，不静默搬动。
     pub fn download_dir(&self) -> PathBuf {
-        self.versions_root().join(DOWNLOAD_SUBDIR)
+        self.paths.package_root(&self.settings)
+    }
+
+    fn package_path(&self, slug:&str, extension:&str)->PathBuf {
+        let name=format!("{slug}.{extension}");
+        let current=self.download_dir().join(&name);
+        let legacy=self.versions_root().join(DOWNLOAD_SUBDIR).join(name);
+        prefer_existing_package(current,legacy)
     }
 
     /// 某时间戳（Unix 秒）。
@@ -162,6 +169,11 @@ impl Ctx {
 /// 只有 `preview` 是预览身份；`beta` 渠道用的是**正式包身份**
 /// （`Microsoft.MinecraftUWP`），它的隔离目录与包族都按正式包处理，
 /// 只是版本号属于开发版（见 `uwp_catalog::UwpChannel`）。
+fn prefer_existing_package(current:PathBuf,legacy:PathBuf)->PathBuf {
+    let usable=|p:&Path|std::fs::metadata(p).map(|m|m.is_file()&&m.len()>0).unwrap_or(false);
+    if !usable(&current)&&usable(&legacy){legacy}else{current}
+}
+
 fn is_preview_channel(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("preview")
 }
@@ -206,7 +218,9 @@ pub fn has_local_package(ctx: &Ctx, slug: &str) -> bool {
 /// 在全新安装上正常打开。权限异常同样降级为空集并留日志，宁可少显示徽标，
 /// 也不能让整页因为一个可选装饰打不开。
 pub fn local_package_slugs(ctx: &Ctx) -> std::collections::HashSet<String> {
-    local_package_slugs_in(&ctx.download_dir())
+    let mut slugs=local_package_slugs_in(&ctx.download_dir());
+    slugs.extend(local_package_slugs_in(&ctx.versions_root().join(DOWNLOAD_SUBDIR)));
+    slugs
 }
 
 /// [`local_package_slugs`] 的纯文件系统实现（可单测）。
@@ -2575,6 +2589,16 @@ fn resume_uwp_package(ctx: &Ctx, pkg: &PackageRecord) -> Result<Option<u64>, Ker
 mod tests {
     use super::*;
 
+    #[test]
+    fn package_root_prefers_new_and_reuses_legacy_without_move() {
+        let root=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let current=root.join(".download/game.appx");let legacy=root.join("versions/.download/game.appx");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();std::fs::write(&legacy,b"old").unwrap();
+        assert_eq!(prefer_existing_package(current.clone(),legacy.clone()),legacy);assert!(legacy.is_file());
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();std::fs::write(&current,b"new").unwrap();
+        assert_eq!(prefer_existing_package(current.clone(),legacy.clone()),current);assert!(legacy.is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn md5_matches_case_insensitive() {
         let dir = std::env::temp_dir().join(format!("copper_gd_md5_{}", std::process::id()));

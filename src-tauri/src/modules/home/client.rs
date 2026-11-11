@@ -597,6 +597,7 @@ pub fn reinject(
         return Err(KernelError::Conflict("正在注入中，请稍候".into()));
     }
     let dir = crate::modules::home::meta::resolve_version_dir(versions_root, instance)?;
+    if super::compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
     let exe = crate::modules::home::launch::game_exe_path(&dir);
     let pid = crate::modules::home::launch::find_pid_at_path(&exe)
         .ok_or_else(|| KernelError::InvalidArgument("游戏未运行，无法注入客户端".into()))?;

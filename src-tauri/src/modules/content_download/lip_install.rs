@@ -285,6 +285,7 @@ pub async fn install_resolved(
     target_dir: &std::path::Path,
     sink: Option<&lipd::CallbackSink>,
 ) -> LipInstallOutcome {
+    if crate::modules::home::compatibility::is_bound(target_dir) { return LipInstallOutcome::failure("compat_mode_unsupported", "兼容绑定不支持加载器或模组安装"); }
     let version = version.trim();
     if version.is_empty() {
         return LipInstallOutcome::failure(ERR_LIP_PACKAGE_VERSION_REQUIRED, "lip 安装需要指定版本号");
