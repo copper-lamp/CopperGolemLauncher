@@ -11,11 +11,14 @@
 // 分页依据是后端返回的 `totalPages`（各来源都给了真数，见 listStore 注释），
 // 不再用“已探索页数”猜末页。
 
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import TranslationAction from "../../components/TranslationAction.vue";
+import CoSkeleton from "../../components/ui/CoSkeleton.vue";
+import { useTranslationMessages } from "../../services/translation-messages";
+import { useTranslation } from "../../composables/useTranslation";
 import { useRouter } from "vue-router";
 import {
   Search,
-  RefreshCw,
   ImageIcon,
   Layers,
   Sun,
@@ -56,6 +59,8 @@ import {
   hasLoadedVersions,
   hasMore,
   items,
+  lastValidated,
+  listNeedsValidation,
   loading,
   markVersionsLoaded,
   page,
@@ -77,6 +82,18 @@ const settings = useSettings();
 const { isAndroid } = usePlatform();
 
 const MB_KEY = "module.content-download";
+const translation = useTranslation();
+const translationMessages = useTranslationMessages();
+const { busy: translationBusy, translated: showTranslation, error: translationError } = translation;
+function toggleTranslation() {
+  if (translationBusy.value || showTranslation.value) { translation.reset(); return; }
+  void translation.run(items.value.flatMap(item => [item.name, item.description ?? ""]));
+}
+function translatedField(index: number, field: 0 | 1, original: string) {
+  return showTranslation.value ? translation.results.value[index * 2 + field] ?? original : original;
+}
+watch(items, translation.reset);
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 /** 筛选设置持久化 key（内核设置系统，全局共享）。 */
 const SETTING_KEYS = {
@@ -199,6 +216,7 @@ function visibleTags(item: ContentItem): string[] {
 }
 
 async function fetchPage() {
+  translation.reset();
   const seq = ++loadSeq;
   loading.value = true;
   error.value = null;
@@ -214,6 +232,7 @@ async function fetchPage() {
     });
     if (seq !== loadSeq) return;
     items.value = result.items;
+    lastValidated.value = Date.now();
     hasMore.value = result.hasMore;
     total.value = result.total;
     // 总页数由后端算好：各来源的 total 语义已经统一，不再需要“已探索页数”。
@@ -300,6 +319,10 @@ watch([source, contentType, gameVersion, sort, tag], () => {
 watch(source, () => void loadTags());
 
 onMounted(() => {
+  // Check age while the page is mounted; new searches and pages keep their normal requests.
+  refreshTimer = setInterval(() => {
+    if (!loading.value && listNeedsValidation()) void fetchPage();
+  }, 60 * 1000);
   void loadVersions();
   void loadTags();
   if (items.value.length === 0) {
@@ -327,37 +350,26 @@ onMounted(() => {
       void fetchPage();
     }
   } else {
+    if (listNeedsValidation()) void fetchPage();
     requestAnimationFrame(() => {
       const scroller = scrollBody();
       if (scroller) scroller.scrollTop = scrollTop.value;
     });
   }
 });
+onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInterval(refreshTimer); });
 </script>
 <template>
   <CoPage ref="pageRef" :scroll="false">
     <Teleport defer to="#copper-titlebar-actions">
-      <button
-        class="list-page__refresh"
-        :title="t(MB_KEY + '.refresh')"
-        :disabled="loading"
-        @click="search"
-      >
-        <RefreshCw :size="15" :class="{ spin: loading }" />
-      </button>
+      <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || !items.length" @toggle="toggleTranslation" />
     </Teleport>
 
     <div class="list-page">
       <!-- 左：结果列表 -->
       <section ref="resultsRef" class="list-page__results">
         <div v-if="loading && items.length === 0" class="list-page__state">
-          <div v-for="n in 6" :key="n" class="list-page__skeleton">
-            <div class="list-page__skeleton-thumb" />
-            <div class="list-page__skeleton-lines">
-              <div class="list-page__skeleton-line" />
-              <div class="list-page__skeleton-line list-page__skeleton-line--short" />
-            </div>
-          </div>
+          <CoSkeleton variant="list" :rows="6" :label="translationMessages.contentLoading" />
           <TipsRotator compact />
         </div>
 
@@ -372,7 +384,7 @@ onMounted(() => {
 
         <div v-else class="list-page__rows">
           <button
-            v-for="item in items"
+            v-for="(item, itemIndex) in items"
             :key="item.id"
             class="content-card"
             @click="openDetail(item)"
@@ -389,7 +401,7 @@ onMounted(() => {
 
             <div class="content-card__main">
               <div class="content-card__title-row">
-                <span class="content-card__name" :title="item.name">{{ item.name }}</span>
+                <span class="content-card__name" :title="item.name">{{ translatedField(itemIndex, 0, item.name) }}</span>
                 <CoBadge
                   :tone="typeBadgeTone(item.contentType)"
                   :label="typeBadgeLabel(item.contentType, item.source)"
@@ -399,7 +411,7 @@ onMounted(() => {
                   :label="sourceBadgeLabel(item.source)"
                 />
               </div>
-              <div class="content-card__desc">{{ item.description }}</div>
+              <div class="content-card__desc">{{ translatedField(itemIndex, 1, item.description) }}</div>
               <div v-if="visibleTags(item).length" class="content-card__tags">
                 <span v-for="name in visibleTags(item)" :key="name" class="content-card__tag">
                   {{ name }}

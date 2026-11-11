@@ -1,0 +1,28 @@
+import { computed } from "vue";
+import { registerAddonI18n, useI18n } from "../i18n";
+const zh = {
+  contentLoading: "正在加载内容", source: "源语言", sourceAuto: "自动检测", sourceHint: "MyMemory 需要明确的源语言，无法自动检测。", title: "翻译", description: "仅在点击翻译时发送当前公开内容。密钥由内核保存，不会回显。", provider: "翻译渠道", target: "目标语言", follow: "跟随界面", endpoint: "服务地址", model: "模型", region: "区域", key: "API 密钥", keyHint: "留空保留已存密钥", configured: "密钥已配置", missing: "需要配置密钥", unavailable: "当前平台不可用", save: "保存配置", saved: "配置已保存", test: "测试连接", testOk: "连接成功", clear: "清空译文缓存", cleared: "缓存已清空", cache: "缓存天数", cacheHint: "成功译文默认保存30天，读取不会延长到期时间", timeout: "请求超时（毫秒）", removeKey: "清除当前密钥", translate: "翻译当前内容", original: "显示原文", translating: "正在翻译，点击取消", failed: "翻译失败，已保留原文", pro: "DeepL Pro", fallback: "自动模式备用渠道（按顺序，逗号分隔渠道ID）", retry: "重试", loading: "正在读取翻译配置", unsupported: "不可用", ready: "可用", notice: "测试会向已保存的选定渠道发送固定示例句。更改配置后请先保存。",
+};
+const en: Record<keyof typeof zh, string> = {
+  contentLoading: "Loading content", source: "Source language", sourceAuto: "Detect automatically", sourceHint: "MyMemory requires an explicit source language and cannot detect it automatically.", title: "Translation", description: "Only explicitly requested public content is sent. Keys are stored by the kernel and never returned.", provider: "Provider", target: "Target language", follow: "Follow interface", endpoint: "Endpoint", model: "Model", region: "Region", key: "API key", keyHint: "Leave empty to keep the stored key", configured: "Key configured", missing: "API key required", unavailable: "Unavailable on this platform", save: "Save configuration", saved: "Configuration saved", test: "Test connection", testOk: "Connection successful", clear: "Clear translation cache", cleared: "Cache cleared", cache: "Cache days", cacheHint: "Successful translations are stored for 30 days by default; reads do not extend expiry", timeout: "Request timeout (milliseconds)", removeKey: "Remove current key", translate: "Translate current content", original: "Show original", translating: "Translating; click to cancel", failed: "Translation failed; original content retained", pro: "DeepL Pro", fallback: "Automatic fallback providers (ordered comma-separated IDs)", retry: "Retry", loading: "Loading translation configuration", unsupported: "Unavailable", ready: "Available", notice: "The test sends a fixed sample to the selected saved provider. Save changes before testing.",
+};
+const errorZh: Record<string, string> = {
+  timeout: "请求超时，请稍后重试", missing_key: "请在翻译设置中配置密钥", missing_endpoint: "请在翻译设置中配置服务地址", source_language_required: "该渠道需要明确的源语言，请选择支持自动检测的渠道", configuration_changed: "配置已更改，请重新翻译", configuration_conflict: "配置已被更新，请重新载入后保存", cancelled: "翻译已取消", invalid_configuration: "请检查缓存天数、超时和服务配置", invalid_fallback: "备用渠道配置无效", missing_fallback_configuration: "请配置自动模式的备用渠道", apple_safari_bridge_required: "当前宿主不支持 Safari 翻译桥", ipc_unavailable: "内核连接不可用", circuit_open: "渠道暂时繁忙，请稍后重试", invalid_endpoint: "服务地址无效，请检查 HTTPS 地址", secret_store: "系统密钥存储不可用", invalid_response: "渠道返回格式无效", unavailable: "翻译服务不可用，请检查配置后重试",
+};
+const errorEn: Record<string, string> = {
+  timeout: "Request timed out; try again later", missing_key: "Configure an API key in Translation settings", missing_endpoint: "Configure a service endpoint in Translation settings", source_language_required: "This provider requires an explicit source language; choose an automatic detection provider", configuration_changed: "Configuration changed; translate again", configuration_conflict: "Configuration was updated; reload before saving", cancelled: "Translation cancelled", invalid_configuration: "Check cache days, timeout and provider settings", invalid_fallback: "Invalid fallback configuration", missing_fallback_configuration: "Configure fallback providers for automatic mode", apple_safari_bridge_required: "This host does not support the Safari translation bridge", ipc_unavailable: "Kernel connection unavailable", circuit_open: "Provider is temporarily busy; try again later", invalid_endpoint: "Invalid endpoint; check the HTTPS URL", secret_store: "System credential storage unavailable", invalid_response: "Invalid provider response", unavailable: "Translation unavailable; check settings and try again",
+};
+registerAddonI18n("translation-ui", { "zh-CN": { ...zh, ...Object.fromEntries(Object.entries(errorZh).map(([k,v]) => [`error_${k}`,v])) }, "en-US": { ...en, ...Object.fromEntries(Object.entries(errorEn).map(([k,v]) => [`error_${k}`,v])) } });
+export function useTranslationError() {
+  const { t } = useI18n();
+  return (cause: unknown) => {
+    const raw = cause instanceof Error ? cause.message : "";
+    const code = raw.startsWith("translation.") ? raw.slice(12) : "unavailable";
+    const safe = code in errorZh ? code : "unavailable";
+    return t(`module.translation-ui.error_${safe}`);
+  };
+}
+export function useTranslationMessages() {
+  const { t } = useI18n();
+  return computed(() => Object.fromEntries(Object.keys(zh).map(key => [key, t(`module.translation-ui.${key}`)])) as Record<keyof typeof zh, string>);
+}

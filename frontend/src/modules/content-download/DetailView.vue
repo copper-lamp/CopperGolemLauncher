@@ -46,6 +46,11 @@ import {
 import { detailCrumbTitle } from "./detailCrumb";
 import RailToc from "./RailToc.vue";
 import { renderReadme, type ReadmeFormat } from "./readme";
+import TranslationAction from "../../components/TranslationAction.vue";
+import CoSkeleton from "../../components/ui/CoSkeleton.vue";
+import { useTranslationMessages } from "../../services/translation-messages";
+import { useTranslation } from "../../composables/useTranslation";
+import { translationDocument } from "../../services/translation";
 import {
   contentDownloadDetail,
   contentDownloadReadme,
@@ -73,6 +78,20 @@ const settings = useSettings();
 const detail = ref<ContentDetail | null>(null);
 const readmeHtml = ref<string | null>(null);
 const readmeLoading = ref(false);
+const translation = useTranslation();
+const translationMessages = useTranslationMessages();
+const { busy: translationBusy, translated: showTranslation, error: translationError } = translation;
+const translatedReadme = ref<string | null>(null);
+const displayedReadme = computed(() => showTranslation.value ? translatedReadme.value ?? readmeHtml.value : readmeHtml.value);
+async function toggleTranslation() {
+  if (translationBusy.value || showTranslation.value) { translation.reset(); return; }
+  if (!readmeHtml.value) return;
+  const sourceHtml = readmeHtml.value;
+  const document = translationDocument(sourceHtml);
+  await translation.run(document.texts);
+  if (showTranslation.value && readmeHtml.value === sourceHtml) translatedReadme.value = document.render(translation.results.value);
+}
+watch(displayedReadme, () => void buildToc());
 const loading = ref(true);
 const error = ref<string | null>(null);
 const lipEnv = ref<LipEnv | null>(null);
@@ -260,6 +279,9 @@ let loadSeq = 0;
 
 async function load() {
   const seq = ++loadSeq;
+  translation.reset();
+  translatedReadme.value = null;
+  readmeHtml.value = null;
   loading.value = true;
   error.value = null;
   expanded.value = new Set();
@@ -279,24 +301,26 @@ async function load() {
     }
     void loadReadme(id, data);
   } catch (e) {
-    error.value = String(e);
+    if (seq === loadSeq) error.value = String(e);
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) loading.value = false;
   }
 }
 
 /** 拉取并渲染 readme：CF 与 lip 都支持，格式按来源区分。 */
 async function loadReadme(id: string, data: ContentDetail) {
+  const seq = loadSeq;
   readmeLoading.value = true;
   try {
     const raw = await contentDownloadReadme(id, locale.value);
+    if (seq !== loadSeq) return;
     readmeHtml.value = raw
       ? renderReadme(raw, readmeFormat(data.item.source), readmeBaseUrl(data))
       : null;
   } catch {
-    readmeHtml.value = null;
+    if (seq === loadSeq) readmeHtml.value = null;
   } finally {
-    readmeLoading.value = false;
+    if (seq === loadSeq) readmeLoading.value = false;
   }
   // 必须等 loading 关掉之后再解析：加载态占着正文位置，此时 docRef 还是 null。
   await buildToc();
@@ -459,6 +483,7 @@ onMounted(async () => {
   await Promise.all([load(), resolveTargetVersion().catch(() => {})]);
 });
 onUnmounted(() => {
+  ++loadSeq;
   resetCrumbTitle();
 });
 
@@ -467,14 +492,13 @@ onUnmounted(() => {
 
 <template>
   <CoPage ref="pageRef">
+    <Teleport defer to="#copper-titlebar-actions">
+      <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || readmeLoading || !readmeHtml" @toggle="toggleTranslation" />
+    </Teleport>
     <div class="cd-detail">
       <CoSplitLayout aside-position="end">
       <template v-if="loading">
-        <div class="cd-detail__skeleton">
-          <div class="cd-detail__skeleton-hero" />
-          <div class="cd-detail__skeleton-line" />
-          <div class="cd-detail__skeleton-line cd-detail__skeleton-line--short" />
-        </div>
+        <CoSkeleton variant="detail" :rows="4" :label="translationMessages.contentLoading" />
         <!-- 详情拉取期间展示内核随机提示 -->
         <TipsRotator compact />
       </template>
@@ -550,7 +574,7 @@ onUnmounted(() => {
               {{ t(`${KB}.docLoading`) }}
             </div>
             <template v-else-if="readmeHtml">
-                <div ref="docRef" class="cd-doc" v-html="readmeHtml" />
+                <div ref="docRef" class="cd-doc" v-html="displayedReadme" />
 
 
             </template>

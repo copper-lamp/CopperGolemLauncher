@@ -23,6 +23,11 @@ export const sort = ref<ContentSort>("downloads_desc");
 export const page = ref(0);
 
 export const items = ref<ContentItem[]>([]);
+/** Last successful validation survives detail/list remounts in this session. */
+export const lastValidated = ref(0);
+export function listNeedsValidation(now = Date.now()): boolean {
+  return now - lastValidated.value >= 12 * 60 * 60 * 1000;
+}
 export const hasMore = ref(false);
 /** 匹配总数（后端给的权威值）。 */
 export const total = ref(0);
@@ -65,6 +70,7 @@ export function markVersionsLoaded(): void {
 export function resetList() {
   page.value = 0;
   items.value = [];
+  lastValidated.value = 0;
   hasMore.value = false;
   total.value = 0;
   totalPages.value = 1;
