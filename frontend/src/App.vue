@@ -45,7 +45,13 @@ const { isMobile, isLandscape } = usePlatform();
     <div class="app-main">
       <TitleBar />
       <main class="app-content">
-        <RouterView />
+        <RouterView v-slot="{ Component, route }">
+          <Transition name="fade" mode="out-in">
+            <div :key="route.name ?? route.matched[route.matched.length - 1]?.path ?? route.path" class="app-route">
+              <component :is="Component" />
+            </div>
+          </Transition>
+        </RouterView>
       </main>
     </div>
     <ToastHost />
@@ -56,7 +62,13 @@ const { isMobile, isLandscape } = usePlatform();
     <div class="app-main">
       <TitleBar />
       <main class="app-content">
-        <RouterView />
+        <RouterView v-slot="{ Component, route }">
+          <Transition name="fade" mode="out-in">
+            <div :key="route.name ?? route.matched[route.matched.length - 1]?.path ?? route.path" class="app-route">
+              <component :is="Component" />
+            </div>
+          </Transition>
+        </RouterView>
       </main>
     </div>
     <MobileNav />
@@ -87,6 +99,13 @@ const { isMobile, isLandscape } = usePlatform();
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.app-route {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* 移动端为纵向：内容 + 底部标签栏上下排布。 */
