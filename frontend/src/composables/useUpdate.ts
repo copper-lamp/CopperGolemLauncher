@@ -49,6 +49,8 @@ const busy = ref(false);
 let initialized = false;
 /** 已自动投递过的版本号：同一个版本不重复投递（下载本身幂等，但会重复弹进度）。 */
 let autoDownloadedFor: string | null = null;
+let downloadFlight: Promise<void> | null = null;
+const failedVersions = new Set<string>();
 
 const phase = computed(() => status.value?.phase ?? "idle");
 
@@ -134,7 +136,7 @@ function clearProgressWhenIdle(): void {
 function maybeAutoDownload(): void {
   if (!hasUpdate.value || !autoInstallable.value) return;
   const version = latest.value?.version;
-  if (!version || version === autoDownloadedFor) return;
+  if (!version || version === autoDownloadedFor || failedVersions.has(version)) return;
   autoDownloadedFor = version;
   void download();
 }
@@ -162,17 +164,24 @@ async function check(): Promise<UpdateStatus | null> {
 }
 
 /** 把更新包投进下载队列。 */
-async function download(): Promise<void> {
+function download(): Promise<void> {
+  if (downloadFlight) return downloadFlight;
+  const version = latest.value?.version;
   busy.value = true;
-  try {
-    await updaterDownload();
-  } catch (e) {
-    // 自动投递失败时不能让「有更新」永远停在原地等一个没人点的按钮：
-    // 退回 `available` 相位并记下原因，用户点按钮即可重试。
-    showToast(describeError(e), "error", 5000);
-  } finally {
-    busy.value = false;
-  }
+  downloadFlight = (async () => {
+    try {
+      await updaterDownload();
+    } catch (e) {
+      autoDownloadedFor = null;
+      if (version) failedVersions.add(version);
+      if (status.value) status.value = {...status.value,phase:'failed',error:describeError(e),error_kind:'download'};
+      showToast(describeError(e), 'error', 5000);
+    } finally {
+      busy.value = false;
+      downloadFlight = null;
+    }
+  })();
+  return downloadFlight;
 }
 
 /** 取消下载（保留断点）。 */
@@ -207,20 +216,21 @@ async function install(): Promise<void> {
 export async function initUpdate(): Promise<void> {
   if (initialized) return;
   initialized = true;
-  try {
-    status.value = await updaterStatus();
-  } catch {
-    // 内核未就绪时保持 null，界面按「无更新」呈现。
-  }
-
+  let receivedEvent=false;
   await onUpdateStatus((next) => {
+    receivedEvent=true;
     status.value = next;
+    if (next.phase === 'failed') {
+      autoDownloadedFor = null;
+      if (next.latest?.version) failedVersions.add(next.latest.version);
+    }
     clearProgressWhenIdle();
     maybeAutoDownload();
   });
   await onDownload("progress", applyTask);
   await onDownload("status", applyTask);
   await onDownload("created", applyTask);
+  try {const initial=await updaterStatus();if(!receivedEvent){status.value=initial;maybeAutoDownload();}}catch{/* Events remain subscribed when the initial snapshot fails. */}
 
   await onUpdateReady(({ version }) => {
     const { t } = useI18n();

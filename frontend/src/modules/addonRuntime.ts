@@ -26,6 +26,7 @@ import type { RouteRecordRaw, Router } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 
 import { registerModule } from "./registry";
+import { registerSettings, disposeModuleSettings, type SettingsContribution } from '../services/settings-registry';
 
 /** 内核 `modules_frontends` 返回的一项。 */
 export interface AddonFrontendDescriptor {
@@ -51,6 +52,7 @@ export interface AddonModuleRegistration {
 export interface CopperHostBridge {
   /** 登记本模块的左导航入口与内容区路由。 */
   registerModule(registration: AddonModuleRegistration): void;
+  registerSettings(section: SettingsContribution): Promise<() => void>;
   /** 调用**本模块自身**的命令。 */
   invoke(command: string, args?: unknown): Promise<unknown>;
   registerI18n(packs: Record<string, Record<string, string>>): void;
@@ -93,6 +95,9 @@ export async function loadAddonFrontends(
   router: Router,
 ): Promise<AddonFrontendLoadReport[]> {
   const descriptors = await fetchAddonFrontends();
+  const refreshSettings = async()=>{const live=new Set((await fetchAddonFrontends()).map(d=>d.id));for(const descriptor of descriptors)if(!live.has(descriptor.id)){disposeModuleSettings(descriptor.id);await invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:'*'}).catch(()=>{});}};
+  await listen('modules-changed',()=>{void refreshSettings();});
+  await listen<Record<string,unknown>>('settings-changed',event=>{if(Object.keys(event.payload).some(key=>key.startsWith('modules.')&&key.endsWith('.enabled')))void refreshSettings();});
   const reports: AddonFrontendLoadReport[] = [];
 
   for (const descriptor of descriptors) {
@@ -102,6 +107,8 @@ export async function loadAddonFrontends(
       await import(/* @vite-ignore */ descriptor.entry_url);
       reports.push({ id: descriptor.id, loaded: true });
     } catch (error) {
+      disposeModuleSettings(descriptor.id);
+      await invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:'*'}).catch(()=>{});
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[addons] 附加模块 \`${descriptor.id}\` 的前端加载失败：${message}`);
       reports.push({ id: descriptor.id, loaded: false, error: message });
@@ -126,6 +133,13 @@ function injectStyles(descriptor: AddonFrontendDescriptor): void {
 
 function installHostBridge(descriptor: AddonFrontendDescriptor, router: Router): void {
   window.__COPPER_HOST__ = {
+    async registerSettings(section) {
+      await invoke('settings_module_register',{moduleId:descriptor.id,section});
+      try {
+        const dispose=registerSettings({id:descriptor.id,namespace:descriptor.namespace,t:(key)=>translateAddon(descriptor.namespace,key),read:(key)=>invoke('settings_module_get',{moduleId:descriptor.id,key}),write:(key,value)=>invoke('settings_module_set',{moduleId:descriptor.id,key,value})},section);
+        return ()=>{dispose();void invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:section.id}).catch(()=>{});};
+      }catch(error){await invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:section.id}).catch(()=>{});throw error;}
+    },
     registerI18n(packs) { registerAddonI18n(descriptor.namespace, packs); },
     t(key, params) { return translateAddon(descriptor.namespace, key, params); },
     locale() { return useLocaleRef().value; },

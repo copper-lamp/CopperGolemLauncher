@@ -7,71 +7,22 @@ import { Eye, EyeOff } from "@lucide/vue";
 import SettingSection from "./SettingSection.vue";
 import SettingRow from "./SettingRow.vue";
 import CoButton from "../../components/ui/CoButton.vue";
-import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
-import CoSwitch from "../../components/ui/CoSwitch.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
-import { useSettings } from "../../composables/useSettings";
 import { llmAddModel, llmClearApiKey, llmListModels, llmRemoveModel, llmSetApiKey, llmUpdateModel, type LlmModelRow } from "../../api/llm";
-import { themeState, setThemeMode, setAccent, type ThemeMode } from "../../theme";
 
 const { t, locale, setLocale, supportedLocales } = useI18n();
-const { get, set } = useSettings();
 
-const mode = computed({
-  get: () => themeState.mode,
-  set: (value: string) => void setThemeMode(value as ThemeMode),
-});
 
-const accent = computed({
-  get: () => themeState.accent,
-  set: (value: string) => {
-    themeState.accent = value;
-  },
-});
+
 
 const localeOptions = supportedLocales().map((code) => ({ value: code, label: code }));
 
-const modeOptions = [
-  { value: "auto", label: t("settings.general.theme_mode_auto") },
-  { value: "light", label: t("settings.general.theme_mode_light") },
-  { value: "dark", label: t("settings.general.theme_mode_dark") },
-];
 
-const presets = [
-  "#c97b3d",
-  "#b87333",
-  "#d9a05b",
-  "#e8b36a",
-  "#a8542a",
-  "#58a6ff",
-  "#3fb950",
-  "#d29922",
-  "#f85149",
-  "#8957e5",
-];
 
-// 下载页「历史下载」展示上限。0 = 不显示；数值取值为固定档位，避免自由输入产生
-// 无意义的展示窗口。仅影响显示，不删除任何记录（历史记录本身只在内存中）。
-const completionBadge = computed({
-  get: () => get<boolean>("download.completion_badge_enabled", true),
-  set: (value: boolean) => void set("download.completion_badge_enabled", value),
-});
-const historyLimit = computed({
-  get: () => get<number>("download.history_limit", 50),
-  set: (value: number) => void set("download.history_limit", value),
-});
 
-const historyLimitOptions = [0, 20, 50, 70, 100, 150, 200].map((n) => ({
-  value: String(n),
-  label: n === 0 ? t("settings.general.download_history_none") : t(`settings.general.download_history_${n}`),
-}));
-
-function updateHistoryLimit(value: string) {
-  historyLimit.value = Number(value);
-}
 
 async function changeLocale(code: string) {
   if (code === locale.value) return;
@@ -79,13 +30,7 @@ async function changeLocale(code: string) {
   showToast(t("common.success"), "success");
 }
 
-async function applyAccent(hex: string) {
-  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) {
-    showToast(t("toast.error", { message: hex }), "error");
-    return;
-  }
-  await setAccent(hex);
-}
+
 
 // ------------------------------------------------ LLM 模型表（内核唯一的 AI 接入读取点）
 // 每条含 显示名称（可留空）/ 接口地址 / 模型名称；密钥经密钥环存储且永不回显，
@@ -239,48 +184,10 @@ onMounted(loadLlmModels);
           @update:model-value="changeLocale"
         />
       </SettingRow>
-      <SettingRow label-key="settings.general.theme_mode">
-        <CoSegmented :model-value="mode" :options="modeOptions" @update:model-value="mode = $event as ThemeMode" />
-      </SettingRow>
-      <SettingRow
-        label-key="settings.general.completion_badge"
-        hint-key="settings.general.completion_badge_hint"
-      >
-        <CoSwitch v-model="completionBadge" />
-      </SettingRow>
-      <SettingRow
-        label-key="settings.general.download_history"
-        hint-key="settings.general.download_history_hint"
-      >
-        <CoSelect
-          :model-value="String(historyLimit)"
-          :options="historyLimitOptions"
-          @update:model-value="updateHistoryLimit"
-        />
-      </SettingRow>
+
     </SettingSection>
 
-    <SettingSection title-key="settings.general.accent_preset">
-      <SettingRow label-key="settings.general.accent_color">
-        <div class="general-tab__accent">
-          <button
-            v-for="preset in presets"
-            :key="preset"
-            :class="['general-tab__swatch', { 'general-tab__swatch--active': accent === preset }]"
-            :style="{ background: preset }"
-            :title="preset"
-            @click="applyAccent(preset)"
-          />
-          <CoTextField
-            :model-value="accent"
-            class="general-tab__accent-input"
-            @update:model-value="accent = $event"
-            @enter="applyAccent(accent)"
-            @blur="applyAccent(accent)"
-          />
-        </div>
-      </SettingRow>
-    </SettingSection>
+
 
     <SettingSection title-key="settings.general.llm">
       <div class="general-tab__llm">

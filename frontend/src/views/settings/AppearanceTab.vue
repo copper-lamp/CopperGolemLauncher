@@ -1,64 +1,11 @@
 <script setup lang="ts">
-// 个性 Tab：列表密度、动画开关、下载悬浮窗自动隐藏、渲染性能偏好。
-
-import { computed } from "vue";
-
-import SettingSection from "./SettingSection.vue";
-import SettingRow from "./SettingRow.vue";
-import CoSegmented from "../../components/ui/CoSegmented.vue";
-import CoSwitch from "../../components/ui/CoSwitch.vue";
-import { useSettings } from "../../composables/useSettings";
-import { useI18n } from "../../i18n";
-
-const { t } = useI18n();
-const { get, set } = useSettings();
-
-const density = computed({
-  get: () => get<string>("appearance.list_density", "comfortable"),
-  set: (value: string) => void set("appearance.list_density", value),
-});
-
-const animations = computed({
-  get: () => get<boolean>("appearance.animations", true),
-  set: (value: boolean) => void set("appearance.animations", value),
-});
-
-const render = computed({
-  get: () => get<string>("performance.render", "balanced"),
-  set: (value: string) => void set("performance.render", value),
-});
-
-const densityOptions = [
-  { value: "cozy", label: t("settings.appearance.list_density_cozy") },
-  { value: "comfortable", label: t("settings.appearance.list_density_comfortable") },
-  { value: "compact", label: t("settings.appearance.list_density_compact") },
-];
-
-const renderOptions = [
-  { value: "performance", label: t("settings.appearance.render_performance") },
-  { value: "balanced", label: t("settings.appearance.render_balanced") },
-  { value: "quality", label: t("settings.appearance.render_quality") },
-];
+import {computed} from 'vue';import SettingSection from './SettingSection.vue';import SettingRow from './SettingRow.vue';import CoSegmented from '../../components/ui/CoSegmented.vue';import CoSwitch from '../../components/ui/CoSwitch.vue';import CoTextField from '../../components/ui/CoTextField.vue';import CoSelect from '../../components/ui/CoSelect.vue';import {useSettings} from '../../composables/useSettings';import {useI18n} from '../../i18n';import {useSettingsText} from '../../services/settings-categories';import {themeState,setThemeMode,setAccent,type ThemeMode} from '../../theme';
+const {t}=useI18n();const st=useSettingsText();const {get,set}=useSettings();
+const density=computed({get:()=>get<string>('appearance.list_density','comfortable'),set:(v:string)=>void set('appearance.list_density',v)});const animations=computed({get:()=>get<boolean>('appearance.animations',true),set:(v:boolean)=>void set('appearance.animations',v)});const render=computed({get:()=>get<string>('performance.render','balanced'),set:(v:string)=>void set('performance.render',v)});
+const mode=computed({get:()=>themeState.mode,set:(v:string)=>void setThemeMode(v as ThemeMode)});const modeOptions=computed(()=>['auto','light','dark'].map(v=>({value:v,label:t(`settings.general.theme_mode_${v}`)})));const densityOptions=computed(()=>['cozy','comfortable','compact'].map(v=>({value:v,label:t(`settings.appearance.list_density_${v}`)})));const renderOptions=computed(()=>['performance','balanced','quality'].map(v=>({value:v,label:t(`settings.appearance.render_${v}`)})));
+const durations=[['component_enter',180],['component_exit',120],['component_press',80],['page_enter',220],['page_exit',140],['loading_enter',160],['loading_exit',120]] as const;
+function number(key:string,value:string,max:number){const n=Number(value);if(Number.isFinite(n)&&n>=0&&n<=max)void set(key,Math.round(n));}
+function accent(v:string){if(/^#[0-9a-f]{6}$/i.test(v))void setAccent(v);}
 </script>
-
-<template>
-  <div class="appearance-tab">
-    <SettingSection title-key="settings.tabs.appearance">
-      <SettingRow label-key="settings.appearance.list_density">
-        <CoSegmented :model-value="density" :options="densityOptions" @update:model-value="density = $event" />
-      </SettingRow>
-      <SettingRow label-key="settings.appearance.animations">
-        <CoSwitch :model-value="animations" @update:model-value="animations = $event" />
-      </SettingRow>
-      <SettingRow label-key="settings.appearance.render">
-        <CoSegmented :model-value="render" :options="renderOptions" @update:model-value="render = $event" />
-      </SettingRow>
-    </SettingSection>
-  </div>
-</template>
-
-<style scoped>
-.appearance-tab {
-  max-width: 640px;
-}
-</style>
+<template><div class="appearance-tab"><SettingSection title-key="settings.tabs.appearance"><SettingRow label-key="settings.general.theme_mode"><CoSelect v-model="mode" :options="modeOptions"/></SettingRow><SettingRow label-key="settings.general.accent_color"><CoTextField :model-value="themeState.accent" @update:model-value="accent"/></SettingRow><SettingRow label-key="settings.appearance.list_density"><CoSegmented v-model="density" :options="densityOptions"/></SettingRow><SettingRow label-key="settings.appearance.animations"><CoSwitch v-model="animations"/></SettingRow><SettingRow label-key="settings.appearance.render"><CoSegmented v-model="render" :options="renderOptions"/></SettingRow><label class="numeric">{{st('radius')}}<CoTextField :model-value="String(get('appearance.radius',16))" @update:model-value="number('appearance.radius',$event,32)"/></label><fieldset><legend>{{st('motion')}}</legend><label v-for="[key,fallback] in durations" :key="key" class="numeric">{{st(key)}}<CoTextField :model-value="String(get(`appearance.motion.${key}`,fallback))" @update:model-value="number(`appearance.motion.${key}`,$event,2000)"/></label></fieldset></SettingSection></div></template>
+<style scoped>.appearance-tab{max-width:720px}.numeric{display:flex;align-items:center;justify-content:space-between;gap:var(--copper-space-4);padding:var(--copper-space-3)}.numeric :deep(input){max-width:120px}fieldset{border:0;padding:var(--copper-space-3);margin:0}legend{color:var(--copper-text-secondary)}</style>

@@ -7,7 +7,13 @@
 // 弹窗要回答的问题只有一个：「现在更新并重启，还是稍后？」因此它必须同时给出
 // 决策所需的全部事实 —— 新版本号、包大小、已下载/已就绪、发行说明、失败原因。
 // 相位为 `downloading` 时按钮区域退化为「查看下载进度 / 取消」，不给重启选项。
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch, nextTick } from "vue";
+import { acquireModal, activeModalId, guardModalFocus } from '../../services/modalCoordinator';
+import {useSettingsText} from '../../services/settings-categories';
+const st=useSettingsText();
+const panel=ref<HTMLElement|null>(null);
+let releaseModal: (()=>void)|undefined;
+let releaseFocus: (()=>void)|undefined;
 import {
   AlertTriangle,
   ArrowRight,
@@ -42,6 +48,7 @@ const {
   panelOpen,
   closePanel,
   check,
+  download,
   cancel,
   install,
 } = useUpdate();
@@ -98,16 +105,14 @@ watch(panelOpen, (open) => {
  * 监听挂在 window 上：焦点在按钮时按 Esc 不触发冒泡到遮罩的 keydown（默认不可靠），
  * 直接监听最稳，且必须在关闭时解绑，否则每次开合都会多挂一个监听。
  */
-function onKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") closePanel();
-}
+
 
 watch(panelOpen, (open) => {
-  if (open) window.addEventListener("keydown", onKeydown);
-  else window.removeEventListener("keydown", onKeydown);
-});
-
-onUnmounted(() => window.removeEventListener("keydown", onKeydown));
+  if(open) releaseModal=acquireModal('update',10);
+  else {releaseFocus?.();releaseFocus=undefined;releaseModal?.();releaseModal=undefined;}
+},{immediate:true});
+watch(()=>panelOpen.value&&activeModalId.value==='update',async active=>{releaseFocus?.();releaseFocus=undefined;if(active){await nextTick();releaseFocus=guardModalFocus('update',()=>panel.value,closePanel);}});
+onUnmounted(()=>{releaseFocus?.();releaseModal?.();});
 
 async function onCheck() {
   actionError.value = null;
@@ -159,8 +164,8 @@ async function openReleasePage() {
 
 <template>
   <Teleport to="body">
-    <div v-if="panelOpen" class="update-dialog" @click.self="closePanel">
-      <div class="update-dialog__card" role="dialog" aria-modal="true">
+    <div v-if="panelOpen && activeModalId === 'update'" class="update-dialog" @click.self="closePanel">
+      <div ref="panel" tabindex="-1" class="update-dialog__card" role="dialog" aria-modal="true">
         <header class="update-dialog__header">
           <span class="update-dialog__icon" :class="`update-dialog__icon--${phase}`">
             <component :is="icon" :size="16" />
@@ -295,6 +300,10 @@ async function openReleasePage() {
               </CoButton>
             </template>
 
+            <template v-else-if="failed && latest && autoInstallable">
+              <CoButton variant="ghost" @click="closePanel">{{t('common.close')}}</CoButton>
+              <CoButton :disabled="busy" @click="download">{{st('retry')}}</CoButton>
+            </template>
             <!-- 手动安装包：只能引导，不能自动跑 -->
             <template v-else-if="manualOnly">
               <CoButton variant="ghost" @click="closePanel">{{ t("common.close") }}</CoButton>

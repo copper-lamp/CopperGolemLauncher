@@ -14,13 +14,23 @@ import { ref } from "vue";
 import { SlidersHorizontal, FolderOpen, Rocket, Palette, Blocks, Info } from "@lucide/vue";
 
 import GeneralTab from "./settings/GeneralTab.vue";
-import VersionTab from "./settings/VersionTab.vue";
+import StorageTab from "./settings/StorageTab.vue";
+import DownloadTab from "./settings/DownloadTab.vue";
+import TranslationTab from "./settings/TranslationTab.vue";
+import UpdateTab from "./settings/UpdateTab.vue";
+import PrivacyTab from "./settings/PrivacyTab.vue";
+import SettingsContributions from "./settings/SettingsContributions.vue";
+import { useSettingsText } from '../services/settings-categories';
+const st = useSettingsText();
 import LaunchTab from "./settings/LaunchTab.vue";
 import AppearanceTab from "./settings/AppearanceTab.vue";
 import ModulesTab from "./settings/ModulesTab.vue";
 import ComponentsTab from "./settings/ComponentsTab.vue";
 import AboutTab from "./settings/AboutTab.vue";
 import CoPage from "../components/layout/CoPage.vue";
+import CoSkeleton from '../components/ui/CoSkeleton.vue';
+import {useSettings} from '../composables/useSettings';
+const {loaded}=useSettings();
 import CoSplitLayout from "../components/layout/CoSplitLayout.vue";
 import { useI18n } from "../i18n";
 
@@ -29,28 +39,39 @@ const { t } = useI18n();
 /** 分类导航：图标与文案一一对应，文案仍走 i18n，不写死。 */
 const tabs = [
   { id: "general", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
-  { id: "version", titleKey: "settings.tabs.version", icon: FolderOpen },
-  { id: "launch", titleKey: "settings.tabs.launch", icon: Rocket },
   { id: "appearance", titleKey: "settings.tabs.appearance", icon: Palette },
+  { id: "storage", titleKey: "settings.tabs.version", icon: FolderOpen },
+  { id: "download", titleKey: "settings.tabs.general", icon: FolderOpen },
+  { id: "launch", titleKey: "settings.tabs.launch", icon: Rocket },
+  { id: "translation", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
   { id: "modules", titleKey: "settings.tabs.modules", icon: Blocks },
   { id: "components", titleKey: "components.title", icon: Blocks },
+  { id: "privacy", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
+  { id: "update", titleKey: "settings.tabs.about", icon: Info },
   { id: "about", titleKey: "settings.tabs.about", icon: Info },
 ] as const;
 
 const active = ref<(typeof tabs)[number]["id"]>("general");
+function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const index=tabs.findIndex(tab=>tab.id===id);const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:['ArrowDown','ArrowRight'].includes(event.key)?(index+1)%tabs.length:['ArrowUp','ArrowLeft'].includes(event.key)?(index+tabs.length-1)%tabs.length:-1;if(next<0)return;event.preventDefault();active.value=tabs[next]!.id;const buttons=(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]');buttons?.[next]?.focus();}
 </script>
 
 <template>
   <CoPage>
     <CoSplitLayout aside-position="start" aside-width="var(--copper-subnav-w)">
       <div class="settings__body">
-        <GeneralTab v-if="active === 'general'" />
-        <VersionTab v-else-if="active === 'version'" />
+        <CoSkeleton v-if="!loaded" variant="settings" :label="t('common.loading')" />
+        <GeneralTab v-else-if="active === 'general'" />
+        <StorageTab v-else-if="active === 'storage'" />
+        <DownloadTab v-else-if="active === 'download'" />
+        <TranslationTab v-else-if="active === 'translation'" />
+        <PrivacyTab v-else-if="active === 'privacy'" />
+        <UpdateTab v-else-if="active === 'update'" />
         <LaunchTab v-else-if="active === 'launch'" />
         <AppearanceTab v-else-if="active === 'appearance'" />
         <ModulesTab v-else-if="active === 'modules'" />
         <ComponentsTab v-else-if="active === 'components'" />
         <AboutTab v-else />
+        <SettingsContributions :category="active" />
       </div>
 
       <template #aside>
@@ -61,11 +82,13 @@ const active = ref<(typeof tabs)[number]["id"]>("general");
             type="button"
             role="tab"
             :aria-selected="active === tab.id"
+            :tabindex="active === tab.id ? 0 : -1"
+            @keydown="navigateTab($event,tab.id)"
             :class="['settings__nav-item', { 'settings__nav-item--active': active === tab.id }]"
             @click="active = tab.id"
           >
             <component :is="tab.icon" :size="15" class="settings__nav-icon" />
-            <span class="settings__nav-label">{{ t(tab.titleKey) }}</span>
+            <span class="settings__nav-label">{{ st(tab.id) }}</span>
           </button>
         </nav>
       </template>

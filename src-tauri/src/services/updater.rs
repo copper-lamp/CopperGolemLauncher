@@ -197,6 +197,7 @@ pub struct UpdaterService {
     client: Client,
     current_version: String,
     status: Arc<Mutex<UpdateStatus>>,
+    download_gate: tokio::sync::Mutex<()>,
 }
 
 impl UpdaterService {
@@ -220,6 +221,7 @@ impl UpdaterService {
             client,
             current_version: current.clone(),
             status: Arc::new(Mutex::new(UpdateStatus::idle(&current))),
+            download_gate: tokio::sync::Mutex::new(()),
         };
         service.track_download();
         service
@@ -396,6 +398,7 @@ impl UpdaterService {
     /// 幂等：已处于 `Downloading` 时返回既有任务 id，不重复投递
     /// （避免用户连点两次装出两个任务各下一份）。
     pub async fn download(&self) -> Result<u64, KernelError> {
+        let _gate = self.download_gate.lock().await;
         let info = {
             let st = self.status.lock();
             if let (UpdatePhase::Downloading, Some(id)) = (st.phase, st.download_task_id) {
@@ -411,7 +414,10 @@ impl UpdaterService {
             ));
         }
         let expected_sha256 = self.resolve_sha256(&info).await?;
-
+        let mut st = self.status.lock();
+        if !st.latest.as_ref().is_some_and(|current| current.version == info.version && current.download_url == info.download_url) {
+            return Err(KernelError::Updater("Update changed while verifying download; check again".into()));
+        }
         let dir = self.paths.cache_dir().join("updates");
         std::fs::create_dir_all(&dir)?;
         let dest = dir.join(&info.asset_name);
@@ -427,7 +433,6 @@ impl UpdaterService {
             },
         )?;
 
-        let mut st = self.status.lock();
         st.phase = UpdatePhase::Downloading;
         st.download_task_id = Some(task_id);
         st.error = None;

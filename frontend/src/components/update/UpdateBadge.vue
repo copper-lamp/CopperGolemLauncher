@@ -14,7 +14,7 @@
 // 区分状态改用**进度环**（环的角度就是字节进度，零占用），文案只在真正需要
 // 用户决策的「已完成」态出现。
 import { computed } from "vue";
-import { ArrowDownToLine } from "@lucide/vue";
+import { ArrowDownToLine, LoaderCircle } from "@lucide/vue";
 
 import { useUpdate } from "../../composables/useUpdate";
 import { useI18n } from "../../i18n";
@@ -87,7 +87,8 @@ const title = computed(() => {
           :style="{ strokeDasharray: CIRCUMFERENCE, strokeDashoffset: dashOffset }"
         />
       </svg>
-      <ArrowDownToLine class="update-badge__icon" :size="15" />
+      <LoaderCircle v-if="downloading" class="update-badge__icon update-badge__spinner" :size="16" />
+      <ArrowDownToLine v-else class="update-badge__icon" :size="15" />
     </span>
     <span v-if="expanded" class="update-badge__label">{{ label }}</span>
   </button>
@@ -107,13 +108,13 @@ const title = computed(() => {
     padding var(--copper-duration) var(--copper-easing),
     background-color var(--copper-duration-fast) var(--copper-easing),
     box-shadow var(--copper-duration) var(--copper-easing);
-  background: var(--copper-update-blue);
+  background: #40a9e8;
   color: #ffffff;
   cursor: pointer;
 }
 
 .update-badge:hover {
-  background: var(--copper-update-blue-hover);
+  background: #278bc8;
 }
 
 .update-badge:active {
@@ -142,6 +143,10 @@ const title = computed(() => {
   border-radius: var(--copper-radius-full);
 }
 
+.update-badge__spinner{animation:update-eccentric 1s linear infinite;transform-box:view-box;transform-origin:50% 50%}
+@keyframes update-eccentric{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.update-badge__spinner,.update-badge--pulse .update-badge__ring-bar,.update-badge__label{animation:none}}
+:global(html[data-motion= reduced]) .update-badge__spinner,:global(html[data-motion= reduced]) .update-badge__ring-bar,:global(html[data-motion= reduced]) .update-badge__label{animation:none}
 .update-badge__icon {
   color: #ffffff;
   stroke-width: 2;
@@ -176,6 +181,8 @@ const title = computed(() => {
 /* 总量未知：环整体缓慢转动，表达「在动但不知道还剩多少」。 */
 .update-badge--pulse .update-badge__ring-bar {
   animation: update-badge-spin 1.4s linear infinite;
+  transform-box: view-box;
+  transform-origin: 50% 50%;
   stroke-dasharray: 26 60 !important;
 }
 
