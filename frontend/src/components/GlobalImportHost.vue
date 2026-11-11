@@ -12,12 +12,16 @@ import { showToast } from '../composables/useToast';
 import { enqueueImports, importQueue, retireImport } from '../services/import-queue';
 import { useImportText } from '../services/import-messages';
 import { compareImportVersions } from '../services/import-version';
+import { acquireModal, activeModalId, isModalActive } from '../services/modalCoordinator';
 const text = useImportText();
+let releaseModal: (() => void) | undefined;
 const route = useRoute();
 const settings = useSettings();
 const { isKernelReady } = useKernelReady();
 const current = computed(() => importQueue.value[0] ?? null);
 const panel = ref<HTMLElement | null>(null);
+watch(() => !!current.value, value => { if (value) releaseModal = acquireModal('global-import', 10); else { releaseModal?.(); releaseModal = undefined; } }, { immediate: true });
+watch(activeModalId, async id => { if (id === 'global-import') { await nextTick(); panel.value?.focus(); } });
 const instances = ref<VersionView[]>([]);
 const instance = ref('');
 const loading = ref(false);
@@ -56,9 +60,9 @@ async function loadInstances() {
 }
 watch(() => current.value?.ticket, async (ticket, oldTicket) => {
   replace.value = false; acknowledge.value = false; conflict.value = false; errorText.value = ''; instance.value = ''; loading.value = false;
-  if (!ticket) { previousFocus?.focus(); return; }
+  if (!ticket) { if (!activeModalId.value) previousFocus?.focus(); return; }
   if (!oldTicket) previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  await nextTick(); panel.value?.focus();
+  await nextTick(); if (isModalActive('global-import')) panel.value?.focus();
   if (!modulePackage.value) await loadInstances();
 });
 watch(instance, () => { conflict.value = false; replace.value = false; errorText.value = ''; });
@@ -82,6 +86,7 @@ async function commit() {
   } finally { busy.value = false; }
 }
 function keydown(event: KeyboardEvent) {
+  if (!isModalActive('global-import')) return;
   if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); void cancel(); }
   if (event.key !== 'Tab') return;
   const nodes = panel.value?.querySelectorAll<HTMLElement>('button:not(:disabled),select:not(:disabled),input:not(:disabled),summary,[tabindex="0"]');
@@ -117,12 +122,12 @@ onMounted(async () => {
     if (disposed) off(); else offDrop = off;
   } catch { /* Native file drops are unavailable in a plain browser. */ }
 });
-onUnmounted(() => { disposed = true; if (timer) clearInterval(timer); offDrop?.(); window.removeEventListener('focus', focus); });
+onUnmounted(() => { releaseModal?.(); disposed = true; if (timer) clearInterval(timer); offDrop?.(); window.removeEventListener('focus', focus); });
 </script>
 <template>
   <Teleport to="body">
     <div v-if="dragging" class="import-drop" role="status"><Upload :size="32" />{{ text('drop') }}</div>
-    <div v-if="current" class="import-mask" @keydown="keydown">
+    <div v-if="current && isModalActive('global-import')" class="import-mask" @keydown="keydown">
       <section ref="panel" class="import-panel" role="dialog" aria-modal="true" aria-labelledby="global-import-title" tabindex="-1" :aria-busy="busy">
         <header><PackageOpen :size="24" /><h2 id="global-import-title">{{ text('title') }}</h2><button :disabled="busy" :aria-label="text('cancel')" @click="cancel"><X :size="18" /></button></header>
         <p class="import-kind">{{ text(current.kind) }}</p><h3>{{ current.name }}</h3>

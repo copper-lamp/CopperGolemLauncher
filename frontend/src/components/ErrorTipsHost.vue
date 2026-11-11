@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { AlertTriangle, Copy, Settings, ListChecks, X } from '@lucide/vue';
 import { useRouter } from 'vue-router';
 import { activeErrorReport, contributedText, diagnosticText } from '../services/errtips';
 import { errtipText } from '../services/errtips-messages';
 import { t, useLocaleRef } from '../i18n';
+import { acquireModal, activeModalId, isModalActive } from '../services/modalCoordinator';
 const locale = useLocaleRef();
+let releaseModal: (() => void) | undefined;
 const router = useRouter();
 function navigate(target: 'settings' | 'downloads') {
   void router.push(target === 'settings' ? '/settings' : '/downloads');
@@ -20,11 +22,14 @@ const diagnostic = computed(() => report.value ? diagnosticText(report.value) : 
 const contribution = computed(() => report.value ? contributedText(report.value) : undefined);
 watch(report, async value => {
   feedback.value = '';
-  if (value) { previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; await nextTick(); panel.value?.focus(); }
-  else previousFocus?.focus();
+  if (value) { if (!releaseModal) releaseModal = acquireModal('error-tips', 10); previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; await nextTick(); if (isModalActive('error-tips')) panel.value?.focus(); }
+  else { releaseModal?.(); releaseModal = undefined; if (!activeModalId.value) previousFocus?.focus(); }
 });
+onUnmounted(() => releaseModal?.());
 function close() { report.value = null; }
+watch(activeModalId, async id => { if (id === 'error-tips') { await nextTick(); panel.value?.focus(); } });
 function keydown(event: KeyboardEvent) {
+  if (!isModalActive('error-tips')) return;
   if (event.key === 'Escape') { event.stopPropagation(); close(); }
   if (event.key !== 'Tab') return;
   const nodes = panel.value?.querySelectorAll<HTMLElement>('button, textarea, [tabindex="0"]');
@@ -40,7 +45,7 @@ async function copy() {
 </script>
 <template>
   <Teleport to="body">
-    <div v-if="report" class="errtips-mask" @keydown="keydown">
+    <div v-if="report && isModalActive('error-tips')" class="errtips-mask" @keydown="keydown">
       <section ref="panel" class="errtips-panel" role="dialog" aria-modal="true" aria-labelledby="errtips-title" aria-describedby="errtips-body" tabindex="-1">
         <header><AlertTriangle :size="22" /><h2 id="errtips-title">{{ contribution ? t(contribution.titleKey) : text('title') }}</h2><button :aria-label="text('close')" @click="close"><X :size="18" /></button></header>
         <p id="errtips-body">{{ contribution ? t(contribution.bodyKey) : text(report.rule) }}</p>
