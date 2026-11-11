@@ -445,9 +445,11 @@ fn launch_compatibility(ctx:&LaunchCtx,name:&str,dir:&std::path::Path,meta:&Vers
     let _guard=BOUND_LAUNCH.lock().map_err(|_|KernelError::Module("compat_launch_lock".into()))?;
     let spec=super::compatibility::resolve(dir)?;
     if is_process_running_at_path(&spec.executable){return Err(KernelError::InvalidArgument("compat_game_running".into()));}
-    std::fs::create_dir_all(super::isolate::data_dir(dir,meta))?;
     super::inject::ensure_hook_dll(dir)?;
     let mut env=hook_env(dir,meta); env.retain(|(k,_)|k!="COPPER_HOOK_LOAD_PRELOADER");
+    for (key,value) in [("COPPER_HOOK_ROOT",spec.source_root.clone()),("COPPER_HOOK_DATA_DIR",spec.shared.data.clone()),("COPPER_HOOK_TEMP",spec.shared.temp.clone()),("COPPER_HOOK_WINRT_ROOT",spec.source_root.clone()),("COPPER_HOOK_LOG_ROOT",dir.to_path_buf())] {env.retain(|(k,_)|k!=key);env.push((key.into(),value.to_string_lossy().into_owned()));}
+    let ready=dir.join(format!("hook-ready-{}",uuid::Uuid::new_v4()));
+    env.push(("COPPER_HOOK_READY_FILE".into(),ready.to_string_lossy().into_owned()));
     env.push(("COPPER_HOOK_HOST_EXE".into(),spec.executable.to_string_lossy().into_owned()));
     let pid=spawn_game(&spec.executable,&spec.source_root,&[],&env,&super::inject::hook_dll_path(dir),true,false)?;
     // Source leases deny ordinary replacement during this process; another launcher has no cooperative lock contract.

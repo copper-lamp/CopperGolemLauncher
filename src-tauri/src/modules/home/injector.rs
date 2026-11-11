@@ -490,8 +490,17 @@ pub fn launch_with_injection(
     let pid = info.dwProcessId;
 
     inject_into(&suspended, dll)?;
+    if let Some((_,ready))=env.iter().find(|(key,_)|key=="COPPER_HOOK_READY_FILE") {
+        wait_hook_ready(Path::new(ready),std::time::Duration::from_secs(15))?;
+    }
     suspended.resume();
     Ok(pid)
+}
+
+fn wait_hook_ready(path:&Path,timeout:std::time::Duration)->Result<(),KernelError>{
+    let start=std::time::Instant::now();
+    let result=loop{match std::fs::read(path){Ok(bytes)=>{let value=String::from_utf8_lossy(&bytes);break if value.trim()=="ready"{Ok(())}else{{log::error!("[home/injector] shared hook initialization: {}",value.trim().chars().take(160).collect::<String>());Err(KernelError::InvalidArgument("compat_hook_initialization_failed".into()))} };},Err(e)if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>break Err(e.into())}if start.elapsed()>=timeout{break Err(KernelError::InvalidArgument("compat_hook_initialization_timeout".into()));}std::thread::sleep(std::time::Duration::from_millis(25));};
+    let _=std::fs::remove_file(path);result
 }
 
 /// 普通启动：不挂起、不注入。
@@ -701,6 +710,14 @@ mod tests {
         let kernel =
             unsafe { GetModuleHandleW(PCWSTR(super::wide("kernel32.dll").as_ptr())) }.ok()?;
         unsafe { GetProcAddress(kernel, PCSTR(name.as_ptr())) }
+    }
+
+    #[test]
+    fn shared_hook_ready_requires_success_and_times_out_closed() {
+        let root=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());std::fs::create_dir_all(&root).unwrap();let path=root.join("ready");
+        std::fs::write(&path,b"ready").unwrap();assert!(super::wait_hook_ready(&path,std::time::Duration::from_millis(1)).is_ok());assert!(!path.exists());
+        std::fs::write(&path,b"error:winrt_init_failed").unwrap();assert!(super::wait_hook_ready(&path,std::time::Duration::from_millis(1)).is_err());assert!(!path.exists());
+        assert!(super::wait_hook_ready(&path,std::time::Duration::from_millis(1)).unwrap_err().to_string().contains("compat_hook_initialization_timeout"));std::fs::remove_dir(root).unwrap();
     }
 
     #[test]

@@ -90,6 +90,7 @@ pub struct ContentItem {
 pub fn content_roots(kernel: &KernelContext, name: &str) -> Result<ContentRoots, KernelError> {
     let dir = resolve_version_dir(&kernel.versions_root(), name)?;
     let meta = read_meta_for(&dir, name)?;
+    if super::compatibility::is_bound(&dir) { return bound_content_roots(&dir); }
     Ok(isolate::content_roots_existing(&dir, &meta))
 }
 
@@ -103,9 +104,16 @@ pub fn content_roots_for_write(
 ) -> Result<ContentRoots, KernelError> {
     let dir = resolve_version_dir(&kernel.versions_root(), name)?;
     let meta = read_meta_for(&dir, name)?;
+    if super::compatibility::is_bound(&dir) {
+        // Sensitive writes revalidate the entire source binding before resolving the same shared roots.
+        let _spec=super::compatibility::resolve(&dir)?;
+        return bound_content_roots(&dir);
+    }
     isolate::ensure_skeleton(&dir, &meta)?;
     Ok(isolate::content_roots(&dir, &meta))
 }
+
+fn bound_content_roots(control:&Path)->Result<ContentRoots,KernelError>{let shared=super::compatibility::shared_data(control)?;super::compatibility::require_unambiguous_player(&shared.users)?;Ok(ContentRoots{com_mojang:shared.shared,users_root:shared.users,worlds:None})}
 
 /// 读取实例元数据，缺失即报错（带实例名，便于前端定位）。
 fn read_meta_for(dir: &Path, name: &str) -> Result<VersionMeta, KernelError> {
@@ -312,6 +320,11 @@ pub fn worlds_dir(
     name: &str,
     create: bool,
 ) -> Result<PathBuf, KernelError> {
+    let control=resolve_version_dir(&kernel.versions_root(),name)?;
+    if super::compatibility::is_bound(&control){
+        // Opening Users needs no account choice and never invents a world directory.
+        return Ok(super::compatibility::shared_data(&control)?.users);
+    }
     let roots = content_roots_for_write(kernel, name)?;
     let dir = first_player_worlds_dir(&roots).unwrap_or_else(|| {
         // UWP：世界目录就是 `com.mojang/minecraftWorlds`，不能再拼一层 `games`。

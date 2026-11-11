@@ -259,7 +259,8 @@ extern "system" fn worker_main() -> u32 {
     };
 
     // 3) 日志必须在「读/写实例目录」之前就绪，否则第一次报错无处可查。
-    log::init(&plan.root.join(HOOK_LOG_FILE_NAME));
+    let log_root = std::env::var_os("COPPER_HOOK_LOG_ROOT").map(PathBuf::from).unwrap_or_else(|| plan.root.clone());
+    log::init(&log_root.join(HOOK_LOG_FILE_NAME));
     log::line("INFO", &format!("注入侧就绪，abi={HOOK_ABI_VERSION}"));
     log::line(
         "INFO",
@@ -305,13 +306,68 @@ extern "system" fn worker_main() -> u32 {
     // PeEditor 原本把 PreLoader.dll 写进 exe 导入表来强制加载；这里改由
     // hook 在远程注入后、游戏主线程恢复前手动 LoadLibrary，exe 保持原版。
     // Bound originals never execute a loader or preload manifest, including inherited environment values.
-    if std::env::var_os("COPPER_HOOK_HOST_EXE").is_some() { return 0; }
+    if std::env::var_os("COPPER_HOOK_HOST_EXE").is_some() {
+        // Shared bindings support unregistered standard GDK: its directory contract is
+        // KnownFolder + GetTempPath, not identity-dependent ApplicationData.Current.
+        let result = shared_gdk_ready(&plan);
+        let status = match result { Ok(()) => "ready".to_owned(), Err(code) => format!("error:{code}") };
+        if let Err(error) = publish_ready(&status) { log::line("ERROR", &format!("启动握手失败: {error}")); }
+        return 0;
+    }
     load_preloader(&plan);
 
     // 7) 预加载
     let manifest_path = paths::manifest_path(&plan, &env_reader());
     run_preload(&plan, &manifest_path);
     0
+}
+
+fn complete_directory_hooks(installed: [bool; 3]) -> bool {
+    installed.into_iter().all(|value| value)
+}
+
+fn shared_gdk_ready(plan: &RedirectPlan) -> Result<(), &'static str> {
+    if [&plan.root, &plan.data, &plan.temp].into_iter().any(|path| !path.is_absolute() || !path.is_dir()) {
+        return Err("shared_paths");
+    }
+    let base = unsafe { sys::GetModuleHandleW(ptr::null()) };
+    if base.is_null() { return Err("directory_hooks"); }
+    // Re-read actual IAT slots: counters or historical success do not establish readiness.
+    let scan = unsafe { iat::scan_main_imports(base as *mut u8, REQUESTS) };
+    let mut installed = [false; 3];
+    for hit in &scan.hits {
+        let index = match REQUESTS[hit.request].function {
+            "SHGetKnownFolderPath" => 0,
+            "GetTempPathA" => 1,
+            "GetTempPathW" => 2,
+            _ => continue,
+        };
+        if unsafe { *hit.slot.slot } == hook_for(hit.request) { installed[index] = true; }
+    }
+    if !complete_directory_hooks(installed) { return Err("directory_hooks"); }
+    Ok(())
+}
+
+#[cfg(test)]
+mod shared_gdk_tests {
+    #[test]
+    fn readiness_requires_every_real_directory_api() {
+        assert!(super::complete_directory_hooks([true, true, true]));
+        for missing in 0..3 {
+            let mut installed = [true; 3]; installed[missing] = false;
+            assert!(!super::complete_directory_hooks(installed));
+        }
+    }
+}
+
+fn publish_ready(status: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("COPPER_HOOK_READY_FILE").map(PathBuf::from) else { return Ok(()); };
+    if !path.is_absolute() { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "ready path must be absolute")); }
+    let temporary = path.with_extension("hook-pending");
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    file.write_all(status.as_bytes())?; file.sync_all()?; drop(file);
+    std::fs::rename(temporary, path)
 }
 
 /// 加载实例目录下的 `PreLoader.dll`（仅 `COPPER_HOOK_LOAD_PRELOADER` 设置时）。
@@ -752,6 +808,12 @@ unsafe extern "system" fn hook_sh_get_known_folder_path(
     output: *mut *mut u16,
 ) -> sys::HRESULT {
     if let Some(plan) = PLAN.get().and_then(|slot| slot.clone()) {
+        // Standard shared GDK matches the source launcher's LocalAppData contract.
+        // Keep ordinary Copper instances' existing behavior unchanged.
+        if !redirect_disabled() && std::env::var_os("COPPER_HOOK_HOST_EXE").is_some()
+            && guid_eq(rfid, &sys::FOLDERID_LOCAL_APP_DATA) {
+            return allocate_path("", output);
+        }
         if !redirect_disabled() && guid_eq(rfid, &sys::FOLDERID_ROAMING_APP_DATA) {
             let roaming = plan.root.to_string_lossy().into_owned();
             note_first_call(

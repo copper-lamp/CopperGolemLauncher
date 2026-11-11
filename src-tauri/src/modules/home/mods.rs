@@ -99,8 +99,15 @@ pub(crate) fn mods_dir_at(version_dir: &Path) -> PathBuf {
     version_dir.join(MODS_DIR)
 }
 
+fn ensure_mod_management_allowed(version_dir:&Path)->Result<(),KernelError>{if super::compatibility::is_bound(version_dir){return Err(KernelError::InvalidArgument("compat_mode_unsupported".into()));}Ok(())}
+
+#[cfg(test)]
+#[test]
+fn bound_mod_management_rejected_without_creating_private_mods(){let root=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());std::fs::create_dir_all(&root).unwrap();std::fs::write(root.join("copper-external-binding.json"),b"{}").unwrap();assert!(ensure_mod_management_allowed(&root).unwrap_err().to_string().contains("compat_mode_unsupported"));assert!(!root.join(MODS_DIR).exists());std::fs::remove_dir_all(root).unwrap();}
+
 pub fn mods_dir(kernel: &KernelContext, name: &str, create: bool) -> Result<PathBuf, KernelError> {
     let version_dir = resolve_version_dir(&kernel.versions_root(), name)?;
+    ensure_mod_management_allowed(&version_dir)?;
     if !version_dir.is_dir() {
         return Err(KernelError::InvalidArgument(format!("版本 `{name}` 不存在")));
     }
