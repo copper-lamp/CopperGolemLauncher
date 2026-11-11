@@ -73,7 +73,7 @@ pub fn list_frontends(kernel: &KernelContext) -> Vec<AddonFrontendView> {
         if !is_valid_module_id(id) {
             continue;
         }
-        if !kernel.modules().is_enabled(kernel, id) {
+        if !kernel.modules().is_enabled(kernel, id) || !kernel.modules().is_running(id) {
             continue;
         }
         // 读清单拿命名空间与入口名。

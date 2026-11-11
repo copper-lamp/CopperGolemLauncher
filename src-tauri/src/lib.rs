@@ -381,7 +381,8 @@ pub fn run() {
                 );
             }
 
-            kernel.modules().boot(&kernel);
+            // 内置能力先就绪；第三方初始化不占用 Tauri setup/IPC 注册线程。
+            kernel.modules().boot_builtins(&kernel);
 
             // 启动期更新检查：延迟发起、全程后台、失败静默（不阻塞启动）。
             // 先克隆一份 `Arc`：`manage` 会取走 `kernel` 本体，而这一步要在
@@ -392,6 +393,13 @@ pub fn run() {
             imports.receive(std::env::args_os().skip(1).map(std::path::PathBuf::from));
             app.manage(imports);
             app.manage(kernel);
+            log::info!("[kernel] 内置模块与 IPC 状态已就绪；附加模块将后台启动");
+            let app_for_addons = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let kernel = app_for_addons.state::<KernelContext>();
+                kernel.modules().boot_addons(kernel.inner());
+                log::info!("[kernel] 附加模块后台启动阶段已完成");
+            });
             updater_for_boot.spawn_background_check();
             // lipd更新只由界面挂载后的components_ui_ready触发，启动不等待任何检查。
 
@@ -570,6 +578,13 @@ pub fn run() {
             commands::game_download::android_game_take_exit,
             commands::game_download::android_apk_pick_result,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(kernel) = app.try_state::<KernelContext>() {
+                    kernel.modules().shutdown(kernel.inner());
+                }
+            }
+        });
 }

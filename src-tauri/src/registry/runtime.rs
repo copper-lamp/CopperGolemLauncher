@@ -152,7 +152,9 @@ impl NodeRuntimeSession {
         self.write_frame(&host_hello_frame())?;
         let deadline = std::time::Instant::now() + NODE_HANDSHAKE_TIMEOUT;
         loop {
-            let frame = self.receive_until(deadline)?;
+            let frame = self.receive_until(deadline).map_err(|error| {
+                KernelError::Module(format!("Node runtime hello 协商失败（module: {}, deadline: 5s）: {error}", self.module_id))
+            })?;
             match frame {
                 WireFrame::Hello { .. } => {
                     let version = negotiate_hello(&frame).map_err(|error| {
@@ -189,7 +191,9 @@ impl NodeRuntimeSession {
         self.write_frame(&WireFrame::request(id.clone(), method, params))?;
         let deadline = std::time::Instant::now() + NODE_REQUEST_TIMEOUT;
         loop {
-            let frame = self.receive_until(deadline)?;
+            let frame = self.receive_until(deadline).map_err(|error| {
+                KernelError::Module(format!("Node runtime 请求 `{method}` 失败（module: {}, deadline: 30s）: {error}", self.module_id))
+            })?;
             match frame {
                 WireFrame::Event { .. } => {
                     // 事件是单向流式输出，不占请求关联：先入队，继续等本次响应。
@@ -447,7 +451,14 @@ impl NodeRuntimeSession {
         match self.frames.recv_timeout(remaining) {
             Ok(Ok(frame)) => Ok(frame),
             Ok(Err(error)) => Err(KernelError::Module(format!("Node runtime NDJSON 无效: {error}"))),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(KernelError::Module("等待 Node runtime 响应超时".into())),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let tail = self.stderr_tail();
+                Err(KernelError::Module(if tail.trim().is_empty() {
+                    "等待 Node runtime 响应超时（进程未提供 stderr 诊断）".into()
+                } else {
+                    format!("等待 Node runtime 响应超时；stderr tail: {}", tail.trim())
+                }))
+            },
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(self.disconnected_error()),
         }
     }
@@ -867,7 +878,11 @@ mod tests {
             wire_protocol: Some(test_wire_protocol()),
         };
 
-        assert_eq!(resolve_runtime_entry(&module_dir, &runtime).unwrap(), fs::canonicalize(entry).unwrap());
+        let resolved = resolve_runtime_entry(&module_dir, &runtime).unwrap();
+        // Node 接收的 Windows 路径去掉 verbatim 前缀；仍须解析到同一真实文件。
+        assert_eq!(fs::canonicalize(&resolved).unwrap(), fs::canonicalize(entry).unwrap());
+        #[cfg(windows)]
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
         assert!(resolve_runtime_entry(&module_dir, &RuntimeSpec { entry: "runtime/missing.mjs".into(), ..runtime }).is_err());
     }
 

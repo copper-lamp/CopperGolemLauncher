@@ -143,6 +143,8 @@ pub struct ModuleRegistry {
     states: RwLock<HashMap<String, ModuleState>>,
     errors: RwLock<HashMap<String, String>>,
     origins: RwLock<HashMap<String, ModuleOrigin>>,
+    lifecycle: parking_lot::Mutex<()>,
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 /// 合法模块 id 形态的**单一来源**在 `copper-module-abi::module_id`：内核、helper
@@ -204,6 +206,8 @@ impl ModuleRegistry {
             states: RwLock::new(HashMap::new()),
             errors: RwLock::new(HashMap::new()),
             origins: RwLock::new(HashMap::new()),
+            lifecycle: parking_lot::Mutex::new(()),
+            stopping: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -229,19 +233,52 @@ impl ModuleRegistry {
             .unwrap_or(ModuleOrigin::Addon)
     }
 
-    /// 依次装载全部已启用模块：`init` → `start`。任一失败即中止并标记 Failed。
+    /// 依次启动全部模块；失败仅标记对应模块，不中断其它模块。
     pub fn boot(&self, kernel: &KernelContext) {
+        self.boot_origin(kernel, None);
+    }
+
+    pub fn boot_builtins(&self, kernel: &KernelContext) {
+        self.boot_origin(kernel, Some(ModuleOrigin::Builtin));
+    }
+
+    pub fn boot_addons(&self, kernel: &KernelContext) {
+        self.boot_origin(kernel, Some(ModuleOrigin::Addon));
+    }
+
+    fn boot_origin(&self, kernel: &KernelContext, origin: Option<ModuleOrigin>) {
+        let _lifecycle = self.lifecycle.lock();
         let modules = self.modules.read().clone();
         for m in modules {
-            if !self.is_enabled(kernel, m.id()) {
+            if self.stopping.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if origin.is_some_and(|origin| self.origin_of(m.id()) != origin)
+                || !self.is_enabled(kernel, m.id()) {
+                continue;
+            }
+            if self.is_running(m.id()) {
                 continue;
             }
             let result = m.init(kernel).and_then(|_| m.start(kernel));
             match result {
                 Ok(()) => {
-                    self.states.write().insert(m.id().to_string(), ModuleState::Running);
+                    if self.stopping.load(std::sync::atomic::Ordering::Acquire)
+                        || !self.is_enabled(kernel, m.id()) {
+                        if let Err(error) = m.stop(kernel) {
+                            log::error!("module {} failed to stop after boot cancellation: {error}", m.id());
+                        }
+                        self.states.write().insert(m.id().to_string(), ModuleState::Stopped);
+                    } else {
+                        self.errors.write().remove(m.id());
+                        self.states.write().insert(m.id().to_string(), ModuleState::Running);
+                    }
                 }
                 Err(e) => {
+                    // init 可能已创建子进程；start/ping 失败必须立即回收。
+                    if let Err(cleanup) = m.stop(kernel) {
+                        log::error!("module {} failed to clean up failed boot: {cleanup}", m.id());
+                    }
                     self.states
                         .write()
                         .insert(m.id().to_string(), ModuleState::Failed);
@@ -249,11 +286,14 @@ impl ModuleRegistry {
                     log::error!("module {} failed to boot: {e}", m.id());
                 }
             }
+            kernel.events().publish("modules-changed", serde_json::json!({ "id": m.id() }));
         }
     }
 
     /// 逆序停止全部模块（应用退出时调用）。
     pub fn shutdown(&self, kernel: &KernelContext) {
+        self.stopping.store(true, std::sync::atomic::Ordering::Release);
+        let _lifecycle = self.lifecycle.lock();
         let modules = self.modules.read().clone();
         for m in modules.iter().rev() {
             if let Err(e) = m.stop(kernel) {
@@ -393,6 +433,7 @@ impl ModuleRegistry {
     ///
     /// 返回是否确有注册项被清除。
     pub fn unregister(&self, id: &str) -> Result<bool, KernelError> {
+        let _lifecycle = self.lifecycle.lock();
         if let Some(ModuleState::Running) = self.states.read().get(id).copied() {
             return Err(KernelError::Module(format!(
                 "模块 `{id}` 正在运行，无法注销：请先停止该模块"
