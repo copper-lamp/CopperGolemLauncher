@@ -7,6 +7,7 @@
 // - 导航项与桌面保持同一份来源（模块注册表 + 内核 Downloads / Settings），
 //   两态布局不产生第二套导航定义。
 
+import { computed } from "vue";
 import { RouterLink } from "vue-router";
 import { useRoute } from "vue-router";
 import NavIcon from "./NavIcon.vue";
@@ -18,7 +19,7 @@ import { useI18n } from "../i18n";
 import { getModuleNav } from "../modules/registry";
 
 const { t } = useI18n();
-const moduleNav = getModuleNav();
+const moduleNav = computed(getModuleNav);
 </script>
 
 <template>

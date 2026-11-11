@@ -68,8 +68,6 @@ const KERNEL_STEP_TIMEOUT_MS = 5000;
  */
 const IPC_BRIDGE_TIMEOUT_MS = 10000;
 
-/** 附加模块前端装载超时（与改造前保持一致：模块不该拖慢启动）。 */
-const ADDON_BOOTSTRAP_TIMEOUT_MS = 3000;
 
 // 最早安装：引导期异常发生在首帧之前，晚一步就只剩「卡加载」这一个现象。
 installBootDiagnostics();
@@ -171,32 +169,25 @@ async function probeKernel(): Promise<void> {
   }
 }
 
-// 1) 先把界面点亮：本地装配 + 挂载不依赖任何 IPC。
-// 附加模块前端必须在挂载**之前**登记（左导航与路由表在首次渲染时被读取），
-// 因此这里只等一个带超时的模块装配，最多多等 ADDON_BOOTSTRAP_TIMEOUT_MS。
-beginStep("addons", "boot.error.step.addons");
-await Promise.race([
-  loadAddonFrontends(router),
-  new Promise<never>((_, reject) =>
-    window.setTimeout(
-      () => reject(new Error(`addon bootstrap timeout after ${ADDON_BOOTSTRAP_TIMEOUT_MS}ms`)),
-      ADDON_BOOTSTRAP_TIMEOUT_MS,
-    ),
-  ),
-])
-  .then(() => endStep("addons"))
-  .catch((error) => {
-    // 单个模块失败不该阻断内置界面（见 addonRuntime 的错误隔离）。
-    failStep("addons", error);
-    logBoot("warn", `附加模块前端装配失败：${String(error)}`);
-    forward(`addon frontend bootstrap failed: ${String(error)}`);
-  });
-
+// 核心挂载完全不等待附加模块或 IPC。
 app.mount("#app");
 markKernelReady();
 // Never await component updates in the boot chain; backend runs once per process.
 void initComponentUpdates().catch((error: unknown) => logBoot('warn', `component observation: ${String(error)}`));
 logBoot("info", "界面已挂载，开始装配内核能力");
+
+// Addons load after the core is visible; pending ESM is observed, never cancelled.
+beginStep("addons", "boot.error.step.addons");
+const addonTimer = window.setTimeout(() => timeoutStep("addons", 3000), 3000);
+void loadAddonFrontends(router).then((reports) => {
+  const failures = reports.filter((report) => !report.loaded);
+  if (failures.length) throw new Error(failures.map((report) => report.id + ": " + report.error).join("; "));
+  endStep("addons");
+}).catch((error: unknown) => {
+  failStep("addons", error);
+  logBoot("warn", "Addon frontend bootstrap failed: " + String(error));
+  forward("addon frontend bootstrap failed: " + String(error));
+}).finally(() => window.clearTimeout(addonTimer));
 
 // 2) 内核能力并行装配：任何一项失败 / 超时都只影响它自己的能力。
 void Promise.all([

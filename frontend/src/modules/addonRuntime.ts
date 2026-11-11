@@ -25,7 +25,7 @@ import type { RouteRecordRaw, Router } from "vue-router";
 
 import { invoke } from "@tauri-apps/api/core";
 
-import { registerModule } from "./registry";
+import { registerModule, unregisterModule } from "./registry";
 import { registerSettings, disposeModuleSettings, type SettingsContribution } from '../services/settings-registry';
 
 /** 内核 `modules_frontends` 返回的一项。 */
@@ -75,50 +75,105 @@ export interface AddonFrontendLoadReport {
   error?: string;
 }
 
-/** 拉取可用的附加模块前端清单；内核不可用时返回空表而不抛出。 */
+/** Fetch descriptors; propagate failures to boot diagnostics rather than reporting false success. */
 export async function fetchAddonFrontends(): Promise<AddonFrontendDescriptor[]> {
-  try {
-    return await invoke<AddonFrontendDescriptor[]>("modules_frontends");
-  } catch (error) {
-    console.warn("[addons] 无法获取附加模块前端清单：", error);
-    return [];
-  }
+  return await invoke<AddonFrontendDescriptor[]>("modules_frontends");
 }
 
 /**
  * 加载全部附加模块前端，并把它们登记进左导航与路由。
  *
- * 必须在应用挂载**之前**完成：左导航与路由表在首次渲染时被读取，之后追加路由会
- * 出现"导航项存在但首次点击 404"的竞态。
+ * 核心先挂载；导航注册表响应式更新，路由先登记再发布导航。
  */
-export async function loadAddonFrontends(
-  router: Router,
-): Promise<AddonFrontendLoadReport[]> {
-  const descriptors = await fetchAddonFrontends();
-  const refreshSettings = async()=>{const live=new Set((await fetchAddonFrontends()).map(d=>d.id));for(const descriptor of descriptors)if(!live.has(descriptor.id)){disposeModuleSettings(descriptor.id);await invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:'*'}).catch(()=>{});}};
-  await listen('modules-changed',()=>{void refreshSettings();});
-  await listen<Record<string,unknown>>('settings-changed',event=>{if(Object.keys(event.payload).some(key=>key.startsWith('modules.')&&key.endsWith('.enabled')))void refreshSettings();});
-  const reports: AddonFrontendLoadReport[] = [];
-
-  for (const descriptor of descriptors) {
-    try {
-      injectStyles(descriptor);
-      installHostBridge(descriptor, router);
-      await import(/* @vite-ignore */ descriptor.entry_url);
-      reports.push({ id: descriptor.id, loaded: true });
-    } catch (error) {
-      disposeModuleSettings(descriptor.id);
-      await invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:'*'}).catch(()=>{});
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[addons] 附加模块 \`${descriptor.id}\` 的前端加载失败：${message}`);
-      reports.push({ id: descriptor.id, loaded: false, error: message });
-    } finally {
-      // 桥一次只服务一个模块。留在全局会让后加载的脚本冒充前一个模块的身份。
-      window.__COPPER_HOST__ = undefined;
+let runtime: Promise<AddonFrontendLoadReport[]> | undefined;
+export function loadAddonFrontends(router: Router): Promise<AddonFrontendLoadReport[]> {
+  return runtime ??= startAddonRuntime(router);
+}
+async function startAddonRuntime(router: Router): Promise<AddonFrontendLoadReport[]> {
+  const loaded = new Map<string, () => void>();
+  const pending = new Map<string, { descriptor: AddonFrontendDescriptor; dispose: () => void }>();
+  const attempted = new Set<string>();
+  const activations = new Map<string, number>();
+  const liveDescriptors = new Map<string, AddonFrontendDescriptor>();
+  let desired = new Map<string, AddonFrontendDescriptor>();
+  let revision = 0;
+  let worker: Promise<AddonFrontendLoadReport[]> | undefined;
+  let snapshotSeq = 0;
+  const cleanups = (id: string, disposers: (() => void)[]) => {
+    for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch (error) { console.warn('[addons] cleanup failed', error); } }
+    disposeModuleSettings(id);
+    void invoke('settings_module_unregister', {moduleId:id,sectionId:'*'}).catch(error => console.warn('[addons] settings cleanup failed', error));
+  };
+  const drain = async (): Promise<AddonFrontendLoadReport[]> => {
+    const reports: AddonFrontendLoadReport[] = [];
+    let observed = -1;
+    while (observed !== revision) {
+      observed = revision;
+      for (const descriptor of desired.values()) {
+        if (attempted.has(descriptor.id)) continue;
+        attempted.add(descriptor.id);
+        const rollback: (() => void)[] = [];
+        let active = true;
+        const dispose = () => { active = false; cleanups(descriptor.id, rollback); };
+        pending.set(descriptor.id, { descriptor, dispose });
+        try {
+          rollback.push(() => { for (const link of document.querySelectorAll<HTMLLinkElement>('link[data-addon-styles]')) if (link.dataset.addonStyles === descriptor.id) link.remove(); });
+          injectStyles(descriptor);
+          installHostBridge(descriptor, router, rollback, () => active && desired.get(descriptor.id) === descriptor);
+          const activation = (activations.get(descriptor.id) ?? 0) + 1;
+          activations.set(descriptor.id, activation);
+          const entry = new URL(descriptor.entry_url, window.location.href);
+          if (activation > 1) entry.searchParams.set("copper_activation", String(activation));
+          await import(/* @vite-ignore */ entry.href);
+          if (desired.get(descriptor.id) !== descriptor) { dispose(); continue; }
+          loaded.set(descriptor.id, dispose);
+          liveDescriptors.set(descriptor.id, descriptor);
+          reports.push({ id: descriptor.id, loaded: true });
+        } catch (error) {
+          dispose();
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn('[addons] frontend failed', descriptor.id, message);
+          reports.push({ id: descriptor.id, loaded: false, error: message });
+        } finally { pending.delete(descriptor.id); window.__COPPER_HOST__ = undefined; }
+      }
     }
-  }
-
-  return reports;
+    const current = router.currentRoute.value;
+    if (current.matched.some(record => record.name && !router.hasRoute(record.name))) await router.replace("/");
+    else if (!current.matched.length && router.resolve(current.fullPath).matched.length) await router.replace(current.fullPath);
+    return reports;
+  };
+  const refresh = async (): Promise<AddonFrontendLoadReport[]> => {
+    const sequence = ++snapshotSeq;
+    const descriptors = await fetchAddonFrontends();
+    if (sequence !== snapshotSeq) return [];
+    const next = new Map(descriptors.map(descriptor => [descriptor.id, descriptor]));
+    // Preserve identity while the same installed entry remains live.
+    for (const [id, descriptor] of next) {
+      const previous = desired.get(id);
+      if (previous && JSON.stringify(previous) === JSON.stringify(descriptor)) next.set(id, previous);
+    }
+    desired = next;
+    revision++;
+    for (const [id, entry] of pending) if (desired.get(id) !== entry.descriptor) { entry.dispose(); attempted.delete(id); }
+    for (const [id, dispose] of loaded) if (desired.get(id) !== liveDescriptors.get(id)) { dispose(); loaded.delete(id); liveDescriptors.delete(id); attempted.delete(id); }
+    for (const id of attempted) if (!desired.has(id)) attempted.delete(id);
+    if (!worker) worker = drain().finally(() => { worker = undefined; });
+    return worker;
+  };
+  const changed = () => { void refresh().then(reports => { for (const report of reports) if (!report.loaded) console.warn('[addons]', report.id, report.error); }).catch(error => console.warn('[addons] refresh failed', error)); };
+  // Subscribe before snapshot: a boot-complete event cannot fall into a missing-snapshot gap.
+  // Late subscription completion takes a new snapshot as well, closing the timeout gap.
+  // Broken subscriptions are reported and bounded; they never gate the core UI.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled([
+      listen('modules-changed', changed).then(stop => { changed(); return stop; }),
+      listen<Record<string, unknown>>('settings-changed', event => { if (Object.keys(event.payload).some(key => key.startsWith('modules.') && key.endsWith('.enabled'))) changed(); }),
+    ]).then(results => { for (const result of results) if (result.status === 'rejected') console.warn('[addons] observer failed', result.reason); }),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, 1000); }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return refresh();
 }
 
 function injectStyles(descriptor: AddonFrontendDescriptor): void {
@@ -131,27 +186,38 @@ function injectStyles(descriptor: AddonFrontendDescriptor): void {
   }
 }
 
-function installHostBridge(descriptor: AddonFrontendDescriptor, router: Router): void {
+function installHostBridge(descriptor: AddonFrontendDescriptor, router: Router, rollback: (() => void)[], isActive: () => boolean): void {
+  const assertActive = () => { if (!isActive()) throw new Error("Addon is no longer active"); };
   window.__COPPER_HOST__ = {
     async registerSettings(section) {
+      assertActive();
       await invoke('settings_module_register',{moduleId:descriptor.id,section});
       try {
+        assertActive();
         const dispose=registerSettings({id:descriptor.id,namespace:descriptor.namespace,t:(key)=>translateAddon(descriptor.namespace,key),read:(key)=>invoke('settings_module_get',{moduleId:descriptor.id,key}),write:(key,value)=>invoke('settings_module_set',{moduleId:descriptor.id,key,value})},section);
         return ()=>{dispose();void invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:section.id}).catch(()=>{});};
-      }catch(error){await invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:section.id}).catch(()=>{});throw error;}
+      }catch(error){void invoke('settings_module_unregister',{moduleId:descriptor.id,sectionId:section.id}).catch(()=>{});throw error;}
     },
-    registerI18n(packs) { registerAddonI18n(descriptor.namespace, packs); },
+    registerI18n(packs) {
+      assertActive(); registerAddonI18n(descriptor.namespace, packs); },
     t(key, params) { return translateAddon(descriptor.namespace, key, params); },
     locale() { return useLocaleRef().value; },
-    onLocaleChange(handler) { return watch(useLocaleRef(), (value) => handler(value)); },
+    onLocaleChange(handler) {
+      assertActive(); const stop = watch(useLocaleRef(), (value) => handler(value)); rollback.push(stop); return stop; },
     listen<T>(event: string, handler: (event: { payload: T }) => void) {
+      assertActive();
       // Exact declarations and suffix wildcards only, matching the kernel manifest rules.
       const allowed = descriptor.frontend_events?.some((pattern) => pattern.endsWith("*")
         ? event.startsWith(pattern.slice(0, -1)) : pattern === event);
       if (!allowed || !/^[a-zA-Z0-9_:/-]+$/.test(event)) return Promise.reject(new Error("Event not declared by this module"));
-      return listen<T>(event, handler);
+      return listen<T>(event, handler).then((stop) => { if (!isActive()) { stop(); throw new Error("Addon is no longer active"); } rollback.push(stop); return stop; });
     },
     registerModule(registration) {
+      assertActive();
+      // Never overwrite an existing named route, including builtins.
+      const check = (routes: RouteRecordRaw[]): void => { for (const route of routes) { if (route.name && router.hasRoute(route.name)) throw new Error("Route name already registered: " + String(route.name)); if (route.children) check(route.children); } };
+      check(registration.routes);
+      for (const route of registration.routes) rollback.push(router.addRoute(route));
       registerModule({
         id: descriptor.id,
         nav: {
@@ -162,11 +228,10 @@ function installHostBridge(descriptor: AddonFrontendDescriptor, router: Router):
         },
         routes: registration.routes,
       });
-      for (const route of registration.routes) {
-        router.addRoute(route);
-      }
+      rollback.push(() => unregisterModule(descriptor.id));
     },
     invoke(command, args) {
+      assertActive();
       return invoke("module_invoke", {
         moduleId: descriptor.id,
         command,

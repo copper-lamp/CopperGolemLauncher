@@ -1,0 +1,32 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import ts from 'typescript';
+import vm from 'node:vm';
+import { shallowRef, computed } from 'vue';
+const main = fs.readFileSync('src/main.ts','utf8');
+assert(main.indexOf('app.mount("#app")') < main.indexOf('void loadAddonFrontends(router)'));
+assert(!main.includes('await Promise.race([\n  loadAddonFrontends'));
+const registrySource = fs.readFileSync('src/modules/registry.ts','utf8').replace('import { shallowRef, type Component } from "vue";', 'const { shallowRef } = globalThis.deps;');
+function compile(source, deps) {
+  const js = ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
+  const context = {exports:{},deps,console,setTimeout,clearTimeout,URL,window:{location:{href:"https://host/"}},document:{head:{appendChild(){}},createElement(){return {dataset:{},remove(){}}},querySelectorAll(){return []}}};
+  vm.runInNewContext(js,context);return context;
+}
+const registry=compile(registrySource,{shallowRef}).exports;
+const nav=computed(()=>registry.getModuleNav());assert.equal(nav.value.length,0);
+registry.registerModule({id:'late',nav:{id:'late'},routes:[]});assert.equal(nav.value.length,1);
+registry.unregisterModule('late');assert.equal(nav.value.length,0);
+let runtime=fs.readFileSync('src/modules/addonRuntime.ts','utf8');
+runtime=runtime.replace(/^import .*?;$/gm,'');
+runtime=runtime.replace('await import(/* @vite-ignore */ entry.href)', 'await globalThis.deps.importAddon(descriptor.id)');
+runtime='const {watch,listen,invoke,registerModule,unregisterModule,disposeModuleSettings,registerSettings,registerAddonI18n,translateAddon,useLocaleRef}=globalThis.deps;\n'+runtime;
+const registered=new Set(),routes=new Set(),removed=[];
+let context;
+const descriptors=['bad','good'].map(id=>({id,namespace:id,entry_url:id,style_urls:[]}));
+const deps={watch:()=>()=>{},listen:async()=>{throw Error('observer unavailable')},invoke:async cmd=>{if(cmd==='modules_frontends')return descriptors;if(cmd==='settings_module_unregister')return new Promise(()=>{});},registerModule:mod=>registered.add(mod.id),unregisterModule:id=>registered.delete(id),disposeModuleSettings:()=>{},registerSettings:()=>()=>{},registerAddonI18n:()=>{},translateAddon:()=>'',useLocaleRef:()=>({value:'en-US'}),importAddon:async id=>{context.window.__COPPER_HOST__.registerModule({nav:{path:'/'+id,titleKey:id,icon:{}},routes:[{path:'/'+id,name:id}]});if(id==='bad')throw Error('entry failed');}};
+context=compile(runtime,deps);
+const router={hasRoute:name=>routes.has(name),addRoute:route=>{routes.add(route.name);return()=>{routes.delete(route.name);removed.push(route.name)}},currentRoute:{value:{fullPath:'/',matched:[{}]}},resolve:()=>({matched:[]})};
+const reports=await context.exports.loadAddonFrontends(router);
+assert.equal(reports.length,2);assert.equal(reports[0].loaded,false);assert.equal(reports[1].loaded,true);
+assert.deepEqual([...registered],['good']);assert.deepEqual([...routes],['good']);assert.deepEqual(removed,['bad']);assert.equal(context.window.__COPPER_HOST__,undefined);
+console.log('PASS: core mounts first; late navigation is reactive; observer rejection and pending cleanup do not block next addon; failed routes/navigation roll back.');

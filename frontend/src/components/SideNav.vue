@@ -2,6 +2,7 @@
 // 左导航栏：顶部软件图标，底部设置入口，其上方为下载入口。
 // 单 icon 无文字，不展开。下载为全量列表页（/downloads），无悬浮窗。
 
+import { computed } from "vue";
 import { RouterLink } from "vue-router";
 import { useRoute } from "vue-router";
 import NavIcon from "./NavIcon.vue";
@@ -13,7 +14,7 @@ import { useI18n } from "../i18n";
 import { getModuleNav } from "../modules/registry";
 
 const { t } = useI18n();
-const moduleNav = getModuleNav();
+const moduleNav = computed(getModuleNav);
 </script>
 
 <template>

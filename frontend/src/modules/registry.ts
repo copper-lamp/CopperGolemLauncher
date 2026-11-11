@@ -10,7 +10,7 @@
 // - `routes` 为 Vue Router 记录，组件允许懒加载（推荐 `() => import(...)`）。
 // - 模块之间不互相依赖，仅经本注册表与内核 Shell 交互。
 
-import type { Component } from "vue";
+import { shallowRef, type Component } from "vue";
 import type { RouteRecordRaw } from "vue-router";
 
 /** 侧边栏入口（单 icon 无文字）。 */
@@ -34,6 +34,7 @@ export interface ModuleFrontend {
 
 const modules = new Map<string, ModuleFrontend>();
 const navOrder: string[] = [];
+const revision = shallowRef(0);
 
 /** 注册一个前端模块。重复 id 抛出，避免静默覆盖导致行为不可预期。 */
 export function registerModule(module: ModuleFrontend): void {
@@ -42,10 +43,12 @@ export function registerModule(module: ModuleFrontend): void {
   }
   modules.set(module.id, module);
   navOrder.push(module.id);
+  revision.value++;
 }
 
 /** 已注册的全部模块（按注册顺序）。 */
 export function getModuleFrontends(): ModuleFrontend[] {
+  void revision.value;
   return navOrder.map((id) => modules.get(id)!).filter(Boolean);
 }
 
@@ -57,4 +60,11 @@ export function getModuleNav(): ModuleNavItem[] {
 /** 模块内容区路由。 */
 export function getModuleRoutes(): RouteRecordRaw[] {
   return getModuleFrontends().flatMap((m) => m.routes);
+}
+/** Remove only registrations owned by a failed addon. */
+export function unregisterModule(id: string): void {
+  if (!modules.delete(id)) return;
+  const index = navOrder.indexOf(id);
+  if (index >= 0) navOrder.splice(index, 1);
+  revision.value++;
 }
