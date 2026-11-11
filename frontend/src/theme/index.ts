@@ -7,6 +7,9 @@
 // - accent：#RRGGBB 写入 --copper-accent，并计算可读前景色。
 
 import { reactive } from "vue";
+import { initVisualPreferences } from "../composables/useVisualPreferences";
+
+initVisualPreferences();
 
 import { onSettingsChanged } from "../events";
 import { themeSnapshot, themeSetMode, themeSetAccent, type ThemeMode } from "../api/theme";

@@ -14,6 +14,7 @@
 // 宽度用 1ch + tabular-nums 对齐，位数变化时整体宽度自然伸缩，不需要量字体。
 
 import { onBeforeUnmount, ref, watch } from "vue";
+import { motionEnabled } from "../../composables/useVisualPreferences";
 
 const props = withDefaults(
   defineProps<{
@@ -53,10 +54,7 @@ const cols = new Map<number, Col>();
 /** 无障碍文案（视觉上隐藏）。 */
 const text = ref("0");
 
-const reduced =
-  typeof window !== "undefined" &&
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+watch(motionEnabled, enabled => { if (!enabled) { if (raf) cancelAnimationFrame(raf); raf = 0; for (const col of cols.values()) { col.pos = col.target; col.vel = 0; write(col); } } });
 
 let raf = 0;
 let lastFrame = 0;
@@ -118,7 +116,7 @@ function tick(now: number) {
 }
 
 function start() {
-  if (reduced) {
+  if (!motionEnabled.value) {
     for (const col of cols.values()) {
       col.pos = col.target;
       col.vel = 0;
@@ -165,7 +163,7 @@ function sync(v: number, animate: boolean) {
 
   keys.value = nextKeys;
 
-  if (!animate || reduced || !inited) {
+  if (!animate || !motionEnabled.value || !inited) {
     for (const col of cols.values()) {
       col.pos = col.target;
       col.vel = 0;

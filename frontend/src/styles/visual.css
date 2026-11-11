@@ -1,0 +1,70 @@
+/* Shared visual contract. Semantic sizes (circles, pills, shell) stay independent. */
+:root {
+  --copper-radius-card:16px;
+  --copper-radius-control:var(--copper-radius-card);
+  --radius-card:var(--copper-radius-card);
+  --radius-control:var(--copper-radius-control);
+  --copper-shadow-card:0 8px 30px rgb(0 0 0 / .22),0 2px 8px rgb(0 0 0 / .12);
+  --shadow-card:var(--copper-shadow-card);
+  --copper-easing-jelly:cubic-bezier(.22,1.28,.42,1);
+  --copper-motion-component-enter:180ms;
+  --copper-motion-component-exit:120ms;
+  --copper-motion-component-press:80ms;
+  --copper-motion-page-enter:220ms;
+  --copper-motion-page-exit:140ms;
+  --copper-motion-loading-enter:160ms;
+  --copper-motion-loading-exit:120ms;
+  --copper-update-blue:#38bdf8;
+  --copper-update-blue-hover:#0ea5e9;
+  --copper-update-foreground:#082f49;
+  --copper-badge-release:#173d33;--copper-badge-release-fg:#9fe5c8;
+  --copper-badge-beta:#41371c;--copper-badge-beta-fg:#ecd184;
+  --copper-badge-alpha:#46252e;--copper-badge-alpha-fg:#f6b0c0;
+  --copper-badge-preview:#3f2945;--copper-badge-preview-fg:#e0b9ec;
+  --copper-badge-ll-mod:#442e20;--copper-badge-ll-mod-fg:#f2c097;
+  --copper-badge-downloaded:#203651;--copper-badge-downloaded-fg:#a9cfff;
+  --copper-badge-behavior-pack:#183c43;--copper-badge-behavior-pack-fg:#91dce9;
+  --copper-badge-texture-pack:#2b3052;--copper-badge-texture-pack-fg:#bdc6ff;
+  --copper-badge-shader:#422747;--copper-badge-shader-fg:#e8b4ed;
+  --copper-badge-source-curseforge:#303c1e;--copper-badge-source-curseforge-fg:#c5e594;
+  --copper-badge-source-lip:#44273a;--copper-badge-source-lip-fg:#f1b0d2;
+  --copper-badge-source-lla:#203c2b;--copper-badge-source-lla-fg:#a2dfb5;
+  --copper-badge-success:#173d33;--copper-badge-success-fg:#9fe5c8;
+  --copper-badge-warning:#41371c;--copper-badge-warning-fg:#ecd184;
+  --copper-badge-danger:#46252e;--copper-badge-danger-fg:#f6b0c0;
+  --copper-badge-accent:#442e20;--copper-badge-accent-fg:#f2c097;
+  --copper-badge-neutral:#303044;--copper-badge-neutral-fg:#ccc6ed;
+}
+html[data-theme="light"] {
+  --copper-shadow-card:0 8px 30px rgb(45 53 65 / .09),0 2px 8px rgb(45 53 65 / .05);
+  --copper-badge-release:#e1f3eb;--copper-badge-release-fg:#22664c;
+  --copper-badge-beta:#f7efd4;--copper-badge-beta-fg:#795d12;
+  --copper-badge-alpha:#f9e6eb;--copper-badge-alpha-fg:#9d354d;
+  --copper-badge-preview:#f1e7f5;--copper-badge-preview-fg:#7f428f;
+  --copper-badge-ll-mod:#f8eadf;--copper-badge-ll-mod-fg:#8e4c20;
+  --copper-badge-downloaded:#e4eefb;--copper-badge-downloaded-fg:#2c60a3;
+  --copper-badge-behavior-pack:#dff1f4;--copper-badge-behavior-pack-fg:#226774;
+  --copper-badge-texture-pack:#e9ecfc;--copper-badge-texture-pack-fg:#46569e;
+  --copper-badge-shader:#f4e5f6;--copper-badge-shader-fg:#8c4096;
+  --copper-badge-source-curseforge:#edf3dc;--copper-badge-source-curseforge-fg:#566f25;
+  --copper-badge-source-lip:#f8e4ef;--copper-badge-source-lip-fg:#973c70;
+  --copper-badge-source-lla:#e3f2e7;--copper-badge-source-lla-fg:#356e46;
+  --copper-badge-success:#e1f3eb;--copper-badge-success-fg:#22664c;
+  --copper-badge-warning:#f7efd4;--copper-badge-warning-fg:#795d12;
+  --copper-badge-danger:#f9e6eb;--copper-badge-danger-fg:#9d354d;
+  --copper-badge-accent:#f8eadf;--copper-badge-accent-fg:#8e4c20;
+  --copper-badge-neutral:#eeebf7;--copper-badge-neutral-fg:#635385;
+}
+/* Shared Vue transitions: only transform and opacity; no animation frame loop. */
+.co-pop-enter-active { transition:transform var(--copper-motion-component-enter) var(--copper-easing-jelly),opacity var(--copper-motion-component-enter); }
+.co-pop-leave-active { transition:transform var(--copper-motion-component-exit) ease-in,opacity var(--copper-motion-component-exit); }
+.co-pop-enter-from,.co-pop-leave-to { transform:translateY(-5px) scale(.97);opacity:0; }
+.fade-enter-active { transition:transform var(--copper-motion-page-enter) var(--copper-easing-jelly),opacity var(--copper-motion-page-enter); }
+.fade-leave-active { transition:transform var(--copper-motion-page-exit) ease-in,opacity var(--copper-motion-page-exit); }
+.fade-enter-from { transform:translateY(8px) scale(.99);opacity:0; }
+.fade-leave-to { transform:translateY(-4px);opacity:0; }
+.co-loading-enter-active { transition:transform var(--copper-motion-loading-enter) var(--copper-easing-jelly),opacity var(--copper-motion-loading-enter); }
+.co-loading-leave-active { transition:transform var(--copper-motion-loading-exit),opacity var(--copper-motion-loading-exit); }
+.co-loading-enter-from,.co-loading-leave-to { transform:scale(.98);opacity:0; }
+html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-motion="reduced"] *::after { animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:0ms!important;scroll-behavior:auto!important; }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:0ms!important;scroll-behavior:auto!important; } }
