@@ -274,6 +274,10 @@ pub fn run() {
                 settings.clone(),
                 platform::as_secret(&backends),
             ));
+            let translation = Arc::new(services::translation::TranslationService::new(
+                db.clone(), settings.clone(), platform::as_secret(&backends),
+            ).map_err(|e| KernelError::startup("装载翻译服务", e))?);
+            app.manage(translation);
             let updater = Arc::new(UpdaterService::new(
                 settings.clone(),
                 download.clone(),
@@ -414,6 +418,13 @@ pub fn run() {
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::settings::settings_set_many,
+            commands::translation::translation_providers,
+            commands::translation::translation_config,
+            commands::translation::translation_save_config,
+            commands::translation::translation_translate,
+            commands::translation::translation_cancel,
+            commands::translation::translation_clear_cache,
+            commands::translation::translation_test,
             commands::llm::llm_list_models,
             commands::llm::llm_add_model,
             commands::llm::llm_update_model,

@@ -12,6 +12,7 @@ pub mod download;
 pub mod http_client;
 pub mod i18n;
 pub mod llm;
+pub mod translation;
 pub mod paths;
 pub mod registry;
 pub mod settings;

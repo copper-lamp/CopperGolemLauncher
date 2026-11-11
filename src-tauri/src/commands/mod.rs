@@ -15,6 +15,7 @@ pub mod intents;
 pub mod imports;
 pub mod kernel;
 pub mod llm;
+pub mod translation;
 pub mod modules;
 pub mod registry;
 pub mod settings;
