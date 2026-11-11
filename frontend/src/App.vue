@@ -25,6 +25,7 @@ import UpdateDialog from "./components/update/UpdateDialog.vue";
 import DiagnosticOverlay from "./components/DiagnosticOverlay.vue";
 import ErrorTipsHost from "./components/ErrorTipsHost.vue";
 import GlobalImportHost from "./components/GlobalImportHost.vue";
+import OnboardingHost from './components/onboarding/OnboardingHost.vue';
 import ComponentPrerequisitesHost from "./components/ComponentPrerequisitesHost.vue";
 import GamePrerequisitesHost from "./components/GamePrerequisitesHost.vue";
 import { useKernelReady } from "./composables/useKernelReady";
@@ -71,6 +72,7 @@ const { isMobile, isLandscape } = usePlatform();
   <DiagnosticOverlay />
   <ErrorTipsHost />
   <GlobalImportHost />
+  <OnboardingHost v-if="isKernelReady" />
 </template>
 
 <style scoped>
