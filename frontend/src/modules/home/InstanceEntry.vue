@@ -344,6 +344,7 @@ function onUpdated(updated: VersionView) {
           <strong>{{ compatText('bound') }}</strong>
           <p>{{ compatText('source') }}: {{ current.compatibility.source_dir }}</p>
           <p>{{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
+          <p v-if="current.compatibility.source_loader_present">{{ compatText('sourceLoader') }}</p>
           <p v-if="current.compatibility.data_dir">{{ compatText('dataPath') }}: {{ current.compatibility.data_dir }}</p>
           <p v-if="current.compatibility.users_root">{{ compatText('usersPath') }}: {{ current.compatibility.users_root }}</p>
           <p v-if="current.compatibility.shared_content_root">{{ compatText('contentPath') }}: {{ current.compatibility.shared_content_root }}</p>
