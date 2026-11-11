@@ -40,6 +40,7 @@ import {
   type LaunchFileState,
   type VersionView,
 } from "../../api/home";
+import { compatibilityReason, useCompatibilityText } from '../../services/compatibility-messages';
 import { useVersionInstance } from "./useVersionInstance";
 
 /** 右侧动作按钮。稿子里的按钮只有文字，没有图标，这里保持一致。 */
@@ -87,7 +88,9 @@ const typeLabel = computed(() => {
 
 // ---------------------------------------------------------------- 模式
 
+const compatText = useCompatibilityText();
 const modeOptions = computed(() => {
+  if (current.value?.compatibility) return [{ value: 'original', label: compatText('bound') }];
   const options = [
     { value: "original", label: t("module.home.instance.mode.original") },
     { value: "levi", label: t("module.home.instance.mode.levi") },
@@ -129,7 +132,7 @@ const modeHint = computed(() => {
 
 async function changeMode(value: string) {
   const view = current.value;
-  if (!view || value === view.mode) return;
+  if (!view || view.compatibility || value === view.mode) return;
   switching.value = true;
   try {
     const updated = await homeVersionSaveMeta(view.name, { mode: value });
@@ -149,7 +152,7 @@ async function saveToggle(update: {
   enable_editor_mode?: boolean;
 }) {
   const view = current.value;
-  if (!view) return;
+  if (!view || view.compatibility) return;
   saving.value = true;
   try {
     applyView(await homeVersionSaveMeta(view.name, update));
@@ -164,7 +167,7 @@ async function saveToggle(update: {
 
 async function refreshLaunchState() {
   const name = current.value?.name;
-  if (!name) return;
+  if (!name || current.value?.compatibility) { launchState.value = null; return; }
   try {
     launchState.value = await homeLaunchFileState(name);
   } catch {
@@ -173,10 +176,11 @@ async function refreshLaunchState() {
   }
 }
 
-const canRestore = computed(() => !!launchState.value?.backup_exists && !restoring.value);
+const canRestore = computed(() => !current.value?.compatibility && !!launchState.value?.backup_exists && !restoring.value);
 
 /** 还原按钮的禁用原因：稿子里没有说明位，用 title 承载。 */
 const restoreReason = computed(() => {
+  if (current.value?.compatibility) return compatText('unsupported');
   if (!launchState.value) return t("module.home.instance.action.restore_unsupported");
   if (!launchState.value.backup_exists) return t("module.home.instance.action.restore_none");
   return "";
@@ -269,7 +273,8 @@ const actionGroups = computed<EntryActionGroup[]>(() => {
     {
       key: "delete",
       icon: Trash2,
-      label: t("module.home.instance.action.delete"),
+      label: view.compatibility ? compatText('detach') : t("module.home.instance.action.delete"),
+      disabled: !!view.compatibility && !view.compatibility.capabilities.detach,
       danger: true,
       run: () => void deleteVersion(),
     },
@@ -289,10 +294,11 @@ watch(currentName, () => void refreshLaunchState(), { immediate: true });
 async function deleteVersion() {
   const target = current.value;
   if (!target) return;
-  if (!window.confirm(t("module.home.delete_confirm", { name: target.name }))) return;
+  if (target.compatibility && !target.compatibility.capabilities.detach) return;
+  if (!window.confirm(target.compatibility ? compatText('detachConfirm') : t("module.home.delete_confirm", { name: target.name }))) return;
   try {
     await homeVersionDelete(target.name);
-    showToast(t("module.home.toast.deleted"), "success");
+    showToast(target.compatibility ? compatText('detached') : t("module.home.toast.deleted"), "success");
     await refresh();
     if (!current.value) void router.push("/");
   } catch (e) {
@@ -332,13 +338,19 @@ function onUpdated(updated: VersionView) {
           </div>
         </header>
 
+        <div v-if="current.compatibility" class="entry__section" role="status">
+          <strong>{{ compatText('bound') }}</strong>
+          <p>{{ compatText('source') }}: {{ current.compatibility.source_dir }}</p>
+          <p>{{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText('privateSave') }}</p>
+          <button type="button" class="entry__action" @click="refresh">{{ compatText('probe') }}</button>
+        </div>
         <div class="entry__section">
           <span class="entry__section-label">{{ t("module.home.instance.mode.label") }}</span>
           <div class="entry__mode">
             <CoSegmented
               :model-value="current.mode"
               :options="modeOptions"
-              :disabled="switching"
+              :disabled="switching || !!current.compatibility"
               @update:model-value="changeMode"
             />
           </div>
@@ -357,7 +369,7 @@ function onUpdated(updated: VersionView) {
               <span class="entry__row-label">{{ t("module.home.meta.console") }}</span>
               <CoSwitch
                 :model-value="current.enable_console"
-                :disabled="saving"
+                :disabled="saving || !!current.compatibility"
                 @update:model-value="(value: boolean) => void saveToggle({ enable_console: value })"
               />
             </li>
@@ -365,7 +377,7 @@ function onUpdated(updated: VersionView) {
               <span class="entry__row-label">{{ t("module.home.meta.editor_mode") }}</span>
               <CoSwitch
                 :model-value="current.enable_editor_mode && current.editor_supported"
-                :disabled="saving || !current.editor_supported"
+                :disabled="saving || !!current.compatibility || !current.editor_supported"
                 :title="current.editor_supported ? '' : t('module.home.basic.editor_unsupported')"
                 @update:model-value="
                   (value: boolean) => void saveToggle({ enable_editor_mode: value })

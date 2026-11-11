@@ -63,6 +63,7 @@ const busy = ref(false);
 
 async function refreshLaunchState() {
   const name = props.version.name;
+  if (props.version.compatibility) { launchFile.value = null; preload.value = null; return; }
   try {
     launchFile.value = await homeLaunchFileState(name);
   } catch {
@@ -110,6 +111,7 @@ const launchFileHint = computed(() => {
 });
 
 async function restoreLaunchFile() {
+  if (props.version.compatibility) return;
   const name = props.version.name;
   busy.value = true;
   try {
@@ -124,6 +126,7 @@ async function restoreLaunchFile() {
 }
 
 async function deleteBackup() {
+  if (props.version.compatibility) return;
   const name = props.version.name;
   busy.value = true;
   try {
@@ -212,7 +215,7 @@ async function openDir(kind: VersionDirKind) {
         </div>
         <div class="basic__shortcuts">
           <button
-            v-for="item in dirShortcuts"
+            v-for="item in dirShortcuts.filter(item => !version.compatibility || item.kind !== 'mods')"
             :key="item.kind"
             type="button"
             class="basic__shortcut"
@@ -223,7 +226,7 @@ async function openDir(kind: VersionDirKind) {
           </button>
         </div>
       </li>
-      <li v-if="launchFile" class="basic__row">
+      <li v-if="launchFile && !version.compatibility" class="basic__row">
         <div class="basic__row-text">
           <span class="basic__row-title">{{ t("module.home.basic.launch_file") }}</span>
           <span class="basic__row-hint">{{ launchFileHint }}</span>

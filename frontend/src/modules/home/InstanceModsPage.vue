@@ -37,13 +37,15 @@ import {
 } from "../../api/home";
 import { onModsChanged } from "../../events";
 import { useVersionInstance } from "./useVersionInstance";
+import { useCompatibilityText } from '../../services/compatibility-messages';
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 type ModFilter = "all" | "enabled" | "disabled" | "updatable";
 
 const { t } = useI18n();
 const router = useRouter();
-const { currentName } = useVersionInstance();
+const { currentName, current } = useVersionInstance();
+const compatText = useCompatibilityText();
 
 const mods = ref<ModView[]>([]);
 const skipped = ref(0);
@@ -122,6 +124,7 @@ const emptyText = computed(() => {
 });
 
 async function refresh() {
+  if (current.value?.compatibility && !current.value.compatibility.capabilities.loader) { mods.value = []; selectedFolders.value = []; loading.value = false; return; }
   loading.value = true;
   errorText.value = "";
   try {
@@ -340,7 +343,8 @@ function editMod(mod: ModView) {
 </script>
 
 <template>
-  <div class="mods">
+  <p v-if="current?.compatibility && !current.compatibility.capabilities.loader" role="status">{{ compatText('unsupported') }}</p>
+  <div v-else class="mods">
     <section class="mods__main">
       <div class="mods__filters" role="tablist">
         <button

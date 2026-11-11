@@ -35,6 +35,32 @@ export interface VersionView {
   logo_data_url: string | null;
   /** 版本目录绝对路径（打开文件夹用）。 */
   folder: string;
+  /** External GDK binding; absent on Copper-owned instances. */
+  compatibility?: CompatibilityStatus | null;
+}
+
+export interface CompatibilityStatus {
+  state: 'bound' | 'disabled';
+  disabled_reason: string | null;
+  source_dir: string;
+  data_mode: 'private-save';
+  capabilities: { launch: boolean; detach: boolean; rename: boolean; shared_save: boolean; loader: boolean; client: boolean; source_write: boolean };
+}
+export interface CompatibilityProbe {
+  supported: boolean;
+  disabled_reason: string | null;
+  source_dir: string;
+  game_version: string | null;
+  version_type: string | null;
+}
+export function homeCompatDiscover(): Promise<string[]> {
+  return call<string[]>('home_compat_discover');
+}
+export function homeCompatProbe(sourceDir: string): Promise<CompatibilityProbe> {
+  return call<CompatibilityProbe>('home_compat_probe', { sourceDir });
+}
+export function homeCompatBind(sourceDir: string, alias: string): Promise<VersionView> {
+  return call<VersionView>('home_compat_bind', { sourceDir, alias });
 }
 
 /** 版本设置部分更新（仅覆盖提供的字段；字段名 snake_case 与后端一致）。 */

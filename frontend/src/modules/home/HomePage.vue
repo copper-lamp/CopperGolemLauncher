@@ -35,6 +35,8 @@ import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import DefaultHome from "./DefaultHome.vue";
+import CompatibilityBinding from './CompatibilityBinding.vue';
+import { compatibilityReason, useCompatibilityText } from '../../services/compatibility-messages';
 import {
   homeClientReinject,
   homeClientsList,
@@ -62,6 +64,7 @@ const WELCOME_TICK_MS = 60 * 1000;
 
 const { t } = useI18n();
 const router = useRouter();
+const compatText = useCompatibilityText();
 
 const settings = useSettings();
 const { isWindows } = usePlatform();
@@ -317,6 +320,7 @@ async function onPrimaryClick() {
 async function launch() {
   const version = current.value;
   if (!version) return;
+  if (version.compatibility && !version.compatibility.capabilities.launch) { showToast(compatibilityReason(version.compatibility.disabled_reason, compatText) || compatText('blocked'), 'error'); return; }
   // 先进入「启动中」再发命令：按钮形态由内核事件收尾，中途失败会在
   // 下面的 catch 里复位，不留「点不动」的按钮。
   beginLaunch(version.name);
@@ -350,6 +354,8 @@ async function stop() {
 /** 默认模式：从磁贴直接启动 / 结束指定实例。 */
 async function launchNamed(name: string) {
   if (!name || launching.value || stopping.value) return;
+  const version = versions.value.find(v => v.name === name);
+  if (version?.compatibility && !version.compatibility.capabilities.launch) { showToast(compatibilityReason(version.compatibility.disabled_reason, compatText) || compatText('blocked'), 'error'); return; }
   if (selectedName.value !== name) selectedName.value = name;
   beginLaunch(name);
   try {
@@ -521,6 +527,8 @@ function goDownload() {
         </div>
       </div>
     </div>
+    <p v-if="current?.compatibility" role="status">{{ compatText('bound') }} · {{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText('privateSave') }}</p>
+    <CompatibilityBinding v-if="isWindows" @bound="async (version) => { versions = await homeVersionsList(); selectedName = version.name; }" />
     <footer class="home-page__mode"><CoSegmented v-model="mode" :options="modeOptions" /></footer>
     </div>
   </CoPage>

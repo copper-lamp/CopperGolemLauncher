@@ -69,7 +69,10 @@ export function useVersionInstance() {
         errorText.value = "";
         return;
       }
-      await fetchOne(target);
+      // The list response includes freshly revalidated compatibility capabilities.
+      current.value = versions.value.find(version => version.name === target) ?? null;
+      lastName.value = target;
+      errorText.value = '';
       // 地址栏补齐实例名：子页面互相跳转、刷新、复制链接都不会丢上下文。
       if (queryName.value !== target) {
         void router.replace({ query: { ...route.query, name: target } });

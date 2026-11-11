@@ -26,10 +26,12 @@ import {
   type ClientView,
 } from "../../api/home";
 import { useVersionInstance } from "./useVersionInstance";
+import { useCompatibilityText } from '../../services/compatibility-messages';
 
 const { t } = useI18n();
 const { isWindows } = usePlatform();
 const { current, applyView } = useVersionInstance();
+const compatText = useCompatibilityText();
 
 const busy = ref(false);
 const clients = ref<ClientView[]>([]);
@@ -86,7 +88,7 @@ async function loadLibrary() {
 
 async function saveMeta(update: { mode?: string; client_id?: string }) {
   const version = current.value;
-  if (!version) return false;
+  if (!version || (version.compatibility && !version.compatibility.capabilities.client)) return false;
   if (!isWindows.value) {
     showToast(t("module.home.client.windows_only"), "error");
     return false;
@@ -229,7 +231,8 @@ onMounted(loadLibrary);
 </script>
 
 <template>
-  <div class="client-page">
+  <p v-if="current?.compatibility && !current.compatibility.capabilities.client" role="status">{{ compatText('unsupported') }}</p>
+  <div v-else class="client-page">
     <section class="client-page__main">
       <div class="client-page__body">
         <section class="group">
