@@ -179,7 +179,7 @@ impl TranslationService {
             translated.push_str(&self.piece(id,p,key,&part[leading..trailing],source,target,cfg.timeout_ms).await?);
             translated.push_str(&part[trailing..]);
         }
-        if translated.trim().is_empty()||translated.trim()==text.trim()||translated.trim_start().to_ascii_lowercase().starts_with("<html")||translated.trim_start().to_ascii_lowercase().starts_with("<!doctype"){return Err(TranslationError::new("invalid_response",true));}
+        if translated.trim().is_empty()||translated.trim_start().to_ascii_lowercase().starts_with("<html")||translated.trim_start().to_ascii_lowercase().starts_with("<!doctype"){return Err(TranslationError::new("invalid_response",true));}
         self.store(&identity,&translated,cfg.cache_days,cfg.generation)?;
         *flight_result=Some(translated.clone());
         Ok((translated,false))
@@ -245,11 +245,10 @@ impl TranslationService {
                     if service.config.read().generation!=cfg.generation{service.routing.lock().cancel(&operation);last=TranslationError::new("configuration_changed",false);break;}
                     pending_ids.retain(|pending|pending!=&id);
                     match result {
-                        Ok(value)=>{let valid=value.texts.iter().zip(&request.texts).all(|(out,input)|input.trim().is_empty()||(!out.trim().is_empty()&&!out.trim_start().starts_with("<!DOCTYPE")&&!out.trim_start().starts_with("<html")));
+                        Ok(value)=>{let valid=value.texts.len()==request.texts.len()&&value.texts.iter().zip(&request.texts).all(|(out,input)|input.trim().is_empty()||(!out.trim().is_empty()&&!out.trim_start().starts_with("<!DOCTYPE")&&!out.trim_start().starts_with("<html")));
                             if !valid{service.routing.lock().observe(&operation,&id,epoch,elapsed,true,true,&service.settings);last=TranslationError::new("invalid_response",true);continue;}
-                            let changed=value.texts.iter().zip(&request.texts).any(|(out,input)|out.trim()!=input.trim());
-                            if !changed && request.texts.iter().any(|text|!text.trim().is_empty()){service.routing.lock().observe(&operation,&id,epoch,elapsed,!value.cached,!value.cached,&service.settings);last=TranslationError::new("unchanged_translation",true);continue;}
-                            service.routing.lock().observe(&operation,&id,epoch,elapsed,!value.cached&&changed,false,&service.settings);
+                            // Brands, proper nouns and numbers may legitimately remain unchanged.
+                            service.routing.lock().observe(&operation,&id,epoch,elapsed,!value.cached,false,&service.settings);
                             succeeded=true;if let Some(tx)=sender.take(){let _=tx.send(Ok(value));}
                         }
                         Err(error)=>{let genuine=!matches!(error.code.as_str(),"translation.cancelled"|"translation.configuration_changed"|"translation.storage"|"translation.circuit_open");service.routing.lock().observe(&operation,&id,epoch,elapsed,genuine,genuine,&service.settings);last=error;}
