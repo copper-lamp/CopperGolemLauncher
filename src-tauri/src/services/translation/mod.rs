@@ -25,7 +25,7 @@ pub struct TranslationConfig {
     pub generation:u64,
     #[serde(skip_deserializing)] pub configured_keys:Vec<String>,
 }
-impl Default for TranslationConfig {fn default()->Self{Self{provider:"google".into(),source_language:"auto".into(),target_language:"auto".into(),cache_days:30,timeout_ms:25000,fallback_providers:Vec::new(),providers:BTreeMap::new(),generation:0,configured_keys:Vec::new()}}}
+impl Default for TranslationConfig {fn default()->Self{Self{provider:"microsoft".into(),source_language:"auto".into(),target_language:"auto".into(),cache_days:30,timeout_ms:25000,fallback_providers:Vec::new(),providers:BTreeMap::new(),generation:0,configured_keys:Vec::new()}}}
 #[derive(Clone,Deserialize)]
 pub struct TranslationRequest {pub request_id:String,pub texts:Vec<String>,pub source_language:String,pub target_language:Option<String>,pub expected_generation:Option<u64>}
 #[derive(Clone,Debug,Serialize)]
@@ -59,11 +59,17 @@ impl TranslationService {
             !info.key_required || secret.get("copper-golem",&account(id)).ok().flatten().is_some_and(|key|!key.trim().is_empty())
         };
         let usable=if config.provider=="auto"{config.fallback_providers.iter().any(|id|ready(id))}else{ready(&config.provider)};
-        if !usable {
-            config.provider="google".into();
+        // Historical Google defaults are unreachable in some supported networks. Move only
+        // untouched single-provider selections; explicit endpoint/options/keys remain user-owned.
+        let old_google_default=config.provider=="google" && config.source_language=="auto" && config.fallback_providers.is_empty()
+            && config.providers.get("google").is_none_or(|p|(p.endpoint.trim().is_empty() || p.endpoint.trim()=="https://translate.googleapis.com/translate_a/single") && p.model.is_empty() && p.region.is_empty() && !p.pro)
+            && config.providers.get("microsoft").is_none_or(|p|p.endpoint.is_empty() && p.model.is_empty() && p.region.is_empty() && !p.pro)
+            && matches!(secret.get("copper-golem",&account("google")),Ok(None));
+        if !usable || old_google_default {
+            config.provider="microsoft".into();
             config.source_language="auto".into();
             config.fallback_providers.clear();
-            config.providers.remove("google");
+            if !usable {config.providers.remove("microsoft");}
             config.generation=config.generation.checked_add(1).ok_or_else(||KernelError::InvalidArgument("translation generation overflow".into()))?;
             settings.set("translation.config",&config)?;
         }

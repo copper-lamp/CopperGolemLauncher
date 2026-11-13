@@ -1,4 +1,53 @@
 use super::*;
+
+#[test]
+fn historical_google_default_migrates_but_custom_selection_stays() {
+    let s=service();
+    assert_eq!(s.config().unwrap().provider,"microsoft");
+    let mut cfg=s.config().unwrap();cfg.provider="google".into();cfg.source_language="auto".into();
+    s.save_config(cfg,HashMap::new()).unwrap();
+    let migrated=TranslationService::new(s.db.clone(),s.settings.clone(),s.secret.clone()).unwrap();
+    assert_eq!(migrated.config().unwrap().provider,"microsoft");
+    let mut cfg=migrated.config().unwrap();cfg.provider="google".into();cfg.providers.insert("google".into(),ProviderConfig{endpoint:"https://example.org/translate".into(),..Default::default()});
+    migrated.save_config(cfg,HashMap::new()).unwrap();
+    let preserved=TranslationService::new(s.db.clone(),s.settings.clone(),s.secret.clone()).unwrap();
+    assert_eq!(preserved.config().unwrap().provider,"google");
+}
+
+/// Explicit opt-in live evidence; never runs in the ordinary offline suite.
+#[tokio::test]
+#[ignore = "sends fixed public sample text to real translation services"]
+async fn live_builtin_translation_and_cancel() {
+    let s=service();
+    let mut cfg=s.config().unwrap();cfg.cache_days=0;cfg.timeout_ms=10000;
+    s.save_config(cfg,HashMap::new()).unwrap();
+    let default_provider=s.config().unwrap().provider;
+    let mut default_ok=false;
+    for id in ["google","microsoft","indextranslate"] {
+        let started=Instant::now();
+        match s.test(id).await {
+            Ok(value)=>{println!("LIVE provider={id} elapsed_ms={} translation={:?}",value.elapsed_ms,value.text);assert!(!value.text.trim().is_empty());if id==default_provider{default_ok=true;}},
+            Err(error)=>println!("LIVE provider={id} elapsed_ms={} error={} retryable={}",started.elapsed().as_millis(),error.code,error.retryable),
+        }
+    }
+    assert!(default_ok,"configured default must translate a real fixed sample");
+    let mut req=request("live-market-sample","Download Minecraft resource packs and explore community content.");
+    req.expected_generation=Some(s.config().unwrap().generation);
+    let result=s.translate(req).await.expect("real default service content translation");
+    println!("LIVE content provider={} translation={:?}",result.provider,result.texts);
+    assert_ne!(result.texts[0],"Download Minecraft resource packs and explore community content.");
+    let worker=s.clone();
+    let pending=tokio::spawn(async move{worker.translate(request("live-cancel",&"This is a public translation cancellation sample. ".repeat(200))).await});
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let started=Instant::now();
+    assert!(s.cancel("live-cancel"),"request must remain registered until cancellation");
+    let error=tokio::time::timeout(Duration::from_secs(2),pending).await.unwrap().unwrap().unwrap_err();
+    assert_eq!(error.code,"translation.cancelled");
+    println!("LIVE cancel error={} elapsed_ms={}",error.code,started.elapsed().as_millis());
+    assert!(!s.cancel("live-cancel"));
+}
+
 use crate::platform::secret::SecretStore;
 use crate::registry::events::EventBus;
 use std::{io::{Read,Write},net::TcpListener,sync::atomic::{AtomicUsize,Ordering}};
