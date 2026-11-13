@@ -8,8 +8,7 @@ defineProps<{ channel: string; label: string }>();
     <path class="cube-top" d="M32 4 58 18 32 32 6 18Z" />
     <path class="cube-left" d="M6 18 32 32 32 60 6 46Z" />
     <path class="cube-right" d="M32 32 58 18 58 46 32 60Z" />
-    <path d="M7 18 32 31 57 18M32 32V59" fill="none" stroke="white" stroke-opacity=".85" stroke-width="1.2" />
-    <text x="32" y="36" text-anchor="middle" dominant-baseline="central">{{ channel === 'release' ? 'R' : 'P' }}</text>
+    <text x="32" y="32" text-anchor="middle" dominant-baseline="central">{{ channel === 'release' ? 'R' : 'P' }}</text>
   </svg>
 </template>
 
