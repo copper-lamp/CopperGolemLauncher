@@ -82,6 +82,19 @@ impl LoaderCatalog {
             .collect()
     }
 
+    /// Reverse the authoritative game → loader map using LIP dependency ranges.
+    /// Unknown syntax never produces a compatibility claim.
+    pub(crate) fn games_for_loader_ranges(&self, ranges: &[&str]) -> Vec<String> {
+        let mut games: Vec<String> = self.versions.iter()
+            .filter(|(_, loaders)| loaders.iter().any(|loader| {
+                ranges.iter().any(|range| loader_range_matches(loader, range))
+            }))
+            .map(|(game, _)| game.clone()).collect();
+        games.sort_by(|a, b| parse_segments(b).cmp(&parse_segments(a)).then_with(|| b.cmp(a)));
+        games.dedup();
+        games
+    }
+
     /// 目录是否为空（版本库里没有任何条目）。
     pub fn is_empty(&self) -> bool {
         self.versions.is_empty()
@@ -140,6 +153,39 @@ impl LoaderCatalog {
                 .collect(),
         }
     }
+}
+
+/// LIP uses whitespace-separated comparators (AND), plus exact/wildcard versions.
+/// Parse each comparator independently so a bare version remains exact, not Cargo's caret.
+fn loader_range_matches(loader: &str, expression: &str) -> bool {
+    let Ok(version) = semver::Version::parse(loader.trim().trim_start_matches('v')) else { return false; };
+    let tokens: Vec<&str> = expression.split_whitespace().collect();
+    if tokens.is_empty() { return false; }
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        let joined;
+        let comparator = if matches!(token, ">=" | "<=" | ">" | "<" | "=" | "^" | "~") {
+            index += 1;
+            let Some(value) = tokens.get(index) else { return false; };
+            joined = format!("{token}{value}");
+            joined.as_str()
+        } else { token };
+        let comparator = comparator.trim_end_matches(',');
+        if matches!(comparator, "*" | "x" | "X") {
+            if !version.pre.is_empty() { return false; }
+            index += 1;
+            continue;
+        }
+        // semver defaults a bare comparator to caret; LIP bare versions are exact.
+        let normalized = if comparator.starts_with(|c: char| c.is_ascii_digit() || c == 'v') {
+            format!("={}", comparator.trim_start_matches('v'))
+        } else { comparator.to_owned() };
+        let Ok(requirement) = semver::Comparator::parse(&normalized) else { return false; };
+        if !requirement.matches(&version) { return false; }
+        index += 1;
+    }
+    true
 }
 
 // ---------------------------------------------------------------- 拉取与解析

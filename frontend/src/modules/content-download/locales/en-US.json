@@ -1,6 +1,6 @@
 {
-  "navTitle": "Content",
-  "listTitle": "Content Download",
+  "navTitle": "Content Market",
+  "listTitle": "Content Market",
   "detailTitle": "Content Detail",
   "searchPlaceholder": "Search behavior packs / texture packs / shaders / LL mods",
   "search": "Search",
@@ -12,6 +12,7 @@
   "empty": "No content available yet",
   "retry": "Retry",
   "unknownVersion": "Unknown version",
+  "previewChannel": "Preview",
   "source": "Source",
   "sourceAll": "All sources",
   "sourceCurseforge": "CurseForge",

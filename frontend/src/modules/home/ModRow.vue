@@ -5,10 +5,11 @@
 // 悬停或选中时才把四个操作按钮铺到右侧 —— 模组多起来以后，常驻按钮会把
 // 名字挤成一团。行的容器用 div 而不是 button，因为里面还要嵌按钮。
 //
-// 图标来自清单 `icon`（后端已转成 data URL）；没有图标时用通用方块占位。
+// 图标由后端解析为 data URL；缺失或加载失败时使用主题彩底首字母。
 
 import { computed } from "vue";
-import { CircleCheck, CircleSlash, FolderOpen, Info, Package, Trash2 } from "@lucide/vue";
+import { CircleCheck, CircleSlash, FolderOpen, Info, Trash2 } from "@lucide/vue";
+import CoContentIcon from "../../components/ui/CoContentIcon.vue";
 
 import { useI18n } from "../../i18n";
 import type { ModView } from "../../api/home";
@@ -60,8 +61,7 @@ const description = computed(() => {
     @keydown.space.prevent="emit('toggle')"
   >
     <span class="row__icon">
-      <img v-if="mod.icon" :src="mod.icon" alt="" draggable="false" />
-      <Package v-else :size="18" :stroke-width="1.6" />
+      <CoContentIcon :name="mod.name" :src="mod.icon" />
     </span>
 
     <span class="row__text">

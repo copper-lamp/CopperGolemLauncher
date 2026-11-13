@@ -11,6 +11,8 @@
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import CoContentIcon from "../../components/ui/CoContentIcon.vue";
+import { contentAuthorAvatar } from "./contentIcon";
 import {
   ExternalLink,
   ImageIcon,
@@ -41,7 +43,6 @@ import {
   typeBadgeLabel,
   typeBadgeTone,
   releaseBadgeLabel,
-  releaseBadgeTone,
 } from "./badges";
 import { detailCrumbTitle } from "./detailCrumb";
 import RailToc from "./RailToc.vue";
@@ -243,10 +244,16 @@ const versionTree = computed<{ branch: string; files: ContentFile[] }[]>(() => {
   if (!d) return [];
   const map = new Map<string, ContentFile[]>();
   for (const file of d.files) {
-    const key = versionBranch(file.version);
-    const list = map.get(key);
-    if (list) list.push(file);
-    else map.set(key, [file]);
+    // LIP package versions describe the mod, not Minecraft. One file may support
+    // several game versions; expose it under each authoritative target.
+    const keys = isLip.value
+      ? [...new Set(file.gameVersions.length ? file.gameVersions : [t(KB + ".otherVersions")])]
+      : [versionBranch(file.version)];
+    for (const key of keys) {
+      const list = map.get(key);
+      if (list) list.push(file);
+      else map.set(key, [file]);
+    }
   }
   return [...map.entries()]
     .sort((a, b) => compareBranch(a[0], b[0]))
@@ -516,7 +523,8 @@ onUnmounted(() => {
         <section id="cd-sec-info" class="cd-info">
           <header class="cd-info__head">
             <div class="cd-info__thumb">
-              <img v-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
+              <CoContentIcon v-if="detail.item.contentType === 'll_mod'" :name="detail.item.name" :src="detail.item.iconUrl" :avatar="contentAuthorAvatar(detail.item)" />
+              <img v-else-if="detail.item.iconUrl" :src="detail.item.iconUrl" :alt="detail.item.name" />
               <component
                 :is="typeIcon(detail.item.contentType)"
                 v-else
@@ -626,10 +634,12 @@ onUnmounted(() => {
                 <div class="cd-file__main">
                   <div class="cd-file__row">
                     <span class="cd-file__version">{{ file.version }}</span>
-                    <CoBadge
-                      :tone="releaseBadgeTone(file.releaseType)"
-                      :label="releaseBadgeLabel(file.releaseType)"
-                    />
+                    <span
+                      class="cd-file__channel"
+                      :class="file.releaseType === 'release' ? 'is-release' : 'is-preview'"
+                      :title="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')"
+                      :aria-label="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')"
+                    >{{ file.releaseType === 'release' ? 'R' : 'P' }}</span>
                     <span v-if="file.size > 0" class="cd-file__meta">
                       {{ formatBytes(file.size) }}
                     </span>
@@ -1275,6 +1285,26 @@ onUnmounted(() => {
   gap: var(--copper-space-2);
 }
 
+.cd-file__channel {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: var(--copper-shadow-sm);
+}
+.cd-file__channel.is-preview {
+  background: var(--copper-update-blue);
+  color: var(--copper-badge-release-fg);
+}
+.cd-file__channel.is-release {
+  background: var(--copper-badge-release);
+  color: var(--copper-badge-release-fg);
+}
 .cd-file__version {
   font-weight: 600;
   color: var(--copper-text);

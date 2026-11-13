@@ -108,13 +108,13 @@ const title = computed(() => {
     padding var(--copper-duration) var(--copper-easing),
     background-color var(--copper-duration-fast) var(--copper-easing),
     box-shadow var(--copper-duration) var(--copper-easing);
-  background: #40a9e8;
-  color: #ffffff;
+  background: var(--copper-update-blue);
+  color: var(--copper-update-foreground);
   cursor: pointer;
 }
 
 .update-badge:hover {
-  background: #278bc8;
+  background: var(--copper-update-blue-hover);
 }
 
 .update-badge:active {
@@ -148,7 +148,7 @@ const title = computed(() => {
 @media(prefers-reduced-motion:reduce){.update-badge__spinner,.update-badge--pulse .update-badge__ring-bar,.update-badge__label{animation:none}}
 :global(html[data-motion= reduced]) .update-badge__spinner,:global(html[data-motion= reduced]) .update-badge__ring-bar,:global(html[data-motion= reduced]) .update-badge__label{animation:none}
 .update-badge__icon {
-  color: #ffffff;
+  color: var(--copper-update-foreground);
   stroke-width: 2;
 }
 
@@ -174,7 +174,7 @@ const title = computed(() => {
 }
 
 .update-badge__ring-bar {
-  stroke: #ffffff;
+  stroke: var(--copper-update-foreground);
   transition: stroke-dashoffset var(--copper-duration) var(--copper-easing);
 }
 
@@ -190,7 +190,7 @@ const title = computed(() => {
   font-size: var(--copper-font-size-sm);
   font-weight: 600;
   white-space: nowrap;
-  color: #ffffff;
+  color: var(--copper-update-foreground);
   animation: update-badge-label-in var(--copper-duration) var(--copper-easing);
 }
 

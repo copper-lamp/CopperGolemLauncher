@@ -1,6 +1,6 @@
 {
-  "navTitle": "内容下载",
-  "listTitle": "内容下载",
+  "navTitle": "内容市场",
+  "listTitle": "内容市场",
   "detailTitle": "内容详情",
   "searchPlaceholder": "搜索行为包 / 材质包 / 光影包 / LL 模组",
   "search": "搜索",
@@ -12,6 +12,7 @@
   "empty": "暂时还没有可用内容",
   "retry": "重试",
   "unknownVersion": "版本未知",
+  "previewChannel": "预览版",
   "source": "来源",
   "sourceAll": "全部来源",
   "sourceCurseforge": "CurseForge",

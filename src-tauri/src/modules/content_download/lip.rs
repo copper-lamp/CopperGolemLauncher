@@ -335,6 +335,14 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
         .ok_or_else(|| KernelError::InvalidArgument(format!("包 `lip:{key}` 不存在")))?;
 
     let item = package_to_item(pkg);
+    // A failed/absent catalog leaves targets unknown; never infer MCBE from package semver.
+    let catalog = match super::loader_catalog::LoaderCatalog::load(_kernel.paths().cache_dir()).await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log::warn!("[content-download] LIP target game catalog unavailable: {error}");
+            super::loader_catalog::LoaderCatalog::default()
+        }
+    };
     let mut files: Vec<ContentFile> = Vec::new();
     for variant in &pkg.preferred_variants {
         for (vers, deps) in &variant.versions {
@@ -347,6 +355,13 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
                     kind: "required".into(),
                 })
                 .collect();
+            let loader_ranges: Vec<&str> = deps.iter().filter_map(|(dependency, range)| {
+                let (package, variant) = dependency.split_once('#').unwrap_or((dependency.as_str(), ""));
+                (package.eq_ignore_ascii_case("github.com/LiteLDev/LeviLamina")
+                    && (variant.is_empty() || variant.eq_ignore_ascii_case("client")))
+                    .then_some(range.as_str())
+            }).collect();
+            let game_versions = catalog.games_for_loader_ranges(&loader_ranges);
             files.push(ContentFile {
                 id: format!("lip-f:{key}:{}:{vers}", variant.key),
                 version: vers.clone(),
@@ -355,17 +370,23 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
                 download_url: String::new(),
                 size: 0,
                 sha256: None,
-                game_versions: Vec::new(),
+                game_versions,
                 dependencies,
-                release_type: "release".into(),
+                release_type: if vers.contains('-') { "beta" } else { "release" }.into(),
                 // variant 独立下发给 lipd（包引用 `github.com/owner/repo#<variant>`）。
                 variant: Some(variant.key.clone()),
                 published_at_hint: String::new(),
             });
         }
     }
-    // 全部优先 variant 合并后去重（跨 variant 避免重复版本）。
+    // Keep variants distinct: the file id and install reference carry their variant.
     files.sort_by(|a, b| cmp_versions(&b.version, &a.version));
+    let mut game_versions: Vec<String> = files.iter().flat_map(|file| file.game_versions.iter().cloned()).collect();
+    game_versions.sort_by(|a, b| {
+        let parts = |value: &str| value.split('.').map(|part| part.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+        parts(b).cmp(&parts(a)).then_with(|| b.cmp(a))
+    });
+    game_versions.dedup();
 
     Ok(ContentDetail {
         item,
@@ -379,7 +400,7 @@ pub async fn detail(_kernel: &KernelContext, identifier: &str) -> Result<Content
             a
         },
         files,
-        game_versions: Vec::new(),
+        game_versions,
     })
 }
 

@@ -217,7 +217,7 @@ impl ContentDownloadModule {
 
     /// 详情：按跨源 id（`cf:` / `lip:` / `lla:` 前缀）路由。
     pub async fn detail(kernel: &KernelContext, id: &str) -> Result<ContentDetail, KernelError> {
-        let key=metadata_key(kernel,"detail",id);
+        let key=metadata_key(kernel,if id.starts_with("lip:") { "detail-game-targets-v2" } else { "detail" },id);
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::detail_uncached(kernel,id)).await
     }
     async fn detail_uncached(kernel:&KernelContext,id:&str)->Result<ContentDetail,KernelError>{

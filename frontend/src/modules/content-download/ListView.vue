@@ -14,6 +14,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import TranslationAction from "../../components/TranslationAction.vue";
 import CoSkeleton from "../../components/ui/CoSkeleton.vue";
+import CoContentIcon from "../../components/ui/CoContentIcon.vue";
+import { contentAuthorAvatar } from "./contentIcon";
 import { useTranslationMessages } from "../../services/translation-messages";
 import { useTranslation } from "../../composables/useTranslation";
 import { useRouter } from "vue-router";
@@ -390,7 +392,8 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
             @click="openDetail(item)"
           >
             <div class="content-card__thumb">
-              <img v-if="item.iconUrl" :src="item.iconUrl" :alt="item.name" loading="lazy" />
+              <CoContentIcon v-if="item.contentType === 'll_mod'" :name="item.name" :src="item.iconUrl" :avatar="contentAuthorAvatar(item)" />
+              <img v-else-if="item.iconUrl" :src="item.iconUrl" :alt="item.name" loading="lazy" />
               <component
                 :is="typeIcon(item.contentType)"
                 v-else

@@ -833,35 +833,33 @@ fn to_view(dir: &Path, folder: String, manifest: ModManifest, enabled: bool) -> 
     }
 }
 
-/// 模组图标的候选文件名（清单未指定时按顺序找第一个存在的）。
-const ICON_CANDIDATES: [&str; 3] = ["pack_icon.png", "icon.png", "logo.png"];
+/// 清单未指定图标时兼容包根目录的常用图标名。
+const ICON_CANDIDATES: [&str; 3] = ["icon.png", "pack_icon.png", "logo.png"];
 /// 模组图标字节上限：列表里每个模组一张，过大宁可回退默认图标。
 const MOD_ICON_MAX_BYTES: u64 = 1024 * 1024;
 
 /// 读取模组图标并转成 data URL。
 ///
-/// 清单里的 `icon` 只接受**单段文件名**：模组目录是外部可写的，允许相对路径就等于
-/// 让清单把启动器带到任意位置读文件。
+/// 清单图标允许包内相对路径（包括 assets/icon.png）；规范化后校验真实路径仍在
+/// 模组目录内，拒绝绝对路径、父目录跳转和符号链接逃逸。
 fn mod_icon(dir: &Path, declared: &str) -> Option<String> {
-    let declared = declared.trim();
-    if !declared.is_empty()
-        && !declared.contains(['/', '\\'])
-        && !declared.contains(':')
-        && !declared.contains("..")
-    {
-        if let Ok(Some(icon)) =
-            crate::modules::home::content::read_image_data_url(&dir.join(declared), MOD_ICON_MAX_BYTES)
+    let root = std::fs::canonicalize(dir).ok()?;
+    let read_icon = |relative: &str| {
+        let relative = relative.trim().replace('\\', "/");
+        if relative.is_empty() || relative.starts_with('/') || relative.contains(':')
+            || relative.split('/').any(|part| part == "..")
         {
-            return Some(icon);
+            return None;
         }
-    }
-    ICON_CANDIDATES
-        .iter()
-        .find_map(|name| {
-            crate::modules::home::content::read_image_data_url(&dir.join(name), MOD_ICON_MAX_BYTES)
-                .ok()
-                .flatten()
-        })
+        let path = std::fs::canonicalize(root.join(relative)).ok()?;
+        if !path.starts_with(&root) {
+            return None;
+        }
+        crate::modules::home::content::read_image_data_url(&path, MOD_ICON_MAX_BYTES)
+            .ok()
+            .flatten()
+    };
+    read_icon(declared).or_else(|| ICON_CANDIDATES.iter().find_map(|name| read_icon(name)))
 }
 
 // ---------------------------------------------------------------- 更新检查

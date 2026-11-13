@@ -14,9 +14,9 @@
   --copper-motion-page-exit:140ms;
   --copper-motion-loading-enter:160ms;
   --copper-motion-loading-exit:120ms;
-  --copper-update-blue:#38bdf8;
-  --copper-update-blue-hover:#0ea5e9;
-  --copper-update-foreground:#082f49;
+  --copper-update-blue:#002fa7;
+  --copper-update-blue-hover:#1646bc;
+  --copper-update-foreground:#ffffff;
   --copper-badge-release:#173d33;--copper-badge-release-fg:#9fe5c8;
   --copper-badge-beta:#41371c;--copper-badge-beta-fg:#ecd184;
   --copper-badge-alpha:#46252e;--copper-badge-alpha-fg:#f6b0c0;
@@ -36,6 +36,9 @@
   --copper-badge-neutral:#303044;--copper-badge-neutral-fg:#ccc6ed;
 }
 html[data-theme="light"] {
+  --copper-update-blue:#002fa7;
+  --copper-update-blue-hover:#1646bc;
+  --copper-update-foreground:#ffffff;
   --copper-shadow-card:0 8px 30px rgb(45 53 65 / .09),0 2px 8px rgb(45 53 65 / .05);
   --copper-badge-release:#e1f3eb;--copper-badge-release-fg:#22664c;
   --copper-badge-beta:#f7efd4;--copper-badge-beta-fg:#795d12;
