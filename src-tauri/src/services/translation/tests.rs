@@ -1,4 +1,12 @@
 use super::*;
+#[test]
+fn passive_routing_counts_operations_not_batches_and_resets_on_failure(){
+ let s=service();let generation=s.config().unwrap().generation;let mut routing=routing::Routing::load(&s.settings,generation);
+ for index in 0..10{let id=format!("operation-{index}");let(_,epoch)=routing.begin(&id,"en:zh".into(),generation,vec!["microsoft".into(),"indextranslate".into()],false).unwrap();routing.observe(&id,"microsoft",epoch,80,true,false,&s.settings);routing.finish(&id,epoch,&s.settings);assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],index);routing.begin(&id,"en:zh".into(),generation,vec![],true).unwrap();routing.observe(&id,"indextranslate",epoch,30,true,false,&s.settings);routing.finish(&id,epoch,&s.settings);}
+ let state=serde_json::to_value(routing.status(generation)).unwrap();assert_eq!(state["operations"],10);assert_eq!(state["selected"][0],"indextranslate");
+ let(_,epoch)=routing.begin("failure","en:zh".into(),generation,vec!["microsoft".into(),"indextranslate".into()],true).unwrap();routing.observe("failure","indextranslate",epoch,1,true,true,&s.settings);assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],0);
+}
+
 
 #[test]
 fn historical_google_default_migrates_but_custom_selection_stays() {
@@ -89,8 +97,8 @@ fn server_body(status:u16,delay:u64,body:&'static str)->(String,Arc<AtomicUsize>
  });
  (format!("http://{address}"),observed)
 }
-fn configured(s:&TranslationService,url:String){let mut cfg=s.config().unwrap();cfg.provider="libre".into();cfg.target_language="zh-CN".into();cfg.providers.insert("libre".into(),ProviderConfig{endpoint:url,..Default::default()});s.save_config(cfg,HashMap::new()).unwrap();}
-fn request(id:&str,text:&str)->TranslationRequest{TranslationRequest{request_id:id.into(),texts:vec![text.into()],source_language:"en".into(),target_language:Some("zh-CN".into()),expected_generation:None}}
+fn configured(s:&TranslationService,url:String){let mut cfg=s.config().unwrap();cfg.provider="libre".into();cfg.target_language="zh-CN".into();cfg.providers.insert("libre".into(),ProviderConfig{endpoint:url,..Default::default()});s.save_config(cfg,HashMap::new()).unwrap();s.routing.lock().select_for_test(vec!["libre".into()]);}
+fn request(id:&str,text:&str)->TranslationRequest{TranslationRequest{request_id:id.into(),texts:vec![text.into()],source_language:"en".into(),target_language:Some("zh-CN".into()),expected_generation:None,operation_id:None,operation_final:None}}
 #[test]fn utf8_long_segments_preserve_every_byte(){for max in [4,450,1400,4000]{let text="汉字测试 and text.\n".repeat(3000);let chunks=split_text(&text,max);assert_eq!(chunks.concat(),text);assert!(chunks.iter().all(|s|s.len()<=max));}}
 #[test]fn reference_registry_is_complete_and_native_is_honest(){let ids:Vec<_>=provider::registry().iter().map(|p|p.id).collect();assert_eq!(ids.len(),15);for id in ["indextranslate","deeplx","microsoft","azure","apple","auto"]{assert!(ids.contains(&id));}assert!(!provider::info("apple").unwrap().available);}
 #[derive(Default)]struct UnavailableSecrets;
@@ -129,4 +137,4 @@ impl SecretStore for UnavailableSecrets{fn set(&self,_:&str,_:&str,_:&str)->std:
 #[test]fn success_cache_survives_service_reconstruction(){let s=service();s.store("persisted","value",30,0).unwrap();let reopened=TranslationService::new(s.db.clone(),s.settings.clone(),s.secret.clone()).unwrap();assert_eq!(reopened.cached("persisted").unwrap().as_deref(),Some("value"));}
 #[test]fn endpoint_rules_keep_credentials_off_plain_remote_http(){assert_eq!(provider::endpoint("custom",&ProviderConfig{endpoint:"http://remote.example/v1".into(),..Default::default()}).unwrap_err().code,"translation.https_required");assert!(provider::endpoint("custom",&ProviderConfig{endpoint:"http://127.0.0.1:8080/v1".into(),..Default::default()}).is_ok());assert!(provider::endpoint("custom",&ProviderConfig{endpoint:"https://user:password@example.com/v1".into(),..Default::default()}).is_err());}
 #[tokio::test]async fn disabled_cache_still_deduplicates_inflight(){let s=service();let(url,count)=server(200,50);configured(&s,url);let mut cfg=s.config().unwrap();cfg.cache_days=0;s.save_config(cfg,HashMap::new()).unwrap();let(a,b)=tokio::join!(s.translate(request("a","hello")),s.translate(request("b","hello")));assert!(a.is_ok()&&b.is_ok());assert_eq!(count.load(Ordering::SeqCst),1);}
-#[tokio::test]async fn explicit_sequential_fallback_only(){let s=service();let (bad,_)=server(400,0);let (good,count)=server(200,0);configured(&s,bad);let mut cfg=s.config().unwrap();cfg.fallback_providers=vec!["deeplx".into()];cfg.providers.insert("deeplx".into(),ProviderConfig{endpoint:good,..Default::default()});s.save_config(cfg,HashMap::new()).unwrap();let result=s.translate(request("fall","hello")).await.unwrap();assert_eq!(result.provider,"deeplx");assert_eq!(result.texts,vec!["translated"]);assert_eq!(count.load(Ordering::SeqCst),1);}
+#[tokio::test]async fn explicit_sequential_fallback_only(){let s=service();let (bad,_)=server(400,0);let (good,count)=server(200,0);configured(&s,bad);let mut cfg=s.config().unwrap();cfg.fallback_providers=vec!["deeplx".into()];cfg.providers.insert("deeplx".into(),ProviderConfig{endpoint:good,..Default::default()});s.save_config(cfg,HashMap::new()).unwrap();s.routing.lock().select_for_test(vec!["libre".into(),"deeplx".into()]);let result=s.translate(request("fall","hello")).await.unwrap();assert_eq!(result.provider,"deeplx");assert_eq!(result.texts,vec!["translated"]);assert_eq!(count.load(Ordering::SeqCst),1);}

@@ -3,6 +3,8 @@ use std::{collections::HashMap,sync::Arc};
 use tauri::State;
 use crate::services::translation::{provider::{self,ProviderInfo},TranslationService,TranslationConfig,TranslationRequest,TranslationResponse,TranslationError,ConnectionTest};
 #[tauri::command]
+pub fn translation_routing(service:State<'_,Arc<TranslationService>>)->crate::services::translation::routing::Status{service.routing_status()}
+#[tauri::command]
 pub fn translation_providers()->Vec<ProviderInfo>{provider::registry()}
 #[tauri::command]
 pub fn translation_config(service:State<'_,Arc<TranslationService>>)->Result<TranslationConfig,TranslationError>{service.config()}

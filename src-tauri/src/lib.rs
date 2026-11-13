@@ -436,6 +436,7 @@ pub fn run() {
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::settings::settings_set_many,
+            commands::translation::translation_routing,
             commands::translation::translation_providers,
             commands::translation::translation_config,
             commands::translation::translation_save_config,
