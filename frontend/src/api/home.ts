@@ -52,23 +52,6 @@ export interface CompatibilityStatus {
   shared_content_root: string | null;
   capabilities: { launch: boolean; detach: boolean; rename: boolean; shared_save: boolean; content: boolean; mods: boolean; loader: boolean; client: boolean; source_write: boolean };
 }
-export interface CompatibilityProbe {
-  supported: boolean;
-  disabled_reason: string | null;
-  source_dir: string;
-  game_version: string | null;
-  version_type: string | null;
-}
-export function homeCompatDiscover(): Promise<string[]> {
-  return call<string[]>('home_compat_discover');
-}
-export function homeCompatProbe(sourceDir: string): Promise<CompatibilityProbe> {
-  return call<CompatibilityProbe>('home_compat_probe', { sourceDir });
-}
-export function homeCompatBind(sourceDir: string, alias: string): Promise<VersionView> {
-  return call<VersionView>('home_compat_bind', { sourceDir, alias });
-}
-
 /** 版本设置部分更新（仅覆盖提供的字段；字段名 snake_case 与后端一致）。 */
 export interface VersionMetaUpdate {
   enable_editor_mode?: boolean;
@@ -393,9 +376,9 @@ export function homeModsOpenFolder(name: string): Promise<string> {
 }
 
 /** 版本目录快捷方式的目标。 */
-export type VersionDirKind = "version" | "mods" | "worlds";
+export type VersionDirKind = "version" | "mods" | "worlds" | "screenshots";
 
-/** 在系统文件管理器中打开版本相关目录（版本 / 模组 / 存档），返回目录绝对路径。 */
+/** 打开版本 / 模组 / 存档 / 已存在的截图目录，返回绝对路径；截图目录缺失时不创建。 */
 export function homeVersionOpenDir(name: string, kind: VersionDirKind): Promise<string> {
   return call<string>("home_version_open_dir", { name, kind });
 }

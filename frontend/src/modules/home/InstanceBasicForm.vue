@@ -9,8 +9,9 @@
 // 裁剪与上传不属于表单逻辑。
 
 import { computed, onMounted, ref, watch } from "vue";
-import { FolderOpen, Gamepad2, Puzzle, Upload, RotateCcw, Eraser } from "@lucide/vue";
+import { FolderOpen, Gamepad2, Puzzle, Upload, Image, RotateCcw, Eraser } from "@lucide/vue";
 
+import { isKernelApiError } from "../../api/core";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import CoTextField from "../../components/ui/CoTextField.vue";
@@ -164,6 +165,7 @@ const dirShortcuts: Array<{
   labelKey: string;
   icon: typeof FolderOpen;
 }> = [
+  { kind: "screenshots", labelKey: "module.home.dir.screenshots", icon: Image },
   { kind: "version", labelKey: "module.home.dir.version", icon: FolderOpen },
   { kind: "mods", labelKey: "module.home.dir.mods", icon: Puzzle },
   { kind: "worlds", labelKey: "module.home.dir.worlds", icon: Upload },
@@ -175,6 +177,10 @@ async function openDir(kind: VersionDirKind) {
   try {
     await homeVersionOpenDir(props.version.name, kind);
   } catch (e) {
+    if (kind === "screenshots" && isKernelApiError(e) && e.message === "screenshots_directory_missing") {
+      showToast(t("module.home.dir.screenshots_missing"), "info");
+      return;
+    }
     showToast(String(e), "error");
   }
 }

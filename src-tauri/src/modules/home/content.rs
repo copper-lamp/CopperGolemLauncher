@@ -226,6 +226,8 @@ fn inspect(path: &Path) -> (bool, Option<u64>, Option<i64>) {
 /// MCBE 的截图落点没有公开文档，而且随渠道（UWP / GDK）与版本变化。这里按
 /// 上述顺序探测并只采用**实际存在**的目录：没有截图时清单里就不出现这一分类，
 /// 不猜也不建空目录。
+pub fn existing_screenshots_dir(kernel:&KernelContext,name:&str)->Result<PathBuf,KernelError>{let roots=content_roots(kernel,name)?;screenshots_dir(&roots).ok_or_else(||KernelError::InvalidArgument("screenshots_directory_missing".into()))}
+
 pub fn screenshots_dir(roots: &ContentRoots) -> Option<PathBuf> {
     let data_root = if roots.users_root.as_os_str().is_empty() {
         // UWP：com_mojang = <数据根>/games/com.mojang。

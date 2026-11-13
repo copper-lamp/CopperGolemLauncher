@@ -440,13 +440,16 @@ pub fn launch_game(
 }
 
 fn launch_compatibility(ctx:&LaunchCtx,name:&str,dir:&std::path::Path,meta:&VersionMeta)->Result<LaunchOutcome,KernelError>{
-    if meta.is_uwp() || meta.mode.as_deref()!=Some("original") || meta.loader.is_some() || meta.client_id.is_some() || meta.enable_console || meta.enable_editor_mode { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
+    let automatic=super::compatibility::is_automatic(dir);
+    if !automatic && (meta.is_uwp() || meta.mode.as_deref()!=Some("original") || meta.loader.is_some() || meta.client_id.is_some() || meta.enable_console || meta.enable_editor_mode) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
     static BOUND_LAUNCH:std::sync::Mutex<()>=std::sync::Mutex::new(());
     let _guard=BOUND_LAUNCH.lock().map_err(|_|KernelError::Module("compat_launch_lock".into()))?;
     let spec=super::compatibility::resolve(dir)?;
     if is_process_running_at_path(&spec.executable){return Err(KernelError::InvalidArgument("compat_game_running".into()));}
+    let private_control=super::compatibility::control_dir(dir);let dir=private_control.as_path();
+    let private_meta=VersionMeta::read(dir).ok_or_else(||KernelError::InvalidArgument("compat_binding_invalid".into()))?;
     super::inject::ensure_hook_dll(dir)?;
-    let mut env=hook_env(dir,meta); env.retain(|(k,_)|k!="COPPER_HOOK_LOAD_PRELOADER");
+    let mut env=hook_env(dir,&private_meta); env.retain(|(k,_)|k!="COPPER_HOOK_LOAD_PRELOADER");
     for (key,value) in [("COPPER_HOOK_ROOT",spec.source_root.clone()),("COPPER_HOOK_DATA_DIR",spec.shared.data.clone()),("COPPER_HOOK_TEMP",spec.shared.temp.clone()),("COPPER_HOOK_WINRT_ROOT",spec.source_root.clone()),("COPPER_HOOK_LOG_ROOT",dir.to_path_buf())] {env.retain(|(k,_)|k!=key);env.push((key.into(),value.to_string_lossy().into_owned()));}
     let ready=dir.join(format!("hook-ready-{}",uuid::Uuid::new_v4()));
     env.push(("COPPER_HOOK_READY_FILE".into(),ready.to_string_lossy().into_owned()));

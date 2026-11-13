@@ -67,14 +67,20 @@ pub fn bootstrap(locator:&Path,default:&Path,legacy:&Path,env:Option<PathBuf>)->
         let plan:Plan=serde_json::from_str(&raw)?;
         match execute(&plan){
             Ok(created)=>{
-                let result=(||{let tx=c.transaction()?;set(&tx,"active",&plan.target.to_string_lossy())?;if let Some(game)=&plan.game_root{set(&tx,"gameRoot",&game.to_string_lossy())?;}tx.execute("DELETE FROM locator WHERE key IN ('pending','lastError')",[])?;tx.commit()?;Ok::<(),KernelError>(())})();
+                let result=(||{let tx=c.transaction()?;set(&tx,"active",&plan.target.to_string_lossy())?;if let Some(game)=&plan.game_root{set(&tx,"gameRoot",&game.to_string_lossy())?;set(&tx,"resetVersionsSelection","1")?;}tx.execute("DELETE FROM locator WHERE key IN ('pending','lastError')",[])?;tx.commit()?;Ok::<(),KernelError>(())})();
                 if let Err(e)=result{for p in created.iter().rev(){let _=std::fs::remove_dir_all(p);}return Err(e);}
                 for p in &created {let _=std::fs::remove_file(p.join(".cgl-migration-owner"));}
+                reset_versions_selection(&c,&plan.target)?;
                 return Ok(plan.target);
             }
             Err(e)=>{set(&c,"lastError",&e.to_string())?;log::error!("[storage] migration failed; original data preserved: {e}");return Ok(initial);}
         }
-    }Ok(initial)
+    }reset_versions_selection(&c,&initial)?;Ok(initial)
+}
+fn reset_versions_selection(locator:&rusqlite::Connection,root:&Path)->Result<(),KernelError>{
+    if get(locator,"resetVersionsSelection")?.is_none(){return Ok(());}
+    let file=root.join("data/copper.db");if file.is_file(){let conn=rusqlite::Connection::open(file)?;conn.execute("DELETE FROM core_settings WHERE key='game.versions_selection'",[])?;}
+    locator.execute("DELETE FROM locator WHERE key='resetVersionsSelection'",[])?;Ok(())
 }
 pub fn game_override(locator:&Path)->Result<Option<PathBuf>,KernelError>{Ok(get(&db(locator)?,"gameRoot")?.map(PathBuf::from))}
 fn execute(plan:&Plan)->Result<Vec<PathBuf>,KernelError>{
@@ -118,7 +124,7 @@ fn execute(plan:&Plan)->Result<Vec<PathBuf>,KernelError>{
             let launcher_stage=&stages[0].0;
             let db_path=launcher_stage.join("data/copper.db");
             let mut conn=rusqlite::Connection::open(db_path)?;let tx=conn.transaction()?;
-            for (key,val) in [("game.root",game.clone()),("game.directory",game.join("versions"))]{tx.execute("INSERT INTO core_settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",rusqlite::params![key,serde_json::to_string(&val.to_string_lossy())?])?;}tx.commit()?;
+            for (key,val) in [("game.root",game.clone()),("game.directory",game.join("versions")),("game.versions_selection",PathBuf::new())]{tx.execute("INSERT INTO core_settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",rusqlite::params![key,serde_json::to_string(&val.to_string_lossy())?])?;}tx.commit()?;
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
         }
         for (stage,target) in stages{write_marker(&stage,&token)?;std::fs::remove_dir(&target)?;std::fs::rename(&stage,&target)?;created.retain(|p|p!=&stage);created.push(target);}

@@ -412,6 +412,8 @@ pub fn run() {
             commands::storage::storage_preview,
             commands::storage::storage_apply,
             commands::storage::storage_cancel,
+            commands::levi_preferences::levi_preferences_read,
+            commands::levi_preferences::levi_preferences_select_versions,
             commands::kernel::debug_log,
             commands::imports::imports_pick,
             commands::imports::imports_pending,
@@ -520,9 +522,6 @@ pub fn run() {
             commands::content_download::content_download_lip_install,
             // 开始页模块（home）
             commands::home::home_versions_list,
-            commands::home::home_compat_probe,
-            commands::home::home_compat_discover,
-            commands::home::home_compat_bind,
             commands::home::home_versions_root,
             commands::home::home_version_get,
             commands::home::home_version_save_meta,

@@ -15,18 +15,6 @@ use crate::modules::home::mods;
 use crate::modules::home::{meta, OpenDirKind, VersionMetaUpdate, VersionView};
 use crate::state::KernelContext;
 
-#[tauri::command]
-pub fn home_compat_discover()->Vec<String>{crate::modules::home::compatibility::discover()}
-#[tauri::command]
-pub async fn home_compat_probe(source_dir:String)->CommandResult<crate::modules::home::compatibility::CompatibilityProbe> { tauri::async_runtime::spawn_blocking(move ||crate::modules::home::compatibility::probe(std::path::Path::new(&source_dir))).await.map_err(|e|into_command_error(KernelError::Module(e.to_string()))) }
-#[tauri::command]
-pub async fn home_compat_bind(kernel:State<'_,KernelContext>,source_dir:String,alias:String)->CommandResult<VersionView>{
- let root=kernel.versions_root();let task_alias=alias.clone();
- tauri::async_runtime::spawn_blocking(move ||crate::modules::home::compatibility::bind(&root,std::path::Path::new(&source_dir),&task_alias)).await.map_err(|e|into_command_error(KernelError::Module(e.to_string())))?.map_err(into_command_error)?;
- kernel.events().publish("version.installed",serde_json::json!({"name":alias}));
- crate::modules::home::HomeModule::get_version(kernel.inner(),&alias).map_err(into_command_error)
-}
-
 /// 版本清单。
 #[tauri::command]
 pub fn home_versions_list(kernel: State<'_, KernelContext>) -> CommandResult<Vec<VersionView>> {

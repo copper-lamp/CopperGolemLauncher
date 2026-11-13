@@ -15,6 +15,8 @@ pub mod llm;
 pub mod translation;
 pub mod paths;
 pub mod metadata_cache;
+mod levi_leveldb;
+pub mod levi_preferences;
 pub mod storage;
 pub mod registry;
 pub mod settings;

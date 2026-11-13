@@ -36,7 +36,6 @@ import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import DefaultHome from "./DefaultHome.vue";
-import CompatibilityBinding from './CompatibilityBinding.vue';
 import { compatibilityReason, useCompatibilityText } from '../../services/compatibility-messages';
 import {
   homeClientReinject,
@@ -529,7 +528,6 @@ function goDownload() {
       </div>
     </div>
     <p v-if="current?.compatibility" role="status">{{ compatText('bound') }} · {{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
-    <CompatibilityBinding v-if="isWindows" @bound="async (version) => { versions = await homeVersionsList(); selectedName = version.name; }" />
     <footer class="home-page__mode"><CoSegmented v-model="mode" :options="modeOptions" /></footer>
     </div>
   </CoPage>

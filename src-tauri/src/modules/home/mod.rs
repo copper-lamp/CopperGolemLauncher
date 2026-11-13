@@ -123,6 +123,8 @@ pub enum OpenDirKind {
     Mods,
     /// 存档目录（玩家数据目录下的 `minecraftWorlds`）。
     Worlds,
+    /// 已存在的真实截图目录。
+    Screenshots,
 }
 
 /// 解析「打开目录」快捷方式的目标路径，`create` 为真时确保目录存在。
@@ -142,6 +144,7 @@ pub fn resolve_open_dir(
         }
         OpenDirKind::Mods => mods::mods_dir(kernel, name, create),
         OpenDirKind::Worlds => content::worlds_dir(kernel, name, create),
+        OpenDirKind::Screenshots => content::existing_screenshots_dir(kernel, name),
     }
 }
 
@@ -241,6 +244,7 @@ impl HomeModule {
     ) -> Result<VersionView, KernelError> {
         let root = kernel.versions_root();
         let old_dir = meta::resolve_version_dir(&root, old_name)?;
+        if compatibility::is_automatic(&old_dir){return Err(KernelError::InvalidArgument("compat_mode_unsupported".into()));}
         let new_name = new_name.trim();
         if new_name.is_empty() {
             return Err(KernelError::InvalidArgument("版本名不能为空".into()));
@@ -274,6 +278,7 @@ impl HomeModule {
         if !dir.exists() {
             return Err(KernelError::InvalidArgument(format!("版本 `{name}` 不存在")));
         }
+        if compatibility::is_automatic(&dir){return Err(KernelError::InvalidArgument("compat_mode_unsupported".into()));}
         let exe = launch::game_exe_path(&dir);
         if launch::is_process_running_at_path(&exe) {
             return Err(KernelError::InvalidArgument("游戏运行中，无法删除".into()));
@@ -365,10 +370,11 @@ fn effective_mode(meta: &VersionMeta) -> String {
     }
 }
 
-fn to_view(root: &std::path::Path, meta: VersionMeta) -> VersionView {
+fn to_view(root: &std::path::Path, mut meta: VersionMeta) -> VersionView {
     let dir = root.join(&meta.name);
+    if compatibility::is_automatic(&dir){meta.mode=Some("original".into());meta.loader=None;meta.client_id=None;meta.client_dll=None;meta.enable_console=false;meta.enable_editor_mode=false;}
     VersionView {
-        editor_supported: isolate::supports_editor_mode(&meta.game_version, &meta.version_type),
+        editor_supported: !compatibility::is_automatic(&dir)&&isolate::supports_editor_mode(&meta.game_version, &meta.version_type),
         name: meta.name.clone(),
         game_version: meta.game_version.clone(),
         version_type: meta.version_type.clone(),

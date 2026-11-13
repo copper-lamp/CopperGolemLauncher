@@ -147,6 +147,7 @@ impl Paths {
     pub fn locator_dir(&self) -> &PathBuf { &self.locator_dir }
     pub fn game_root(&self, settings:&SettingsService) -> PathBuf {
         if let Some(versions)=non_empty_env(VERSIONS_DIR_ENV){return versions.parent().unwrap_or(&versions).to_owned();}
+        if let Some(selected)=settings.get::<String>("game.versions_selection").filter(|s|!s.trim().is_empty()){let versions=PathBuf::from(selected);return versions.parent().unwrap_or(&versions).to_owned();}
         if let Some(root)=self.game_override.clone().or_else(||settings.get::<String>("game.root").filter(|s|!s.trim().is_empty()).map(PathBuf::from)){return root;}
         let versions=self.versions_root(settings); versions.parent().unwrap_or(&versions).to_owned()
     }
@@ -161,7 +162,7 @@ impl Paths {
         &self.versions_dir
     }
 
-    /// 解析当前游戏（版本）根目录。三级优先，取第一个非空：
+    /// 解析版本来源：env > 显式 game.versions_selection > locator/game.root > game.directory > default。
     /// 1. `COPPER_VERSIONS_DIR`：进程级覆盖（调试 / 受限环境隔离用），空串按未设置处理；
     /// 2. `settings.game.directory`：用户在「设置 → 版本目录」选的路径；
     /// 3. 默认 `versions_dir`（`<data>/versions`）。
@@ -175,6 +176,7 @@ impl Paths {
         if let Some(dir) = non_empty_env(VERSIONS_DIR_ENV) {
             return dir;
         }
+        if let Some(selected)=settings.get::<String>("game.versions_selection").filter(|s|!s.trim().is_empty()){return PathBuf::from(selected);}
         if let Some(root) = self.game_override.as_ref().cloned().or_else(||settings.get::<String>("game.root").filter(|s|!s.trim().is_empty()).map(PathBuf::from)) { return root.join("versions"); }
         settings
             .get::<String>("game.directory")

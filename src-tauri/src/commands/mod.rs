@@ -15,6 +15,7 @@ pub mod intents;
 pub mod imports;
 pub mod kernel;
 pub mod storage;
+pub mod levi_preferences;
 pub mod llm;
 pub mod translation;
 pub mod modules;

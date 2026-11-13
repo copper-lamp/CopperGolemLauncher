@@ -89,7 +89,7 @@
   },
   "nav": {
     "settings": "设置",
-    "downloads": "下载"
+    "downloads": "下载中心"
   },
   "settings": {
     "title": "设置",
@@ -376,7 +376,7 @@
   },
   "download": {
     "feedback_completed": "{name} 已完成",
-    "title": "下载",
+    "title": "下载中心",
     "empty": "没有正在进行的下载",
     "all_pause": "全部暂停",
     "all_resume": "全部继续",

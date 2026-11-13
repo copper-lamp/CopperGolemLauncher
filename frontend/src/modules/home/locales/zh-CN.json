@@ -1,9 +1,9 @@
 {
-  "title": "开始",
+  "title": "开始游戏",
   "hero_title": "创造你的世界",
   "subtitle": "选择版本开始游戏",
-  "empty": "还没有安装任何版本，前往游戏下载模块安装",
-  "install_hint": "版本将由游戏下载模块安装，此处管理已安装版本",
+  "empty": "还没有安装任何版本，前往游戏安装模块安装",
+  "install_hint": "版本将由游戏安装模块安装，此处管理已安装版本",
   "go_download": "前往下载游戏",
   "play": "开始游戏",
   "launching": "启动中",
@@ -29,7 +29,7 @@
     "offline": "未登录",
     "instances": "实例",
     "none": "未选择",
-    "downloads": "下载",
+    "downloads": "下载中心",
     "downloads_active": "{count} 个进行中",
     "downloads_idle": "没有进行中的下载",
     "play": "开始游戏",
@@ -145,6 +145,8 @@
     }
   },
   "dir": {
+    "screenshots": "截图文件夹",
+    "screenshots_missing": "尚未找到截图文件夹，请先在游戏中保存截图。",
     "version": "版本目录",
     "mods": "模组目录",
     "worlds": "存档目录"

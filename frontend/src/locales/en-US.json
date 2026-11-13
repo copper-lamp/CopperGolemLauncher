@@ -89,7 +89,7 @@
   },
   "nav": {
     "settings": "Settings",
-    "downloads": "Downloads"
+    "downloads": "Download Center"
   },
   "settings": {
     "title": "Settings",
@@ -376,7 +376,7 @@
   },
   "download": {
     "feedback_completed": "{name} completed",
-    "title": "Downloads",
+    "title": "Download Center",
     "empty": "No active downloads",
     "all_pause": "Pause all",
     "all_resume": "Resume all",

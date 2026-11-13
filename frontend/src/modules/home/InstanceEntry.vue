@@ -282,6 +282,11 @@ const actionGroups = computed<EntryActionGroup[]>(() => {
     },
   ];
 
+  if (view.compatibility && !view.compatibility.capabilities.detach) {
+    const index = maintain.findIndex(action => action.key === "delete");
+    if (index >= 0) maintain.splice(index, 1);
+  }
+
   return [
     { key: "manage", label: t("module.home.instance.group.manage"), items: manage },
     { key: "maintain", label: t("module.home.instance.group.maintain"), items: maintain },
@@ -342,13 +347,13 @@ function onUpdated(updated: VersionView) {
 
         <div v-if="current.compatibility" class="entry__section" role="status">
           <strong>{{ compatText('bound') }}</strong>
+          <p v-if="!current.compatibility.capabilities.detach">{{ compatText('automatic') }}</p>
           <p>{{ compatText('source') }}: {{ current.compatibility.source_dir }}</p>
           <p>{{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
           <p v-if="current.compatibility.source_loader_present">{{ compatText('sourceLoader') }}</p>
           <p v-if="current.compatibility.data_dir">{{ compatText('dataPath') }}: {{ current.compatibility.data_dir }}</p>
           <p v-if="current.compatibility.users_root">{{ compatText('usersPath') }}: {{ current.compatibility.users_root }}</p>
           <p v-if="current.compatibility.shared_content_root">{{ compatText('contentPath') }}: {{ current.compatibility.shared_content_root }}</p>
-          <button type="button" class="entry__action" @click="refresh">{{ compatText('probe') }}</button>
         </div>
         <div class="entry__section">
           <span class="entry__section-label">{{ t("module.home.instance.mode.label") }}</span>

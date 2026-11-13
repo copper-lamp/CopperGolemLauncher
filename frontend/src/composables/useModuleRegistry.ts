@@ -23,7 +23,7 @@ import {
   type RegistryModuleEntry,
   type RegistryStatus,
 } from "../api/registry";
-import { useLocaleRef } from "../i18n";
+import { t, useLocaleRef } from "../i18n";
 import { currentPlatform } from "./usePlatform";
 
 /** 内核 `Module` trait 契约版本，当前支持 1 与 2（2.3.2 `api_version`）。 */
@@ -131,8 +131,18 @@ const locale = useLocaleRef();
 
 let inflight: Promise<void> | null = null;
 
-/** 展示名回退链：本地 display_name → 条目 display_name → id（2.9.4）。 */
+/** 内置模块名称与导航同源；外部模块保留元数据名称回退链。 */
 function resolveDisplayName(local: ModuleInfo | null, entry: RegistryModuleEntry | null): string {
+  const builtinTitleKeys: Record<string, string> = {
+    home: "module.home.title",
+    "content-download": "module.content-download.navTitle",
+    "game-download": "module.game-download.navTitle",
+    downloads: "nav.downloads",
+    settings: "nav.settings",
+  };
+  const id = local?.id ?? entry?.id ?? "";
+  const titleKey = local?.is_builtin ? builtinTitleKeys[id] : undefined;
+  if (titleKey) return t(titleKey);
   const localName = local?.display_name?.trim();
   if (localName) return localName;
   const entryName = entry?.display_name?.trim();

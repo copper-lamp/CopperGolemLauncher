@@ -1,10 +1,10 @@
 {
-  "title": "Home",
+  "title": "Play",
   "hero_title": "Create your world",
   "subtitle": "Pick a version to play",
-  "empty": "No versions installed yet. Install one from the Game Downloads module",
-  "install_hint": "Versions are installed by the Game Downloads module; manage installed versions here",
-  "go_download": "Go to Game Downloads",
+  "empty": "No versions installed yet. Install one from the Game Installation module",
+  "install_hint": "Versions are installed by the Game Installation module; manage installed versions here",
+  "go_download": "Go to Game Installation",
   "play": "Play",
   "launching": "Launching",
   "stop": "Quit game",
@@ -29,7 +29,7 @@
     "offline": "Signed out",
     "instances": "Instances",
     "none": "None selected",
-    "downloads": "Downloads",
+    "downloads": "Download Center",
     "downloads_active": "{count} active",
     "downloads_idle": "No active downloads",
     "play": "Play",
@@ -82,7 +82,7 @@
     "isolation_on": "On",
     "loader_none": "Not installed",
     "loader_hint": "Injected into the game process at launch",
-    "loader_hint_none": "Pick a loader in the version detail page of Game Downloads",
+    "loader_hint_none": "Pick a loader in the version detail page of Game Installation",
     "editor_unsupported": "This game version has no editor mode",
     "console_hint": "Start the game with a console subsystem for crash output; takes effect on next launch",
     "launch_file": "Game file and injection",
@@ -145,6 +145,8 @@
     }
   },
   "dir": {
+    "screenshots": "Screenshots folder",
+    "screenshots_missing": "No screenshots folder was found. Save a screenshot in the game first.",
     "version": "Version folder",
     "mods": "Mods folder",
     "worlds": "Worlds folder"
