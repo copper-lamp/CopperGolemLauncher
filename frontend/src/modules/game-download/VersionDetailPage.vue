@@ -223,7 +223,7 @@ function goBack() {
   flex: 0 1 auto;
 }
 
-/* 列表浮层独立定位；窄高视口仅让表单本体滚动。 */
+/* 专用下拉在文档流中展开，表单滚动而安装按钮留在屏幕内。 */
 .gd-detail__form-scroll {
   display: flex;
   flex-direction: column;
