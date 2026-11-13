@@ -84,13 +84,17 @@ const translationMessages = useTranslationMessages();
 const { busy: translationBusy, translated: showTranslation, error: translationError } = translation;
 const translatedReadme = ref<string | null>(null);
 const displayedReadme = computed(() => showTranslation.value ? translatedReadme.value ?? readmeHtml.value : readmeHtml.value);
-const displayedName = computed(() => showTranslation.value ? translation.results.value[0] ?? detail.value?.item.name : detail.value?.item.name);
-const displayedDescription = computed(() => showTranslation.value ? translation.results.value[1] ?? detail.value?.item.description : detail.value?.item.description);
+// Commit the header and document from the same operation snapshot, never global slots.
+const translatedHeader = ref<{ name: string; description: string } | null>(null);
+const displayedName = computed(() => showTranslation.value ? translatedHeader.value?.name ?? detail.value?.item.name ?? "" : detail.value?.item.name ?? "");
+const displayedDescription = computed(() => showTranslation.value ? translatedHeader.value?.description ?? detail.value?.item.description ?? "" : detail.value?.item.description ?? "");
+watch(displayedName, name => { detailCrumbTitle.value = name; }, { flush: "sync" });
 let translationSeq = 0;
 function resetTranslation() {
   ++translationSeq;
   translation.reset();
   translatedReadme.value = null;
+  translatedHeader.value = null;
 }
 async function toggleTranslation() {
   if (translationBusy.value || showTranslation.value) { resetTranslation(); return; }
@@ -99,12 +103,21 @@ async function toggleTranslation() {
   const seq = ++translationSeq;
   const sourceHtml = readmeHtml.value;
   const document = translationDocument(sourceHtml ?? "");
+  const fields = { name: 0, description: 1, document: 2 } as const;
+  const source = [currentDetail.item.name, currentDetail.item.description ?? "", ...document.texts];
   const isCurrent = () => seq === translationSeq && detail.value === currentDetail && readmeHtml.value === sourceHtml;
   const publish = (values: string[]) => {
-    if (isCurrent()) translatedReadme.value = sourceHtml ? document.render(values.slice(2)) : null;
+    if (!isCurrent()) return;
+    if (values.length !== source.length) throw new Error("translation.invalid_response");
+    // Render before publishing either field so a failed document cannot commit a header.
+    const html = sourceHtml ? document.render(values.slice(fields.document)) : null;
+    translatedHeader.value = {
+      name: values[fields.name].trim() ? values[fields.name] : currentDetail.item.name,
+      description: values[fields.description].trim() ? values[fields.description] : currentDetail.item.description ?? "",
+    };
+    translatedReadme.value = html;
   };
-  const values = await translation.run([currentDetail.item.name, currentDetail.item.description ?? "", ...document.texts], publish);
-  if (values && isCurrent()) publish(values);
+  await translation.run(source, publish);
 }
 watch(displayedReadme, () => void buildToc());
 const loading = ref(true);
@@ -626,6 +639,7 @@ onUnmounted(() => {
                 class="cd-version-card__caret"
                 :class="{ 'is-open': isExpanded(g.branch) }"
               />
+              <CoVersionCube :channel="g.files.every(file => file.releaseType === 'release') ? 'release' : 'preview'" :label="g.files.every(file => file.releaseType === 'release') ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')" />
               <span class="cd-version-card__label">{{ g.branch }}</span>
               <span class="cd-version-card__count">
                 {{ t(`${KB}.versionCount`, { count: g.files.length }) }}
