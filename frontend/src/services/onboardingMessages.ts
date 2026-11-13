@@ -2,6 +2,7 @@ import { registerAddonI18n } from '../i18n';
 export const ONBOARDING_NAMESPACE = 'onboarding';
 registerAddonI18n(ONBOARDING_NAMESPACE, {
   'en-US': {
+    'preview.action': 'Preview onboarding', 'preview.notice': 'Preview only. Progress is temporary; settings, imports and installation are disabled.', 'preview.close': 'Back to About',
     chooseLauncherStorage: 'Choose launcher data root',
     launcherRoot: 'Launcher data root', gameRoot: 'Game root', confirm: 'Schedule migration', cancel: 'Cancel', confirmStorage: 'Verify this destination. The migration will run on restart and preserve the source on failure.',
     title: 'Welcome to Copper Golem', next: 'Continue', back: 'Back', finish: 'Finish setup', exit: 'Exit application', retry: 'Retry', loading: 'Loading saved setup…', saveFailed: 'Setup could not be saved. Your current step has been kept.',
@@ -19,6 +20,7 @@ registerAddonI18n(ONBOARDING_NAMESPACE, {
     briefs: 'What is new', dismiss: 'Got it', 'release.modules.title': 'External modules, connected', 'release.modules.body': 'Install trusted external modules from Settings, import local .cglm packages and load their pages after restarting. The host validates module packages and declared permissions.', storageError: 'Storage could not be loaded. Retry, or review it later in Settings.', detectError: 'Installed preferences could not be read. Retry or continue with your current settings.',
   },
   'zh-CN': {
+    'preview.action': '预览新手引导', 'preview.notice': '当前为预览，进度仅临时保留，设置修改、导入与安装已禁用。', 'preview.close': '返回关于',
     chooseLauncherStorage: '选择启动器数据根',
     launcherRoot: '启动器数据根', gameRoot: '游戏根目录', confirm: '安排迁移', cancel: '取消', confirmStorage: '请核对目标目录。迁移将在重启后执行，失败时保留原数据。',
     title: '欢迎使用铜傀儡', next: '继续', back: '上一步', finish: '完成设置', exit: '退出应用', retry: '重试', loading: '正在读取引导进度…', saveFailed: '无法保存引导进度，已保留当前步骤。',

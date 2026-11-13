@@ -17,7 +17,14 @@ import { RELEASE_BRIEFS } from '../../services/releaseBriefs';
 import { onboardingKey as key } from '../../services/onboardingMessages';
 import { acquireModal, guardModalFocus } from '../../services/modalCoordinator';
 const { t, locale } = useI18n();
-const session = new OnboardingSession({ read: settingsGet, write: (name, value) => settingsSet(name, value as JsonValue) });
+const props = withDefaults(defineProps<{ preview?: boolean }>(), { preview: false });
+const emit = defineEmits<{ closed: [] }>();
+// Preview owns a disposable store; it never reads or writes the real lifecycle keys.
+const previewMode = props.preview && import.meta.env.DEV;
+const previewStore = new Map<string, unknown>();
+const session = new OnboardingSession(previewMode
+  ? { read: async name => previewStore.get(name) ?? null, write: async (name, value) => { previewStore.set(name, value); } }
+  : { read: settingsGet, write: (name, value) => settingsSet(name, value as JsonValue) });
 const progress = ref(session.progress), visible = ref(true), busy = ref(false), error = ref(''), initialized = ref(false);
 const panel = ref<HTMLElement | null>(null), modules = ref<RegistryModuleEntry[]>([]), moduleError = ref('');
 const selected = ref<string[]>([]), briefs = ref<number[]>([]), releaseState = ref<ReleaseState | null>(null), platform = ref('');
@@ -34,7 +41,7 @@ const briefItems = computed(() => briefs.value.flatMap(id => { const item = RELE
 const previewIcon = computed(() => ({ features: LayoutDashboard, theme: Palette, levi: FolderOpen, storage: Settings, game: Download, content: Boxes, launch: Play, modules: Package })[step.value]);
 async function focusModal() {
   releaseModal?.(); releaseFocus?.();
-  const id = showingBriefs.value ? 'release-briefs' : 'onboarding';
+  const id = previewMode ? 'onboarding-preview' : showingBriefs.value ? 'release-briefs' : 'onboarding';
   releaseModal = acquireModal(id, showingBriefs.value ? 50 : 100);
   await nextTick();
   if (!disposed) releaseFocus = guardModalFocus(id, () => panel.value);
@@ -47,6 +54,7 @@ function load() {
 async function initialize() {
   error.value = '';
   if (!releaseModal) await focusModal();
+  if (previewMode) { initialized.value = true; return; }
   try {
     // Render the feature introduction immediately; saved state is authoritative once read.
     await session.load();
@@ -62,6 +70,7 @@ async function initialize() {
   } catch (e) { if (!disposed) error.value = `${t(key('saveFailed'))} ${String(e)}`; }
 }
 async function loadCapabilities() {
+  if (previewMode) return;
   try { storage.value = await storageStatus(); storageScheduled.value = storage.value.restartRequired; } catch { storageError.value = t(key('storageError')); }
   try {
     const status = await registryStatus();
@@ -72,14 +81,14 @@ async function loadCapabilities() {
   } catch { moduleError.value = t(key('noModules')); }
 }
 async function readPreferences() {
-  if (preferencesLoading.value) return;
+  if (previewMode || preferencesLoading.value) return;
   preferencesLoading.value = true; configurationError.value = '';
   try { preferences.value = await call<LeviPreferences>('levi_preferences_read'); }
   catch (e) { configurationError.value = String(e); }
   finally { preferencesLoading.value = false; }
 }
 async function applyPreferences(item: LeviPreferences['installations'][number]) {
-  if (busy.value) return;
+  if (previewMode || busy.value) return;
   busy.value = true; configurationError.value = '';
   try {
     // The directory apply contract is coordinated with the storage owner.
@@ -98,12 +107,13 @@ async function applyPreferences(item: LeviPreferences['installations'][number]) 
   finally { busy.value = false; }
 }
 async function chooseStorage(root: 'gameRoot' | 'launcherRoot') {
+  if (previewMode) return;
   busy.value = true; storageError.value = '';
   try { const path = await open({ directory: true, multiple: false }); if (typeof path !== 'string') return; storageRequest.value = { [root]: path }; storagePreview.value = await previewStorage(storageRequest.value); }
   catch (e) { storageError.value = String(e); } finally { busy.value = false; }
 }
 async function applyStorage() {
-  if (!storageRequest.value || !storagePreview.value) return;
+  if (previewMode || !storageRequest.value || !storagePreview.value) return;
   busy.value = true; storageError.value = '';
   try { const result = await storageApply(storageRequest.value); storageScheduled.value = result.scheduled && result.restartRequired; storagePreview.value = null; }
   catch (e) { storageError.value = String(e); } finally { busy.value = false; }
@@ -127,23 +137,25 @@ async function back() {
   catch (e) { error.value = `${t(key('saveFailed'))} ${String(e)}`; } finally { busy.value = false; }
 }
 async function changeTheme(mode: ThemeMode) {
+  if (previewMode) return;
   busy.value = true; error.value = '';
   try { await themeSetMode(mode); themeState.mode = mode; document.documentElement.dataset.themeMode = mode; document.documentElement.dataset.theme = mode === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : mode; }
   catch (e) { error.value = String(e); } finally { busy.value = false; }
 }
 async function installSelected() {
+  if (previewMode) return;
   busy.value = true; moduleError.value = '';
   try { await session.save({ selectedModules: selected.value }); for (const id of selected.value) { if (session.progress.installedModules.includes(id) || !modules.value.some(x => x.id === id)) continue; await modulesInstall(id); await session.save({ installedModules: [...session.progress.installedModules, id] }); progress.value = session.progress; } }
   catch (e) { moduleError.value = `${t(key('moduleFailed'))} ${String(e)}`; } finally { busy.value = false; }
 }
 async function dismissBriefs() {
-  if (!releaseState.value || busy.value) return;
+  if (previewMode || !releaseState.value || busy.value) return;
   busy.value = true; error.value = '';
   try { await settingsSet(RELEASE_KEY, acknowledgeBriefs(releaseState.value) as unknown as JsonValue); briefs.value = []; close(); }
   catch (e) { error.value = `${t(key('saveFailed'))} ${String(e)}`; } finally { busy.value = false; }
 }
-function close() { visible.value = false; releaseModal?.(); releaseModal = undefined; releaseFocus?.(); releaseFocus = undefined; }
-async function exit() { try { await getCurrentWindow().close(); } catch (e) { error.value = String(e); } }
+function close() { const wasVisible = visible.value; visible.value = false; releaseModal?.(); releaseModal = undefined; releaseFocus?.(); releaseFocus = undefined; if (previewMode && wasVisible) emit('closed'); }
+async function exit() { if (previewMode) { close(); return; } try { await getCurrentWindow().close(); } catch (e) { error.value = String(e); } }
 onMounted(load);
 onBeforeUnmount(() => { disposed = true; close(); });
 </script>
@@ -160,8 +172,8 @@ onBeforeUnmount(() => { disposed = true; close(); });
             <aside><img src="/app-64.png" alt="" width="32" height="32"/><LayoutDashboard/><Download/><Boxes/><Settings/></aside>
             <div class="preview-workspace"><div class="preview-toolbar"><span>{{ t(key('preview.brand')) }}</span><i/><i/><i/></div><div class="preview-body"><div class="preview-heading"><component :is="previewIcon" :size="30"/><strong>{{ t(key(step)) }}</strong></div><div class="preview-grid"><div class="preview-feature"><component :is="previewIcon" :size="54"/><span>{{ t(key(`${step}.preview`)) }}</span></div><div class="preview-list"><div v-for="n in 3" :key="n"><span/><i/></div><button tabindex="-1"><Play :size="18"/>{{ t(key('preview.launch')) }}</button></div></div></div></div>
           </div>
-          <div class="copy"><small>{{ t(key('title')) }}</small><h1 id="onboarding-title">{{ t(key(step)) }}</h1><p class="description">{{ t(key(`${step}.body`)) }}</p>
-            <div v-if="step === 'theme'" class="controls"><button v-for="mode in (['light','dark','auto'] as const)" :key="mode" :aria-pressed="themeState.mode === mode" :disabled="busy || !initialized" @click="changeTheme(mode)">{{ t(key(mode)) }}</button></div>
+          <div class="copy"><p v-if="previewMode" role="status">{{ t(key('preview.notice')) }}</p><small>{{ t(key('title')) }}</small><h1 id="onboarding-title">{{ t(key(step)) }}</h1><p class="description">{{ t(key(`${step}.body`)) }}</p>
+            <div v-if="step === 'theme'" class="controls"><button v-for="mode in (['light','dark','auto'] as const)" :key="mode" :aria-pressed="themeState.mode === mode" :disabled="previewMode || busy || !initialized" @click="changeTheme(mode)">{{ t(key(mode)) }}</button></div>
             <div v-if="step === 'levi'" class="details">
               <p v-if="preferencesLoading" role="status">{{ t(key('configLoading')) }}</p><p v-else-if="!preferences?.installations.length">{{ t(key('noConfiguration')) }}</p>
               <div v-for="item in preferences?.installations" :key="item.configPath" class="module-row"><span><strong>{{ item.versionsDirectory }}</strong><small>{{ item.configPath }}</small><small v-if="item.colors.light || item.colors.dark">{{ t(key('colors')) }}: {{ item.colors.light }} {{ item.colors.dark }}</small></span><button :disabled="busy || appliedPreferences.includes(item.configPath)" @click="applyPreferences(item)">{{ t(key(appliedPreferences.includes(item.configPath) ? 'applied' : 'applyConfiguration')) }}</button></div>
@@ -171,7 +183,7 @@ onBeforeUnmount(() => { disposed = true; close(); });
             <div v-if="step === 'modules'" class="details"><p v-if="!modules.length">{{ t(key('noModules')) }}</p><label v-for="item in modules" :key="item.id" class="module-row"><input v-model="selected" type="checkbox" :value="item.id" :disabled="busy || progress.installedModules.includes(item.id)" @change="saveSelection"/><Package :size="20"/><span><strong>{{ item.display_name || item.id }}</strong><small>{{ item.author?.name }} · {{ item.version }}</small><small>{{ pickLocalized(item.summary,locale) }}</small><small>{{ t(key('permissions')) }}: {{ item.permissions?.join(', ') || '—' }}</small><small v-if="progress.installedModules.includes(item.id)">{{ t(key('installed')) }}</small></span></label><p v-if="moduleError" role="alert">{{ moduleError }}</p><button v-if="modules.length" :disabled="busy || !selected.some(id => !progress.installedModules.includes(id))" @click="installSelected"><Check :size="16"/>{{ t(key(busy ? 'installing' : 'install')) }}</button></div>
             <div v-if="error" role="alert" class="error"><p>{{ error }}</p><button :disabled="busy" @click="load">{{ t(key('retry')) }}</button></div>
           </div>
-          <footer><button :disabled="busy" @click="exit"><LogOut :size="16"/>{{ t(key('exit')) }}</button><div class="progress" role="progressbar" :aria-label="t(key('progress'))" :aria-valuenow="steps.indexOf(step)+1" :aria-valuemax="steps.length" aria-valuemin="1"><i v-for="(item,index) in steps" :key="item" :class="{ passed:index <= steps.indexOf(step) }"/><small>{{ steps.indexOf(step)+1 }} / {{ steps.length }}</small></div><button v-if="steps.indexOf(step)>0" :disabled="busy || !initialized" @click="back"><ArrowLeft :size="16"/>{{ t(key('back')) }}</button><button :disabled="busy || !initialized || !!storagePreview" class="primary" @click="next">{{ t(key(step === 'modules' ? 'finish' : 'next')) }}<ArrowRight :size="16"/></button></footer>
+          <footer><button :disabled="busy" @click="exit"><LogOut :size="16"/>{{ t(key(previewMode ? 'preview.close' : 'exit')) }}</button><div class="progress" role="progressbar" :aria-label="t(key('progress'))" :aria-valuenow="steps.indexOf(step)+1" :aria-valuemax="steps.length" aria-valuemin="1"><i v-for="(item,index) in steps" :key="item" :class="{ passed:index <= steps.indexOf(step) }"/><small>{{ steps.indexOf(step)+1 }} / {{ steps.length }}</small></div><button v-if="steps.indexOf(step)>0" :disabled="busy || !initialized" @click="back"><ArrowLeft :size="16"/>{{ t(key('back')) }}</button><button :disabled="busy || !initialized || !!storagePreview" class="primary" @click="next">{{ t(key(step === 'modules' ? 'finish' : 'next')) }}<ArrowRight :size="16"/></button></footer>
         </template>
       </section>
     </div>
