@@ -11,7 +11,7 @@
 // 用它验证分栏原语的吸顶、折叠与滚动归属，风险最低。
 
 import { ref } from "vue";
-import { SlidersHorizontal, FolderOpen, Rocket, Palette, Blocks, Info } from "@lucide/vue";
+import { SlidersHorizontal, FolderOpen, Rocket, Palette, Blocks, Info, Download, Languages, Puzzle, ShieldCheck, RefreshCw } from "@lucide/vue";
 
 import GeneralTab from "./settings/GeneralTab.vue";
 import StorageTab from "./settings/StorageTab.vue";
@@ -41,13 +41,13 @@ const tabs = [
   { id: "general", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
   { id: "appearance", titleKey: "settings.tabs.appearance", icon: Palette },
   { id: "storage", titleKey: "settings.tabs.version", icon: FolderOpen },
-  { id: "download", titleKey: "settings.tabs.general", icon: FolderOpen },
+  { id: "download", titleKey: "settings.tabs.general", icon: Download },
   { id: "launch", titleKey: "settings.tabs.launch", icon: Rocket },
-  { id: "translation", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
+  { id: "translation", titleKey: "settings.tabs.general", icon: Languages },
   { id: "modules", titleKey: "settings.tabs.modules", icon: Blocks },
-  { id: "components", titleKey: "components.title", icon: Blocks },
-  { id: "privacy", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
-  { id: "update", titleKey: "settings.tabs.about", icon: Info },
+  { id: "components", titleKey: "components.title", icon: Puzzle },
+  { id: "privacy", titleKey: "settings.tabs.general", icon: ShieldCheck },
+  { id: "update", titleKey: "settings.tabs.about", icon: RefreshCw },
   { id: "about", titleKey: "settings.tabs.about", icon: Info },
 ] as const;
 
