@@ -42,9 +42,15 @@ export const translationTest = (provider: string) =>
   call<{ provider: string; text: string; elapsed_ms: number }>("translation_test", { provider });
 export const translationCancel = (requestId: string) => call<boolean>("translation_cancel", { requestId });
 export const translationClearCache = () => call<number>("translation_clear_cache");
-export const translationTranslate = (requestId: string, texts: string[], targetLanguage: string, sourceLanguage = "auto", expectedGeneration?: number) =>
+export interface TranslationRouting {
+  phase: "learning" | "selected"; operations: number; required_operations: number; selected: string[]; expires_at: number | null;
+  providers: Array<{ id: string; successes: number; failures: number; mean_ms: number | null }>;
+}
+export const translationRouting = () => call<TranslationRouting>("translation_routing");
+export const translationTranslate = (requestId: string, texts: string[], targetLanguage: string, sourceLanguage = "auto", expectedGeneration?: number, operationId?: string, operationFinal?: boolean) =>
   call<TranslationResult>("translation_translate", { request: {
     request_id: requestId, texts, source_language: sourceLanguage, target_language: targetLanguage, expected_generation: expectedGeneration,
+    operation_id: operationId, operation_final: operationFinal,
   } });
 
 /** Operate on already-sanitized HTML. Only text content is ever replaced. */

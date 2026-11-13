@@ -19,8 +19,8 @@ const { useTranslation } = load('../src/composables/useTranslation.ts', {
   ref, watch, onScopeDispose, useLocaleRef: () => locale, useTranslationError: () => e => e.message,
   translationCancel: async id => { cancelled.push(id); return true; },
   translationConfig: async () => ({ target_language: 'auto', source_language: 'en', generation: 7 }),
-  translationTranslate: async (id, texts, target, source, expectedGeneration) => {
-    calls.push({ id, texts, target, source, expectedGeneration });
+  translationTranslate: async (id, texts, target, source, expectedGeneration, operationId, operationFinal) => {
+    calls.push({ id, texts, target, source, expectedGeneration, operationId, operationFinal });
     if (defer) return new Promise(resolve => pending.push(() => resolve({ texts: texts.map(t => `translated:${t}`), generation: responseGeneration })));
     return { texts: texts.map(t => `translated:${t}`), generation: responseGeneration };
   },
@@ -29,7 +29,10 @@ const scope = effectScope();
 const state = scope.run(() => useTranslation());
 const input = Array.from({ length: 300 }, (_, i) => `item-${i}`);
 await state.run(input);
-assert.deepEqual(calls.map(c => c.texts.length), [128,128,44]);
+assert.deepEqual(calls.map(c => c.texts.length), [...Array(37).fill(8), 4]);
+assert.ok(calls.every(c => c.operationId === calls[0].operationId));
+assert.equal(calls.filter(c => c.operationFinal).length, 1);
+assert.equal(calls.at(-1).operationFinal, true);
 assert.equal(state.results.value.length, 300);
 assert.equal(state.results.value[299], 'translated:item-299');
 assert.equal(calls[0].source, 'en');
@@ -43,6 +46,7 @@ responseGeneration = 7;
 state.reset();
 assert.equal(state.results.value.length, 0);
 assert.equal(state.translated.value, false);
+cancelled.length = 0;
 defer = true;
 let run = state.run(['old page']);
 await new Promise(resolve => setImmediate(resolve));

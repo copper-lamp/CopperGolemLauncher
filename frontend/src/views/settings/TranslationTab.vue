@@ -4,10 +4,12 @@ import CoButton from "../../components/ui/CoButton.vue";
 import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
 import { useTranslationMessages, useTranslationError } from "../../services/translation-messages";
-import { translationConfig, translationSaveConfig, translationTest, translationClearCache, type TranslationConfig } from "../../services/translation";
+import { translationConfig, translationSaveConfig, translationTest, translationClearCache, translationRouting, type TranslationRouting, type TranslationConfig } from "../../services/translation";
 const m = useTranslationMessages();
 const errorMessage = useTranslationError();
 const config = ref<TranslationConfig | null>(null);
+const routing = ref<TranslationRouting | null>(null);
+const routingError = ref("");
 const busy = ref(false);
 const loading = ref(true);
 const error = ref("");
@@ -18,6 +20,8 @@ async function load() {
   try { config.value = await translationConfig(); }
   catch (e) { error.value = errorMessage(e); }
   finally { loading.value = false; }
+  try { routing.value = await translationRouting(); routingError.value = ""; }
+  catch (e) { routingError.value = errorMessage(e); }
 }
 async function action(kind: "save" | "test" | "clear") {
   if (!config.value || busy.value) return;
@@ -46,6 +50,8 @@ onMounted(load);
       <label>{{ m.target }}<CoSelect v-model="config.target_language" :options="languageOptions" :disabled="busy" /></label>
       <label>{{ m.cache }}<input v-model.number="config.cache_days" class="number" type="number" min="0" max="365" :disabled="busy" /><small>{{ m.cacheHint }}</small></label>
       <p class="hint">{{ m.defaultHint }}</p>
+      <p v-if="routing" class="hint" role="status">{{ m.routing }}：{{ routing.operations }} / {{ routing.required_operations }}<span v-if="routing.selected.length"> · {{ m.selected }}：{{ routing.selected.join(', ') }}</span></p>
+      <p v-if="routingError" class="hint">{{ m.routingUnavailable }} · {{ routingError }}</p>
       <p class="hint">{{ m.notice }}</p>
       <div class="actions"><CoButton type="submit" :disabled="busy">{{ m.save }}</CoButton><CoButton variant="secondary" :disabled="busy" @click="action('test')">{{ m.test }}</CoButton><CoButton variant="secondary" :disabled="busy" @click="action('clear')">{{ m.clear }}</CoButton></div>
     </form>

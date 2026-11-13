@@ -12,6 +12,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import CoContentIcon from "../../components/ui/CoContentIcon.vue";
+import CoVersionCube from "../../components/ui/CoVersionCube.vue";
 import { contentAuthorAvatar } from "./contentIcon";
 import {
   ExternalLink,
@@ -22,7 +23,6 @@ import {
   PackageCheck,
   LoaderCircle,
   AlertTriangle,
-  FileDigit,
   Link2,
   ChevronRight,
 } from "@lucide/vue";
@@ -84,13 +84,27 @@ const translationMessages = useTranslationMessages();
 const { busy: translationBusy, translated: showTranslation, error: translationError } = translation;
 const translatedReadme = ref<string | null>(null);
 const displayedReadme = computed(() => showTranslation.value ? translatedReadme.value ?? readmeHtml.value : readmeHtml.value);
+const displayedName = computed(() => showTranslation.value ? translation.results.value[0] ?? detail.value?.item.name : detail.value?.item.name);
+const displayedDescription = computed(() => showTranslation.value ? translation.results.value[1] ?? detail.value?.item.description : detail.value?.item.description);
+let translationSeq = 0;
+function resetTranslation() {
+  ++translationSeq;
+  translation.reset();
+  translatedReadme.value = null;
+}
 async function toggleTranslation() {
-  if (translationBusy.value || showTranslation.value) { translation.reset(); return; }
-  if (!readmeHtml.value) return;
+  if (translationBusy.value || showTranslation.value) { resetTranslation(); return; }
+  const currentDetail = detail.value;
+  if (!currentDetail) return;
+  const seq = ++translationSeq;
   const sourceHtml = readmeHtml.value;
-  const document = translationDocument(sourceHtml);
-  await translation.run(document.texts);
-  if (showTranslation.value && readmeHtml.value === sourceHtml) translatedReadme.value = document.render(translation.results.value);
+  const document = translationDocument(sourceHtml ?? "");
+  const isCurrent = () => seq === translationSeq && detail.value === currentDetail && readmeHtml.value === sourceHtml;
+  const publish = (values: string[]) => {
+    if (isCurrent()) translatedReadme.value = sourceHtml ? document.render(values.slice(2)) : null;
+  };
+  const values = await translation.run([currentDetail.item.name, currentDetail.item.description ?? "", ...document.texts], publish);
+  if (values && isCurrent()) publish(values);
 }
 watch(displayedReadme, () => void buildToc());
 const loading = ref(true);
@@ -286,8 +300,7 @@ let loadSeq = 0;
 
 async function load() {
   const seq = ++loadSeq;
-  translation.reset();
-  translatedReadme.value = null;
+  resetTranslation();
   readmeHtml.value = null;
   loading.value = true;
   error.value = null;
@@ -500,7 +513,7 @@ onUnmounted(() => {
 <template>
   <CoPage ref="pageRef">
     <Teleport defer to="#copper-titlebar-actions">
-      <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || readmeLoading || !readmeHtml" @toggle="toggleTranslation" />
+      <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || readmeLoading || !detail" @toggle="toggleTranslation" />
     </Teleport>
     <div class="cd-detail">
       <CoSplitLayout aside-position="end">
@@ -544,8 +557,8 @@ onUnmounted(() => {
                   :label="sourceBadgeLabel(detail.item.source)"
                 />
               </div>
-              <h1 class="cd-info__name">{{ detail.item.name }}</h1>
-              <p class="cd-info__desc">{{ detail.item.description }}</p>
+              <h1 class="cd-info__name">{{ displayedName }}</h1>
+              <p class="cd-info__desc">{{ displayedDescription }}</p>
               <div class="cd-info__links">
                 <span v-if="detail.authors.length" class="cd-info__author">
                   {{ t(`${KB}.author`) }}：{{ detail.authors[0] }}
@@ -630,16 +643,11 @@ onUnmounted(() => {
                 @click="onPickFile(file, $event)"
                 @keydown.enter="onPickFile(file, $event as unknown as MouseEvent)"
               >
-                <FileDigit :size="16" class="cd-file__icon" />
+                <CoVersionCube :channel="file.releaseType" :label="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')" />
                 <div class="cd-file__main">
                   <div class="cd-file__row">
                     <span class="cd-file__version">{{ file.version }}</span>
-                    <span
-                      class="cd-file__channel"
-                      :class="file.releaseType === 'release' ? 'is-release' : 'is-preview'"
-                      :title="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')"
-                      :aria-label="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')"
-                    >{{ file.releaseType === 'release' ? 'R' : 'P' }}</span>
+
                     <span v-if="file.size > 0" class="cd-file__meta">
                       {{ formatBytes(file.size) }}
                     </span>
@@ -1285,26 +1293,6 @@ onUnmounted(() => {
   gap: var(--copper-space-2);
 }
 
-.cd-file__channel {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 22px;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: var(--copper-shadow-sm);
-}
-.cd-file__channel.is-preview {
-  background: var(--copper-update-blue);
-  color: var(--copper-badge-release-fg);
-}
-.cd-file__channel.is-release {
-  background: var(--copper-badge-release);
-  color: var(--copper-badge-release-fg);
-}
 .cd-file__version {
   font-weight: 600;
   color: var(--copper-text);
