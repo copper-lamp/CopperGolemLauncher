@@ -11,7 +11,7 @@
 //   再叠一层底色变化在浅色主题下会读成「变灰」而不是「高亮」），点击进入二级页面。
 
 import { useRouter } from "vue-router";
-import { Gamepad2 } from "@lucide/vue";
+import { gameVersionIcon } from "./gameVersionIcon";
 
 import CoBadge from "../../components/ui/CoBadge.vue";
 import { useI18n } from "../../i18n";
@@ -32,7 +32,7 @@ function open() {
 <template>
   <button class="version-card" :title="version.game_version" @click="open">
     <span class="version-card__icon" aria-hidden="true">
-      <Gamepad2 :size="20" />
+      <img :src="gameVersionIcon(version.kind)" alt="" />
     </span>
     <span class="version-card__name">{{ version.game_version }}</span>
     <CoBadge size="sm" :tone="version.kind" :label="t(`${MB_KEY}.kind.${version.kind}`)" />
@@ -90,7 +90,15 @@ function open() {
   flex-shrink: 0;
   border-radius: var(--copper-radius-sm);
   background: var(--copper-surface-2);
-  color: var(--copper-accent);
+  overflow: hidden;
+}
+
+.version-card__icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
 }
 
 /* 版本号：卡片里的视觉重点。不参与伸展（flex:0 1 auto），徽标才会紧贴它右侧，

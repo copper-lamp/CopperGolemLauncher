@@ -10,7 +10,7 @@
 
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { AlertTriangle, Ban, Gamepad2, PackagePlus, Puzzle } from "@lucide/vue";
+import { AlertTriangle, Ban, PackagePlus, Puzzle } from "@lucide/vue";
 
 import CoBadge from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
@@ -19,6 +19,7 @@ import { useI18n } from "../../i18n";
 import InstanceNameDialog from "./InstanceNameDialog.vue";
 import { ensureLipComponents } from '../../composables/useComponentPrerequisites';
 import type { GameVersionView } from "./api";
+import { gameVersionIcon } from "./gameVersionIcon";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
 
 const { t } = useI18n();
@@ -99,7 +100,7 @@ function goBack() {
         <!-- 顶部：版本图标与版本号，无边框 -->
         <header class="gd-detail__hero">
           <span class="gd-detail__icon" aria-hidden="true">
-            <Gamepad2 :size="30" />
+            <img :src="gameVersionIcon(version.kind)" alt="" />
           </span>
           <span class="gd-detail__name">{{ version.game_version }}</span>
           <!-- 徽标与列表页同源（CoBadge）：两处各写一份 CSS 迟早漂移。 -->
@@ -204,7 +205,15 @@ function goBack() {
   flex-shrink: 0;
   border-radius: var(--copper-radius-md);
   background: var(--copper-surface-2);
-  color: var(--copper-accent);
+  overflow: hidden;
+}
+
+.gd-detail__icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
 }
 
 .gd-detail__name {
