@@ -13,6 +13,10 @@ pub struct ProviderInfo {
     pub available: bool,
     pub unavailable_reason: Option<&'static str>,
     pub max_bytes: usize,
+    /// Built-in public endpoint accepting automatic source detection without a user key.
+    pub builtin_ready: bool,
+    pub supports_auto_source: bool,
+    pub default_model: &'static str,
 }
 
 pub fn registry() -> Vec<ProviderInfo> {
@@ -33,10 +37,13 @@ pub fn registry() -> Vec<ProviderInfo> {
     ];
     let mut out: Vec<_> = rows.into_iter().map(|(id,name,endpoint,key_required,max_bytes)| ProviderInfo {
         id,name,endpoint,key_required,max_bytes,available:true,unavailable_reason:None,
+        builtin_ready:matches!(id,"google"|"microsoft"|"indextranslate"),
+        supports_auto_source:id!="mymemory",
+        default_model:match id {"openai"|"custom"=>"gpt-4o-mini","deepseek"=>"deepseek-chat","gemini"=>"gemini-2.0-flash","claude"=>"claude-3-5-haiku-latest","indextranslate"=>"Index-Translate-35B-A3B",_=>""},
     }).collect();
     out.push(ProviderInfo { id:"apple",name:"Apple System Translation",endpoint:"",key_required:false,max_bytes:4000,available:false,
-        unavailable_reason:Some("translation.apple_safari_bridge_required") });
-    out.push(ProviderInfo { id:"auto",name:"Sequential Fallback",endpoint:"",key_required:false,max_bytes:4000,available:true,unavailable_reason:None });
+        unavailable_reason:Some("translation.apple_safari_bridge_required"),builtin_ready:false,supports_auto_source:false,default_model:"" });
+    out.push(ProviderInfo { id:"auto",name:"Sequential Fallback",endpoint:"",key_required:false,max_bytes:4000,available:true,unavailable_reason:None,builtin_ready:false,supports_auto_source:true,default_model:"" });
     out
 }
 
@@ -97,10 +104,39 @@ fn between<'a>(text: &'a str, before: &str, after: &str) -> Option<&'a str> {
     text.split_once(before)?.1.split_once(after).map(|v|v.0)
 }
 async fn bing(client: &Client, base: &str, text: &str, source: &str, target: &str) -> Result<String, TranslationError> {
-    let response = client.get(format!("{base}/translator"))
-        .header("User-Agent", "Mozilla/5.0 CopperGolem/1.0").send().await.map_err(|e| TranslationError::new(if e.is_timeout(){"timeout"}else{"network"}, true))?;
-    if !response.status().is_success() { return Err(TranslationError::new(&format!("http_{}",response.status().as_u16()),true)); }
-    let mut response = response;
+    let mut url=reqwest::Url::parse(&format!("{base}/translator")).map_err(|_|TranslationError::new("invalid_endpoint",false))?;
+    let initial=url.clone();
+    let mut cookies=std::collections::HashMap::<String,String>::new();
+    let mut redirects=0;
+    let mut response=loop {
+        let origin=url.origin().ascii_serialization();
+        let mut request=client.get(url.clone()).header("User-Agent","Mozilla/5.0 CopperGolem/1.0")
+            .header("Accept","text/html,application/xhtml+xml");
+        if let Some(cookie)=cookies.get(&origin){request=request.header(reqwest::header::COOKIE,cookie);}
+        let response=request.send().await.map_err(|e|TranslationError::new(if e.is_timeout(){"timeout"}else{"network"},true))?;
+        let mut pairs=std::collections::BTreeMap::new();
+        if let Some(previous)=cookies.get(&origin){for pair in previous.split("; "){if let Some((name,value))=pair.split_once('='){pairs.insert(name.to_owned(),value.to_owned());}}}
+        for header in response.headers().get_all(reqwest::header::SET_COOKIE).iter(){
+            if let Ok(header)=header.to_str(){if let Some((name,value))=header.split(';').next().and_then(|pair|pair.split_once('=')){
+                if name.len()+value.len()<=4096 {pairs.insert(name.trim().to_owned(),value.to_owned());}
+            }}
+        }
+        let cookie=pairs.into_iter().map(|(name,value)|format!("{name}={value}")).collect::<Vec<_>>().join("; ");
+        if cookie.len()>16384{return Err(TranslationError::new("response_too_large",false));}
+        cookies.insert(origin,cookie);
+        if response.status().is_redirection(){
+            if redirects>=3{return Err(TranslationError::new("bing_redirect",false));}
+            let next=response.headers().get(reqwest::header::LOCATION).and_then(|v|v.to_str().ok()).and_then(|v|url.join(v).ok()).ok_or_else(||TranslationError::new("bing_redirect",false))?;
+            let bing_host=|url:&reqwest::Url|url.host_str().is_some_and(|host|host=="bing.com"||host.ends_with(".bing.com"));
+            let allowed=next.origin()==initial.origin()||(bing_host(&initial)&&bing_host(&next)&&next.scheme()=="https"&&next.port_or_known_default()==Some(443));
+            if !allowed||!next.username().is_empty()||next.password().is_some()||next.fragment().is_some(){return Err(TranslationError::new("bing_redirect",false));}
+            url=next;redirects+=1;continue;
+        }
+        if !response.status().is_success(){let status=response.status();return Err(TranslationError::new(&format!("http_{}",status.as_u16()),status.as_u16()==429||status.is_server_error()));}
+        break response;
+    };
+    let base=url.origin().ascii_serialization();
+    let cookie=cookies.get(&base).cloned().unwrap_or_default();
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_|TranslationError::new("network",true))? {
         if bytes.len() + chunk.len() > 2*1024*1024 { return Err(TranslationError::new("response_too_large",false)); }
@@ -118,6 +154,7 @@ async fn bing(client: &Client, base: &str, text: &str, source: &str, target: &st
     let data = send(client.post(format!("{base}/ttranslatev3"))
         .query(&[("isVertical","1"),("IG",ig),("IID",iid)])
         .header("User-Agent","Mozilla/5.0 CopperGolem/1.0").header("Referer",format!("{base}/translator"))
+        .header(reqwest::header::COOKIE,cookie)
         .form(&[("fromLang",if source=="auto"{"auto-detect"}else{source}),("to",target),("text",text),("key",key),("token",token)])).await?;
     string(data.pointer("/0/translations/0/text"))
 }
@@ -177,7 +214,14 @@ pub async fn translate_piece(client: &Client, id: &str, cfg: &ProviderConfig, ke
         "google" => {
             let rows = data.get(0).and_then(Value::as_array).ok_or_else(||TranslationError::new("invalid_response",false))?;
             let mut result=String::new();
-            for row in rows { result.push_str(&string(row.get(0))?); }
+            for row in rows {
+                // Google may append null metadata rows; translated sentence rows remain ordered.
+                match row.get(0) {
+                    Some(Value::String(text)) => result.push_str(text),
+                    None | Some(Value::Null) if row.is_null() || row.is_array() => {},
+                    _ => return Err(TranslationError::new("invalid_response",false)),
+                }
+            }
             if result.is_empty(){Err(TranslationError::new("empty_translation",false))}else{Ok(result)}
         },
         "mymemory" => {

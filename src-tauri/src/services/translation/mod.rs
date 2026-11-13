@@ -50,6 +50,23 @@ impl TranslationService {
         db.migrate_scope("translation",MIGRATIONS)?;
         let mut config=settings.get_or("translation.config",TranslationConfig::default());
         config.configured_keys.clear();
+        // Repair historical incomplete selections once, while retaining usable advanced settings and keys.
+        let ready=|id:&str| {
+            let Ok(info)=provider::info(id) else{return false;};
+            if !info.available || id=="auto" || (!info.supports_auto_source && config.source_language=="auto"){return false;}
+            let options=config.providers.get(id).cloned().unwrap_or_default();
+            if provider::endpoint(id,&options).is_err(){return false;}
+            !info.key_required || secret.get("copper-golem",&account(id)).ok().flatten().is_some_and(|key|!key.trim().is_empty())
+        };
+        let usable=if config.provider=="auto"{config.fallback_providers.iter().any(|id|ready(id))}else{ready(&config.provider)};
+        if !usable {
+            config.provider="google".into();
+            config.source_language="auto".into();
+            config.fallback_providers.clear();
+            config.providers.remove("google");
+            config.generation=config.generation.checked_add(1).ok_or_else(||KernelError::InvalidArgument("translation generation overflow".into()))?;
+            settings.set("translation.config",&config)?;
+        }
         Ok(Self{db,settings,secret,config:RwLock::new(config),save_lock:Mutex::new(()),client:super::http_client::client_builder(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).no_proxy().proxy(reqwest::Proxy::custom(|url|{if matches!(url.host_str(),Some("localhost"|"127.0.0.1"|"::1")){None}else{super::http_client::resolved_proxy()}})).build().map_err(|e|KernelError::InvalidArgument(format!("translation client: {e}")))?,requests:Mutex::new(HashMap::new()),flights:Mutex::new(HashMap::new()),health:Mutex::new(HashMap::new()),network:Semaphore::new(3)})
     }
     pub fn config(&self)->Result<TranslationConfig>{
@@ -158,7 +175,8 @@ impl TranslationService {
         let mut last=TranslationError::new("unavailable",false);
         for id in ids {
             let p=cfg.providers.get(&id).cloned().unwrap_or_default();
-            let key={let _save=self.save_lock.lock();if self.config.read().generation!=cfg.generation{return Err(TranslationError::new("configuration_changed",false));}self.provider_key(&id)?};
+            let key={let _save=self.save_lock.lock();if self.config.read().generation!=cfg.generation{return Err(TranslationError::new("configuration_changed",false));}self.provider_key(&id)};
+            let key=match key{Ok(key)=>key,Err(error)=>{last=error;continue;}};
             let mut texts=Vec::new();let mut cached=true;let mut error=None;
             for text in &request.texts {match self.text(&id,&p,&key,text,&request.source_language,target,cfg).await{Ok((value,hit))=>{texts.push(value);cached &= hit;},Err(e)=>{error=Some(e);break;}}}
             if let Some(e)=error{last=e;continue;}

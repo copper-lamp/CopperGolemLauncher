@@ -23,6 +23,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 export interface TranslationProvider {
   id: string; name: string; endpoint: string; key_required: boolean;
   available: boolean; unavailable_reason: string | null; max_bytes: number;
+  builtin_ready?: boolean; default_model?: string; supports_auto_source?: boolean;
 }
 export interface TranslationProviderConfig { endpoint: string; model: string; region: string; pro: boolean }
 export interface TranslationConfig {
