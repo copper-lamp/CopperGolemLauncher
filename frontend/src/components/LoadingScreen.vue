@@ -15,10 +15,10 @@ const { t } = useI18n();
 <template>
   <div class="loading-screen">
     <div class="loading-screen__content">
-      <!-- 软件图标：与左导航栏共用 /app-64.png，保证品牌一致 -->
+      <!-- 软件图标：与左导航栏共用 /app-256.png，保证品牌一致 -->
       <img
         class="loading-screen__logo"
-        src="/app-64.png"
+        src="/app-256.png"
         width="56"
         height="56"
         alt=""

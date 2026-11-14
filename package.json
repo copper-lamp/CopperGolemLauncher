@@ -10,7 +10,9 @@
     "preview": "npm --prefix frontend run preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:dev:preview": "tauri dev --config src-tauri/tauri.preview.conf.json",
+    "tauri:build:preview": "tauri build --config src-tauri/tauri.preview.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

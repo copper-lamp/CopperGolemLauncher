@@ -21,7 +21,7 @@ const moduleNav = computed(getModuleNav);
   <nav class="side-nav">
     <div class="side-nav__top">
       <RouterLink to="/" class="side-nav__logo" :title="t('app.name')">
-        <img src="/app-64.png" width="26" height="26" alt="" aria-hidden="true" />
+        <img src="/app-256.png" width="26" height="26" alt="" aria-hidden="true" />
       </RouterLink>
       <RouterLink
         v-for="item in moduleNav"

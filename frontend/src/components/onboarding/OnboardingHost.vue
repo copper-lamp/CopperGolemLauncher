@@ -169,7 +169,7 @@ onBeforeUnmount(() => { disposed = true; close(); });
         </template>
         <template v-else>
           <div class="launcher-preview" aria-hidden="true">
-            <aside><img src="/app-64.png" alt="" width="32" height="32"/><LayoutDashboard/><Download/><Boxes/><Settings/></aside>
+            <aside><img src="/app-256.png" alt="" width="32" height="32"/><LayoutDashboard/><Download/><Boxes/><Settings/></aside>
             <div class="preview-workspace"><div class="preview-toolbar"><span>{{ t(key('preview.brand')) }}</span><i/><i/><i/></div><div class="preview-body"><div class="preview-heading"><component :is="previewIcon" :size="30"/><strong>{{ t(key(step)) }}</strong></div><div class="preview-grid"><div class="preview-feature"><component :is="previewIcon" :size="54"/><span>{{ t(key(`${step}.preview`)) }}</span></div><div class="preview-list"><div v-for="n in 3" :key="n"><span/><i/></div><button tabindex="-1"><Play :size="18"/>{{ t(key('preview.launch')) }}</button></div></div></div></div>
           </div>
           <div class="copy"><p v-if="previewMode" role="status">{{ t(key('preview.notice')) }}</p><small>{{ t(key('title')) }}</small><h1 id="onboarding-title">{{ t(key(step)) }}</h1><p class="description">{{ t(key(`${step}.body`)) }}</p>
