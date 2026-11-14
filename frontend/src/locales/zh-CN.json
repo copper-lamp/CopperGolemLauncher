@@ -1,7 +1,8 @@
 {
   "components": {
-    "title": "外部组件", "description": "启动器独立管理依赖，并按官方发布摘要校验完整性。",
-    "automatic": "启动后更新兼容的 lipd", "automaticDescription": "每次启动启动器后在后台检查一次。其他运行库和 lipr 索引不自动扫描；关闭后可手动检查。",
+    "title": "外部组件",
+    "lipStatus": "LIP 状态",
+    "automatic": "自动更新 LIP", "automaticDescription": "启动器启动后延迟在后台检查一次已安装的 LIP，不阻塞启动。关闭后不会自动更新。",
     "updatedNotice":"兼容的 lip 守护进程已在后台更新。",
     "names": {"lip": "lip 守护进程", "dotnet10": ".NET 10 运行时"},
     "states": {"installed":"已安装", "missing":"未安装", "unsupported":"当前平台不支持", "installing":"安装中", "failed":"操作失败", "update-available":"有可用更新", "incompatible-update":"新版协议不兼容，已保留当前版本", "background-check-failed":"后台检查未完成，当前版本仍可用"},

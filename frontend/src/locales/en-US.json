@@ -1,7 +1,8 @@
 {
   "components": {
-    "title": "External components", "description": "Launcher-managed dependencies, verified against official release digests.",
-    "automatic": "Update compatible lipd after startup", "automaticDescription": "Check once in the background after each launcher startup. Other runtimes and the lipr index are not scanned. Turn off to check manually.",
+    "title": "External components",
+    "lipStatus": "LIP status",
+    "automatic": "Automatically update LIP", "automaticDescription": "Check for updates to installed LIP once in the background after launcher startup, without delaying startup. Turn off to disable automatic updates.",
     "updatedNotice":"The compatible lip daemon was updated in the background.",
     "names": {"lip": "lip daemon", "dotnet10": ".NET 10 runtime"},
     "states": {"installed":"Installed", "missing":"Missing", "unsupported":"Unsupported platform", "installing":"Installing", "failed":"Action failed", "update-available":"Update available", "incompatible-update":"Newer protocol is incompatible; current version retained", "background-check-failed":"Background check did not finish; current version retained"},

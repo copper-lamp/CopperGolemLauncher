@@ -6,3 +6,4 @@
 pub mod content_download;
 pub mod game_download;
 pub mod home;
+pub mod lip;

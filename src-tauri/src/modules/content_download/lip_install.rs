@@ -301,12 +301,17 @@ pub async fn install_resolved(
 
     if let Some(sink) = sink { sink(lipd::DaemonCallback::Stage("download.stage.lip_querying")); }
     // 查询安装状态：失败仅记日志，不阻断安装（与 LeviLauncher 一致）。
-    let states = match lipd::list_package_states(exe, target_dir).await {
-        Ok(states) => states,
-        Err(e) => {
-            log::warn!("[content-download] 查询 lip 安装状态失败（忽略）：{e}");
-            HashMap::new()
-        }
+    // 优先读取内置 Rust LIP 的 format-4 状态；旧工作区或损坏状态回退到
+    // lipd 查询，避免在新模块尚未覆盖安装事务时破坏既有安装链路。
+    let states = match crate::modules::lip::read_state(target_dir) {
+        Ok(state) if target_dir.join(".lip/state.json").is_file() => state.package_states().unwrap_or_default(),
+        Ok(_) | Err(_) => match lipd::list_package_states(exe, target_dir).await {
+            Ok(states) => states,
+            Err(e) => {
+                log::warn!("[content-download] 查询内置 LIP/lipd 安装状态失败（忽略）：daemon={e}");
+                HashMap::new()
+            }
+        },
     };
 
     // 锁定已安装的 LeviLamina 版本，避免依赖求解器替换 LL 或拉取大量候选。

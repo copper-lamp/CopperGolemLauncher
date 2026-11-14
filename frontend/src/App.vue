@@ -30,6 +30,7 @@ import ComponentPrerequisitesHost from "./components/ComponentPrerequisitesHost.
 import GamePrerequisitesHost from "./components/GamePrerequisitesHost.vue";
 import { useKernelReady } from "./composables/useKernelReady";
 import { usePlatform } from "./composables/usePlatform";
+import RouteTransition from "./components/RouteTransition.vue";
 
 const { isKernelReady } = useKernelReady();
 const { isMobile, isLandscape } = usePlatform();
@@ -45,13 +46,7 @@ const { isMobile, isLandscape } = usePlatform();
     <div class="app-main">
       <TitleBar />
       <main class="app-content">
-        <RouterView v-slot="{ Component, route }">
-          <Transition name="fade" mode="out-in">
-            <div :key="route.name ?? route.matched[route.matched.length - 1]?.path ?? route.path" class="app-route">
-              <component :is="Component" />
-            </div>
-          </Transition>
-        </RouterView>
+        <RouteTransition />
       </main>
     </div>
     <ToastHost />
@@ -62,13 +57,7 @@ const { isMobile, isLandscape } = usePlatform();
     <div class="app-main">
       <TitleBar />
       <main class="app-content">
-        <RouterView v-slot="{ Component, route }">
-          <Transition name="fade" mode="out-in">
-            <div :key="route.name ?? route.matched[route.matched.length - 1]?.path ?? route.path" class="app-route">
-              <component :is="Component" />
-            </div>
-          </Transition>
-        </RouterView>
+        <RouteTransition />
       </main>
     </div>
     <MobileNav />
