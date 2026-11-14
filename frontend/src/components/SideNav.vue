@@ -30,7 +30,12 @@ const moduleNav = computed(getModuleNav);
         class="side-nav__item"
         :title="t(item.titleKey)"
       >
-        <NavIcon :id="item.id" :fallback="item.icon" :active="navigationScopeOf(route) === `module:${item.id}`" />
+        <NavIcon
+          :id="item.id"
+          :fallback="item.icon"
+          :size="22"
+          :active="navigationScopeOf(route) === `module:${item.id}`"
+        />
       </RouterLink>
     </div>
     <div class="side-nav__bottom">
@@ -40,14 +45,14 @@ const moduleNav = computed(getModuleNav);
         class="side-nav__item"
         :title="t('nav.downloads')"
       >
-        <DownloadNavIcon :active="route.path === '/downloads'" />
+        <DownloadNavIcon :size="22" :active="route.path === '/downloads'" />
       </RouterLink>
       <RouterLink
         to="/settings"
         class="side-nav__item"
         :title="t('nav.settings')"
       >
-        <NavIcon id="settings" :active="route.path === '/settings'" />
+        <NavIcon id="settings" :size="22" :active="route.path === '/settings'" />
       </RouterLink>
     </div>
   </nav>
@@ -61,7 +66,7 @@ const moduleNav = computed(getModuleNav);
   justify-content: space-between;
   width: var(--copper-nav-w);
   flex-shrink: 0;
-  padding: var(--copper-space-2) 0;
+  padding: var(--copper-space-3) 0;
   background: var(--copper-surface);
   box-shadow: 2px 0 10px color-mix(in srgb, #000 4%, transparent);
   overflow-y: auto;
@@ -87,17 +92,22 @@ html[data-form-factor="mobile"] .side-nav {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--copper-space-3);
+  gap: 6px;
 }
 
-/* 透明底图标，容器只负责 hover 反馈与点击区，不加底色以免切掉图标透明边缘 */
+/*
+ * 透明底图标，容器只负责 hover 反馈与点击区，不加底色以免切掉图标透明边缘。
+ * 品牌区与功能区分开：Logo 下方留 16px（6px 项间距 + 10px 额外间隔），
+ * 让「我是谁」和「能去哪」在视觉上成为两组。
+ */
 .side-nav__logo {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: var(--copper-radius-md);
+  margin-bottom: 10px;
+  border-radius: 12px;
   text-decoration: none;
   transition:
     background-color var(--copper-duration-fast) var(--copper-easing),
@@ -122,16 +132,20 @@ html[data-form-factor="mobile"] .side-nav {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--copper-space-2);
+  gap: 6px;
 }
 
+/*
+ * 导航项与标题栏控件共用一套度量：40px 命中框 / 12px 圆角 / 24px 以内的图标。
+ * 底色默认透明，状态只靠微色阶（hover 一档，选中用主题色 14% 混合），不描边。
+ */
 .side-nav__item {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: var(--copper-radius-md);
+  border-radius: 12px;
   color: var(--copper-text-secondary);
   text-decoration: none;
   transition:
@@ -144,8 +158,24 @@ html[data-form-factor="mobile"] .side-nav {
   color: var(--copper-text);
 }
 
+/* 选中 = 主题色淡底 + 主题色图标；不再用纯黑，暗色主题下也成立。 */
 .side-nav__item.router-link-active {
   color: var(--copper-accent);
+  background: color-mix(in srgb, var(--copper-accent) 14%, transparent);
+}
+
+.side-nav__item.router-link-active:hover {
+  background: color-mix(in srgb, var(--copper-accent) 20%, transparent);
+}
+
+.side-nav__item :deep(svg) {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+.side-nav__item--pulse {
+  border-radius: 12px;
 }
 
 /* 下载落点水波纹：圆点飞抵下载入口后触发，向外扩散一圈即消散。 */

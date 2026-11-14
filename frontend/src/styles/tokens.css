@@ -81,8 +81,8 @@
   /* 承载富内容（图标 + 文字 + 说明）的控件高度，如下拉选择器。 */
   --copper-control-h-lg: 44px;
 
-  /* 标题栏 */
-  --copper-titlebar-h: 40px;
+  /* 标题栏：44px 让 32px 控件上下各留 6px，和 64px 导航、40px 导航项同一节奏 */
+  --copper-titlebar-h: 44px;
   /* 左导航 */
   --copper-nav-w: 64px;
 

@@ -143,8 +143,8 @@ async function handleLogout() {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 10px 0 3px;
+  height: 32px;
+  padding: 0 11px 0 4px;
   border: none;
   border-radius: var(--copper-radius-full);
   background: transparent;

@@ -26,5 +26,5 @@ onBeforeUnmount(() => { animation?.cancel(); registerDownloadTarget(null); });
 <style scoped>
 .download-nav-icon { display: inline-flex; position: relative; }
 .download-nav-icon--working::after { content: ''; width: 4px; height: 4px; background: var(--copper-accent); border-radius: 50%; position: absolute; bottom: -5px; left: calc(50% - 2px); }
-.download-nav-icon__badge { position: absolute; top: -9px; left: 12px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; font-weight: 600; color: var(--copper-surface); background: var(--copper-accent); box-shadow: 0 1px 5px color-mix(in srgb, #000 14%, transparent); }
+.download-nav-icon__badge { position: absolute; top: -8px; left: 11px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; font-weight: 600; color: var(--copper-surface); background: var(--copper-accent); box-shadow: 0 1px 5px color-mix(in srgb, #000 14%, transparent); }
 </style>

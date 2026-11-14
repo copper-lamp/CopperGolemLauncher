@@ -125,8 +125,8 @@ function close() {
 <template>
   <header class="titlebar" @pointerdown="startWindowDrag">
     <div class="titlebar__left">
-      <button class="titlebar__back" :disabled="!canBack" :title="t('titlebar.back')" :aria-label="t('titlebar.back')" @click="goBack"><ArrowLeft :size="15" /></button>
-      <button class="titlebar__back" :disabled="!canForward" :title="t('titlebar.forward')" :aria-label="t('titlebar.forward')" @click="router.forward()"><ArrowRight :size="15" /></button>
+      <button class="titlebar__back" :disabled="!canBack" :title="t('titlebar.back')" :aria-label="t('titlebar.back')" @click="goBack"><ArrowLeft :size="18" /></button>
+      <button class="titlebar__back" :disabled="!canForward" :title="t('titlebar.forward')" :aria-label="t('titlebar.forward')" @click="router.forward()"><ArrowRight :size="18" /></button>
       <nav v-if="breadcrumb.length" class="titlebar__crumbs">
         <template v-for="(crumb, index) in breadcrumb" :key="`${index}-${crumb.path}`">
           <button
@@ -142,7 +142,7 @@ function close() {
           <ChevronRight
             v-if="index < breadcrumb.length - 1"
             class="titlebar__crumb-sep"
-            :size="13"
+            :size="12"
           />
         </template>
       </nav>
@@ -166,8 +166,8 @@ function close() {
       >
         <Stethoscope :size="15" />
       </button>
-      <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" @click="showToast(t('titlebar.search_pending'))"><Search :size="16" /></button>
-      <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="16" /></button>
+      <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" @click="showToast(t('titlebar.search_pending'))"><Search :size="18" /></button>
+      <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="18" /></button>
       <AccountMenu />
       <template v-if="!isMobile">
         <div class="titlebar__sep" />
@@ -177,22 +177,22 @@ function close() {
             :title="t('titlebar.minimize')"
             @click="minimize"
           >
-            <Minus :size="14" />
+            <Minus :size="16" />
           </button>
           <button
             class="titlebar__btn"
             :title="maximized ? t('titlebar.restore') : t('titlebar.maximize')"
             @click="toggleMaximize"
           >
-            <Copy v-if="maximized" :size="12" />
-            <Square v-else :size="11" />
+            <Copy v-if="maximized" :size="14" />
+            <Square v-else :size="14" />
           </button>
           <button
             class="titlebar__btn titlebar__btn--close"
             :title="t('titlebar.close')"
             @click="close"
           >
-            <X :size="14" />
+            <X :size="16" />
           </button>
         </div>
       </template>
@@ -218,16 +218,23 @@ function close() {
   min-width: 0;
 }
 
+/*
+ * 标题栏控件统一度量：32px 命中框 / 10px 圆角 / 18px 图标，
+ * 底色默认透明，状态只靠微色阶。不再给返回与搜索套白色圆钮 ——
+ * 那几个白点在浅色主题下会浮起来，和左导航的透明图标不是一套语言。
+ */
 .titlebar__back {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex: 0 0 32px;
   border: none;
-  border-radius: var(--copper-radius-full);
+  border-radius: var(--copper-radius-md);
   flex-shrink: 0;
-  background: var(--copper-surface);
+  background: transparent;
   color: var(--copper-text-secondary);
   cursor: pointer;
   transition:
@@ -251,7 +258,7 @@ function close() {
 .titlebar__crumbs {
   display: flex;
   align-items: center;
-  gap: var(--copper-space-1);
+  gap: 2px;
   min-width: 0;
 }
 
@@ -260,7 +267,7 @@ function close() {
 .titlebar__crumb {
   display: inline-flex;
   align-items: center;
-  height: 26px;
+  height: 24px;
   padding: 0 var(--copper-space-2);
   border: none;
   border-radius: var(--copper-radius-sm);
@@ -308,6 +315,30 @@ button.titlebar__crumb:hover {
   padding: 0 var(--copper-space-2);
 }
 
+/* Teleported page actions are outside their source component's scoped CSS. Keep
+   their icon box stable so global button rules cannot collapse the glyph. */
+.titlebar__actions :deep(svg) {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+}
+
+/* 页面注入的操作与左右两侧控件同基准（32px），不另起第三套尺寸。 */
+.titlebar__actions :deep(button) {
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.titlebar__right > button:not(.titlebar__btn) {
+  width: 32px;
+  height: 32px;
+}
+
+.titlebar__right > button:not(.titlebar__btn) :deep(svg) {
+  width: 18px;
+  height: 18px;
+}
+
 /* Keep injected controls in normal flow; a fixed footer would cover MobileNav. */
 .titlebar__back:disabled { opacity: .35; cursor: default; }
 .titlebar__left { flex: 1; overflow: hidden; }
@@ -353,8 +384,8 @@ button.titlebar__crumb:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   margin-right: var(--copper-space-1);
   border: none;
   border-radius: var(--copper-radius-sm);
@@ -370,7 +401,7 @@ button.titlebar__crumb:hover {
 
 .titlebar__sep {
   width: 1px;
-  height: 18px;
+  height: 16px;
   background: var(--copper-border);
 }
 
@@ -383,7 +414,7 @@ button.titlebar__crumb:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
+  width: 46px;
   height: 100%;
   border: none;
   background: transparent;
