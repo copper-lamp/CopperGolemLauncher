@@ -40,7 +40,9 @@ export const error = ref<string | null>(null);
 export const versions = ref<string[]>([]);
 export const versionsLoading = ref(false);
 export const versionsError = ref<string | null>(null);
-let versionsLoaded = false;
+/** 版本表对应的内容类型：光影用 Java 版本表，其余用 MCBE 版本表，两套不能混用。 */
+export const versionsType = ref("");
+let versionsLoadedFor: string | null = null;
 
 /** 列表容器上次的滚动位置（离开页面前记录，返回后恢复）。 */
 export const scrollTop = ref(0);
@@ -56,14 +58,15 @@ export const scrollTop = ref(0);
  * - `search_list`：两源总数之和 / 每页条数。
  */
 
-/** 是否已成功拉取过版本列表（失败时允许重试）。 */
-export function hasLoadedVersions(): boolean {
-  return versionsLoaded;
+/** 是否已成功拉取过该类型的版本列表（失败时允许重试）。 */
+export function hasLoadedVersions(ctype = ""): boolean {
+  return versionsLoadedFor === ctype;
 }
 
-/** 记录版本列表拉取成功。 */
-export function markVersionsLoaded(): void {
-  versionsLoaded = true;
+/** 记录版本列表拉取成功；类型一变就必须重新拉，否则会拿另一套版本号去筛选。 */
+export function markVersionsLoaded(ctype = ""): void {
+  versionsLoadedFor = ctype;
+  versionsType.value = ctype;
 }
 
 /** 恢复视图状态：重置翻页与数据。 */

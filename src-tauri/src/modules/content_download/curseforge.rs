@@ -1,7 +1,13 @@
 //! 内容下载模块 · CurseForge 提供器。
 //!
-//! 真实对接 CurseForge API（base `https://api.curseforge.com`），来源为
-//! MC 基岩版（`gameId=78022`），覆盖行为包 / 材质包 / 光影包三类。
+//! 真实对接 CurseForge API（base `https://api.curseforge.com`）。两类来源并存：
+//!
+//! - 行为包 / 材质包走 MC 基岩版（`gameId=78022`）；
+//! - 光影包走 Java 版（`gameId=432`，classId 6552），因为启动器的光影由 Arke
+//!   （Iris 系加载器）加载，Java 版光影包数量与质量远好于基岩版。
+//!
+//! 两个版本表的语义不同：基岩版 `gameVersion` 是按点分段的前缀匹配（`26` 匹配不到
+//! `26.60`），Java 版是真正的大版本前缀（`1.21` 覆盖 `1.21.x`），所以版本列表也分两套。
 //!
 //! - API key 从设置 `content.curseforgeApiKey` 读取（缺失时返回友好错误）；
 //! - 类型 → classId 依 `/v1/categories` 实时解析并按名字匹配（参考 LeviLauncher），
@@ -28,6 +34,13 @@ use super::model::{
 /// CurseForge API 基址与 MC 基岩版 gameId（参考 LeviLauncher）。
 const BASE_URL: &str = "https://api.curseforge.com";
 const GAME_ID: &str = "78022";
+/// Java 版 gameId：光影包只取 Java 版资源（Arke 加载的是 Java 光影）。
+const JAVA_GAME_ID: &str = "432";
+/// Java 版「光影（Shaders）」类别 id。
+///
+/// 这个值是 CurseForge 的固定分类，不放进按名字解析的类别缓存：基岩版类别表里
+/// 同名类别是另一套 id，混用会把光影查询打到错误的分类上。
+const JAVA_SHADER_CLASS_ID: i64 = 6552;
 /// 类别 / 分类表缓存 TTL（秒）。
 const CATEGORY_CACHE_TTL_SECS: u64 = 0; // Persistent operation cache owns freshness; never re-stamp old provider values.
 /// 游戏版本列表缓存 TTL（秒）。
@@ -41,9 +54,34 @@ fn class_name_for(ctype: &str) -> Option<&'static str> {
     match ctype {
         TYPE_BEHAVIOR_PACK => Some("Behavior Packs"),
         TYPE_TEXTURE_PACK => Some("Texture Packs"),
-        TYPE_SHADER => Some("Shaders"),
         _ => None,
     }
+}
+
+/// 光影包是否走 Java 版来源（决定 gameId / classId / 版本表）。
+fn is_java_shader(ctype: Option<&str>) -> bool {
+    ctype == Some(TYPE_SHADER)
+}
+
+/// Java 版光影子类别 → categoryId。
+///
+/// Java 光影分类只有三个固定类别（6553 Realistic / 6554 Fantasy / 6555 Vanilla），
+/// 与基岩版那一整套类别名互不相干，所以这里硬编码映射，查不到就不加过滤参数。
+fn java_shader_category_id(tag: &str) -> Option<i64> {
+    match tag.trim().to_lowercase().as_str() {
+        "realistic" => Some(6553),
+        "fantasy" => Some(6554),
+        "vanilla" => Some(6555),
+        _ => None,
+    }
+}
+
+/// Java 版版本号是否是发布版（`1.21.4`），用于剔除 `25w45a` 这类快照。
+fn is_release_version(raw: &str) -> bool {
+    raw.matches('.').count() >= 1
+        && raw
+            .split('.')
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
 }
 
 // ---------------------------------------------------------------- API 响应模型
@@ -238,6 +276,21 @@ struct GameVersionGroup {
     versions: Vec<String>,
 }
 
+/// `/v1/minecraft/version` 响应（Java 版版本表）。
+#[derive(Debug, Deserialize)]
+struct MinecraftVersionsResponse {
+    #[serde(default)]
+    data: Vec<MinecraftVersionEntry>,
+}
+
+/// Java 版版本表的一项；只用 `versionString`（其余字段是资源下载地址与类型）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MinecraftVersionEntry {
+    #[serde(default)]
+    version_string: String,
+}
+
 // ---------------------------------------------------------------- 类别缓存
 
 
@@ -267,6 +320,11 @@ pub async fn tags(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
 
 fn category_cache() -> &'static Mutex<Option<CategoryCache>> {
     CATEGORY_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Java 版光影的固定标签（与 `java_shader_category_id` 的键一一对应）。
+pub fn shader_tags() -> Vec<String> {
+    vec!["Realistic".into(), "Fantasy".into(), "Vanilla".into()]
 }
 
 /// 类别名 → 内容类型（`class_name_for` 的反向）。
@@ -328,6 +386,10 @@ async fn content_type_for_class(
     kernel: &KernelContext,
     class_id: i64,
 ) -> Result<Option<String>, KernelError> {
+    // Java 光影是固定 classId，不依赖（也不应该依赖）基岩版类别表。
+    if class_id == JAVA_SHADER_CLASS_ID {
+        return Ok(Some(TYPE_SHADER.to_string()));
+    }
     ensure_categories(kernel).await?;
     Ok(category_cache()
         .lock()
@@ -366,18 +428,25 @@ pub async fn list(
 ) -> Result<ContentListPage, KernelError> {
     let api_key = api_key(kernel)?;
     let page = query.page;
+    let java_shader = is_java_shader(query.content_type.as_deref());
 
     // 类型 → classId（可选）。未指定类型则不过滤 class。
-    let class_id = match query.content_type.as_deref() {
-        Some(ct) => match class_name_for(ct) {
-            Some(cls) => class_id_by_name(kernel, cls).await?,
+    // 光影固定走 Java 版：gameId 换成 432，classId 固定 6552。
+    let class_id = if java_shader {
+        Some(JAVA_SHADER_CLASS_ID)
+    } else {
+        match query.content_type.as_deref() {
+            Some(ct) => match class_name_for(ct) {
+                Some(cls) => class_id_by_name(kernel, cls).await?,
+                None => Some(0),
+            },
             None => Some(0),
-        },
-        None => Some(0),
+        }
     };
+    let game_id = if java_shader { JAVA_GAME_ID } else { GAME_ID };
 
     let mut url = format!(
-        "{BASE_URL}/v1/mods/search?gameId={GAME_ID}&pageSize={PAGE_SIZE}&index={}",
+        "{BASE_URL}/v1/mods/search?gameId={game_id}&pageSize={PAGE_SIZE}&index={}",
         page * PAGE_SIZE as u32
     );
     if class_id.is_some_and(|v| v > 0) {
@@ -391,10 +460,15 @@ pub async fn list(
     if let Some(tag) = query.tag.as_deref() {
         let tag = tag.trim();
         if !tag.is_empty() {
-            // CurseForge 没有"标签"概念，能做的是按**类别名**过滤：
-            // 这条链路产出的 categories 本来就是类别名，名字能反查回 categoryId。
+            // CurseForge 没有"标签"概念，能做的是按**类别**过滤：
+            // 基岩版的类别名能反查回 categoryId，Java 光影只有三个固定子类别。
             // 查不到同名类别时不加参数 —— 宁可不过滤，也不伪造一个必然为空的结果。
-            if let Some(id) = class_id_by_name(kernel, tag).await? {
+            let category_id = if java_shader {
+                java_shader_category_id(tag)
+            } else {
+                class_id_by_name(kernel, tag).await?
+            };
+            if let Some(id) = category_id {
                 url.push_str(&format!("&categoryId={id}"));
             }
         }
@@ -420,6 +494,7 @@ pub async fn list(
     let total = resp.pagination.as_ref().map(|p| p.total_count.max(0) as u64).unwrap_or(0);
     // 已按 classId 过滤，返回内容类型即查询类型；未指定类型时用 `unknown` 兜底。
     let content_type = match query.content_type.as_deref() {
+        Some(TYPE_SHADER) => TYPE_SHADER,
         Some(ct) if class_name_for(ct).is_some() => ct,
         _ => "unknown",
     };
@@ -552,6 +627,54 @@ pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, Kernel
     versions.sort_by(|a, b| compare_game_versions(b, a).then_with(|| a.cmp(b)));
 
     *versions_cache().lock().unwrap() = Some(VersionsCache {
+        versions: versions.clone(),
+        fetched_at: std::time::Instant::now(),
+    });
+    Ok(versions)
+}
+
+/// Java 版游戏版本列表缓存（光影包用）。
+static JAVA_VERSIONS_CACHE: OnceLock<Mutex<Option<VersionsCache>>> = OnceLock::new();
+
+fn java_versions_cache() -> &'static Mutex<Option<VersionsCache>> {
+    JAVA_VERSIONS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// 拉取 / 复用 Java 版游戏版本列表（发布版，降序）。
+///
+/// 这里不能用 `/v1/games/432/versions`：那个接口把 ModLoader、插件加载器版本
+/// 和游戏版本混在一个分组里。`/v1/minecraft/version` 才是纯净的 Java 版本表，
+/// 但也包含 `25w45a` 这类快照，按「纯数字点分」过滤掉。
+pub async fn java_game_versions(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
+    if let Some(c) = java_versions_cache().lock().unwrap().as_ref() {
+        if c.fetched_at.elapsed().as_secs() < VERSIONS_CACHE_TTL_SECS {
+            return Ok(c.versions.clone());
+        }
+    }
+    let api_key = api_key(kernel)?;
+    let url = format!("{BASE_URL}/v1/minecraft/version");
+    let resp: MinecraftVersionsResponse = http::client()
+        .get(&url)
+        .header("x-api-key", api_key)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let mut versions: Vec<String> = Vec::new();
+    for entry in resp.data {
+        let raw = entry.version_string.trim();
+        if !is_release_version(raw) {
+            continue;
+        }
+        if !versions.iter().any(|v| v == raw) {
+            versions.push(raw.to_string());
+        }
+    }
+    versions.sort_by(|a, b| compare_game_versions(b, a).then_with(|| a.cmp(b)));
+
+    *java_versions_cache().lock().unwrap() = Some(VersionsCache {
         versions: versions.clone(),
         fetched_at: std::time::Instant::now(),
     });
@@ -809,6 +932,36 @@ mod tests {
         assert_eq!(compare_game_versions("1.21.100", "1.21.81"), Ordering::Greater);
         assert_eq!(compare_game_versions("26.60", "1.21.90"), Ordering::Greater);
         assert_eq!(compare_game_versions("1.9", "1.10"), Ordering::Less);
+    }
+
+    #[test]
+    fn java_shader_tags_map_to_fixed_categories() {
+        assert_eq!(java_shader_category_id("Realistic"), Some(6553));
+        assert_eq!(java_shader_category_id(" fantasy "), Some(6554));
+        assert_eq!(java_shader_category_id("VANILLA"), Some(6555));
+        // 基岩版类别名不能落到 Java 光影上，否则会拼出一个必然为空的 categoryId。
+        assert_eq!(java_shader_category_id("Adventure"), None);
+    }
+
+    #[test]
+    fn release_version_filter_drops_snapshots() {
+        assert!(is_release_version("1.21.4"));
+        assert!(is_release_version("26.0"));
+        assert!(!is_release_version("25w45a"));
+        assert!(!is_release_version("1.21.4-pre1"));
+        assert!(!is_release_version("1."));
+        assert!(!is_release_version(""));
+    }
+
+    #[test]
+    fn minecraft_versions_response_reads_version_string() {
+        let raw = r#"{"data":[{"versionString":"1.21.4","type":"release"},
+            {"versionString":"25w45a","type":"snapshot"}]}"#;
+        let resp: MinecraftVersionsResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].version_string, "1.21.4");
+        assert!(is_release_version(&resp.data[0].version_string));
+        assert!(!is_release_version(&resp.data[1].version_string));
     }
 
     #[test]

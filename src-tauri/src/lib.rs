@@ -514,6 +514,7 @@ pub fn run() {
             commands::content_download::content_download_detail,
             commands::content_download::content_download_readme,
             commands::content_download::content_download_game_versions,
+            commands::content_download::content_download_arke_status,
             commands::content_download::content_download_plan,
             commands::content_download::content_download_download,
             commands::content_download::content_download_records,

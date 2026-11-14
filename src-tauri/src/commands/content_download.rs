@@ -8,7 +8,8 @@ use crate::commands::into_command_error;
 use crate::error::CommandResult;
 use crate::modules::content_download::model::{ContentDetail, ContentListPage, ContentListQuery};
 use crate::modules::content_download::{
-    ContentDownloadModule, ContentDownloadRecord, ContentPlacement, LipEnv, LipInstallAccepted,
+    ArkeStatus, ContentDownloadModule, ContentDownloadRecord, ContentPlacement, LipEnv,
+    LipInstallAccepted,
 };
 use crate::state::KernelContext;
 
@@ -29,8 +30,9 @@ pub async fn content_download_list(
 pub async fn content_download_tags(
     kernel: State<'_, KernelContext>,
     source: Option<String>,
+    content_type: Option<String>,
 ) -> CommandResult<Vec<String>> {
-    ContentDownloadModule::tags(kernel.inner(), source.as_deref())
+    ContentDownloadModule::tags(kernel.inner(), source.as_deref(), content_type.as_deref())
         .await
         .map_err(into_command_error)
 }
@@ -67,11 +69,26 @@ pub async fn content_download_readme(
 }
 
 /// 可选游戏版本列表（供前端「版本过滤」下拉）。
+///
+/// `content_type` 决定用哪套版本表：光影包是 Java 版本号，其余是 MCBE 版本号。
+/// 前端必须把当前筛选的内容类型一起传，否则拿到的是另一套版本（筛选必然为空）。
 #[tauri::command]
 pub async fn content_download_game_versions(
     kernel: State<'_, KernelContext>,
+    content_type: Option<String>,
 ) -> CommandResult<Vec<String>> {
-    ContentDownloadModule::game_versions(kernel.inner())
+    ContentDownloadModule::game_versions(kernel.inner(), content_type.as_deref())
+        .await
+        .map_err(into_command_error)
+}
+
+/// 光影前置检查：目标实例是否装了 Arke（光影包由 Arke 加载）。
+#[tauri::command]
+pub async fn content_download_arke_status(
+    kernel: State<'_, KernelContext>,
+    version: Option<String>,
+) -> CommandResult<ArkeStatus> {
+    ContentDownloadModule::arke_status(kernel.inner(), version.as_deref())
         .await
         .map_err(into_command_error)
 }

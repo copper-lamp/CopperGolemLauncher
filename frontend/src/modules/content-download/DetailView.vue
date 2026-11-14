@@ -57,6 +57,7 @@ import {
   contentDownloadReadme,
   contentDownloadDownload,
   contentDownloadPlan,
+  contentDownloadArkeStatus,
   contentDownloadLipEnv,
   contentDownloadLipInstall,
   formatBytes,
@@ -203,6 +204,8 @@ const installRunning = ref(false);
  * 安卓章节）。两者都要确认目标版本，所以共用同一个弹窗。
  */
 const isLip = computed(() => detail.value?.item.source === "lip");
+/** 光影包：落点与前置依赖都和其它内容不同（由 Arke 加载）。 */
+const isShader = computed(() => detail.value?.item.contentType === "shader");
 const isLla = computed(() => detail.value?.item.source === "lla");
 /** 需要确认目标版本的来源（lip 安装 / 安卓模组安装）。 */
 const needsTargetConfirm = computed(() => isLip.value || isLla.value);
@@ -383,6 +386,31 @@ const downloadOnlyConfirm = ref<ContentFile | null>(null);
 /** 落点预演结果（确认框要显示落点目录）。 */
 const downloadOnlyDir = ref("");
 
+/** 未装 Arke 的提示弹窗：保存用户点过的文件，装完 Arke 回来再点一次即可。 */
+const arkeMissing = ref<ContentFile | null>(null);
+/** 检查到的 Arke 目录（提示里告诉用户它会落到哪）。 */
+const arkeDir = ref("");
+
+/** 光影包的前置检查：目标实例必须有 Arke，否则下载下来也加载不出来。 */
+async function arkeReady(): Promise<boolean> {
+  try {
+    const status = await contentDownloadArkeStatus();
+    if (status.installed) return true;
+    arkeDir.value = status.dir;
+    return false;
+  } catch (e) {
+    showToast(String(e).replace(/^Error:\s*/, ""), "error");
+    return false;
+  }
+}
+
+/** 跳启动器内的 Arke 详情页（lip 来源，可直接安装），不再外链 GitHub。 */
+function goInstallArke() {
+  arkeMissing.value = null;
+  pendingOrigin.value = undefined;
+  void router.push("/content/" + encodeURIComponent("lip:github.com/LiteLDev/Arke"));
+}
+
 /** CurseForge 文件直链下载。
  *
  * 先调 `plan` 预演落点：无 MC 实例时后端会把落点改到系统下载目录，这种情况下
@@ -392,6 +420,12 @@ const downloadOnlyDir = ref("");
 async function downloadFile(file: ContentFile, origin?: { x: number; y: number }) {
   if (!detail.value) return;
   const itemId = detail.value.item.id;
+  // 光影先过 Arke 前置检查：没有加载器，下再多的包也进不了游戏。
+  if (isShader.value && !await arkeReady()) {
+    pendingOrigin.value = origin;
+    arkeMissing.value = file;
+    return;
+  }
   try {
     const plan = await contentDownloadPlan(itemId, file.id);
     if (plan.kind === "downloadOnly") {
@@ -716,6 +750,27 @@ onUnmounted(() => {
           </button>
           <button class="cd-modal__btn cd-modal__btn--primary" @click="confirmDownloadOnly">
             {{ t(`${KB}.continueDownload`) }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 光影前置弹窗：未装 Arke 时阻断下载，引导去安装 -->
+    <div v-if="arkeMissing" class="cd-modal">
+      <div class="cd-modal__mask" @click="arkeMissing = null" />
+      <div class="cd-modal__card" role="dialog" aria-modal="true">
+        <h3 class="cd-modal__title">{{ t(`${KB}.arkeTitle`) }}</h3>
+        <p class="cd-modal__text">{{ t(`${KB}.arkeText`, { dir: arkeDir }) }}</p>
+        <p class="cd-modal__hint">
+          <AlertTriangle :size="13" />
+          {{ t(`${KB}.arkeHint`) }}
+        </p>
+        <div class="cd-modal__actions">
+          <button class="cd-modal__btn" @click="arkeMissing = null">
+            {{ t("common.cancel") }}
+          </button>
+          <button class="cd-modal__btn cd-modal__btn--primary" @click="goInstallArke">
+            {{ t(`${KB}.arkeGoInstall`) }}
           </button>
         </div>
       </div>

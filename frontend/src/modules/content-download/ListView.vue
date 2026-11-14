@@ -289,13 +289,20 @@ function openDetail(item: ContentItem) {
 }
 
 async function loadVersions(force = false) {
+  const ctype = contentType.value;
+  if (!force && hasLoadedVersions(ctype) && versions.value.length > 0) return;
   if (versionsLoading.value) return;
-  if (!force && hasLoadedVersions() && versions.value.length > 0) return;
   versionsLoading.value = true;
   versionsError.value = null;
   try {
-    versions.value = await contentDownloadGameVersions();
-    markVersionsLoaded();
+    const list = await contentDownloadGameVersions(ctype || undefined);
+    // 用户在请求期间切了类型，这份结果已经过期，丢弃而不是覆盖。
+    if (contentType.value !== ctype) return;
+    versions.value = list;
+    markVersionsLoaded(ctype);
+    versionsExpanded.value = false;
+    // 版本表换了（MCBE ↔ Java），旧选中值在新表里不存在时清掉，避免筛出空列表。
+    if (gameVersion.value && !list.includes(gameVersion.value)) gameVersion.value = "";
   } catch (e) {
     versionsError.value = String(e);
   } finally {
@@ -359,9 +366,19 @@ const visibleVersionGroups = computed(() => {
 
 /** 标签表按来源变化：桌面端 lip 的标签与 CurseForge 的类别是两套词表。 */
 async function loadTags() {
+  // 记录发起时的筛选条件：标签词表同时取决于来源与类型（光影是 Realistic /
+  // Fantasy / Vanilla，其它类型是 CurseForge 类别名）。切换类型会连发两次请求，
+  // 先发的「全部类型」结果可能后到，直接覆盖会把已经切走的那套词表盖回来。
+  const ctype = contentType.value;
   try {
-    tagOptions.value = await contentDownloadTags(source.value || undefined);
+    const options = await contentDownloadTags(
+      source.value || undefined,
+      ctype || undefined,
+    );
+    if (contentType.value !== ctype) return;
+    tagOptions.value = options;
   } catch {
+    if (contentType.value !== ctype) return;
     tagOptions.value = [];
   }
   // 当前标签不在新词表里（例如切换了来源）时清掉，避免“选了但列表为空”。
@@ -389,6 +406,17 @@ watch([source, contentType, gameVersion, sort, tag], () => {
 });
 
 watch(source, () => void loadTags());
+
+// 光影的标签是另一套（Realistic / Fantasy / Vanilla），换类型必须重取词表。
+watch(contentType, () => void loadTags());
+
+// 内容类型换了就是换了一套游戏版本表（光影走 Java 版），旧版本号在新表里必然
+// 不存在，先清掉选中值再重拉，否则会带着一个筛不出任何内容的版本号发请求。
+watch(contentType, () => {
+  gameVersion.value = "";
+  versionsExpanded.value = false;
+  void loadVersions();
+});
 
 onMounted(() => {
   // Check age while the page is mounted; new searches and pages keep their normal requests.

@@ -171,14 +171,44 @@ export function contentDownloadReadme(
   return call<string | null>("content_download_readme", { id, locale });
 }
 
-/** 可选游戏版本列表（供「版本过滤」下拉；来源为 CurseForge）。 */
-export function contentDownloadGameVersions(): Promise<string[]> {
-  return call<string[]>("content_download_game_versions");
+/** 可选游戏版本列表（供「版本过滤」下拉；来源为 CurseForge）。
+ *
+ * 光影包用的是 Java 版本表，其余类型是 MCBE 版本表，所以类型必须一起传。
+ */
+export function contentDownloadGameVersions(
+  contentType?: string,
+): Promise<string[]> {
+  return call<string[]>("content_download_game_versions", {
+    contentType: contentType || null,
+  });
+}
+
+/** Arke 光影加载器在目标实例里的安装状态。 */
+export interface ArkeStatus {
+  installed: boolean;
+  version: string;
+  /** `<版本目录>/mods/arke`。 */
+  dir: string;
+  /** `<版本目录>/mods/arke/shaderpacks`。 */
+  shaderpacks: string;
+}
+
+/** 光影前置检查：是否已在目标实例装好 Arke。 */
+export function contentDownloadArkeStatus(version?: string): Promise<ArkeStatus> {
+  return call<ArkeStatus>("content_download_arke_status", {
+    version: version ?? null,
+  });
 }
 
 /** 平铺筛选栏的标签 / 类别名（可选按来源收窄）。 */
-export function contentDownloadTags(source?: ContentSource): Promise<string[]> {
-  return call<string[]>("content_download_tags", { source: source ?? null });
+export function contentDownloadTags(
+  source?: ContentSource,
+  contentType?: string,
+): Promise<string[]> {
+  return call<string[]>("content_download_tags", {
+    source: source ?? null,
+    contentType: contentType || null,
+  });
 }
 
 /** 下载投递：CurseForge 文件直链 → 内核下载队列，返回任务 id。 */
@@ -203,6 +233,7 @@ export function contentDownloadRecordsClear(): Promise<number> {
 export type ContentPlacement = ContentPlacementBase &
   (
     | { kind: "install"; version: string; roots: ContentRootsView; notice?: string | null }
+    | { kind: "shaderPack"; version: string; shaderpacks: string }
     | { kind: "downloadOnly"; dir: string }
     | { kind: "llpMod"; version: string }
   );

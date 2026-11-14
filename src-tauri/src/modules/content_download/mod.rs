@@ -39,7 +39,7 @@ use self::model::{
     TYPE_SHADER, TYPE_TEXTURE_PACK,
 };
 
-pub use self::install_target::Placement as ContentPlacement;
+pub use self::install_target::{ArkeStatus, Placement as ContentPlacement};
 pub use self::lip_install::LipInstallOutcome;
 
 /// 安卓平台的 LL 模组来源（LeviModHub 目录 `.so` 直装）。
@@ -126,8 +126,14 @@ async fn ll_list(
 
 // ---------------------------------------------------------------- 对外业务
 
+/// 元数据缓存键。
+///
+/// 中间的 `v2` 是**解析器 / 查询语义版本**，不是接口版本：v1 → v2 是因为光影改成
+/// CurseForge Java 版（gameId/classId/标签都换了）。列表结果本身也走这个缓存，
+/// 旧二进制把「光影 → 0 条」这件事缓存了 12 小时，只改解析器不升 key 会让用户
+/// 继续看到那份空结果，所以这次必须整体失效。
 fn metadata_key(kernel:&KernelContext,kind:&str,query:&str)->String{
-    serde_json::json!(["content","cf-lip-lla","v1",kernel.backends().platform_id(),kernel.i18n().current_locale(),kind,query]).to_string()
+    serde_json::json!(["content","cf-lip-lla","v2",kernel.backends().platform_id(),kernel.i18n().current_locale(),kind,query]).to_string()
 }
 impl ContentDownloadModule {
     /// 列表：按来源 / 类型过滤 + 关键字搜索 + 分页。
@@ -185,10 +191,17 @@ impl ContentDownloadModule {
     ///
     /// 未指定来源时合并三个来源（桌面端没有 lla，不会出现它的标签）。
     /// 上游失败保留72小时内旧成功值；首次失败向调用方报告，不把空标签写成成功缓存。
+    ///
+    /// 光影的标签不同于其它内容：Java 版光影只有三个固定子类别，基岩版那套
+    /// 类别名拿过去当 `categoryId` 会筛出空列表，所以按类型分流。
     pub async fn tags(
         kernel: &KernelContext,
         source: Option<&str>,
+        content_type: Option<&str>,
     ) -> Result<Vec<String>, KernelError> {
+        if content_type == Some(TYPE_SHADER) {
+            return Ok(curseforge::shader_tags());
+        }
         let key=metadata_key(kernel,"tags",source.unwrap_or("all"));
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::tags_uncached(kernel,source)).await
     }
@@ -276,12 +289,52 @@ impl ContentDownloadModule {
     ///
     /// LL 模组无 MCBE 游戏版本元数据，故列表仅来自 CurseForge。
     ///
-    /// key 里的 `game-versions-v2` 是**解析器版本**：旧解析器把
-    /// `/versions` 的分组响应当成了 `{name, slug}` 列表，永久性地存下空数组；
-    /// 升 key 让旧空缓存立刻失效，不必等 12 小时 TTL 到期。
-    pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
-        let key=metadata_key(kernel,"game-versions-v2","all");
-        crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||curseforge::game_versions(kernel)).await
+    /// 版本表按类型分两套：行为包 / 材质包是 MCBE 版本号，光影包是 Java 版本号。
+    /// 混用会让筛选条件永远匹配不到任何项目（搜索返回空列表），所以按类型分 key。
+    ///
+    /// key 里的版本号是**解析器版本**：v2 修掉了「把分组响应当成 `{name, slug}` 列表」
+    /// 造成的空数组；v3 再按来源拆表，旧缓存一律失效，不必等 12 小时 TTL 到期。
+    pub async fn game_versions(
+        kernel: &KernelContext,
+        content_type: Option<&str>,
+    ) -> Result<Vec<String>, KernelError> {
+        let shader = content_type == Some(TYPE_SHADER);
+        let kind = if shader {
+            "game-versions-v3-java"
+        } else {
+            "game-versions-v3-mcbe"
+        };
+        let key = metadata_key(kernel, kind, "all");
+        if shader {
+            crate::services::metadata_cache::load(
+                kernel.paths().cache_dir(),
+                &key,
+                crate::services::metadata_cache::CONTENT_REFRESH,
+                || curseforge::java_game_versions(kernel),
+            )
+            .await
+        } else {
+            crate::services::metadata_cache::load(
+                kernel.paths().cache_dir(),
+                &key,
+                crate::services::metadata_cache::CONTENT_REFRESH,
+                || curseforge::game_versions(kernel),
+            )
+            .await
+        }
+    }
+
+    /// 光影前置检查：目标实例里 Arke 是否已安装。
+    ///
+    /// `version` 缺省时回退开始页选中的版本——与落点解析同一口径，避免
+    /// 「检查的是 A 实例、装的是 B 实例」。
+    pub async fn arke_status(
+        kernel: &KernelContext,
+        version: Option<&str>,
+    ) -> Result<install_target::ArkeStatus, KernelError> {
+        let version = target_version(kernel, version)
+            .ok_or_else(|| KernelError::InvalidArgument("请先在开始页选择要安装的版本".into()))?;
+        install_target::arke_status(kernel, &version)
     }
 
     /// 落点预演：不投递任何东西，只解析这个文件下载后会落到哪。
@@ -295,8 +348,8 @@ impl ContentDownloadModule {
         file_id: &str,
         version: Option<&str>,
     ) -> Result<Placement, KernelError> {
-        let (_item, file) = resolve_source_file(kernel, id, file_id).await?;
-        resolve_placement(kernel, id, &file, version)
+        let (item, file) = resolve_source_file(kernel, id, file_id).await?;
+        resolve_placement(kernel, id, &item, &file, version)
     }
 
     /// 下载投递：文件直链 → 内核下载队列，并落库一条下载记录。
@@ -331,7 +384,7 @@ impl ContentDownloadModule {
         }
 
         // 落点按文件后缀名解析；`content_type` 仅在后缀名无法判定时兜底。
-        let placement = resolve_placement(kernel, id, &file, version)?;
+        let placement = resolve_placement(kernel, id, &item, &file, version)?;
         let dest = PathBuf::from(&placement.dir);
         announce_placement(kernel, &placement);
 
@@ -485,6 +538,7 @@ fn target_version(kernel: &KernelContext, version: Option<&str>) -> Option<Strin
 fn resolve_placement(
     kernel: &KernelContext,
     id: &str,
+    item: &ContentItem,
     file: &ContentFile,
     version: Option<&str>,
 ) -> Result<Placement, KernelError> {
@@ -501,7 +555,9 @@ fn resolve_placement(
         });
     }
     let version = target_version(kernel, version);
-    install_target::resolve(kernel, &file.filename, version.as_deref())
+    // 内容类型必须一起传：光影包的落点不在游戏内容目录，而在 Arke 的光影目录，
+    // 只按后缀名判断会把 zip 当普通归档解包。
+    install_target::resolve(kernel, &file.filename, version.as_deref(), Some(&item.content_type))
 }
 
 /// 广播落点信息，供前端吐司提示。
@@ -519,6 +575,11 @@ fn announce_placement(kernel: &KernelContext, placement: &Placement) {
             "kind": "install",
             "version": version,
             "notice": notice,
+        }),
+        PlacementKind::ShaderPack { version, .. } => serde_json::json!({
+            "kind": "shaderpack",
+            "version": version,
+            "dest": placement.dir,
         }),
         PlacementKind::LlpMod { .. } => return,
     };
@@ -1337,7 +1398,10 @@ fn record_download(
             Some(serde_json::to_string(&PendingInstall::Content(info))?)
         }
         // 纯下载无落位动作；LL 模组由 `enqueue_ll_android` 自行记录。
-        PlacementKind::DownloadOnly { .. } | PlacementKind::LlpMod { .. } => None,
+        // 光影包直接下到最终路径，没有解包步骤，因此不需要 pending install。
+        PlacementKind::DownloadOnly { .. }
+        | PlacementKind::ShaderPack { .. }
+        | PlacementKind::LlpMod { .. } => None,
     };
     record_download_inner(
         kernel,

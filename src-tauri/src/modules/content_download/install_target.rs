@@ -6,8 +6,10 @@
 //! **解包后的目录**，所以走 `Install` 的路径必须真正解包落位——把 `.mcpack`
 //! 原样丢进加载目录不会被加载，那是最容易让人以为「装好了」却毫无效果的假成功。
 //!
-//! 三种落点：
+//! 四种落点：
 //! - [`PlacementKind::Install`]：解包后原子落位到版本的游戏目录；
+//! - [`PlacementKind::ShaderPack`]：光影包原样落进实例的 Arke 光影目录
+//!   （`<mods>/arke/shaderpacks`），**不解包**——Arke 直接读 zip；
 //! - [`PlacementKind::DownloadOnly`]：落系统「下载」目录，纯下载不安装
 //!   （无实例、或后缀名本就不是可安装内容）；
 //! - [`PlacementKind::LlpMod`]：安卓 LL 模组，由 `ll_android` 既有链路处理。
@@ -177,6 +179,10 @@ pub enum PlacementKind {
         roots: ContentRootsView,
         notice: Option<String>,
     },
+    /// 光影包：原样落进实例的 Arke 光影目录，不解包。
+    ///
+    /// `shaderpacks` 是该目录，`Placement::dir` 是最终文件路径。
+    ShaderPack { version: String, shaderpacks: String },
     /// 落系统「下载」目录，不安装。
     DownloadOnly { dir: String },
     /// 安卓 LL 模组（由 `ll_android` 处理，本模块不落位）。
@@ -198,9 +204,9 @@ pub struct Placement {
 impl Placement {
     pub fn version(&self) -> Option<&str> {
         match &self.kind {
-            PlacementKind::Install { version, .. } | PlacementKind::LlpMod { version } => {
-                Some(version.as_str())
-            }
+            PlacementKind::Install { version, .. }
+            | PlacementKind::ShaderPack { version, .. }
+            | PlacementKind::LlpMod { version } => Some(version.as_str()),
             PlacementKind::DownloadOnly { .. } => None,
         }
     }
@@ -211,10 +217,11 @@ impl Placement {
 /// 解析最终落点。
 ///
 /// 判定顺序：
-/// 1. 后缀名不是已知归档 → 系统「下载」目录（纯下载）；
-/// 2. `.levipack` / `.so` → 交给 `ll_android` 链路；
-/// 3. 版本根本无可用实例 → 系统「下载」目录（前端须弹确认告知用户）；
-/// 4. 有实例 → 版本内安装目标（`Install`）。
+/// 1. 光影包（`content_type = shader`）→ 实例的 Arke 光影目录（不解包）；
+/// 2. 后缀名不是已知归档 → 系统「下载」目录（纯下载）；
+/// 3. `.levipack` / `.so` → 交给 `ll_android` 链路；
+/// 4. 版本根本无可用实例 → 系统「下载」目录（前端须弹确认告知用户）；
+/// 5. 有实例 → 版本内安装目标（`Install`）。
 ///
 /// 第 3 步与「实例存在但内容根不可用」是**两回事**：后者是可恢复的临时状态
 /// （非隔离实例没启动过游戏），此时**直接报错**而非降级——降级会让用户以为
@@ -223,7 +230,12 @@ pub fn resolve(
     kernel: &KernelContext,
     filename: &str,
     version: Option<&str>,
+    content_type: Option<&str>,
 ) -> Result<Placement, KernelError> {
+    // 光影先于后缀判定：光影包同样是 zip，但按普通归档解包会让 Arke 找不到它。
+    if content_type == Some(TYPE_SHADER) {
+        return resolve_shader_pack(kernel, filename, version);
+    }
     let Some(ext) = classify_extension(filename) else {
         return Ok(download_only(kernel, filename));
     };
@@ -282,6 +294,75 @@ fn instance_exists(kernel: &KernelContext, version: &str) -> bool {
         return false;
     };
     meta::VersionMeta::read(&dir).is_some()
+}
+
+/// 光影包落点：`<版本目录>/mods/arke/shaderpacks/<文件名>`。
+///
+/// Arke 直接扫描该目录里的 zip（不读解包后的目录），所以这里保留下载到的归档
+/// 本身：不暂存、不解包，下载完成即视为已安装。
+///
+/// 版本为空或该版本没有实例时**降级为纯下载**，与其它内容一致：前端据此弹
+/// 「没有可用实例」的确认，而不是把光影悄悄丢进一个不存在的目录。
+fn resolve_shader_pack(
+    kernel: &KernelContext,
+    filename: &str,
+    version: Option<&str>,
+) -> Result<Placement, KernelError> {
+    let Some(version) = version.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(download_only(kernel, filename));
+    };
+    if !instance_exists(kernel, version) {
+        return Ok(download_only(kernel, filename));
+    }
+    let shaderpacks = crate::modules::home::mods::mods_dir(kernel, version, true)?
+        .join("arke")
+        .join("shaderpacks");
+    ensure_writable_dir(&shaderpacks, "光影包目录")?;
+
+    Ok(Placement {
+        kind: PlacementKind::ShaderPack {
+            version: version.to_string(),
+            shaderpacks: shaderpacks.to_string_lossy().into_owned(),
+        },
+        dir: shaderpacks
+            .join(sanitize_filename(filename))
+            .to_string_lossy()
+            .into_owned(),
+        install_kind: "shaderpack",
+    })
+}
+
+/// Arke 光影加载器的安装状态（装光影前的前置校验）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArkeStatus {
+    /// 实例里是否真的装了 Arke。
+    pub installed: bool,
+    pub version: String,
+    /// `<版本目录>/mods/arke`。
+    pub dir: String,
+    /// `<版本目录>/mods/arke/shaderpacks`。
+    pub shaderpacks: String,
+}
+
+/// 判定实例里的 Arke 是否可用。
+///
+/// 不能只看目录存在：解压失败或用户手删文件都会留下空目录，那是假阳性——
+/// 用户永远等不到「请先安装 Arke」的提示，光影下了也加载不出来。
+/// Arke 发布包会在 `mods/arke` 里放 `arke.dll` 与 `manifest.json`，任一存在即视为已装
+/// （Windows 文件系统大小写不敏感，无需再处理大小写差异）。
+pub fn arke_status(kernel: &KernelContext, version: &str) -> Result<ArkeStatus, KernelError> {
+    let version_dir = meta::resolve_version_dir(&kernel.versions_root(), version)?;
+    let dir = version_dir.join("mods").join("arke");
+    let installed = ["arke.dll", "manifest.json"]
+        .iter()
+        .any(|file| dir.join(file).is_file());
+    Ok(ArkeStatus {
+        installed,
+        version: version.to_string(),
+        dir: dir.to_string_lossy().into_owned(),
+        shaderpacks: dir.join("shaderpacks").to_string_lossy().into_owned(),
+    })
 }
 
 /// 落系统「下载」目录。
