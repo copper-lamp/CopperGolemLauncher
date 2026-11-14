@@ -75,8 +75,19 @@ impl PackageFile {
     }
 
     /// 选出适用于该环境的条目。
+    ///
+    /// 先按变体名精确匹配。若该变体在清单里不存在（典型情况：lipr 索引把无 label 的
+    /// tooth 变体标注成 client，而 tooth.json 里的 label 为空），回退到默认变体空串。
+    /// 只回退到空 label 这一个变体，绝不回退到「任意一个条目」——tooth 里客户端与服务端
+    /// 是并列变体，乱选会把服务端依赖/落点带进客户端实例。
     pub fn entry(&self, variant: &str, environment: &Environment) -> Option<&Entry> {
-        self.variants.get(variant)?.iter().find(|entry| entry.side == environment.side && entry.platform == environment.platform)
+        let matches = |entry: &&Entry| entry.side == environment.side && entry.platform == environment.platform;
+        if let Some(entries) = self.variants.get(variant) {
+            if let Some(entry) = entries.iter().find(matches) {
+                return Some(entry);
+            }
+        }
+        self.variants.get("")?.iter().find(matches)
     }
 
     pub fn has_mod_asset(&self) -> bool {
@@ -346,7 +357,6 @@ pub fn from_tooth_json(json: &Json, environment: &Environment) -> Result<Option<
             .map(str::to_string),
     };
 
-    let mut entry = Entry { side: environment.side.clone(), platform: environment.platform.clone(), ..Default::default() };
     let mut variants: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
 
     if version == 3 {
@@ -357,6 +367,9 @@ pub fn from_tooth_json(json: &Json, environment: &Environment) -> Result<Option<
             if !platform.is_empty() && !rid_matches(platform, &environment.platform) {
                 continue;
             }
+            // 每个 variant 必须是独立条目：tooth v3 的 variants 是并列的变体，
+            // 跨迭代复用同一份 Entry 会把服务端条目的依赖 / 资产并进客户端条目。
+            let mut entry = Entry { side: environment.side.clone(), platform: environment.platform.clone(), ..Default::default() };
             if let Some(deps) = variant.get("dependencies").and_then(Json::as_object) {
                 for (key, range) in deps {
                     if let Some(range) = range.as_str() {
@@ -409,9 +422,10 @@ pub fn from_tooth_json(json: &Json, environment: &Environment) -> Result<Option<
                 entry.hooks.pre_uninstall = [list("pre_uninstall"), list("uninstall")].concat();
                 entry.hooks.post_uninstall = list("post_uninstall");
             }
-            variants.entry(label).or_default().push(entry.clone());
+            variants.entry(label).or_default().push(entry);
         }
     } else {
+        let mut entry = Entry { side: environment.side.clone(), platform: environment.platform.clone(), ..Default::default() };
         // v1 / v2：单一条目。
         let deps = object
             .get("dependencies")
@@ -552,7 +566,81 @@ version = "1.2.3"
         let _ = text;
         let toml = "format = 4\nid = \"github.com/example/demo\"\nversion = \"1.2.3\"\n[[variants.\"\"]]\nside = \"client\"\nplatform = \"win-x64\"\n[[variants.\"\".assets]]\ntype = \"zip\"\nurls = [\"https://example.com/v{{version}}/a.zip\"]\n";
         let (file, json) = parse_package_file(toml).unwrap();
-        assert_eq!(file.version(), semver::Version::parse("1.2.3").unwrap());
+        assert_eq!(file.version().unwrap(), semver::Version::parse("1.2.3").unwrap());
         assert_eq!(json["variants"][""][0]["assets"][0]["urls"][0], "https://example.com/v1.2.3/a.zip");
+    }
+
+    /// tooth v3 的 variants 是并列变体：无 label（服务端）与 label=client 必须各成一条，
+    /// 客户端条目不得继承服务端依赖 / 资产 / 落点（否则客户端实例会被装进 BDS）。
+    #[test]
+    fn tooth_variants_do_not_share_entries() {
+        let tooth = serde_json::json!({
+            "format_version": 3,
+            "tooth": "github.com/example/loader",
+            "version": "1.0.0",
+            "information": { "name": "Loader" },
+            "variants": [
+                {
+                    "platform": "win-x64",
+                    "dependencies": { "github.com/example/bds": "1.0.*" },
+                    "assets": [{ "type": "zip", "urls": ["https://example.com/server.zip"] }],
+                    "placements": [{ "type": "dir", "src": "Server/", "dest": "plugins/Server/" }],
+                    "scripts": { "install": ["server-hook.exe"] }
+                },
+                {
+                    "label": "client",
+                    "platform": "win-x64",
+                    "dependencies": { "github.com/example/runtime#client": "1.0.*" },
+                    "assets": [{ "type": "zip", "urls": ["https://example.com/client.zip"] }],
+                    "placements": [{ "type": "dir", "src": "Client/", "dest": "mods/Client/" }],
+                    "scripts": { "install": ["client-hook.exe"] }
+                }
+            ]
+        });
+        let environment = Environment::new("client", "win-x64");
+        let file = from_tooth_json(&tooth, &environment).unwrap().unwrap();
+        let server = file.entry("", &environment).expect("server entry");
+        let client = file.entry("client", &environment).expect("client entry");
+        assert!(server.deps.contains_key("github.com/example/bds"));
+        assert!(!client.deps.contains_key("github.com/example/bds"));
+        assert!(client.deps.contains_key("github.com/example/runtime#client"));
+        assert_eq!(client.assets.len(), 1);
+        assert_eq!(client.purge, server.purge);
+        assert_eq!(client.hooks.post_install, vec!["client-hook.exe".to_string()]);
+        assert_eq!(server.hooks.post_install, vec!["server-hook.exe".to_string()]);
+        let client_urls = match &client.assets[0] {
+            Asset::Zip { urls, .. } => urls.clone(),
+            other => panic!("unexpected asset: {other:?}"),
+        };
+        assert_eq!(client_urls, vec!["https://example.com/client.zip".to_string()]);
+    }
+
+    /// GMLIB 这类模组的 tooth v3 只有一个无 label 的变体，而 lipr 索引把它标注成 client。
+    /// 请求 client 时必须回退到空 label 变体，否则实机上会直接报「no client entry」。
+    #[test]
+    fn tooth_without_label_falls_back_to_default_variant() {
+        let tooth = serde_json::json!({
+            "format_version": 3,
+            "tooth": "github.com/GroupMountain/GMLIB-Release",
+            "version": "26.51.3",
+            "variants": [{
+                "platform": "win-x64",
+                "dependencies": { "github.com/LiteLDev/LeviLamina": ">=26.51.0" },
+                "assets": [{
+                    "type": "self",
+                    "urls": [],
+                    "placements": [{ "type": "dir", "src": "bin/DLL/GMLIB", "dest": "plugins/GMLIB/" }]
+                }],
+                "remove_files": ["plugins/GMLIB"]
+            }]
+        });
+        let environment = Environment::new("client", "win-x64");
+        let file = from_tooth_json(&tooth, &environment).unwrap().unwrap();
+        let entry = file.entry("client", &environment).expect("fallback to empty label");
+        assert_eq!(entry.assets.len(), 1);
+        assert!(matches!(&entry.assets[0], Asset::SelfArchive { .. }));
+        assert!(entry.deps.contains_key("github.com/LiteLDev/LeviLamina"));
+        // 完全不存在的变体同样回退，且不会跨到别的 label。
+        assert!(file.entry("server", &environment).is_some());
     }
 }

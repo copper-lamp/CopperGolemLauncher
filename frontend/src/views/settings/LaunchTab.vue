@@ -1,5 +1,8 @@
 <script setup lang="ts">
-// 启动 Tab：默认版本、内存分配、启动参数、显示日志、启动后行为。
+// 启动 Tab：默认版本、启动参数、环境变量、启动后行为、游戏退出后。
+//
+// 不提供“内存分配”与“显示日志”：这两个选项对基岩版没有实际作用，
+// 留在界面上只会让用户以为它们生效（假实现比缺功能更糟）。
 
 import { computed, onMounted, ref } from "vue";
 
@@ -8,7 +11,6 @@ import SettingRow from "./SettingRow.vue";
 import CoSegmented from "../../components/ui/CoSegmented.vue";
 import CoSelect from "../../components/ui/CoSelect.vue";
 import CoTextField from "../../components/ui/CoTextField.vue";
-import CoSwitch from "../../components/ui/CoSwitch.vue";
 import { useSettings } from "../../composables/useSettings";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -39,19 +41,14 @@ onMounted(async () => {
   }
 });
 
-const memoryMb = computed({
-  get: () => get<number>("launch.memory_mb", 4096),
-  set: (value: number) => void set("launch.memory_mb", value),
-});
-
 const args = computed({
   get: () => get<string>("launch.args", ""),
   set: (value: string) => void set("launch.args", value),
 });
 
-const showLogs = computed({
-  get: () => get<boolean>("launch.show_logs", false),
-  set: (value: boolean) => void set("launch.show_logs", value),
+const envVars = computed({
+  get: () => get<string>("launch.env_vars", ""),
+  set: (value: string) => void set("launch.env_vars", value),
 });
 
 const afterLaunch = computed({
@@ -64,26 +61,17 @@ const afterGameExit = computed({
   set: (value: string) => void set("launch.after_game_exit", value),
 });
 
-const memoryOptions = [2048, 3072, 4096, 6144, 8192, 12288, 16384].map((mb) => ({
-  value: String(mb),
-  label: `${Math.round(mb / 1024)} GB (${mb} MB)`,
-}));
-
-const afterLaunchOptions = [
+const afterLaunchOptions = computed(() => [
   { value: "keep", label: t("settings.launch.after_launch_keep") },
   { value: "minimize", label: t("settings.launch.after_launch_minimize") },
   { value: "hide", label: t("settings.launch.after_launch_hide") },
-];
+]);
 
-const afterGameExitOptions = [
+const afterGameExitOptions = computed(() => [
   { value: "keep", label: t("settings.launch.after_exit_keep") },
   { value: "reopen", label: t("settings.launch.after_exit_reopen") },
   { value: "close", label: t("settings.launch.after_exit_close") },
-];
-
-function updateMemory(value: string) {
-  memoryMb.value = Number(value);
-}
+]);
 </script>
 
 <template>
@@ -96,22 +84,23 @@ function updateMemory(value: string) {
           @update:model-value="defaultVersion = $event"
         />
       </SettingRow>
-      <SettingRow label-key="settings.launch.memory" hint-key="settings.launch.memory_hint">
-        <CoSelect
-          :model-value="String(memoryMb)"
-          :options="memoryOptions"
-          @update:model-value="updateMemory"
-        />
-      </SettingRow>
-      <SettingRow label-key="settings.launch.args">
+      <SettingRow label-key="settings.launch.args" hint-key="settings.launch.args_hint">
         <CoTextField
+          class="launch-tab__field"
           :model-value="args"
           :placeholder="t('settings.launch.args_placeholder')"
           @update:model-value="args = $event"
         />
       </SettingRow>
-      <SettingRow label-key="settings.launch.show_logs">
-        <CoSwitch :model-value="showLogs" @update:model-value="showLogs = $event" />
+      <SettingRow label-key="settings.launch.environment" hint-key="settings.launch.environment_hint">
+        <textarea
+          class="launch-tab__env"
+          :value="envVars"
+          :placeholder="t('settings.launch.environment_placeholder')"
+          spellcheck="false"
+          rows="4"
+          @input="envVars = ($event.target as HTMLTextAreaElement).value"
+        />
       </SettingRow>
       <SettingRow
         label-key="settings.launch.after_launch"
@@ -140,5 +129,38 @@ function updateMemory(value: string) {
 <style scoped>
 .launch-tab {
   max-width: 640px;
+}
+
+.launch-tab__field {
+  width: min(360px, 46vw);
+}
+
+.launch-tab__env {
+  width: min(420px, 52vw);
+  min-height: calc(var(--copper-control-h) * 2.2);
+  padding: var(--copper-space-3);
+  border: 0;
+  border-radius: var(--copper-radius-control);
+  background: var(--copper-surface-2);
+  color: var(--copper-text);
+  font-family: var(--copper-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: var(--copper-font-size-sm);
+  line-height: 1.5;
+  resize: vertical;
+  box-shadow: var(--copper-shadow-subtle);
+  transition: background var(--copper-duration-fast);
+}
+
+.launch-tab__env::placeholder {
+  color: var(--copper-text-disabled);
+}
+
+.launch-tab__env:hover:not(:disabled) {
+  background: var(--copper-surface-3);
+}
+
+.launch-tab__env:focus-visible {
+  outline: 2px solid var(--copper-accent);
+  outline-offset: 2px;
 }
 </style>

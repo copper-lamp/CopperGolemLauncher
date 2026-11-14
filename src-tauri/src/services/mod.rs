@@ -4,7 +4,6 @@
 //! 但不允许反向依赖命令层。
 
 pub mod account;
-pub mod components;
 pub mod game_prerequisites;
 pub mod system_runtime;
 pub mod database;

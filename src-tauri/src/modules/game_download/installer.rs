@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::error::KernelError;
 use crate::modules::content_download::lip_install;
-use crate::modules::content_download::lipd;
+use crate::modules::lip::{self, Environment, LipEvent, Sink};
 use crate::modules::content_download::loader_catalog;
 use crate::modules::home::meta;
 use crate::registry::events::EventBus;
@@ -72,7 +72,6 @@ pub struct Ctx {
     pub paths: Arc<Paths>,
     pub settings: Arc<SettingsService>,
     pub download: Arc<DownloadService>,
-    pub components: Arc<crate::services::components::ExternalComponentService>,
     pub account: Arc<AccountService>,
     /// 商店授权专用客户端：不跟随重定向（与 LeviLauncher 的 `CheckRedirect` 一致），
     /// 避免票据被转发到非目标主机。
@@ -90,7 +89,6 @@ impl Ctx {
             paths: kernel.paths().clone(),
             settings: kernel.settings().clone(),
             download: kernel.download().clone(),
-            components: kernel.components().clone(),
             account: kernel.account().clone(),
             store_http: Arc::new(
                 crate::services::http_client::client_builder(std::time::Duration::from_secs(40))
@@ -367,10 +365,9 @@ impl InstallProgress {
         self.download.finish_phase(id, error);
     }
 
-    /// 供 lipd 回调使用的独立上报句柄。
+    /// 供 LIP 引擎事件使用的独立上报句柄。
     ///
-    /// `lipd::CallbackSink` 要求 `'static + Send + Sync`，闭包不能借用 `self`；
-    /// 这里复制出最小的一组标量 + `Arc<DownloadService>`，语义与 [`Self::inner`] 一致。
+    /// 闭包不能借用 `self`，这里复制最小的一组标量与 `Arc<DownloadService>`。
     fn loader_handle(&self) -> Option<LoaderProgress> {
         Some(LoaderProgress {
             download: self.download.clone(),
@@ -392,8 +389,7 @@ struct LoaderProgress {
 impl LoaderProgress {
     /// 上报加载器安装进度；`fraction` 为 `None` 时给阶段中点。
     ///
-    /// lipd 的依赖求解步骤不报百分比（协议里该字段就是缺的），报阶段起点会让进度条
-    /// 看起来停死，报中点则如实表达「这步在跑，但量不出来」。
+    /// 依赖求解步骤可能没有百分比；此时报告阶段中点，表示任务正在运行但无法量化。
     fn report(&self, fraction: Option<f64>, detail: Option<String>) {
         let (key, weight) = INSTALL_PHASES[PHASE_LOADER];
         let inner = fraction.map(|f| f.clamp(0.0, 1.0)).unwrap_or(0.5);
@@ -1424,10 +1420,13 @@ pub fn cancel(ctx: &Ctx, instance: &str) -> Result<(), KernelError> {
 
 /// 取某版本可选的加载器清单（详情页「加载器」下拉）。
 ///
-/// `lip_available` 为假表示本机没有 lipd：加载器下拉仍列出候选项，但选中后装不上，
-/// 前端据此提前提示，而不是让用户在下完几个 G 之后才在安装末期失败。
+/// `lip_available` 表示内置 LIP 引擎可初始化；加载器下拉仍可列出候选项供界面展示。
 pub async fn loader_options(kernel: &KernelContext, version_id: &str) -> Result<LoaderOptions, KernelError> {
-    let lip_available = kernel.components().lip_runtime().await.is_ok();
+    let lip_available = lip::Engine::new(
+        Environment::current(),
+        kernel.paths().cache_dir().join("lip"),
+    )
+    .is_ok();
     // UWP 实例不支持加载器（见 `enqueue_uwp`）：下拉里给出空集，前端按既有逻辑
     // 显示「无可用加载器」，而不是列出一串选了必然失败的选项。
     if uwp_catalog::is_uwp(version_id) {
@@ -1447,7 +1446,7 @@ pub async fn loader_options(kernel: &KernelContext, version_id: &str) -> Result<
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LoaderOptions {
-    /// 本机是否可用 lipd（决定选中的加载器能否真的装上）。
+    /// 内置 LIP 引擎是否可初始化。
     pub lip_available: bool,
     pub loaders: Vec<loader_catalog::LoaderOption>,
 }
@@ -1990,48 +1989,45 @@ async fn install_instance(
     Ok(())
 }
 
-/// 把 LeviLamina 装进实例目录（经 lipd；依赖解析与下载都由它完成）。
+/// 把 LeviLamina 安装到实例目录，复用内容下载模块的内置 LIP 编排。
 ///
-/// 这里直接调用内容下载模块的**内核无关核心**（[`lip_install::install_resolved`]）：
-/// 游戏下载流水线跑在内核事件里，手里只有一组 Arc 服务，既拿不到也用不上整个
-/// `KernelContext`。加载器目录与安装实现都归内容下载模块，本模块只负责「什么时候装、
-/// 装到哪个目录、进度怎么报」。
+/// 游戏下载流水线只持有精简服务上下文；本模块负责安装时机、目标目录与进度映射。
 async fn install_loader(
     ctx: &Ctx,
     install_dir: &Path,
     loader: &str,
     progress: &mut InstallProgress,
 ) -> Result<(), KernelError> {
-    let runtime = ctx.components.lip_runtime().await?;
-    let exe = runtime.exe;
+    let engine = lip::Engine::new(
+        Environment::current(),
+        ctx.paths.cache_dir().join("lip"),
+    )
+    .map_err(|error| KernelError::Module(format!("初始化内置 LIP 失败：{error}")))?;
     let handle = progress.loader_handle();
-    let sink: lipd::CallbackSink = Arc::new(move |callback: lipd::DaemonCallback| {
+    let sink = Sink::new(move |event| {
         let Some(handle) = handle.as_ref() else { return };
-        match callback {
-            lipd::DaemonCallback::Progress { item, percent } => {
-                // lipd 的百分比是 0~100；缺省（协议里就没有该字段）时给阶段中点，
-                // 而不是起点——报起点会让进度条看起来停死在这 28% 上。
-                handle.report(percent.map(|p| p / 100.0), Some(item));
+        match event {
+            LipEvent::Progress { item, percent } => handle.report(percent, Some(item)),
+            LipEvent::Stage(stage) => handle.report(None, Some(stage.to_string())),
+            LipEvent::Log(text) if !text.trim().is_empty() => {
+                log::debug!("[game-download] LIP: {text}");
             }
-            lipd::DaemonCallback::Stage(stage) => {
-                handle.report(None, Some(stage.to_string()));
-            }
-            lipd::DaemonCallback::Log(text) => {
-                // 步骤文本比百分比更细，但也更吵：这里只留诊断日志。
-                if !text.trim().is_empty() {
-                    log::debug!("[game-download] lipd: {text}");
-                }
-            }
+            LipEvent::Log(_) => {}
         }
     });
-
-    let _ = ctx;
+    // 游戏下载的取消语义目前停在整包下载 / 解包阶段（见 `cancel`），加载器安装还没有
+    // 对应的用户取消入口；这里给一个独立标记，至少让引擎内部的取消路径保持可用。
+    let cancel = lip::Cancel::new();
     let outcome = lip_install::install_resolved(
-        &exe,
+        &engine,
         loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF,
         loader,
         install_dir,
+        // 加载器要连运行时依赖（PreLoader / bedrock-runtime-data 等）一起装，
+        // 否则实例启动就缺文件；内容下载装单个模组时相反，见 lip_install::install。
+        true,
         Some(&sink),
+        &cancel,
     )
     .await;
     if outcome.success {

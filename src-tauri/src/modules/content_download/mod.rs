@@ -4,7 +4,7 @@
 //! - **CurseForge**（行为包 / 材质包 / 光影包）：列表 / 详情 / 文件直链齐备，
 //!   `download` 把 `downloadUrl` 投递到内核全局下载队列（悬浮窗统一展示进度）。
 //! - **LIP**（LL 模组）：lipr 索引导仅含元数据，真实安装经 `lip_install` 调用
-//!   `lipd` 守护进程完成（见 `lipd.rs` / `lip_install.rs`）；不伪造直链。
+//!   内置 Rust LIP 引擎完成（见 `lip` / `lip_install.rs`）；不伪造直链。
 //!
 //! 联动（经内核中介）：投递任务 `kernel.download()`、持久化 `kernel.db()`
 //! （记录已下载项）、设置 `content.curseforgeApiKey`、语言包 `kernel.i18n()`。
@@ -44,7 +44,7 @@ pub use self::lip_install::LipInstallOutcome;
 
 /// 安卓平台的 LL 模组来源（LeviModHub 目录 `.so` 直装）。
 ///
-/// lipr 索引的资产全为 `win-x64`，lipd 又依赖 .NET + BDS，安卓两者皆不可用；
+/// lipr 索引的资产面向桌面运行环境，内置 LIP 引擎在安卓端不启用；
 /// 详见 [`ll_android`] 模块文档。用函数而非 `cfg!` 常量，是为了让**同一份
 /// 逻辑在两个平台都可编译可单测**，只有路由点才做平台判断。
 #[inline]
@@ -83,7 +83,7 @@ pub mod http;
 pub mod install_target;
 pub mod lip;
 pub mod lip_install;
-pub mod lipd;
+pub mod lip_queue;
 pub mod ll_android;
 pub mod loader_catalog;
 pub mod model;
@@ -405,17 +405,8 @@ impl ContentDownloadModule {
     }
 
     /// 探测 lip 环境：lipd 可执行是否可用。
-    pub fn lip_env(kernel: &KernelContext) -> LipEnv {
-        let available = kernel.components().installed_path(crate::services::components::ComponentId::Lip)
-            .filter(|_|kernel.components().installed_path(crate::services::components::ComponentId::Dotnet10).is_some());
-        LipEnv {
-            lip_available: available.is_some(),
-            message: if available.is_some() {
-                None
-            } else {
-                Some("未检测到 lipd，请先安装 lip（需要 .NET 10 运行时）".to_string())
-            },
-        }
+    pub fn lip_env(_kernel: &KernelContext) -> LipEnv {
+        LipEnv { lip_available: true, message: None }
     }
 
     /// Freeze the target and persist before starting a job; a repeated request is idempotent.
@@ -449,11 +440,8 @@ impl ContentDownloadModule {
                 if existing != fingerprint { return Err(KernelError::InvalidArgument("Install request id reused with different parameters".into())); }
                 return Ok(false);
             }
-            let busy: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM module_content_download_record WHERE source = 'lip' AND dest = ?1 AND state = 'installing')",
-                [&dest], |row| row.get(0),
-            )?;
-            if busy { return Err(KernelError::InvalidArgument("Target instance already has an active lip operation".into())); }
+            // 同一个实例不允许并发执行，但允许排队：真正的串行由安装闸门（lip_queue）
+            // 与引擎的工作区锁保证。这里再拒绝一次只会让第二个模组连队都排不上。
             record_lip_install_conn(conn, &operation_id, &detail.item, version, &dest, &fingerprint)?;
             Ok(true)
         })?;
@@ -463,10 +451,13 @@ impl ContentDownloadModule {
             let version = version.to_string();
             let variant = variant.map(str::to_string);
             let job_id = operation_id.clone();
+            // 取消登记必须在 spawn 之前完成：否则用户在校验后才点取消会找不到作业。
+            let cancel = lip_install::begin_job(&job_id);
             kernel.runtime().spawn(async move {
                 use tauri::Manager;
                 let state = app.state::<KernelContext>();
-                Self::lip_install(state.inner(), &job_id, &id, &version, variant.as_deref(), Some(&dest)).await;
+                Self::lip_install(state.inner(), &job_id, &id, &version, variant.as_deref(), Some(&dest), &cancel).await;
+                lip_install::finish_job(&job_id, &cancel);
             });
         }
         Ok(LipInstallAccepted { operation_id })
@@ -479,11 +470,40 @@ impl ContentDownloadModule {
         version: &str,
         variant: Option<&str>,
         dir: Option<&str>,
+        cancel: &crate::modules::lip::Cancel,
     ) -> LipInstallOutcome {
         let sink = lip_progress_sink(kernel.db().clone(), kernel.events().clone(), operation_id.to_string());
-        let mut outcome = lip_install::install(kernel, id, version, variant, dir, Some(&sink)).await;
-        if outcome.success { sink(lipd::DaemonCallback::Stage(STAGE_LIP_FINALIZING)); }
-        let state = if outcome.success { "installed" } else { "failed" };
+        // 排队：同一实例串行、跨实例按下载中心的「同时下载」并行。排到之前就把状态
+        // 告诉界面，否则用户只看到一条 0% 不动的记录。
+        let queue_dest = lip_install::resolve_target_dir(kernel, dir)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let permit = lip_queue::acquire(
+            &queue_dest,
+            || kernel.settings().get_or("download.concurrency", 3usize),
+            cancel,
+            || sink.progress("排队中：等待前面的安装完成", None),
+        )
+        .await;
+        let mut outcome = match permit {
+            Ok(permit) => {
+                let outcome = lip_install::install(kernel, id, version, variant, dir, Some(&sink), cancel).await;
+                // 许可必须在写终态之前释放，否则下一个排队任务要等到落库/发事件结束。
+                drop(permit);
+                outcome
+            }
+            Err(crate::modules::lip::LipError::Cancelled) => LipInstallOutcome::lip_failure(
+                "",
+                lip_install::ERR_LIP_CANCELLED,
+                crate::modules::lip::LipError::Cancelled,
+            ),
+            Err(error) => LipInstallOutcome::lip_failure("", lip_install::ERR_LIP_PACKAGE_INSTALL_FAILED, error),
+        };
+        if outcome.success { sink.stage(STAGE_LIP_FINALIZING); }
+        // 取消是终态，不能归到 failed：下载中心要把它显示成「已取消」而不是「安装失败」。
+        let state = if outcome.success { "installed" }
+            else if outcome.error_code.as_deref() == Some(lip_install::ERR_LIP_CANCELLED) { "cancelled" }
+            else { "failed" };
         if let Err(error) = update_lip_record(kernel, operation_id, version, state,
             (!outcome.success).then_some(outcome.stderr.as_str())) {
             outcome.success = false;
@@ -496,6 +516,16 @@ impl ContentDownloadModule {
             "operationId": operation_id, "outcome": outcome,
         }));
         outcome
+    }
+
+    /// 取消一次正在执行的 lip 安装。
+    ///
+    /// 只置取消标记并立即返回：引擎在每个可中断点检查标记，随后按 journal 回滚本次
+    /// 未提交的变更，最终由安装任务自己写终态（`cancelled`）并发事件。这样 IPC 不会
+    /// 被一次安装卡住，也不会出现「界面已取消、磁盘还在写」的窗口。
+    /// 返回 `false` 表示该作业已结束（或从未开始），调用方按幂等处理。
+    pub fn cancel_lip_install(operation_id: &str) -> bool {
+        lip_install::cancel_job(operation_id)
     }
 }
 
@@ -1278,7 +1308,7 @@ fn update_lip_progress(
 /// 两处节流是必需的：lipd 的 `ReportProgress` 频率不可控，直接落库会在安装期间
 /// 刷出成千上万条 UPDATE（每一条都是一次 fsync 级别的写）。事件则按 120ms
 /// 一帧推送——比内核下载引擎的 200ms 更密，因为这里的一帧只改一个 DOM 宽度。
-fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: String) -> lipd::CallbackSink {
+fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: String) -> crate::modules::lip::Sink {
     const EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(120);
     /// 进度至少动了 1% 才值得写库。
     const PERSIST_DELTA: f64 = 0.01;
@@ -1299,15 +1329,15 @@ fn lip_progress_sink(db: Arc<DatabaseService>, events: Arc<EventBus>, item_id: S
         persisted_progress: 0.0,
     }));
 
-    Arc::new(move |callback: lipd::DaemonCallback| {
-        let (target, stage, detail) = match callback {
-            lipd::DaemonCallback::Stage(stage) => (None, stage.to_string(), None),
-            lipd::DaemonCallback::Progress { item, percent } => (
+    crate::modules::lip::Sink::new(move |event| {
+        let (target, stage, detail) = match event {
+            crate::modules::lip::LipEvent::Stage(stage) => (None, stage.to_string(), None),
+            crate::modules::lip::LipEvent::Progress { item, percent } => (
                 percent.map(lip_install_progress),
                 STAGE_LIP_INSTALLING.to_string(),
                 (!item.trim().is_empty()).then_some(item),
             ),
-            lipd::DaemonCallback::Log(text) => {
+            crate::modules::lip::LipEvent::Log(text) => {
                 let current = tracker.lock();
                 (current.progress, current.stage.clone(), Some(text))
             }

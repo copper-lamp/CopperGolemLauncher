@@ -152,10 +152,12 @@ pub fn defaults() -> HashMap<String, Value> {
     m.insert("launch.default_version".into(), Value::String(String::new()));
     m.insert("launch.memory_mb".into(), Value::Number(4096.into()));
     m.insert("launch.args".into(), Value::String(String::new()));
-    m.insert("launch.show_logs".into(), Value::Bool(false));
+    // 全局环境变量（每行 KEY=VALUE）；实例自己的同名值优先。
+    m.insert("launch.env_vars".into(), Value::String(String::new()));
     m.insert("launch.after_launch".into(), Value::String("keep".into()));
-        m.insert("launch.after_game_exit".into(), Value::String("keep".into()));
-    // 个性
+    m.insert("launch.after_game_exit".into(), Value::String("keep".into()));
+    // 个性：动画预设 fast / smooth / silky（以 smooth 为基准倍率）。
+    m.insert("appearance.motion_preset".into(), Value::String("smooth".into()));
     m.insert("appearance.list_density".into(), Value::String("comfortable".into()));
     m.insert("appearance.animations".into(), Value::Bool(true));
     m.insert("performance.render".into(), Value::String("balanced".into()));
@@ -170,7 +172,6 @@ pub fn defaults() -> HashMap<String, Value> {
     // 仅约束**展示窗口**：历史行落库于 `core_download_task`，真实的表规模
     // 由内核侧 `services::download::HISTORY_KEEP` 兜底淘汰，两者不是一回事。
     m.insert("download.history_limit".into(), Value::Number(50.into()));
-    m.insert("components.auto_update_enabled".into(), Value::Bool(true));
     // 模块：元数据发布通道过滤（stable / beta / dev，可用 `+` 组合，如 `stable+beta`）。
     m.insert("registry.channel".into(), Value::String("stable".into()));
     // 更新（启动器自更新，与上面的模块通道是两回事）：

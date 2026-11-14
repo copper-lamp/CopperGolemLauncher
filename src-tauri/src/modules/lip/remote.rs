@@ -1,10 +1,10 @@
-//! 远端访问：GitHub 清单/标签/归档下载、镜像回退、本地档案。
+//! 远端访问：按原版 lip 的做法用 git smart-HTTP 读仓库（引用、文件树、清单 blob），
+//! 以及下载 zip / mcmod 资产与本地档案。
 //!
-//! 只使用公开 HTTP 接口；不依赖 lip 可执行文件，也不复用上游源码。
+//! 清单不再靠 raw.githubusercontent / jsDelivr 的 URL 猜测，也不整仓下载归档：
+//! 先 ls-refs 找到 tag 对应的提交，再只取 commit/tree，最后按 object id 取清单文件。
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -12,12 +12,28 @@ use serde_json::Value as Json;
 use tokio::io::AsyncWriteExt;
 
 use super::archive::ArchiveView;
+use super::git::{GitClient, GitRefEntry};
 use super::manifest::{self, PackageFile};
 use super::source::{GitRef, PackageSource, Source};
 use super::{Cancel, Environment, LipError};
 
 const USER_AGENT: &str = "CopperGolem-LIP/1.0 (+https://github.com/CopperGolem)";
 const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// 单个候选地址的连接上限。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// 下载流两段数据之间的最长静默，超过即判定该源卡死、换下一个。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 内置的 GitHub 加速镜像（按 URL 前缀拼接，形如 `https://gh-proxy.com/https://github.com/...`）。
+const BUILTIN_URL_MIRRORS: [&str; 3] = ["https://gh-proxy.com/", "https://ghfast.top/", "https://ghproxy.net/"];
+/// 内置的 GitHub 加速镜像（按主机替换，形如 `https://github.bibk.top/owner/repo/...`）。
+const BUILTIN_PATH_MIRRORS: [&str; 1] = ["https://github.bibk.top/"];
+
+/// 下载进度回调：已下载字节与响应声明的总字节（服务端不给长度时为 None）。
+///
+/// 引擎不把百分比写死在下载层：一次安装有多个包、多个资产，整体百分比只有
+/// 上层（workspace）知道该落在哪个区间，这里只报原始字节。
+pub type BytesProgress<'a> = dyn Fn(u64, Option<u64>) + Send + Sync + 'a;
 
 /// 远端或本地解析出的包。
 pub struct RemotePackage {
@@ -32,31 +48,36 @@ pub struct RemotePackage {
 
 pub struct RemoteClient {
     http: reqwest::Client,
+    git: GitClient,
     cache_dir: PathBuf,
     mirrors: Vec<String>,
-    tags: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl RemoteClient {
     pub fn new(cache_dir: PathBuf, mirrors: Vec<String>) -> Result<Self, LipError> {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(20))
-            .timeout(Duration::from_secs(120))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(Duration::from_secs(300))
             .redirect(reqwest::redirect::Policy::limited(8))
             .build()
             .map_err(|error| LipError::Network(error.to_string()))?;
-        Ok(Self { http, cache_dir, mirrors, tags: Mutex::new(HashMap::new()) })
+        let git = GitClient::new(http.clone());
+        Ok(Self { http, git, cache_dir, mirrors })
     }
 
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
 
+    pub fn git_client(&self) -> &GitClient {
+        &self.git
+    }
+
     /// 解析一个包引用为可安装的包。
-    pub async fn fetch_package(&self, source: &PackageSource, environment: &Environment, cancel: &Cancel) -> Result<RemotePackage, LipError> {
+    pub async fn fetch_package(&self, source: &PackageSource, environment: &Environment, cancel: &Cancel, progress: Option<&BytesProgress<'_>>) -> Result<RemotePackage, LipError> {
         match &source.source {
-            Source::Github { owner, repo } => self.fetch_github(owner, repo, source, environment, cancel).await,
+            Source::Github { owner, repo } => self.fetch_github(owner, repo, source, environment, cancel, progress).await,
             Source::Local { path } => {
                 let (archive, text) = if path.is_dir() {
                     let archive = ArchiveView::from_directory(path)?;
@@ -67,34 +88,35 @@ impl RemoteClient {
                     let text = read_manifest_from_archive(&archive)?;
                     (archive, text)
                 };
-                let file = self.parse_manifest(&text, environment)?;
+                let (file, json) = self.parse_manifest_with_json(&text, environment)?;
                 let needs_archive = file.variants.values().flatten().any(|entry| entry.assets.iter().any(|asset| matches!(asset, manifest::Asset::SelfArchive { .. })));
                 let archive = if needs_archive { Some(archive) } else { None };
-                let json = serde_json::to_value(&file).map_err(LipError::Json)?;
                 Ok(RemotePackage { file, json, git_ref: None, archive })
             }
             Source::ArchiveUrl { url } => {
                 cancel.check()?;
                 let temp = self.cache_dir.join(format!("archive-{}.zip", short_hash(url)));
-                self.download_zip(&[url.clone()], &temp, cancel).await?;
+                self.download_zip(&[url.clone()], &temp, cancel, progress).await?;
                 let archive = ArchiveView::from_zip(&temp)?;
                 let text = read_manifest_from_archive(&archive)?;
-                let file = self.parse_manifest(&text, environment)?;
+                let (file, json) = self.parse_manifest_with_json(&text, environment)?;
                 let needs_archive = file.variants.values().flatten().any(|entry| entry.assets.iter().any(|asset| matches!(asset, manifest::Asset::SelfArchive { .. })));
-                let json = serde_json::to_value(&file).map_err(LipError::Json)?;
                 Ok(RemotePackage { file, json, git_ref: None, archive: if needs_archive { Some(archive) } else { None } })
             }
         }
     }
 
     /// 列出包的可选版本（仅 GitHub 仓库；本地包返回自身版本）。
+    ///
+    /// 版本来源与官方实现一致：仓库的 tag 就是版本，按 semver 排序。
     pub async fn versions(&self, source: &PackageSource, cancel: &Cancel) -> Result<Vec<semver::Version>, LipError> {
         match &source.source {
             Source::Github { owner, repo } => {
-                let tags = self.tags(owner, repo, cancel).await?;
-                let mut versions: Vec<semver::Version> = tags
+                let refs = self.git.list_refs(owner, repo, &["refs/tags/".to_string()], cancel).await?;
+                let mut versions: Vec<semver::Version> = refs
                     .iter()
-                    .filter_map(|tag| semver::Version::parse(tag.trim_start_matches('v')).ok())
+                    .filter_map(|entry| entry.name.strip_prefix("refs/tags/"))
+                    .filter_map(|name| semver::Version::parse(name.trim_start_matches('v')).ok())
                     .collect();
                 versions.sort();
                 versions.dedup();
@@ -102,226 +124,210 @@ impl RemoteClient {
             }
             Source::Local { path } => {
                 let environment = Environment::current();
-                let (text, _) = if path.is_dir() {
-                    (read_manifest_from_dir(path)?, ())
+                let text = if path.is_dir() {
+                    read_manifest_from_dir(path)?
                 } else {
                     let archive = ArchiveView::from_zip(path)?;
-                    (read_manifest_from_archive(&archive)?, ())
+                    read_manifest_from_archive(&archive)?
                 };
-                let file = self.parse_manifest(&text, &environment)?;
+                let (file, _) = self.parse_manifest_with_json(&text, &environment)?;
                 Ok(vec![file.version()?])
             }
             Source::ArchiveUrl { .. } => Ok(Vec::new()),
         }
     }
 
-    /// 解析最新发布 tag（优先 releases/latest，其次 tags 排序）。
-    pub async fn latest_tag(&self, owner: &str, repo: &str, cancel: &Cancel) -> Result<String, LipError> {
+    async fn fetch_github(&self, owner: &str, repo: &str, source: &PackageSource, environment: &Environment, cancel: &Cancel, progress: Option<&BytesProgress<'_>>) -> Result<RemotePackage, LipError> {
         cancel.check()?;
-        let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-        if let Ok(response) = self.http.get(&url).send().await {
-            if response.status().is_success() {
-                if let Ok(json) = response.json::<Json>().await {
-                    if let Some(tag) = json.get("tag_name").and_then(Json::as_str) {
-                        return Ok(tag.to_string());
-                    }
-                }
+        let refs = self
+            .git
+            .list_refs(owner, repo, &["refs/tags/".to_string(), "refs/heads/".to_string()], cancel)
+            .await?;
+        let (reference_name, commit) = match &source.reference {
+            Some(GitRef::Commit(value)) => (value.clone(), value.clone()),
+            Some(GitRef::Tag(name)) => {
+                let entry = find_tag(&refs, name).ok_or_else(|| LipError::PackageNotFound(format!("{owner}/{repo}: 没有 tag {name}")))?;
+                (entry.name.clone(), entry.commit().to_string())
             }
-        }
-        let tags = self.tags(owner, repo, cancel).await?;
-        let mut versions: Vec<(semver::Version, String)> = tags
-            .into_iter()
-            .filter_map(|tag| semver::Version::parse(tag.trim_start_matches('v')).ok().map(|version| (version, tag)))
-            .collect();
-        versions.sort_by(|a, b| a.0.cmp(&b.0));
-        versions.pop().map(|(_, tag)| tag).ok_or_else(|| LipError::PackageNotFound(format!("{owner}/{repo}: no released version")))
-    }
-
-    /// 仓库 tag 列表，带磁盘缓存（1 小时）。
-    pub async fn tags(&self, owner: &str, repo: &str, cancel: &Cancel) -> Result<Vec<String>, LipError> {
-        let key = format!("{}/{}", owner.to_ascii_lowercase(), repo.to_ascii_lowercase());
-        if let Some(cached) = self.tags.lock().map_err(|_| LipError::Internal("tag cache poisoned".into()))?.get(&key) {
-            return Ok(cached.clone());
-        }
-        let cache_path = self.cache_dir.join("tags").join(format!("{}-{}.json", owner.to_ascii_lowercase(), repo.to_ascii_lowercase()));
-        if let Some(tags) = read_tag_cache(&cache_path) {
-            if let Ok(mut guard) = self.tags.lock() {
-                guard.insert(key.clone(), tags.clone());
+            Some(GitRef::Branch(name)) => {
+                let full = format!("refs/heads/{}", name.trim_start_matches("refs/heads/"));
+                let entry = refs.iter().find(|entry| entry.name == full).ok_or_else(|| LipError::PackageNotFound(format!("{owner}/{repo}: 没有分支 {name}")))?;
+                (entry.name.clone(), entry.commit().to_string())
             }
-            return Ok(tags);
-        }
-        cancel.check()?;
-        let mut tags = Vec::new();
-        let mut page = 1;
-        loop {
-            let url = format!("https://api.github.com/repos/{owner}/{repo}/tags?per_page=100&page={page}");
-            let response = self.http.get(&url).send().await.map_err(|error| LipError::Network(format!("{owner}/{repo} tags: {error}")))?;
-            if !response.status().is_success() {
-                return Err(LipError::Network(format!("{owner}/{repo} tags: HTTP {}", response.status())));
-            }
-            let json: Json = response.json().await.map_err(|error| LipError::Network(error.to_string()))?;
-            let items = json.as_array().ok_or_else(|| LipError::Network("unexpected tags response".into()))?;
-            if items.is_empty() {
-                break;
-            }
-            for item in items {
-                if let Some(name) = item.get("name").and_then(Json::as_str) {
-                    tags.push(name.to_string());
-                }
-            }
-            if items.len() < 100 || page >= 5 {
-                break;
-            }
-            page += 1;
-        }
-        if let Some(directory) = cache_path.parent() {
-            let _ = std::fs::create_dir_all(directory);
-        }
-        let _ = std::fs::write(&cache_path, serde_json::to_vec(&tags).unwrap_or_default());
-        if let Ok(mut guard) = self.tags.lock() {
-            guard.insert(key, tags.clone());
-        }
-        Ok(tags)
-    }
-
-    async fn fetch_github(&self, owner: &str, repo: &str, source: &PackageSource, environment: &Environment, cancel: &Cancel) -> Result<RemotePackage, LipError> {
-        let git_ref = self.resolve_ref(owner, repo, source.reference.as_ref(), cancel).await?;
-        let reference_text = git_ref.as_str();
-        let mut file = None;
-        let mut json = None;
-        let manifest_names = [manifest::PACKAGE_FILE, manifest::LEGACY_PACKAGE_FILE];
-        for name in manifest_names {
-            let urls = self.manifest_urls(owner, repo, &reference_text, name);
-            if let Some(text) = self.try_fetch_text(&urls, cancel).await? {
-                let (parsed, parsed_json) = self.parse_manifest_with_json(&text, environment)?;
-                file = Some(parsed);
-                json = Some(parsed_json);
-                break;
-            }
-        }
-
-        let (file, json, archive) = match (file, json) {
-            (Some(file), Some(json)) => (file, json, None),
-            _ => {
-                let archive = self.download_repo_archive(owner, repo, &reference_text, cancel).await?;
-                let text = read_manifest_from_archive(&archive)?;
-                let (file, json) = self.parse_manifest_with_json(&text, environment)?;
-                (file, json, Some(archive))
-            }
-        };
-
-        let needs_archive = file.variants.values().flatten().any(|entry| entry.assets.iter().any(|asset| matches!(asset, manifest::Asset::SelfArchive { .. })));
-        let archive = match (needs_archive, archive) {
-            (true, Some(archive)) => Some(archive),
-            (true, None) => Some(self.download_repo_archive(owner, repo, &reference_text, cancel).await?),
-            (false, _) => None,
-        };
-        Ok(RemotePackage { file, json, git_ref: Some(reference_text), archive })
-    }
-
-    async fn resolve_ref(&self, owner: &str, repo: &str, reference: Option<&GitRef>, cancel: &Cancel) -> Result<GitRef, LipError> {
-        match reference {
-            None | Some(GitRef::Latest) => Ok(GitRef::Tag(self.latest_tag(owner, repo, cancel).await?)),
             Some(GitRef::Version(version)) => {
-                let candidates = [format!("v{version}"), version.to_string()];
-                if let Ok(tags) = self.tags(owner, repo, cancel).await {
-                    for candidate in &candidates {
-                        if tags.iter().any(|tag| tag == candidate) {
-                            return Ok(GitRef::Tag(candidate.clone()));
-                        }
-                    }
-                }
-                Ok(GitRef::Tag(candidates[0].clone()))
+                let entry = find_version_tag(&refs, version).ok_or_else(|| LipError::PackageNotFound(format!("{owner}/{repo}: 没有版本 {version}")))?;
+                (entry.name.clone(), entry.commit().to_string())
             }
-            Some(reference) => Ok(reference.clone()),
-        }
+            Some(GitRef::Latest) | None => {
+                let entry = latest_release(&refs).ok_or_else(|| LipError::PackageNotFound(format!("{owner}/{repo}: 仓库没有可用的 tag 或默认分支")))?;
+                (entry.name.clone(), entry.commit().to_string())
+            }
+        };
+        self.fetch_github_at(owner, repo, &reference_name, &commit, environment, cancel, progress).await
     }
 
-    fn manifest_urls(&self, owner: &str, repo: &str, reference: &str, name: &str) -> Vec<String> {
-        let mut urls = Vec::new();
-        for mirror in std::iter::once(String::new()).chain(self.mirrors.iter().cloned()) {
-            urls.push(format!("{mirror}https://raw.githubusercontent.com/{owner}/{repo}/{reference}/{name}"));
-            urls.push(format!("{mirror}https://cdn.jsdelivr.net/gh/{owner}/{repo}@{reference}/{name}"));
-            urls.push(format!("{mirror}https://github.com/{owner}/{repo}/raw/{reference}/{name}"));
-        }
-        urls
+    async fn fetch_github_at(&self, owner: &str, repo: &str, reference_name: &str, commit: &str, environment: &Environment, cancel: &Cancel, progress: Option<&BytesProgress<'_>>) -> Result<RemotePackage, LipError> {
+        cancel.check()?;
+        // 只取提交与文件树（filter blob:none），再按需取清单文件本身。
+        let tree = self.git.list_tree(owner, repo, commit, cancel).await?;
+        let manifest_entry = tree
+            .entries
+            .iter()
+            .find(|entry| entry.path == manifest::PACKAGE_FILE)
+            .or_else(|| tree.entries.iter().find(|entry| entry.path == manifest::LEGACY_PACKAGE_FILE))
+            .or_else(|| tree.entries.iter().find(|entry| entry.path.ends_with(&format!("/{}", manifest::PACKAGE_FILE))))
+            .or_else(|| tree.entries.iter().find(|entry| entry.path.ends_with(&format!("/{}", manifest::LEGACY_PACKAGE_FILE))))
+            .ok_or_else(|| LipError::InvalidManifest(format!("{owner}/{repo}@{reference_name}: 仓库里没有 lip.toml 或 tooth.json")))?;
+        let blobs = self.git.fetch_blobs(owner, repo, std::slice::from_ref(&manifest_entry.oid), cancel).await?;
+        let bytes = blobs
+            .get(&manifest_entry.oid)
+            .ok_or_else(|| LipError::Network(format!("{owner}/{repo}: 没有取到清单文件 {}", manifest_entry.path)))?;
+        let text = String::from_utf8(bytes.clone()).map_err(|_| LipError::InvalidManifest(format!("{} is not UTF-8", manifest_entry.path)))?;
+        let (file, json) = self.parse_manifest_with_json(&text, environment)?;
+
+        // self 资产不再整仓下载归档：官方实现是按要放置的路径从文件树里按需取 blob，
+        // 整仓 zip 对大仓库（GMLIB 等）意味着几十 MB 的无谓下载。这里只记录提交，
+        // 由 workspace 在真正放置文件时按需批量取 blob。
+        let _ = progress;
+        Ok(RemotePackage { file, json, git_ref: Some(commit.to_string()), archive: None })
     }
 
-    fn archive_urls(&self, owner: &str, repo: &str, reference: &str) -> Vec<String> {
-        let mut urls = Vec::new();
-        let ref_path = if reference.starts_with("refs/") { reference.to_string() } else { format!("refs/tags/{reference}") };
-        for mirror in std::iter::once(String::new()).chain(self.mirrors.iter().cloned()) {
-            urls.push(format!("{mirror}https://codeload.github.com/{owner}/{repo}/zip/{ref_path}"));
-            urls.push(format!("{mirror}https://github.com/{owner}/{repo}/archive/{reference}.zip"));
-        }
-        urls
-    }
-
-    async fn download_repo_archive(&self, owner: &str, repo: &str, reference: &str, cancel: &Cancel) -> Result<ArchiveView, LipError> {
-        let urls = self.archive_urls(owner, repo, reference);
-        let temp = self.cache_dir.join(format!("repo-{}-{}-{}.zip", owner.to_ascii_lowercase(), repo.to_ascii_lowercase(), short_hash(reference)));
-        self.download_zip(&urls, &temp, cancel).await?;
-        ArchiveView::from_zip(&temp)
-    }
-
-    /// 依次尝试 URL 列表，下载第一个成功的归档。
-    pub async fn download_zip(&self, urls: &[String], dest: &Path, cancel: &Cancel) -> Result<(), LipError> {
+    /// 依次尝试候选地址（原始 URL 及其镜像），下载第一个成功的归档。
+    pub async fn download_zip(&self, urls: &[String], dest: &Path, cancel: &Cancel, progress: Option<&BytesProgress<'_>>) -> Result<(), LipError> {
         let mut last_error = String::from("no url");
         for url in urls {
-            cancel.check()?;
-            match self.download_one(url, dest, cancel).await {
-                Ok(()) => return Ok(()),
-                Err(error) => last_error = format!("{url}: {error}"),
+            for candidate in self.asset_candidates(url) {
+                cancel.check()?;
+                match self.download_one(&candidate, dest, cancel, progress).await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => last_error = format!("{candidate}: {error}"),
+                }
             }
         }
         Err(LipError::Network(format!("all download sources failed: {last_error}")))
     }
 
-    async fn download_one(&self, url: &str, dest: &Path, cancel: &Cancel) -> Result<(), LipError> {
-        let response = self.http.get(url).send().await.map_err(|error| LipError::Network(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(LipError::Network(format!("HTTP {}", response.status())));
+    /// 把一个 GitHub 资产地址展开成候选列表：原始地址在前，镜像在后。
+    ///
+    /// 只改写 github.com 上的地址；其它主机（自建分发、CDN）保持原样，避免把无关的
+    /// 请求也送进第三方代理。镜像按「内置 + `COPPER_LIP_MIRROR` 自定义」拼接，自定义
+    /// 里写 `{url}` 表示按模板替换，否则当作前缀直接拼接。
+    fn asset_candidates(&self, url: &str) -> Vec<String> {
+        let mut candidates = vec![url.to_string()];
+        let Some(rest) = url.strip_prefix("https://github.com/").or_else(|| url.strip_prefix("http://github.com/")) else {
+            return candidates;
+        };
+        let mut push = |candidate: String| {
+            if !candidate.is_empty() && !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        };
+        for mirror in &self.mirrors {
+            if mirror.contains("{url}") {
+                push(mirror.replace("{url}", url));
+            } else {
+                push(format!("{}{url}", if mirror.ends_with('/') { mirror.clone() } else { format!("{mirror}/") }));
+            }
         }
+        for prefix in BUILTIN_URL_MIRRORS {
+            push(format!("{prefix}{url}"));
+        }
+        for prefix in BUILTIN_PATH_MIRRORS {
+            push(format!("{prefix}{rest}"));
+        }
+        candidates
+    }
+
+    async fn download_one(&self, url: &str, dest: &Path, cancel: &Cancel, progress: Option<&BytesProgress<'_>>) -> Result<(), LipError> {
+        let response = tokio::time::timeout(CONNECT_TIMEOUT, self.http.get(url).send())
+            .await
+            .map_err(|_| LipError::Network(format!("{url}: connect timed out")))?
+            .map_err(|error| LipError::Network(error.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            // 404 是最常见的失败：上游打了 tag 却没上传发布文件（CoralFans 26.51.2 就是）。
+            // 把判断写进错误文本，用户和日志都不用再猜。
+            let hint = if status == reqwest::StatusCode::NOT_FOUND { "（上游该版本可能未上传发布文件）" } else { "" };
+            return Err(LipError::Network(format!("HTTP {status}{hint}")));
+        }
+        let expected = response.content_length();
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(LipError::Io)?;
         }
-        let mut file = tokio::fs::File::create(dest).await.map_err(LipError::Io)?;
+        // 先写 .part 再改名：缓存目录里出现 asset-*.zip 就意味着该文件已完整校验收尾。
+        // 直接写目标名会让「下载到一半进程被杀」留下半截 zip，下一次命中缓存时解包失败。
+        let part = dest.with_extension("zip.part");
+        let mut file = tokio::fs::File::create(&part).await.map_err(LipError::Io)?;
         let mut stream = response.bytes_stream();
         let mut total = 0u64;
-        while let Some(chunk) = stream.next().await {
-            cancel.check()?;
-            let chunk = chunk.map_err(|error| LipError::Network(error.to_string()))?;
+        let mut reported = 0u64;
+        let mut failure: Option<LipError> = None;
+        if let Some(progress) = progress {
+            progress(0, expected);
+        }
+        loop {
+            let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => {
+                    failure = Some(LipError::Network(format!("{url}: download stalled")));
+                    break;
+                }
+            };
+            if let Err(error) = cancel.check() {
+                failure = Some(error);
+                break;
+            }
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    failure = Some(LipError::Network(error.to_string()));
+                    break;
+                }
+            };
             total += chunk.len() as u64;
             if total > MAX_DOWNLOAD_BYTES {
-                let _ = tokio::fs::remove_file(dest).await;
-                return Err(LipError::Network("download exceeds size limit".into()));
+                failure = Some(LipError::Network("download exceeds size limit".into()));
+                break;
             }
-            file.write_all(&chunk).await.map_err(LipError::Io)?;
-        }
-        file.flush().await.map_err(LipError::Io)?;
-        // 归档必须以 ZIP 本地文件头或空档头开始，避免把 HTML 错误页当 zip。
-        let header = tokio::fs::read(dest).await.map_err(LipError::Io)?;
-        if !(header.starts_with(b"PK\x03\x04") || header.starts_with(b"PK\x05\x06")) {
-            let _ = tokio::fs::remove_file(dest).await;
-            return Err(LipError::Network("response is not a zip archive".into()));
-        }
-        Ok(())
-    }
-
-    async fn try_fetch_text(&self, urls: &[String], cancel: &Cancel) -> Result<Option<String>, LipError> {
-        for url in urls {
-            cancel.check()?;
-            if let Ok(response) = self.http.get(url).send().await {
-                if response.status().is_success() {
-                    if let Ok(text) = response.text().await {
-                        if !text.trim().is_empty() {
-                            return Ok(Some(text));
-                        }
-                    }
+            if let Err(error) = file.write_all(&chunk).await {
+                failure = Some(LipError::Io(error));
+                break;
+            }
+            // 每 256 KiB 报一次：太小会淹没事件通道，太大又看不出在动。
+            if let Some(progress) = progress {
+                if total - reported >= 256 * 1024 {
+                    reported = total;
+                    progress(total, expected);
                 }
             }
         }
-        Ok(None)
+        if failure.is_none() {
+            if let Some(progress) = progress {
+                progress(total, expected.or(Some(total)));
+            }
+        }
+        let flushed = if failure.is_none() { file.flush().await } else { Ok(()) };
+        drop(file);
+        if failure.is_none() {
+            if let Err(error) = flushed {
+                failure = Some(LipError::Io(error));
+            }
+        }
+        if failure.is_none() {
+            // 归档必须以 ZIP 本地文件头或空档头开始，避免把 HTML 错误页当 zip。
+            match tokio::fs::read(&part).await {
+                Ok(header) if header.starts_with(b"PK\x03\x04") || header.starts_with(b"PK\x05\x06") => {}
+                Ok(_) => failure = Some(LipError::Network("response is not a zip archive".into())),
+                Err(error) => failure = Some(LipError::Io(error)),
+            }
+        }
+        if let Some(error) = failure {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(error);
+        }
+        tokio::fs::rename(&part, dest).await.map_err(LipError::Io)?;
+        Ok(())
     }
 
     fn parse_manifest(&self, text: &str, environment: &Environment) -> Result<PackageFile, LipError> {
@@ -343,6 +349,41 @@ impl RemoteClient {
             manifest::parse_package_file(text)
         }
     }
+}
+
+fn find_tag<'a>(refs: &'a [GitRefEntry], name: &str) -> Option<&'a GitRefEntry> {
+    if name.starts_with("refs/") {
+        return refs.iter().find(|entry| entry.name == name);
+    }
+    let full = format!("refs/tags/{name}");
+    refs.iter().find(|entry| entry.name == full)
+}
+
+fn find_version_tag<'a>(refs: &'a [GitRefEntry], version: &semver::Version) -> Option<&'a GitRefEntry> {
+    let candidates = [format!("refs/tags/v{version}"), format!("refs/tags/{version}")];
+    candidates.iter().find_map(|candidate| refs.iter().find(|entry| &entry.name == candidate))
+}
+
+/// 最新版本：优先 semver 最高的 tag，没有 tag 时退回默认分支。
+fn latest_release(refs: &[GitRefEntry]) -> Option<&GitRefEntry> {
+    let mut best: Option<(semver::Version, &GitRefEntry)> = None;
+    for entry in refs.iter().filter(|entry| entry.name.starts_with("refs/tags/")) {
+        let name = entry.name.trim_start_matches("refs/tags/");
+        if let Ok(version) = semver::Version::parse(name.trim_start_matches('v')) {
+            if best.as_ref().map(|(current, _)| version > *current).unwrap_or(true) {
+                best = Some((version, entry));
+            }
+        }
+    }
+    if let Some((_, entry)) = best {
+        return Some(entry);
+    }
+    for branch in ["refs/heads/main", "refs/heads/master"] {
+        if let Some(entry) = refs.iter().find(|entry| entry.name == branch) {
+            return Some(entry);
+        }
+    }
+    refs.iter().find(|entry| entry.name.starts_with("refs/heads/"))
 }
 
 /// tooth.json 里的模板变量由包自身字段提供。
@@ -388,16 +429,6 @@ fn read_manifest_from_archive(archive: &ArchiveView) -> Result<String, LipError>
     Err(LipError::InvalidManifest("archive has no lip.toml or tooth.json".into()))
 }
 
-fn read_tag_cache(path: &Path) -> Option<Vec<String>> {
-    let metadata = std::fs::metadata(path).ok()?;
-    let modified = metadata.modified().ok()?;
-    if modified.elapsed().ok()? > Duration::from_secs(3600) {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
 fn short_hash(text: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -409,6 +440,10 @@ fn short_hash(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(name: &str, oid: &str) -> GitRefEntry {
+        GitRefEntry { name: name.to_string(), oid: oid.to_string(), peeled: None }
+    }
 
     #[test]
     fn renders_tooth_templates() {
@@ -422,10 +457,19 @@ mod tests {
     }
 
     #[test]
-    fn manifest_urls_include_mirror() {
-        let client = RemoteClient::new(std::env::temp_dir(), vec!["https://mirror.example/".into()]).unwrap();
-        let urls = client.manifest_urls("a", "b", "v1", "lip.toml");
-        assert!(urls[0].starts_with("https://raw.githubusercontent.com/a/b/v1/lip.toml"));
-        assert!(urls.iter().any(|url| url.starts_with("https://mirror.example/https://raw.githubusercontent.com")));
+    fn latest_release_prefers_high_semver_tag() {
+        let refs = vec![
+            entry("refs/tags/v1.2.0", "a000000000000000000000000000000000000001"),
+            entry("refs/tags/v1.10.0", "a000000000000000000000000000000000000002"),
+            entry("refs/heads/main", "a000000000000000000000000000000000000003"),
+        ];
+        assert_eq!(latest_release(&refs).unwrap().name, "refs/tags/v1.10.0");
+    }
+
+    #[test]
+    fn version_tag_matches_both_spellings() {
+        let refs = vec![entry("refs/tags/26.51.3", "a000000000000000000000000000000000000001")];
+        let version = semver::Version::parse("26.51.3").unwrap();
+        assert_eq!(find_version_tag(&refs, &version).unwrap().name, "refs/tags/26.51.3");
     }
 }

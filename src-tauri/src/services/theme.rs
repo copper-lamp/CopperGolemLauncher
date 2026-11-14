@@ -18,6 +18,7 @@ pub enum ThemeMode {
     Dark,
     Light,
     Auto,
+    Time,
 }
 
 /// 主题服务。

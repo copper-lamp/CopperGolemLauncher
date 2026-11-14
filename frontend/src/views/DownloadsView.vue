@@ -51,6 +51,7 @@ import {
 } from "../api/download";
 import { showToast } from "../composables/useToast";
 import {
+  contentDownloadLipCancel,
   contentDownloadRecordRemove,
   contentDownloadRecordsClear,
   type ContentDownloadRecord,
@@ -158,7 +159,9 @@ function contentRecordTask(record: ContentDownloadRecord, index: number): Downlo
       ? "installing"
       : record.state === "installed"
         ? "done"
-        : "failed";
+        : record.state === "cancelled"
+          ? "cancelled"
+          : "failed";
   return {
     id: Number.MAX_SAFE_INTEGER - index,
     filename: record.name,
@@ -367,17 +370,38 @@ function removeActionTitle(task: DownloadTask): string {
     : t("download.actions.remove");
 }
 
-/** 安装中的任务不可取消（流水线不响应中断），按钮置灰而不是假装能点。 */
+/** 安装中的内容记录（用于判断它是否支持取消）。 */
+function recordOf(task: DownloadTask): ContentDownloadRecord | undefined {
+  if (!task.content_id) return undefined;
+  return contentRecords.value.find((record) => record.id === task.content_id);
+}
+
+/**
+ * 安装中的任务能否取消。
+ *
+ * 内置 LIP 安装是协作式的：后端在可中断点退出并回滚未提交的变更，所以按钮真的能点。
+ * 内核游戏安装流水线仍不响应中断（整包解包、写版本目录分多步，中途停下只会留下
+ * 半成品），那条路径继续置灰，不假装能取消。
+ */
 function canCancelOrRemove(task: DownloadTask): boolean {
-  return task.status !== "installing";
+  if (task.status !== "installing") return true;
+  return recordOf(task)?.source === "lip";
 }
 
 /** 移除 / 取消：内容记录走模块自己的删除命令，内核任务走下载服务。 */
 async function handleCancelOrRemove(task: DownloadTask) {
   if (!canCancelOrRemove(task)) return;
   if (ACTIVE_STATUSES.has(task.status)) {
-    // 内容安装不是内核下载任务，没有可取消的 id。
-    if (task.content_id) return;
+    // 内容安装不是内核下载任务，没有可取消的下载 id：只有内置 LIP 安装有取消协议。
+    if (task.content_id) {
+      try {
+        await contentDownloadLipCancel(task.content_id);
+        showToast(t("download.cancel_requested"), "info");
+      } catch (e) {
+        showToast(String(e), "error");
+      }
+      return;
+    }
     await cancel(task.id);
     return;
   }

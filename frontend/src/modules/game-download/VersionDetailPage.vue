@@ -17,7 +17,6 @@ import CoButton from "../../components/ui/CoButton.vue";
 import CoDropdown, { type DropdownOption } from "../../components/ui/CoDropdown.vue";
 import { useI18n } from "../../i18n";
 import InstanceNameDialog from "./InstanceNameDialog.vue";
-import { ensureLipComponents } from '../../composables/useComponentPrerequisites';
 import type { GameVersionView } from "./api";
 import { gameVersionIcon } from "./gameVersionIcon";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
@@ -65,7 +64,6 @@ const dialogOpen = ref(false);
 
 async function openDialog() {
   if (!version.value) return;
-  if (loader.value && !await ensureLipComponents()) return;
   dialogOpen.value = true;
 }
 

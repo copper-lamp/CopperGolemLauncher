@@ -243,6 +243,7 @@ watch(expandedId, () => void measureTitle());
 
 const mods = ref<ModView[]>([]);
 const modsLoading = ref(false);
+const modsError = ref(false);
 const updates = ref<Record<string, string>>({});
 
 let disposeMods: (() => void) | null = null;
@@ -252,18 +253,23 @@ async function loadMods() {
   if (!name) {
     mods.value = [];
     updates.value = {};
+    modsError.value = false;
+    modsLoading.value = false;
     return;
   }
   modsLoading.value = true;
+  modsError.value = false;
   try {
     const result = await homeModsList(name);
+    if (name !== props.selectedName) return;
     mods.value = result.mods;
   } catch {
-    // 实例没有模组目录 / 读取失败：当作空列表，不编造数据。
-    mods.value = [];
+    if (name !== props.selectedName) return;
+    modsError.value = true;
   } finally {
-    modsLoading.value = false;
+    if (name === props.selectedName) modsLoading.value = false;
   }
+  if (name !== props.selectedName || modsError.value) return;
   // 更新检查要联网，单独跑：先出列表，徽标随后亮。
   try {
     const list = await homeModsUpdates(name);
@@ -511,6 +517,13 @@ watch(
         </header>
 
         <CoSkeleton v-if="modsLoading && mods.length === 0" variant="list" :rows="2" :label="t('common.loading')" />
+        <div v-else-if="modsError" class="widget__state widget__state--error" role="alert">
+          <span>{{ t("module.home.widget.mods.load_error") }}</span>
+          <button type="button" class="widget__retry" :disabled="modsLoading" @click="loadMods">
+            <RefreshCw :size="13" :class="{ spin: modsLoading }" />
+            <span>{{ t("common.retry") }}</span>
+          </button>
+        </div>
         <p v-else-if="mods.length === 0" class="widget__state">
           {{ t("module.home.mods.empty") }}
         </p>
@@ -1059,6 +1072,48 @@ watch(
   color: var(--copper-text-disabled);
   font-size: var(--copper-font-size-xs);
   text-align: center;
+}
+
+/* 读取失败不冒充“没有模组”：给出真实原因与重试入口。 */
+.widget__state--error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--copper-space-2);
+  margin: 0 calc(-1 * var(--copper-space-2));
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface-2);
+  box-shadow: var(--copper-shadow-subtle);
+  color: var(--copper-danger);
+}
+
+.widget__retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 var(--copper-space-2);
+  border: none;
+  border-radius: var(--copper-radius-sm);
+  background: var(--copper-surface-3);
+  color: var(--copper-text);
+  font-family: inherit;
+  font-size: var(--copper-font-size-xs);
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    box-shadow var(--copper-duration-fast) var(--copper-easing),
+    opacity var(--copper-duration-fast) var(--copper-easing);
+}
+
+.widget__retry:hover:not(:disabled) {
+  background: var(--copper-hover);
+  box-shadow: var(--copper-shadow-raised);
+}
+
+.widget__retry:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* 列表最多同屏 5 行（5 × 48 + 间隙），超出在框内滚动。 */

@@ -44,12 +44,19 @@ sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["signature"] }
 openssl = "0.10"
 semver = "1"
+# 内置 LIP：清单 lip.toml 解析、异步下载流与临时目录。
+toml = "0.8"
+futures-util = "0.3"
+tempfile = "3"
+# 内置 LIP 的 git 客户端：解压 packfile 对象与 delta 流。
+flate2 = "1"
 base64 = "0.21"
 quick-xml = "0.41"
 async-trait = "0.1"
 md-5 = "0.10"
 libloading = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+libc = "0.2"
 # 设备注册凭据随机源：参考实现用 32 字节缓冲，与 uuid 的 16 字节不通用。
 getrandom = "0.2"
 copper-downloader = { path = "../copper-downloader" }

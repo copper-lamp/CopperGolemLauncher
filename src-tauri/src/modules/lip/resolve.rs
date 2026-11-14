@@ -60,12 +60,17 @@ impl Plan {
 }
 
 /// 计算 install / update 计划。refresh=true 时忽略已安装版本优先，重新取最新。
+///
+/// dependencies=false 时只安装请求里点名的包：不展开依赖闭包、不把状态里其它
+/// 显式包当成根重新求解、也不卸载它们。内容下载「装这个模组」走这条路径——
+/// 用户点一个模组就只该拿到该模组的文件，而不是顺带重装 LeviLamina 的运行时依赖。
 pub async fn plan_install(
     client: &RemoteClient,
     environment: &Environment,
     state: &State,
     requests: &[PackageSource],
     refresh: bool,
+    dependencies: bool,
     cancel: &Cancel,
     sink: &super::Sink,
 ) -> Result<Plan, LipError> {
@@ -74,7 +79,7 @@ pub async fn plan_install(
 
     // 请求集：本次显式请求 + 状态里其它显式包（install 不应顺手删掉它们）。
     let mut roots: Vec<PackageSource> = requests.to_vec();
-    for package in &state.packages {
+    for package in state.packages.iter().filter(|_| dependencies) {
         if !package.explicit {
             continue;
         }
@@ -103,7 +108,7 @@ pub async fn plan_install(
 
     for _round in 0..64 {
         // 先把依赖闭包扩到不动点（依赖的依赖）。
-        for _expand in 0..64 {
+        for _expand in 0..(if dependencies { 64 } else { 0 }) {
             let mut added = false;
             let snapshot: Vec<(String, BTreeMap<String, String>)> = selections
                 .iter()
@@ -158,7 +163,12 @@ pub async fn plan_install(
 
     // 只保留显式包的可达闭包。
     let mut reachable: HashSet<String> = HashSet::new();
-    let mut queue: Vec<String> = requirements.iter().filter(|(_, requirement)| requirement.explicit).map(|(key, _)| key.clone()).collect();
+    let mut queue: Vec<String> = if dependencies {
+        requirements.iter().filter(|(_, requirement)| requirement.explicit).map(|(key, _)| key.clone()).collect()
+    } else {
+        // 只认请求本身：依赖不进入计划，也就不会触发依赖的远端查询与下载。
+        requirements.keys().cloned().collect()
+    };
     while let Some(key) = queue.pop() {
         if !reachable.insert(key.clone()) {
             continue;
@@ -203,15 +213,35 @@ pub async fn plan_install(
         }
     }
 
+    if !dependencies {
+        // 只装请求的包：未参与本次解析的已安装包原样保留，既不改状态也不删文件。
+        for package in &state.packages {
+            let key = identity(&package.manifest.id, &package.variant).to_ascii_lowercase();
+            if installs.iter().any(|item| item.identity.to_ascii_lowercase() == key)
+                || kept.iter().any(|item| item.identity.to_ascii_lowercase() == key)
+            {
+                continue;
+            }
+            kept.push(KeptItem {
+                identity: identity(&package.manifest.id, &package.variant),
+                package: package.clone(),
+                explicit: package.explicit,
+            });
+        }
+    }
+
     // 被新版本替换的旧包先卸载。
     let keep_keys: HashSet<String> = kept.iter().map(|item| item.identity.to_ascii_lowercase()).collect();
-    let install_keys: HashSet<String> = installs.iter().map(|item| item.identity.to_ascii_lowercase()).collect();
     let mut removals: Vec<InstalledPackage> = state
         .packages
         .iter()
         .filter(|package| {
             let key = identity(&package.manifest.id, &package.variant).to_ascii_lowercase();
-            !keep_keys.contains(&key) && !install_keys.contains(&key) || (install_keys.contains(&key) && !keep_keys.contains(&key))
+            if keep_keys.contains(&key) {
+                return false;
+            }
+            // 关闭依赖求解时，只有被同名新版本替换的包才卸载。
+            dependencies || installs.iter().any(|item| item.identity.to_ascii_lowercase() == key)
         })
         .cloned()
         .collect();
@@ -243,9 +273,9 @@ async fn select(
         if !refresh {
             if let Ok(version) = Version::parse(&package.manifest.version) {
                 if ranges.iter().all(|range| range.matches(&version)) && pinned.as_ref().map(|pin| pin == &version).unwrap_or(true) {
-                    let (result, entry) = selection_from_installed(package, source, explicit)?;
+                    let (result, entry) = selection_from_installed(package, environment, source)?;
                     sink.log(format!("保留已安装的 {key} {}", package.manifest.version));
-                    return Ok(Selection { identity: identity(&result.id, &package.variant), variant: package.variant.clone(), source: source.clone(), package: result, entry, explicit });
+                    return Ok(Selection { identity: identity(&result.file.id, &package.variant), variant: package.variant.clone(), source: source.clone(), package: result, entry, explicit });
                 }
             }
         }
@@ -255,6 +285,9 @@ async fn select(
         Some(version) => version.clone(),
         None => {
             sink.log(format!("解析 {key} 的可用版本"));
+            // 解析阶段没有字节进度，但必须把「在做什么」推到界面上，否则网络慢时
+            // 用户只能看到一个不动的转圈。
+            sink.progress(&format!("解析 {key} 的可用版本"), None);
             let versions = client.versions(source, cancel).await?;
             ranges
                 .iter()
@@ -273,7 +306,17 @@ async fn select(
 
     let mut request = source.clone();
     request.reference = Some(GitRef::Version(chosen.clone()));
-    let package = client.fetch_package(&request, environment, cancel).await?;
+    sink.progress(&format!("获取 {key} {chosen} 的清单"), None);
+    // 解析阶段也会走网络（ls-refs / 文件树 / 清单 blob），把字节进度接到界面上，
+    // 否则慢网下用户只看到一行静止的「正在安装」。
+    let reporter = |done: u64, total: Option<u64>| {
+        let text = match total {
+            Some(total) if total > 0 => format!("获取 {key} {chosen} 清单 {:.1}/{:.1} MB", done as f64 / 1048576.0, total as f64 / 1048576.0),
+            _ => format!("获取 {key} {chosen} 清单 {:.1} MB", done as f64 / 1048576.0),
+        };
+        sink.progress(&text, None);
+    };
+    let package = client.fetch_package(&request, environment, cancel, Some(&reporter)).await?;
     let variant = if request.variant.is_empty() { String::new() } else { request.variant.clone() };
     let entry = package.file.entry(&variant, environment).cloned().ok_or_else(|| {
         LipError::PackageNotFound(format!("{key} {} has no {} entry for {}", package.file.version, environment.side, environment.platform))
@@ -288,14 +331,18 @@ async fn select(
     })
 }
 
-fn selection_from_installed(package: &InstalledPackage, source: &PackageSource, explicit: bool) -> Result<(RemotePackage, Entry), LipError> {
+fn selection_from_installed(package: &InstalledPackage, environment: &Environment, _source: &PackageSource) -> Result<(RemotePackage, Entry), LipError> {
     let variant = package.variant.clone();
+    // 严禁回退到「任意一个条目」：tooth 里服务端与客户端是并列变体，
+    // 拿错条目会把服务端依赖/落点带进客户端实例（客户端模组装出 BDS 的根因之一）。
     let entry = package
         .manifest
-        .entry(&variant, &Environment { side: package.manifest.side_hint(), platform: package.manifest.platform_hint() })
+        .entry(&variant, environment)
         .cloned()
-        .or_else(|| package.manifest.variants.values().flatten().next().cloned())
-        .ok_or_else(|| LipError::InvalidState("installed package has no entry".into()))?;
+        .ok_or_else(|| LipError::InvalidState(format!(
+            "installed package {}#{} has no {} entry for {}",
+            package.manifest.id, variant, environment.side, environment.platform
+        )))?;
     let json = serde_json::to_value(&package.manifest)?;
     Ok((RemotePackage { file: package.manifest.clone(), json, git_ref: package.commit.clone(), archive: None }, entry))
 }

@@ -2,7 +2,7 @@
 
 import { call } from "./core";
 
-export type ThemeMode = "dark" | "light" | "auto";
+export type ThemeMode = "dark" | "light" | "time" | "auto";
 
 /** 主题快照（前端启动时一次性应用）。 */
 export interface ThemeSnapshot {

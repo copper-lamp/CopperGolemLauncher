@@ -219,7 +219,7 @@
     "open_folder": "打开模组目录",
     "dll_filter": "DLL 模组",
     "zip_filter": "模组压缩包",
-    "skipped": "已跳过 {count} 个缺少 manifest.json 的目录",
+    "skipped": "已跳过 {count} 个 manifest.json 缺失或无法解析的目录",
     "enabled": "已启用",
     "disabled": "已停用",
     "enable": "启用",
@@ -406,7 +406,8 @@
       "title": "模组管理",
       "enter": "进入",
       "update": "可更新",
-      "update_hint": "目录里有新版本 {version}"
+      "update_hint": "目录里有新版本 {version}",
+      "load_error": "无法读取模组列表"
     }
   }
 }

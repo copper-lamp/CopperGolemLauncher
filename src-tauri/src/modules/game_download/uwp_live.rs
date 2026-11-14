@@ -86,7 +86,6 @@ fn build_ctx(root: &std::path::Path) -> (Ctx, Arc<EventBus>, tokio::runtime::Run
         runtime.handle().clone(),
     ));
     let ctx = Ctx {
-        components: Arc::new(crate::services::components::ExternalComponentService::new(&paths,settings.clone(),events.clone())),
         events: events.clone(),
         db,
         paths,

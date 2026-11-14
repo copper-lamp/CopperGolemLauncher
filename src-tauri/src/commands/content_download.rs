@@ -152,7 +152,7 @@ pub async fn content_download_lip_env(kernel: State<'_, KernelContext>) -> Comma
     Ok(ContentDownloadModule::lip_env(kernel.inner()))
 }
 
-/// 经 lipd 安装 / 更新 LL 模组到目标版本目录。
+/// 经内置 LIP 引擎安装 / 更新 LL 模组到目标版本目录。
 ///
 /// `variant` 缺省按 lip 约定回退 `client`；`dir` 缺省解析设置 `launch.default_version`。
 /// 域内失败以 `success=false` + `errorCode` 返回，不走命令错误通道。
@@ -169,4 +169,13 @@ pub async fn content_download_lip_install(
     ContentDownloadModule::start_lip_install(
         app, kernel.inner(), &id, &version, variant.as_deref(), dir.as_deref(), &client_request_id,
     ).await.map_err(into_command_error)
+}
+
+/// 取消一次正在执行的 lip 安装。
+///
+/// 只请求取消并立即返回；安装作业在可中断点退出、回滚未提交变更并自行写终态。
+/// 作业已结束时返回 `false`，调用方按幂等处理。
+#[tauri::command]
+pub fn content_download_lip_cancel(operation_id: String) -> bool {
+    ContentDownloadModule::cancel_lip_install(&operation_id)
 }

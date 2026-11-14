@@ -1,24 +1,15 @@
-//! 内容下载模块 · LIP 安装编排。
+//! 内容下载模块 · 内置 Rust LIP 安装编排。
 //!
-//! 移植 LeviLauncher `internal/mcservice/lip_package.go` 的安装链路，把它对 lipd
-//! 的调用落到 [`super::lipd`]：
-//!
-//! 1. 标识规范化 —— `owner/repo[#variant]` 或 `https://host/owner/repo` 统一成
-//!    `github.com/owner/repo#<variant>`（缺省 variant 为 `client`）；
-//! 2. 目标目录解析 —— 必须是**具体已安装版本目录**（LeviLauncher `resolveLIPTargetDir`
-//!    用「版本名 → 版本目录」并要求目录存在）；lipd 在版本根目录执行会找不到 BDS 环境；
-//! 3. 查询安装状态 —— 一次 `List` 得到全部包的安装状态（查询失败仅记日志，不阻断）；
-//! 4. 锁定已装 LeviLamina 版本 —— 避免依赖求解器在宽范围（如 `1.9.*`）下拉取大量候选
-//!    或替换 LL 版本；
-//! 5. 安装 / 更新 —— 已显式安装则 `Update`，否则 `Install`；命中「已显式安装」冲突时
-//!    先仅用目标包重试 `Install`，再回退为仅 `Update` 目标包。
+//! 将界面包标识规范化为 LIP package ref，解析具体游戏目录，并调用内置引擎完成依赖求解、
+//! 资产获取与事务安装。游戏下载复用同一安装核心与进度事件接口。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::state::KernelContext;
 
-use super::lipd;
+use crate::modules::lip::{self, Cancel, Environment, LipError, Sink};
 
 /// LeviLamina 客户端包引用（安装前置依赖）。
 const LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE: &str = "github.com/LiteLDev/LeviLamina#client";
@@ -31,8 +22,53 @@ pub const ERR_LIP_PACKAGE_INVALID_IDENTIFIER: &str = "ERR_LIP_PACKAGE_INVALID_ID
 pub const ERR_LIP_PACKAGE_VERSION_REQUIRED: &str = "ERR_LIP_PACKAGE_VERSION_REQUIRED";
 /// 目标版本目录不存在。
 pub const ERR_TARGET_NOT_FOUND: &str = "ERR_TARGET_NOT_FOUND";
+/// 安装被用户取消。
+pub const ERR_LIP_CANCELLED: &str = "ERR_LIP_CANCELLED";
 /// 安装 / 更新失败。
 pub const ERR_LIP_PACKAGE_INSTALL_FAILED: &str = "ERR_LIP_PACKAGE_INSTALL_FAILED";
+
+// ---------------------------------------------------------------- 取消登记
+
+/// 正在执行的安装任务 → 取消标记。
+///
+/// 登记表放在模块级而不是 `KernelContext` 上：上下文按设计只聚合服务、不持有业务状态，
+/// 而「哪个作业正在跑」正是短生命周期的业务状态。键是作业 id（内容安装的
+/// `lip-job:<uuid>`、游戏下载的 `game:<实例名>`），值是该作业的取消标记。
+static ACTIVE_JOBS: OnceLock<Mutex<HashMap<String, Arc<Cancel>>>> = OnceLock::new();
+
+fn active_jobs() -> &'static Mutex<HashMap<String, Arc<Cancel>>> {
+    ACTIVE_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 登记一次安装作业，返回它的取消标记（同一作业重复登记会替换旧标记）。
+pub fn begin_job(job: &str) -> Arc<Cancel> {
+    let cancel = Arc::new(Cancel::new());
+    if let Ok(mut jobs) = active_jobs().lock() {
+        jobs.insert(job.to_string(), Arc::clone(&cancel));
+    }
+    cancel
+}
+
+/// 作业结束后撤销登记。只移除仍指向自己那个标记的条目，避免误删同名后续作业。
+pub fn finish_job(job: &str, cancel: &Arc<Cancel>) {
+    if let Ok(mut jobs) = active_jobs().lock() {
+        if jobs.get(job).is_some_and(|current| Arc::ptr_eq(current, cancel)) {
+            jobs.remove(job);
+        }
+    }
+}
+
+/// 请求取消作业；找不到（已完成 / 未开始）返回 `false`。
+pub fn cancel_job(job: &str) -> bool {
+    let cancel = active_jobs().lock().ok().and_then(|jobs| jobs.get(job).cloned());
+    match cancel {
+        Some(cancel) => {
+            cancel.cancel();
+            true
+        }
+        None => false,
+    }
+}
 
 /// lip 安装结果（域内失败以 `success=false` + `error_code` 表达，不抛内核错误）。
 #[derive(Debug, serde::Serialize)]
@@ -63,13 +99,13 @@ impl LipInstallOutcome {
     }
 
     /// 构造 daemon 调用失败结果（保留已收集的日志）。
-    fn daemon_failure(package: &str, code: &str, failure: lipd::DaemonFailure) -> Self {
+    pub(crate) fn lip_failure(package: &str, code: &str, error: LipError) -> Self {
         Self {
             success: false,
             package: package.to_string(),
-            stdout: failure.logs.join("\n"),
-            stderr: failure.message,
-            error_code: Some(if failure.timed_out { "ERR_LIP_DAEMON_TIMEOUT" } else { code }.to_string()),
+            stdout: String::new(),
+            stderr: error.to_string(),
+            error_code: Some(if matches!(error, LipError::Cancelled) { "ERR_LIP_CANCELLED" } else { code }.to_string()),
         }
     }
 
@@ -221,10 +257,11 @@ pub(super) fn resolve_target_dir(kernel: &KernelContext, dir: Option<&str>) -> R
 
 // ---------------------------------------------------------------- 安装编排
 
-/// 经 lipd 安装 / 更新 LL 模组到目标版本目录。
+/// 经内置引擎安装 / 更新 LL 模组到目标版本目录。
 ///
 /// `variant` 缺省时按 lip 约定回退到 `client`；`id` 需带 `lip:` 来源前缀或为裸标识。
-/// `sink` 用于把 lipd 的步骤与进度回传（下载中心据此画模拟进度条）。
+/// `sink` 用于把引擎的步骤与进度回传（下载中心据此画进度条）；`cancel` 由调用方登记，
+/// 用户取消后引擎在每个可中断点退出并按 journal 回滚。
 /// 永不返回内核错误：域内失败以 `success=false` + `errorCode` 表达，便于前端按码提示。
 pub async fn install(
     kernel: &KernelContext,
@@ -232,7 +269,8 @@ pub async fn install(
     version: &str,
     variant: Option<&str>,
     dir: Option<&str>,
-    sink: Option<&lipd::CallbackSink>,
+    sink: Option<&Sink>,
+    cancel: &Cancel,
 ) -> LipInstallOutcome {
     let identifier = id.strip_prefix("lip:").unwrap_or(id).trim().to_string();
     // 前端把 variant 独立传参；若标识内已含 `#variant` 则不重复拼接。
@@ -241,11 +279,11 @@ pub async fn install(
         _ => identifier,
     };
 
-    let runtime = match kernel.components().lip_runtime().await {
-        Ok(runtime) => runtime,
-        Err(_) => return LipInstallOutcome::failure(ERR_LIP_NOT_INSTALLED, "受管 lip / .NET 10 未安装或健康检查失败"),
+    let cache = kernel.paths().cache_dir().join("lip");
+    let engine = match lip::Engine::new(Environment::current(), cache) {
+        Ok(engine) => engine,
+        Err(error) => return LipInstallOutcome::lip_failure("", ERR_LIP_PACKAGE_INSTALL_FAILED, error),
     };
-    let exe = runtime.exe;
 
     let Some((_normalized, package_ref_base)) = build_package_ref_base(&identifier) else {
         return LipInstallOutcome::failure(
@@ -269,7 +307,7 @@ pub async fn install(
         }
     };
 
-    install_resolved(&exe, &package_ref_base, version, &target_dir, sink).await
+    install_resolved(&engine, &package_ref_base, version, &target_dir, false, sink, cancel).await
 }
 
 /// 内核无关的安装核心：把已解析的包引用装进一个**已存在**的目标目录。
@@ -277,13 +315,15 @@ pub async fn install(
 /// 从 [`install`] 拆出来是为了让「游戏下载」模块能在装完游戏实例后自动补装
 /// LeviLamina：那条链路跑在内核事件里、手里只有一组 Arc 服务（`game_download::Ctx`），
 /// 既拿不到也用不上整个 `KernelContext`。拆出的边界正好落在「一切环境探测与路径解析
-/// 都已完成」之后——本函数只依赖 `lipd`、包引用、版本号与目标目录。
+/// 都已完成」之后——本函数只依赖内置引擎、包引用、版本号、目标目录与取消标记。
 pub async fn install_resolved(
-    exe: &std::path::Path,
+    engine: &lip::Engine,
     package_ref_base: &str,
     version: &str,
     target_dir: &std::path::Path,
-    sink: Option<&lipd::CallbackSink>,
+    with_dependencies: bool,
+    sink: Option<&Sink>,
+    cancel: &Cancel,
 ) -> LipInstallOutcome {
     if crate::modules::home::compatibility::is_bound(target_dir) { return LipInstallOutcome::failure("compat_mode_unsupported", "兼容绑定不支持加载器或模组安装"); }
     let version = version.trim();
@@ -295,81 +335,30 @@ pub async fn install_resolved(
     }
 
     let package = format!("{package_ref_base}@{version}");
-    let target_only = vec![package.clone()];
-    let mut install_packages = vec![package.clone()];
-    let mut pinned_levilamina = false;
-
-    if let Some(sink) = sink { sink(lipd::DaemonCallback::Stage("download.stage.lip_querying")); }
-    // 查询安装状态：失败仅记日志，不阻断安装（与 LeviLauncher 一致）。
-    // 优先读取内置 Rust LIP 的 format-4 状态；旧工作区或损坏状态回退到
-    // lipd 查询，避免在新模块尚未覆盖安装事务时破坏既有安装链路。
-    let states = match crate::modules::lip::read_state(target_dir) {
-        Ok(state) if target_dir.join(".lip/state.json").is_file() => state.package_states().unwrap_or_default(),
-        Ok(_) | Err(_) => match lipd::list_package_states(exe, target_dir).await {
-            Ok(states) => states,
-            Err(e) => {
-                log::warn!("[content-download] 查询内置 LIP/lipd 安装状态失败（忽略）：daemon={e}");
-                HashMap::new()
-            }
-        },
+    log::info!("[content-download] 内置 LIP 安装 {package} → {}", target_dir.display());
+    if let Some(sink) = sink { sink.stage("download.stage.lip_querying"); }
+    let state = match engine.state(target_dir) {
+        Ok(state) => state,
+        Err(error) => return LipInstallOutcome::lip_failure(&package, ERR_LIP_PACKAGE_INSTALL_FAILED, error),
     };
-
-    // 锁定已安装的 LeviLamina 版本，避免依赖求解器替换 LL 或拉取大量候选。
-    if !package_ref_base.eq_ignore_ascii_case(LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE) {
-        if let Some(state) = states.get(&LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE.to_lowercase()) {
-            let pinned = state.installed_version.trim();
-            if state.installed && !state.explicit_installed && !pinned.is_empty() {
-                install_packages.push(format!("{LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE}@{pinned}"));
-                pinned_levilamina = true;
-            }
-        }
+    let states = state.package_states().unwrap_or_default();
+    let target_explicit = states.get(&package_ref_base.to_ascii_lowercase()).is_some_and(|s| s.explicit_installed);
+    if let Some(sink) = sink {
+        sink.stage("download.stage.lip_installing");
+        sink.progress(&format!("准备安装 {package}"), None);
     }
-
-    let target_explicit = states
-        .get(&package_ref_base.to_lowercase())
-        .is_some_and(|state| state.explicit_installed);
-
-    if let Some(sink) = sink { sink(lipd::DaemonCallback::Stage("download.stage.lip_installing")); }
-    if target_explicit {
-        log::info!("[content-download] lip 更新 {package} → {}", target_dir.display());
-        return match lipd::update_packages(exe, target_dir, &install_packages, sink).await {
-            Ok(logs) => LipInstallOutcome::done(&package, logs),
-            Err(failure) => {
-                LipInstallOutcome::daemon_failure(&package, ERR_LIP_PACKAGE_INSTALL_FAILED, failure)
-            }
-        };
-    }
-
-    log::info!("[content-download] lip 安装 {package} → {}", target_dir.display());
-    match lipd::install_packages(exe, target_dir, &install_packages, sink).await {
-        Ok(logs) => LipInstallOutcome::done(&package, logs),
-        Err(mut failure) => {
-            // 锁定的 LeviLamina 已装导致冲突 → 仅用目标包重试一次 Install。
-            if pinned_levilamina
-                && is_already_installed_error_for_package(
-                    &failure.message,
-                    LEVI_LAMINA_CLIENT_PACKAGE_REF_BASE,
-                )
-            {
-                match lipd::install_packages(exe, target_dir, &target_only, sink).await {
-                    Ok(logs) => return LipInstallOutcome::done(&package, logs),
-                    Err(retry) => failure = retry,
-                }
-            }
-            // 任意「已显式安装」冲突 → 回退为仅更新目标包。
-            if is_already_installed_error(&failure.message) {
-                log::warn!("[content-download] lip 安装冲突，回退更新：{}", failure.message);
-                return match lipd::update_packages(exe, target_dir, &target_only, sink).await {
-                    Ok(logs) => LipInstallOutcome::done(&package, logs),
-                    Err(update) => LipInstallOutcome::daemon_failure(
-                        &package,
-                        ERR_LIP_PACKAGE_INSTALL_FAILED,
-                        update,
-                    ),
-                };
-            }
-            log::error!("[content-download] lip 安装失败：{}", failure.message);
-            LipInstallOutcome::daemon_failure(&package, ERR_LIP_PACKAGE_INSTALL_FAILED, failure)
+    let event_sink = sink.cloned().unwrap_or_default();
+    let result = if target_explicit {
+        engine.update(target_dir, &[package.clone()], with_dependencies, &event_sink, &cancel).await
+    } else {
+        engine.install(target_dir, &[package.clone()], false, with_dependencies, &event_sink, &cancel).await
+    };
+    match result {
+        Ok(_) => LipInstallOutcome::done(&package, Vec::new()),
+        Err(error) => {
+            // 失败文本此前只进 outcome，日志里没有任何细节，实机上只能看到一行错误码。
+            log::warn!("[content-download] 内置 LIP 安装失败 {package}: {error}");
+            LipInstallOutcome::lip_failure(&package, ERR_LIP_PACKAGE_INSTALL_FAILED, error)
         }
     }
 }

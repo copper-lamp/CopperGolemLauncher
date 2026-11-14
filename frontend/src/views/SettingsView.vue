@@ -40,14 +40,14 @@ const { t } = useI18n();
 const tabs = [
   { id: "general", titleKey: "settings.tabs.general", icon: SlidersHorizontal },
   { id: "appearance", titleKey: "settings.tabs.appearance", icon: Palette },
-  { id: "storage", titleKey: "settings.tabs.version", icon: FolderOpen },
-  { id: "download", titleKey: "settings.tabs.general", icon: Download },
+  { id: "storage", titleKey: "settings.tabs.storage", icon: FolderOpen },
   { id: "launch", titleKey: "settings.tabs.launch", icon: Rocket },
-  { id: "translation", titleKey: "settings.tabs.general", icon: Languages },
+  { id: "download", titleKey: "settings.tabs.download", icon: Download },
+  { id: "translation", titleKey: "settings.tabs.translation", icon: Languages },
   { id: "modules", titleKey: "settings.tabs.modules", icon: Blocks },
-  { id: "components", titleKey: "components.title", icon: Puzzle },
-  { id: "privacy", titleKey: "settings.tabs.general", icon: ShieldCheck },
-  { id: "update", titleKey: "settings.tabs.about", icon: RefreshCw },
+  { id: "components", titleKey: "settings.tabs.components", icon: Puzzle },
+  { id: "privacy", titleKey: "settings.tabs.privacy", icon: ShieldCheck },
+  { id: "update", titleKey: "settings.tabs.update", icon: RefreshCw },
   { id: "about", titleKey: "settings.tabs.about", icon: Info },
 ] as const;
 

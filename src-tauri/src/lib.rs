@@ -401,7 +401,6 @@ pub fn run() {
                 log::info!("[kernel] 附加模块后台启动阶段已完成");
             });
             updater_for_boot.spawn_background_check();
-            // lipd更新只由界面挂载后的components_ui_ready触发，启动不等待任何检查。
 
             Ok(())
         })
@@ -420,14 +419,8 @@ pub fn run() {
             commands::imports::imports_drop,
             commands::imports::imports_cancel,
             commands::imports::imports_commit,
-            commands::components::components_list,
-            commands::components::components_probe,
-            commands::components::components_check,
-            commands::components::components_install,
-            commands::components::components_ui_ready,
-            commands::components::components_cancel,
-            commands::components::game_dependencies_probe,
-            commands::components::game_dependencies_install,
+            commands::game_dependencies::game_dependencies_probe,
+            commands::game_dependencies::game_dependencies_install,
             commands::settings::settings_module_register,
             commands::settings::settings_module_unregister,
             commands::settings::settings_module_get,
@@ -522,6 +515,7 @@ pub fn run() {
             commands::content_download::content_download_records_clear,
             commands::content_download::content_download_lip_env,
             commands::content_download::content_download_lip_install,
+            commands::content_download::content_download_lip_cancel,
             // 开始页模块（home）
             commands::home::home_versions_list,
             commands::home::home_versions_root,

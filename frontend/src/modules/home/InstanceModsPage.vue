@@ -125,10 +125,23 @@ const emptyText = computed(() => {
 
 async function refresh() {
   if (current.value?.compatibility && !current.value.compatibility.capabilities.loader) { mods.value = []; selectedFolders.value = []; loading.value = false; return; }
+  // 实例名还没解析出来（刚进页面 / 刚切实例）：空名字会被后端拒绝成「版本名不能为空」，
+  // 那个错误还会晚于随后成功的请求落到 UI，把已经读到的列表盖成一条报错。
+  const name = currentName.value;
+  if (!name) {
+    mods.value = [];
+    skipped.value = 0;
+    selectedFolders.value = [];
+    errorText.value = "";
+    loading.value = false;
+    return;
+  }
   loading.value = true;
   errorText.value = "";
   try {
-    const result = await homeModsList(currentName.value);
+    const result = await homeModsList(name);
+    // 请求期间实例已切换：丢弃过期结果，别让旧实例的列表盖掉新实例。
+    if (name !== currentName.value) return;
     mods.value = result.mods;
     skipped.value = result.skipped;
     // 选中项可能已被删除或改名。
@@ -136,20 +149,23 @@ async function refresh() {
       result.mods.some((mod) => mod.folder === folder),
     );
   } catch (e) {
+    if (name !== currentName.value) return;
     errorText.value = String(e);
     mods.value = [];
     skipped.value = 0;
     selectedFolders.value = [];
   } finally {
-    loading.value = false;
+    if (name === currentName.value) loading.value = false;
   }
-  await refreshUpdates();
+  if (name !== currentName.value) return;
+  await refreshUpdates(name);
 }
 
 /** 更新检查是网络请求：列表先渲染，徽标后补，不阻塞首屏。 */
-async function refreshUpdates() {
+async function refreshUpdates(name: string) {
   try {
-    const list = await homeModsUpdates(currentName.value);
+    const list = await homeModsUpdates(name);
+    if (name !== currentName.value) return;
     const map: Record<string, string> = {};
     for (const update of list) map[update.folder] = update.latest_version;
     updates.value = map;

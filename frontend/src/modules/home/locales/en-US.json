@@ -219,7 +219,7 @@
     "open_folder": "Open mods folder",
     "dll_filter": "DLL mods",
     "zip_filter": "Mod archives",
-    "skipped": "Skipped {count} folder(s) without manifest.json",
+    "skipped": "Skipped {count} folder(s) whose manifest.json is missing or unreadable",
     "enabled": "Enabled",
     "disabled": "Disabled",
     "enable": "Enable",
@@ -406,7 +406,8 @@
       "title": "Mods",
       "enter": "Open",
       "update": "Update",
-      "update_hint": "A newer version is available: {version}"
+      "update_hint": "A newer version is available: {version}",
+      "load_error": "Unable to load the mod list"
     }
   }
 }

@@ -1,11 +1,178 @@
 <script setup lang="ts">
-import {ref,onMounted,computed} from 'vue';import {open} from '@tauri-apps/plugin-dialog';import CoButton from '../../components/ui/CoButton.vue';import CoTextField from '../../components/ui/CoTextField.vue';import {storageStatus,storagePreview,storageApply,storageCancel,type StorageStatus} from '../../api/storage';import {useLocaleRef} from '../../i18n';
-const state=ref<StorageStatus|null>(null);const launcher=ref('');const game=ref('');const busy=ref(false);const error=ref('');const preview=ref<Awaited<ReturnType<typeof storagePreview>>|null>(null);const scheduled=ref(false);const locale=useLocaleRef();const m=computed(()=>locale.value==='en-US'?{title:'Storage locations',plan:'Confirmation schedules a copy and switch after restart; the source is preserved.',launcher:'Launcher data root',game:'Game root',pick:'Choose folder',preview:'Preview migration',apply:'Confirm and schedule',cancel:'Cancel scheduled migration',scheduled:'Scheduled. Copy and switch will run after restart; source data is preserved.',override:'Environment override is active. Migration is unavailable.',saf:'SAF locations are not supported by this migration.',versions:'Versions',packages:'Packages'}:{title:'储存位置',plan:'确认后将在重启时复制并切换目录，保留原目录。',launcher:'启动器数据根目录',game:'游戏根目录',pick:'选择目录',preview:'预览迁移',apply:'确认并安排迁移',cancel:'取消已安排迁移',scheduled:'已安排，重启后执行保留源数据的复制与切换，尚未完成迁移。',override:'环境变量正在覆盖路径，无法安排迁移。',saf:'此迁移暂不支持 SAF 位置。',versions:'实例目录',packages:'安装包目录'});
-async function refresh(){state.value=await storageStatus();launcher.value=state.value.launcherRoot;game.value=state.value.gameRoot;}
-async function choose(target:'launcher'|'game'){const path=await open({directory:true,multiple:false});if(typeof path==='string'){if(target==='launcher')launcher.value=path;else game.value=path;preview.value=null;}}
-async function run(action:()=>Promise<void>){busy.value=true;error.value='';try{await action();}catch(e){error.value=e instanceof Error?e.message:String(e);}finally{busy.value=false;}}
-function request(){return {launcherRoot:launcher.value,gameRoot:game.value};}
-onMounted(()=>run(refresh));
+// 储存位置 Tab：游戏数据目录 + 启动器数据目录快捷入口。
+//
+// 这里只负责定位，不承担迁移：改目录就是改 game.directory，生效路径由内核
+// 重新解析后回显（与「设置 → 版本」同一条链路，两个入口改的是同一个设置项）。
+// 启动器数据目录是安装目录下的运行时数据（数据库 / 日志 / 缓存），由内核决定，
+// 因此只读展示，提供系统文件管理器入口。
+
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { FolderOpen, RotateCcw } from "@lucide/vue";
+import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
+
+import SettingSection from "./SettingSection.vue";
+import SettingRow from "./SettingRow.vue";
+import CoButton from "../../components/ui/CoButton.vue";
+import CoTextField from "../../components/ui/CoTextField.vue";
+import { useSettings } from "../../composables/useSettings";
+import { useI18n } from "../../i18n";
+import { showToast } from "../../composables/useToast";
+import { homeVersionsRoot } from "../../api/home";
+import { storageStatus } from "../../api/storage";
+
+const { t } = useI18n();
+const { get, set } = useSettings();
+
+const resolvedRoot = ref("");
+const launcherRoot = ref("");
+const environmentOverride = ref(false);
+
+const gameDir = computed({
+  get: () => get<string>("game.directory", ""),
+  set: (value: string) => void set("game.directory", value),
+});
+
+// 设置值与内核实际解析路径不一致 = 有进程级环境变量在覆盖，必须说破，
+// 否则用户会反复修改一个不生效的设置项。
+const overridden = computed(
+  () => gameDir.value.trim() !== "" && resolvedRoot.value !== gameDir.value.trim(),
+);
+
+async function refresh() {
+  try {
+    const [root, status] = await Promise.all([homeVersionsRoot(), storageStatus()]);
+    resolvedRoot.value = root;
+    launcherRoot.value = status.launcherRoot;
+    environmentOverride.value = status.environmentOverride;
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
+async function pickFolder() {
+  const selected = await open({ directory: true, multiple: false });
+  if (typeof selected === "string" && selected) gameDir.value = selected;
+}
+
+function resetDir() {
+  gameDir.value = "";
+  void refresh();
+}
+
+async function reveal(path: string) {
+  if (!path) return;
+  try {
+    await openPath(path);
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
+// 逐字符输入时不需要每次扫盘；去抖后只刷新一次生效路径。
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+watch(gameDir, () => {
+  if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => void refresh(), 300);
+});
+onBeforeUnmount(() => {
+  if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+});
+
+onMounted(refresh);
 </script>
-<template><section class="storage"><h2>{{m.title}}</h2><p v-if="state?.environmentOverride">{{m.override}}</p><label>{{m.launcher}}<CoTextField v-model="launcher" @update:model-value="preview=null"/><CoButton :disabled="busy||!!state?.environmentOverride" @click="choose('launcher')">{{m.pick}}</CoButton></label><label>{{m.game}}<CoTextField v-model="game" @update:model-value="preview=null"/><CoButton :disabled="busy||!!state?.environmentOverride" @click="choose('game')">{{m.pick}}</CoButton></label><p>{{m.versions}}: {{state?.versions}}</p><p>{{m.packages}}: {{state?.packages}}</p><p v-if="!state?.safSupported">{{m.saf}}</p><CoButton :disabled="busy||!!state?.environmentOverride" @click="run(async()=>{preview=await storagePreview(request())})">{{m.preview}}</CoButton><template v-if="preview"><p>{{m.launcher}}: {{preview.source}} → {{preview.launcherRoot}}</p><p v-if="preview.gameRoot">{{m.game}}: {{state?.gameRoot}} → {{preview.gameRoot}}</p><p>{{m.plan}}</p><CoButton :disabled="busy" @click="run(async()=>{const result=await storageApply(request());scheduled=result.scheduled;preview=null;await refresh()})">{{m.apply}}</CoButton></template><p v-if="scheduled||state?.pending" role="status">{{m.scheduled}}</p><CoButton v-if="state?.pending" :disabled="busy" @click="run(async()=>{await storageCancel();scheduled=false;await refresh()})">{{m.cancel}}</CoButton><p v-if="error||state?.lastError" role="alert">{{error||state?.lastError}}</p></section></template>
-<style scoped>.storage{padding:var(--copper-space-5);background:var(--copper-surface);border-radius:var(--copper-radius-card);box-shadow:var(--copper-shadow-card)}label{display:grid;gap:var(--copper-space-3);margin-bottom:var(--copper-space-5)}p,pre{overflow-wrap:anywhere;white-space:pre-wrap;color:var(--copper-text-secondary)}[role=alert]{color:var(--copper-danger)}</style>
+
+<template>
+  <div class="storage-tab">
+    <SettingSection title-key="settings.storage.section">
+      <SettingRow
+        label-key="settings.storage.game_dir"
+        hint-key="settings.storage.game_dir_hint"
+      >
+        <div class="storage-tab__row">
+          <CoTextField
+            class="storage-tab__field"
+            :model-value="gameDir"
+            :placeholder="t('settings.storage.game_dir_default')"
+            :disabled="environmentOverride"
+            @update:model-value="gameDir = $event"
+          />
+          <CoButton
+            variant="secondary"
+            size="sm"
+            :disabled="environmentOverride"
+            @click="pickFolder"
+          >
+            <FolderOpen :size="14" />
+            <span>{{ t("settings.storage.browse") }}</span>
+          </CoButton>
+          <CoButton variant="ghost" size="sm" :disabled="environmentOverride" @click="resetDir">
+            <RotateCcw :size="14" />
+            <span>{{ t("settings.storage.reset") }}</span>
+          </CoButton>
+          <CoButton variant="secondary" size="sm" @click="reveal(resolvedRoot)">
+            <FolderOpen :size="14" />
+            <span>{{ t("settings.storage.open") }}</span>
+          </CoButton>
+        </div>
+      </SettingRow>
+      <p class="storage-tab__resolved">
+        {{ t("settings.storage.resolved", { path: resolvedRoot || "—" }) }}
+      </p>
+      <p v-if="overridden || environmentOverride" class="storage-tab__warn">
+        {{ t("settings.storage.overridden") }}
+      </p>
+
+      <SettingRow
+        label-key="settings.storage.launcher_dir"
+        hint-key="settings.storage.launcher_dir_hint"
+      >
+        <div class="storage-tab__row">
+          <span class="storage-tab__path">{{ launcherRoot || "—" }}</span>
+          <CoButton variant="secondary" size="sm" @click="reveal(launcherRoot)">
+            <FolderOpen :size="14" />
+            <span>{{ t("settings.storage.open") }}</span>
+          </CoButton>
+        </div>
+      </SettingRow>
+    </SettingSection>
+  </div>
+</template>
+
+<style scoped>
+.storage-tab {
+  max-width: 760px;
+}
+
+.storage-tab__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--copper-space-2);
+}
+
+.storage-tab__field {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.storage-tab__path {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-sm);
+}
+
+.storage-tab__resolved {
+  margin: 0 var(--copper-space-2) var(--copper-space-2);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
+}
+
+.storage-tab__warn {
+  margin: 0 var(--copper-space-2) var(--copper-space-3);
+  color: var(--copper-warning, var(--copper-danger));
+  font-size: var(--copper-font-size-xs);
+}
+</style>

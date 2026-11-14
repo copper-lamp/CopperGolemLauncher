@@ -147,14 +147,14 @@ fn parse_comparator(token: &str, raw: &str) -> Result<Comparator, LipError> {
             }
             if let Some(wildcard) = parse_wildcard(rest) {
                 // >=1.* 之类的通配与比较符组合：按通配的上下界折叠。
-                return wildcard;
+                return Ok(wildcard);
             }
             let version = parse_version(rest, raw)?;
             return Ok(build(version));
         }
     }
     if let Some(wildcard) = parse_wildcard(token) {
-        return wildcard;
+        return Ok(wildcard);
     }
     Ok(Comparator::Exact(parse_version(token, raw)?))
 }

@@ -278,6 +278,7 @@ mod tests {
         assert!(safe_relative("../x").is_none());
         assert!(safe_relative("C:/x").is_none());
         assert!(safe_relative("/x").is_none());
-        assert_eq!(safe_relative("plugins/a.dll").unwrap().to_string_lossy(), "plugins/a.dll");
+        // PathBuf 在 Windows 上使用反斜杠，断言按路径分段比较，避免平台差异。
+        assert_eq!(safe_relative("plugins/a.dll").unwrap(), std::path::Path::new("plugins").join("a.dll"));
     }
 }

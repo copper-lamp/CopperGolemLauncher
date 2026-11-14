@@ -56,6 +56,13 @@ pub struct ModManifest {
     /// 图标文件名（可选扩展，相对模组目录；缺省时回退 pack_icon.png / icon.png）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// 客户端 / 服务端标记（LeviLamina 清单里的 platform）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub platform: String,
+    /// 清单里的其它扩展字段（LeviLamina 本体用 extraInfo 放 sentry 配置）；
+    /// 原样保留，导入 / 编辑回写时不能丢。
+    #[serde(default, rename = "extraInfo", skip_serializing_if = "Option::is_none")]
+    pub extra_info: Option<Value>,
 }
 
 /// 模组视图（前端列表用）。
@@ -357,14 +364,14 @@ fn save_manifest_at(
 
     for (path, _) in &targets {
         let mut map = read_manifest_map(path)?;
-        map.insert("name".into(), Value::String(mod_name.into()));
-        map.insert("entry".into(), Value::String(entry.into()));
-        map.insert("version".into(), Value::String(version.into()));
-        map.insert("type".into(), Value::String(mod_type.into()));
+        set_ci(&mut map, "name", Value::String(mod_name.into()));
+        set_ci(&mut map, "entry", Value::String(entry.into()));
+        set_ci(&mut map, "version", Value::String(version.into()));
+        set_ci(&mut map, "type", Value::String(mod_type.into()));
         if author.is_empty() {
-            map.remove("author");
+            remove_ci(&mut map, "author");
         } else {
-            map.insert("author".into(), Value::String(author.into()));
+            set_ci(&mut map, "author", Value::String(author.into()));
         }
         write_manifest_map(path, &map)?;
     }
@@ -461,6 +468,7 @@ fn import_dll_at(
         author: String::new(),
         description: String::new(),
         icon: String::new(),
+        ..Default::default()
     };
 
     let staging = staging_dir(root);
@@ -754,34 +762,152 @@ fn read_manifest(path: &Path) -> Option<ModManifest> {
     parse_manifest(&raw).ok()
 }
 
+/// 按 LeviLauncher `JsonCompatBytes` 规则清理 JSON 注释和尾随逗号。
+fn json_compat_bytes(raw: &[u8]) -> Vec<u8> {
+    // UTF-8 BOM 会让 serde_json 直接判为非法 JSON，先剥掉。
+    let raw = if raw.len() >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
+        &raw[3..]
+    } else {
+        raw
+    };
+    let mut without_comments = Vec::with_capacity(raw.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < raw.len() {
+        let byte = raw[index];
+        if in_string {
+            without_comments.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'\"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'\"' {
+            in_string = true;
+            without_comments.push(byte);
+            index += 1;
+        } else if byte == b'/' && index + 1 < raw.len() && raw[index + 1] == b'/' {
+            index += 2;
+            while index < raw.len() && raw[index] != b'\n' {
+                index += 1;
+            }
+        } else if byte == b'/' && index + 1 < raw.len() && raw[index + 1] == b'*' {
+            index += 2;
+            while index + 1 < raw.len() && !(raw[index] == b'*' && raw[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(raw.len());
+        } else {
+            without_comments.push(byte);
+            index += 1;
+        }
+    }
+
+    let mut cleaned = Vec::with_capacity(without_comments.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < without_comments.len() {
+        let byte = without_comments[index];
+        if in_string {
+            cleaned.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'\"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'\"' {
+            in_string = true;
+            cleaned.push(byte);
+            index += 1;
+        } else if byte == b',' {
+            let mut next = index + 1;
+            while next < without_comments.len() && without_comments[next].is_ascii_whitespace() {
+                next += 1;
+            }
+            if next == without_comments.len() || !matches!(without_comments[next], b'}' | b']') {
+                cleaned.push(byte);
+            }
+            index += 1;
+        } else {
+            cleaned.push(byte);
+            index += 1;
+        }
+    }
+    cleaned
+}
+
 /// 解析清单字节。
 fn parse_manifest(raw: &[u8]) -> Result<ModManifest, KernelError> {
-    let mut value: Value = serde_json::from_slice(raw)?;
-    if let Value::Object(map) = &mut value {
-        let lowered = map
-            .iter()
-            .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
-            .collect();
-        *map = lowered;
+    let value: Value = serde_json::from_slice(&json_compat_bytes(raw))?;
+    let map = value
+        .as_object()
+        .ok_or_else(|| KernelError::InvalidArgument("模组清单格式错误".into()))?;
+    Ok(ModManifest {
+        name: str_ci(map, "name"),
+        entry: str_ci(map, "entry"),
+        version: str_ci(map, "version"),
+        mod_type: str_ci(map, "type"),
+        author: str_ci(map, "author"),
+        description: str_ci(map, "description"),
+        icon: str_ci(map, "icon"),
+        platform: str_ci(map, "platform"),
+        extra_info: get_ci(map, "extraInfo").cloned(),
+    })
+}
+
+/// 大小写不敏感取键：清单里的字段名大小写并不统一。
+fn get_ci<'a>(map: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a Value> {
+    map.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+}
+
+fn str_ci(map: &serde_json::Map<String, Value>, key: &str) -> String {
+    get_ci(map, key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 大小写不敏感写键：已有同名键就地替换，保住原键名（extraInfo 不会被改成小写）。
+fn set_ci(map: &mut serde_json::Map<String, Value>, key: &str, value: Value) {
+    if let Some(existing) = map.keys().find(|k| k.eq_ignore_ascii_case(key)).cloned() {
+        map.insert(existing, value);
+    } else {
+        map.insert(key.to_string(), value);
     }
-    Ok(serde_json::from_value(value)?)
+}
+
+fn remove_ci(map: &mut serde_json::Map<String, Value>, key: &str) {
+    if let Some(existing) = map.keys().find(|k| k.eq_ignore_ascii_case(key)).cloned() {
+        map.remove(&existing);
+    }
 }
 
 /// 读取清单原始键值（保留未知字段，键名统一小写）。
 fn read_manifest_map(path: &Path) -> Result<serde_json::Map<String, Value>, KernelError> {
     let raw = std::fs::read(path)?;
-    let mut value: Value = if raw.iter().all(u8::is_ascii_whitespace) {
-        Value::Object(serde_json::Map::new())
-    } else {
-        serde_json::from_slice(&raw)?
-    };
-    let map = value
-        .as_object_mut()
-        .ok_or_else(|| KernelError::InvalidArgument("模组清单格式错误".into()))?;
-    Ok(std::mem::take(map)
-        .into_iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), v))
-        .collect())
+    if raw.iter().all(u8::is_ascii_whitespace) {
+        return Ok(serde_json::Map::new());
+    }
+    let value: Value = serde_json::from_slice(&json_compat_bytes(&raw))?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| KernelError::InvalidArgument("模组清单格式错误".into()))
 }
 
 /// 写清单键值。
@@ -818,9 +944,15 @@ fn write_bytes_atomic(path: &Path, raw: &[u8]) -> Result<(), KernelError> {
 /// 构建前端视图。
 fn to_view(dir: &Path, folder: String, manifest: ModManifest, enabled: bool) -> ModView {
     let icon = mod_icon(dir, &manifest.icon);
+    // 清单缺 name 时用文件夹名兜底，不能因为一个字段就让整个模组消失。
+    let name = if manifest.name.trim().is_empty() {
+        folder.clone()
+    } else {
+        manifest.name
+    };
     ModView {
         folder,
-        name: manifest.name,
+        name,
         version: manifest.version,
         mod_type: manifest.mod_type,
         author: manifest.author,
@@ -1026,6 +1158,81 @@ fn newest_version(files: &[crate::modules::content_download::model::ContentFile]
 #[cfg(test)]
 mod tests {
     #[test]
+    fn parses_levi_launcher_json_compat_syntax() {
+        let raw = br#"{
+            // comments are allowed in the manifest
+            "Name": "Example",
+            "entry": "main.dll",
+            "version": "1.2.3",
+            "description": "text with // and /* markers",
+        }"#;
+        let manifest = parse_manifest(raw).unwrap();
+        assert_eq!(manifest.name, "Example");
+        assert_eq!(manifest.entry, "main.dll");
+        assert_eq!(manifest.version, "1.2.3");
+        assert_eq!(manifest.description, "text with // and /* markers");
+    }
+
+    /// 真实 LeviLamina 清单：带 BOM、带 extraInfo 扩展字段、native 模组带 platform。
+    #[test]
+    fn parses_real_levilamina_manifests() {
+        let raw = b"\xEF\xBB\xBF{\n  \"name\": \"LeviLamina\",\n  \"entry\": \"LeviLamina.dll\",\n  \"version\": \"26.51.9\",\n  \"type\": \"preload-native\",\n  \"extraInfo\": { \"sentryDsn\": \"https://example.invalid/1\" }\n}";
+        let manifest = parse_manifest(raw).unwrap();
+        assert_eq!(manifest.name, "LeviLamina");
+        assert_eq!(manifest.entry, "LeviLamina.dll");
+        assert_eq!(manifest.mod_type, "preload-native");
+        assert_eq!(
+            manifest
+                .extra_info
+                .as_ref()
+                .and_then(|value| value.get("sentryDsn"))
+                .and_then(Value::as_str),
+            Some("https://example.invalid/1")
+        );
+
+        let native = br#"{"name":"Lamium","entry":"Lamium.dll","version":"0.3.1","type":"native","platform":"client"}"#;
+        let manifest = parse_manifest(native).unwrap();
+        assert_eq!(manifest.mod_type, "native");
+        assert_eq!(manifest.platform, "client");
+    }
+
+    /// 编辑清单不能弄丢 / 改名加载器自己的扩展字段。
+    #[test]
+    fn editing_manifest_keeps_extra_info_key_casing() {
+        let root = temp_root("keeps-extra");
+        let mod_dir = root.join("LeviLamina");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join(MANIFEST_FILE),
+            r#"{"name":"LeviLamina","entry":"LeviLamina.dll","version":"26.51.9","type":"preload-native","author":"x","extraInfo":{"sentryDsn":"d"}}"#,
+        )
+        .unwrap();
+
+        save_manifest_at(
+            &root,
+            "LeviLamina",
+            "LeviLamina",
+            "LeviLamina.dll",
+            "26.51.10",
+            "preload-native",
+            "",
+        )
+        .unwrap();
+
+        let map = read_manifest_map(&mod_dir.join(MANIFEST_FILE)).unwrap();
+        assert_eq!(
+            map.get("extraInfo")
+                .and_then(|value| value.get("sentryDsn"))
+                .and_then(Value::as_str),
+            Some("d")
+        );
+        assert!(map.get("extrainfo").is_none());
+        assert_eq!(map.get("version").and_then(Value::as_str), Some("26.51.10"));
+        // 作者清空时键直接移除，而不是留一个空字符串。
+        assert!(!map.contains_key("author"));
+    }
+
+    #[test]
     fn version_parts_compare_naturally() {
         assert!(version_parts("1.10.0") > version_parts("1.2.9"));
         assert_eq!(version_parts("v1.2"), version_parts("1.2"));
@@ -1111,6 +1318,7 @@ mod tests {
             author: "tester".into(),
             description: String::new(),
             icon: String::new(),
+            ..Default::default()
         })
         .unwrap();
 
@@ -1324,7 +1532,9 @@ mod tests {
         assert_eq!(view.author, "new");
         let raw = std::fs::read_to_string(mod_dir.join(MANIFEST_FILE)).unwrap();
         assert!(raw.contains("\"custom\": 42"), "未知字段应保留: {raw}");
-        assert!(!raw.contains("\"Name\""), "键名应统一为小写: {raw}");
+        // 键名大小写是清单作者写的，回写时原样保留，不能悄悄改成小写。
+        assert!(raw.contains("\"Name\": \"Renamed\""), "原始键名应保留: {raw}");
+        assert!(!raw.contains("\"name\""), "不应多出小写重复键: {raw}");
 
         // 作者留空 → 字段被移除。
         save_manifest_at(&root, "mod-a", "Renamed", "b.dll", "2.0.0", "script", "").unwrap();
@@ -1336,7 +1546,7 @@ mod tests {
         save_manifest_at(&root, "mod-a", "Disabled", "b.dll", "2.0.0", "script", "x").unwrap();
         let raw =
             std::fs::read_to_string(mod_dir.join("manifest.json.close")).unwrap();
-        assert!(raw.contains("\"name\": \"Disabled\""));
+        assert!(raw.contains("\"Name\": \"Disabled\""), "停用态也要保住原始键名: {raw}");
 
         // 必填校验。
         assert!(save_manifest_at(&root, "mod-a", "", "b.dll", "1", "t", "").is_err());

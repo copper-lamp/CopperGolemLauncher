@@ -57,11 +57,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  * 因此这里只登记真正会长时间阻塞的那几个，而不是把所有命令都放宽。
  */
 const LONG_RUNNING_COMMANDS: Record<string, number> = {
-  components_install: 600_000,
   game_dependencies_probe: 120_000,
   game_dependencies_install: 1_200_000,
-  components_check: 180_000,
-  components_probe: 30_000,
   // 商店 / 微软账户往返（含设备注册与重定向）。
   account_begin_login: 180_000,
   account_wam_sign_in: 180_000,

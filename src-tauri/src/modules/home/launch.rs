@@ -255,6 +255,27 @@ fn parse_launch_args(input: &str) -> Vec<String> {
     args
 }
 
+/// 合并环境变量：后者覆盖同名项，且不保留重复键。
+///
+/// Windows 的环境块以 NUL 分隔的 KEY=VALUE 列表表示，同名键重复会让取值
+/// 依赖实现细节；这里显式收敛成「一个键只留最后一次写入」。
+fn merge_env(base: Vec<(String, String)>, overlay: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut merged = base;
+    for (key, value) in overlay {
+        merged.retain(|(existing, _)| existing != &key);
+        merged.push((key, value));
+    }
+    merged
+}
+
+/// 用户可设置的环境变量：拒绝 COPPER_HOOK_* 交接键。
+fn user_env(input: &str) -> Vec<(String, String)> {
+    parse_env_vars(input)
+        .into_iter()
+        .filter(|(key, _)| !key.starts_with("COPPER_HOOK_"))
+        .collect()
+}
+
 /// 解析环境变量文本（每行 `KEY=VALUE`）。
 fn parse_env_vars(input: &str) -> Vec<(String, String)> {
     input
@@ -407,11 +428,22 @@ pub fn launch_game(
     }
     let dll = super::inject::hook_dll_path(&dir);
 
-    // 2) 启动参数与环境：用户自定义在前，交接变量在后且覆盖同名项
-    //    （交接变量是隔离成立的前提，不能被用户的同名 env 顶掉）。
-    let args = launch_args(&meta, name);
-    let mut env = parse_env_vars(&meta.env_vars);
-    env.extend(hook_env(&dir, &meta));
+    // 2) 启动参数与环境：全局默认 → 实例覆盖 → 交接变量覆盖。
+    //
+    //    全局项来自设置页（launch.args / launch.env_vars），实例自己的值后写，
+    //    因此同名变量以实例为准；COPPER_HOOK_* 是内核与注入侧的交接协议，
+    //    任何用户输入都不得抢占，否则隔离会静默失效。
+    let global_args = ctx
+        .settings
+        .get_or::<String>("launch.args", String::new());
+    let global_env = ctx
+        .settings
+        .get_or::<String>("launch.env_vars", String::new());
+    let mut args = parse_launch_args(&global_args);
+    args.extend(launch_args(&meta, name));
+    let mut env = user_env(&global_env);
+    env = merge_env(env, user_env(&meta.env_vars));
+    env = merge_env(env, hook_env(&dir, &meta));
 
     // 3) 挂起启动 → 远程 LoadLibraryW → 恢复主线程。
     //
@@ -449,7 +481,8 @@ fn launch_compatibility(ctx:&LaunchCtx,name:&str,dir:&std::path::Path,meta:&Vers
     let private_control=super::compatibility::control_dir(dir);let dir=private_control.as_path();
     let private_meta=VersionMeta::read(dir).ok_or_else(||KernelError::InvalidArgument("compat_binding_invalid".into()))?;
     super::inject::ensure_hook_dll(dir)?;
-    let mut env=hook_env(dir,&private_meta); env.retain(|(k,_)|k!="COPPER_HOOK_LOAD_PRELOADER");
+    let global_env=ctx.settings.get_or::<String>("launch.env_vars",String::new());
+    let mut env=merge_env(user_env(&global_env),user_env(&private_meta.env_vars)); env=merge_env(env,hook_env(dir,&private_meta)); env.retain(|(k,_)|k!="COPPER_HOOK_LOAD_PRELOADER");
     for (key,value) in [("COPPER_HOOK_ROOT",spec.source_root.clone()),("COPPER_HOOK_DATA_DIR",spec.shared.data.clone()),("COPPER_HOOK_TEMP",spec.shared.temp.clone()),("COPPER_HOOK_WINRT_ROOT",spec.source_root.clone()),("COPPER_HOOK_LOG_ROOT",dir.to_path_buf())] {env.retain(|(k,_)|k!=key);env.push((key.into(),value.to_string_lossy().into_owned()));}
     let ready=dir.join(format!("hook-ready-{}",uuid::Uuid::new_v4()));
     env.push(("COPPER_HOOK_READY_FILE".into(),ready.to_string_lossy().into_owned()));
@@ -763,6 +796,30 @@ mod tests {
         assert_eq!(parse_launch_args(""), Vec::<String>::new());
         assert_eq!(parse_launch_args("-a -b"), vec!["-a", "-b"]);
         assert_eq!(parse_launch_args("-a \"b c\" -d"), vec!["-a", "b c", "-d"]);
+    }
+
+    /// 同名变量后写覆盖先写，且不留下重复键（环境块不允许同键多值）。
+    #[test]
+    fn merge_env_prefers_last_write() {
+        let merged = merge_env(
+            parse_env_vars("A=1\nB=2"),
+            parse_env_vars("B=3\nC=4"),
+        );
+        assert_eq!(
+            merged,
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "3".to_string()),
+                ("C".to_string(), "4".to_string())
+            ]
+        );
+    }
+
+    /// 用户环境变量不得抢占注入交接协议（COPPER_HOOK_*）。
+    #[test]
+    fn user_env_rejects_handover_keys() {
+        let env = user_env("COPPER_HOOK_ROOT=X\nNORMAL=1");
+        assert_eq!(env, vec![("NORMAL".to_string(), "1".to_string())]);
     }
 
     #[test]

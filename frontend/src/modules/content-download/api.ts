@@ -38,7 +38,7 @@ export interface ContentInstallProgress {
 /** 来源（与后端 `SOURCE_*` 对应）。
  *
  * `lla` 是安卓专属的 LL 模组源（LeviModHub 目录，`.so` / `.levipack` 直装）：
- * lip 依赖 lipd + BDS 且资产全为 `win-x64`，安卓两者皆不可用。
+ * lip 包的资产平台固定为 `win-x64`，安卓无法安装，因此需要独立的来源。
  */
 export type ContentSource = "curseforge" | "lip" | "lla";
 
@@ -279,7 +279,7 @@ export function contentDownloadLipEnv(): Promise<LipEnv> {
   return call<LipEnv>("content_download_lip_env");
 }
 
-/** 经 lipd 安装 / 更新 LL 模组到目标版本目录。
+/** 经内置 LIP 引擎安装 / 更新 LL 模组到目标版本目录。
  *
  * `variant` 缺省按 lip 约定回退 `client`（后端拼接为
  * `github.com/owner/repo#<variant>@<version>`）；`dir` 缺省解析设置
@@ -299,6 +299,15 @@ export function contentDownloadLipInstall(
     variant,
     dir,
   });
+}
+
+/** 取消一次正在执行的 lip 安装。
+ *
+ * 只请求取消，不等安装结束：后端在可中断点退出、按 journal 回滚未提交的变更，
+ * 再由安装任务自己把记录写成 `cancelled`。作业已结束时返回 `false`。
+ */
+export function contentDownloadLipCancel(operationId: string): Promise<boolean> {
+  return call<boolean>("content_download_lip_cancel", { operationId });
 }
 
 /** 格式化字节数（与内核下载页一致）。 */
