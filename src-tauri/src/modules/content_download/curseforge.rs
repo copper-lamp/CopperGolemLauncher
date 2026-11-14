@@ -219,20 +219,23 @@ fn sort_params(sort: &str) -> (u32, &'static str) {
     }
 }
 
-/// `/v1/games/{gameId}/versions` 响应（仅取列表首层字段）。
+/// `/v1/games/{gameId}/versions` 响应。
+///
+/// CurseForge 把这个游戏的版本按「版本类型」分组返回，形如
+/// `{"data":[{"type":73249,"versions":["1.21.90","1.21.81", ...]}]}`；
+/// 版本号串本身在每组的 `versions` 数组里，**不是**每项一个 `{name, slug}`。
 #[derive(Debug, Deserialize)]
 struct GameVersionsResponse {
-    data: Vec<GameVersionEntry>,
+    #[serde(default)]
+    data: Vec<GameVersionGroup>,
 }
 
-/// 单个游戏版本条目（CurseForge 用 `name` 承载版本号串）。
+/// 一个版本类型分组：`type` 是 CF 的版本类型 id（MCBE 目前只有 73249），
+/// 这里只关心版本号串，id 不参与业务。
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GameVersionEntry {
+struct GameVersionGroup {
     #[serde(default)]
-    name: String,
-    #[serde(default)]
-    slug: String,
+    versions: Vec<String>,
 }
 
 // ---------------------------------------------------------------- 类别缓存
@@ -536,22 +539,17 @@ pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, Kernel
         .await?;
 
     let mut versions: Vec<String> = Vec::new();
-    for entry in resp.data {
-        let raw = if !entry.name.trim().is_empty() {
-            entry.name.trim().to_string()
-        } else {
-            entry.slug.trim().to_string()
-        };
-        if !raw.is_empty() && !versions.contains(&raw) {
-            versions.push(raw);
+    for group in resp.data {
+        for raw in group.versions {
+            let raw = raw.trim();
+            if !raw.is_empty() && !versions.iter().any(|v| v == raw) {
+                versions.push(raw.to_string());
+            }
         }
     }
-    // 版本号降序（新版本在前）；无法解析者排末尾。
-    versions.sort_by(|a, b| {
-        parse_game_version(b)
-            .cmp(&parse_game_version(a))
-            .then_with(|| a.cmp(b))
-    });
+    // 版本号降序（新版本在前）：逐段数值比较，"1.21.90" 必须排在 "1.21.9" 之后，
+    // 只比 (major, minor) 会让同一 minor 下的补丁版本互相乱序。
+    versions.sort_by(|a, b| compare_game_versions(b, a).then_with(|| a.cmp(b)));
 
     *versions_cache().lock().unwrap() = Some(VersionsCache {
         versions: versions.clone(),
@@ -665,6 +663,30 @@ fn version_range(m: &ModData) -> (Option<String>, Option<String>) {
     }
 }
 
+/// 逐段数值比较两个游戏版本号，用于「版本过滤」下拉的排序。
+///
+/// 不能只用 `parse_game_version` 的 (major, minor)：那会把 `1.21.9` 与 `1.21.90`
+/// 视为同版本，排序结果随输入顺序漂移。这里按 `.`/`-`/`+` 切段逐段比数值，
+/// 段数不同时短者补 0（`1.21` == `1.21.0`），非数字段退化为字符串比较。
+fn compare_game_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn segments(v: &str) -> Vec<&str> {
+        v.trim().split(['.', '-', '+']).collect()
+    }
+    let (sa, sb) = (segments(a), segments(b));
+    for i in 0..sa.len().max(sb.len()) {
+        let x = sa.get(i).copied().unwrap_or("0");
+        let y = sb.get(i).copied().unwrap_or("0");
+        let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+            (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+            _ => x.cmp(y),
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 /// 解析形如 `1.21` / `26.40` 的游戏版本为 (major, minor)。
 fn parse_game_version(v: &str) -> Option<(u32, u32)> {
     let clean = v.trim().split('-').next().unwrap_or(v.trim());
@@ -763,6 +785,30 @@ mod tests {
         assert_eq!(parse_game_version("1.20.30"), Some((1, 20)));
         assert_eq!(parse_game_version("x.y"), None);
         assert_eq!(parse_game_version("abc"), None);
+    }
+
+    #[test]
+    fn game_versions_response_flattens_groups() {
+        // 真实响应形状：版本号串在每组的 versions 数组里，而不是每项一个 {name, slug}。
+        let raw = r#"{"data":[{"type":73249,"versions":["1.21.90","1.21.81","1.21.9"]},
+            {"type":73250,"versions":["1.20"]}]}"#;
+        let resp: GameVersionsResponse = serde_json::from_str(raw).unwrap();
+        let versions: Vec<String> = resp
+            .data
+            .into_iter()
+            .flat_map(|g| g.versions)
+            .collect();
+        assert_eq!(versions, vec!["1.21.90", "1.21.81", "1.21.9", "1.20"]);
+    }
+
+    #[test]
+    fn compare_game_versions_orders_patch_segments() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_game_versions("1.21.90", "1.21.9"), Ordering::Greater);
+        assert_eq!(compare_game_versions("1.21", "1.21.0"), Ordering::Equal);
+        assert_eq!(compare_game_versions("1.21.100", "1.21.81"), Ordering::Greater);
+        assert_eq!(compare_game_versions("26.60", "1.21.90"), Ordering::Greater);
+        assert_eq!(compare_game_versions("1.9", "1.10"), Ordering::Less);
     }
 
     #[test]

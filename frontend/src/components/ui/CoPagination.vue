@@ -13,7 +13,7 @@
 // 窄屏降级：`html[data-form-factor="mobile"]` 下隐藏整条页码序列，只留
 // 「上一页 / 第 X / N 页 / 下一页」——一屏 7 个页码位在手机上会把整个页脚挤成两行。
 
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "@lucide/vue";
 
 import CoNumberWheel from "./CoNumberWheel.vue";
@@ -101,25 +101,89 @@ const items = computed<PageItem[]>(() => {
   return out;
 });
 
+/** 圆形按钮的最小宽度与间距，用于按容器宽度换算能放几个页码。 */
+const CIRCLE_MIN_WIDTH = 30;
+const CIRCLE_GAP = 4;
+/** 左右两个翻页按钮固定占位。 */
+const CIRCLE_ARROWS = 2;
+/** 页码槽位上限：再多就失去「一眼看清位置」的意义。 */
+const CIRCLE_MAX_SLOTS = 11;
+
+const circlesRef = ref<HTMLElement | null>(null);
 /**
- * 圆形形态的页码序列：**固定最多 5 个槽位**，保证无论总页数多大都是一行。
+ * 当前宽度下能放下的页码槽位数（含省略号位）。
  *
- * 圆形按钮 + 前后箭头在右栏（约 240~350px）里最多放得下 7 个 30px 的圆，
- * 所以这里只保留「首页 / … / 当前页 / … / 末页」，相邻页交给左右箭头。
- * 面包屑形态不参与这个裁剪（它有整行宽度）。
+ * 右栏只有 500px 上下时给 11 位，窄容器退到 3~5 位；上限见 CIRCLE_MAX_SLOTS。
+ */
+const circleCapacity = ref(5);
+let circlesObserver: ResizeObserver | null = null;
+
+function measureCircleCapacity(width: number) {
+  if (width <= 0) return;
+  const fit =
+    Math.floor((width + CIRCLE_GAP) / (CIRCLE_MIN_WIDTH + CIRCLE_GAP)) - CIRCLE_ARROWS;
+  circleCapacity.value = Math.max(3, Math.min(CIRCLE_MAX_SLOTS, fit));
+}
+
+function attachCirclesObserver(el: HTMLElement | null) {
+  circlesObserver?.disconnect();
+  circlesObserver = null;
+  if (!el) return;
+  measureCircleCapacity(el.getBoundingClientRect().width);
+  // 窗口最大化 / 分栏变宽都会改容器宽度，槽位必须跟着变，否则右栏会留一大片空白。
+  if (typeof ResizeObserver === "undefined") return;
+  circlesObserver = new ResizeObserver((entries) => {
+    const entry = entries[0];
+    if (entry) measureCircleCapacity(entry.contentRect.width);
+  });
+  circlesObserver.observe(el);
+}
+
+// 元素是 v-if 渲染的（只有一页 / 面包屑形态时不存在），只能跟着 ref 的落地时机挂观察器。
+watch(circlesRef, (el) => attachCirclesObserver(el), { flush: "post" });
+onMounted(() => attachCirclesObserver(circlesRef.value));
+
+onBeforeUnmount(() => {
+  circlesObserver?.disconnect();
+  circlesObserver = null;
+});
+
+/** 以当前页为中心、宽度为 `width` 的连续页码窗口，首末页常驻，两侧缺口折叠成省略号。 */
+function windowItems(last: number, cur: number, width: number): PageItem[] {
+  let start = Math.max(2, cur - Math.floor((width - 1) / 2));
+  let end = Math.min(last - 1, start + width - 1);
+  start = Math.max(2, end - width + 1);
+  const out: PageItem[] = [1];
+  if (start > 2) out.push("gap");
+  for (let n = start; n <= end; n += 1) out.push(n);
+  if (end < last - 1) out.push("gap");
+  out.push(last);
+  return out;
+}
+
+/**
+ * 圆形形态的页码序列：**槽位数随容器宽度自适应**。
+ *
+ * 之前固定 5 个槽位（1 … 当前 … 末），窗口最大化后右栏变宽仍只显示三位数字，
+ * 中间一大片空白。现在先量容器宽度算出能放 C 个槽位，再把「首末页 + 两条省略号」
+ * 之外的槽位都给当前页附近的连续窗口；窄容器自动退化成 1 … N。
  */
 const circleItems = computed<PageItem[]>(() => {
   const last = props.totalPages;
   const cur = current.value;
-  if (last <= 5) {
+  const capacity = circleCapacity.value;
+  if (last <= capacity) {
     return Array.from({ length: Math.max(last, 1) }, (_, i) => i + 1);
   }
-  const out: PageItem[] = [1];
-  if (cur > 2) out.push("gap");
-  if (cur !== 1 && cur !== last) out.push(cur);
-  if (cur < last - 1) out.push("gap");
-  out.push(last);
-  return out;
+  if (capacity <= 4) return [1, "gap", last];
+  // 首末页 + 两条省略号占 4 个槽位，其余给窗口；窗口从宽到窄回落，
+  // 保证「凑不出省略号」的边界页附近也能填满可用宽度。
+  let width = Math.max(1, capacity - 4);
+  for (;;) {
+    const items = windowItems(last, cur, width);
+    if (items.length <= capacity || width <= 1) return items;
+    width -= 1;
+  }
 });
 
 function go(target: number) {
@@ -164,7 +228,7 @@ function go(target: number) {
     </div>
 
     <!-- 圆形形态：右栏 / 卡片头部用 -->
-    <div v-if="shape === 'circle'" class="co-pager__circles">
+    <div v-if="shape === 'circle'" ref="circlesRef" class="co-pager__circles">
       <button
         class="co-pager__circle co-pager__circle--step"
         :disabled="!canPrev"

@@ -29,6 +29,7 @@ import {
   User,
   RotateCcw,
   LoaderCircle,
+  ArrowUp,
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -151,9 +152,24 @@ const pendingPage = ref<number | null>(null);
 /** 左侧列表自己的滚动容器（整页不滚动，右栏才能顶满高度且不跟滚）。 */
 const resultsRef = ref<HTMLElement | null>(null);
 const tagOptions = ref<string[]>([]);
+const showBackToTop = ref(false);
 
 function scrollBody(): HTMLElement | null {
   return resultsRef.value ?? pageRef.value?.bodyEl ?? null;
+}
+
+function onResultsScroll(event: Event) {
+  showBackToTop.value = (event.currentTarget as HTMLElement).scrollTop > 280;
+}
+
+function backToTop() {
+  scrollBody()?.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function localizedTag(name: string): string {
+  const key = MB_KEY + ".tags." + name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const translated = t(key);
+  return translated === key ? name : translated;
 }
 
 /** 跳页滑轨的文案（与分页共用同一套 key，不新增词条）。 */
@@ -287,6 +303,60 @@ async function loadVersions(force = false) {
   }
 }
 
+/**
+ * 「游戏版本」组的展开状态。
+ *
+ * CurseForge 的 MCBE 版本表有上百个版本，全铺开会把后面的排序、标签挤出视野，
+ * 所以默认只显示最新的若干个；展开按钮留在同一行，不额外占位。
+ */
+const VERSIONS_COLLAPSED = 12;
+const versionsExpanded = ref(false);
+
+/** 实际渲染的版本 chip：折叠时取最新的前若干个，但已选中的版本必须留在可见列表里。 */
+const visibleVersions = computed(() => {
+  if (versionsExpanded.value || versions.value.length <= VERSIONS_COLLAPSED) {
+    return versions.value;
+  }
+  const head = versions.value.slice(0, VERSIONS_COLLAPSED);
+  const selected = gameVersion.value;
+  if (selected && !head.includes(selected)) head.push(selected);
+  return head;
+});
+
+/** 折叠时被隐藏的版本数量（用于「更多版本」胶囊上的计数）。 */
+const hiddenVersionCount = computed(() =>
+  versionsExpanded.value ? 0 : Math.max(0, versions.value.length - VERSIONS_COLLAPSED),
+);
+
+/**
+ * 版本号归到「大版本线」：`1.21.90` → `1.21`，`26.60` → `26`。
+ *
+ * 基岩版有两套编号：老版本是 `1.x.y`，26 起只有两段（`26.60`）。所以首位小于 2 时
+ * 取前两段，否则只取首位，这样 `26.0.02` 与 `26.60` 会落在同一条 `26.x` 线上。
+ */
+function versionLine(version: string): string {
+  const parts = version.split(/[.+-]/).filter(Boolean);
+  if (parts.length <= 1) return parts[0] ?? version;
+  return Number(parts[0]) >= 2 ? parts[0] : parts.slice(0, 2).join(".");
+}
+
+/**
+ * 可见版本按大版本线分组，渲染时每条线前加一个 `1.21.x` 之类的行标题。
+ *
+ * 只对**已折叠后的可见列表**分组：展开后自然铺出全部版本线，折叠时通常只剩最新那条线，
+ * 不会因为分组把十几条标题全铺进来。
+ */
+const visibleVersionGroups = computed(() => {
+  const groups: { line: string; label: string; versions: string[] }[] = [];
+  for (const version of visibleVersions.value) {
+    const line = versionLine(version);
+    const last = groups[groups.length - 1];
+    if (last && last.line === line) last.versions.push(version);
+    else groups.push({ line, label: `${line}.x`, versions: [version] });
+  }
+  return groups;
+});
+
 /** 标签表按来源变化：桌面端 lip 的标签与 CurseForge 的类别是两套词表。 */
 async function loadTags() {
   try {
@@ -362,14 +432,16 @@ onMounted(() => {
 onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInterval(refreshTimer); });
 </script>
 <template>
-  <CoPage ref="pageRef" :scroll="false">
+  <!-- 内容市场是宽屏工作台（列表 + 筛选栏），窗口最大化时左右铺满，不套 1240px 版心。 -->
+  <CoPage ref="pageRef" :scroll="false" width="full">
     <Teleport defer to="#copper-titlebar-actions">
       <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || !items.length" @toggle="toggleTranslation" />
     </Teleport>
 
     <div class="list-page">
+      <div class="list-page__grid">
       <!-- 左：结果列表 -->
-      <section ref="resultsRef" class="list-page__results">
+      <section ref="resultsRef" class="list-page__results" @scroll="onResultsScroll">
         <div v-if="loading && items.length === 0" class="list-page__state">
           <CoSkeleton variant="list" :rows="6" :label="translationMessages.contentLoading" />
           <TipsRotator compact />
@@ -415,29 +487,32 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
                 />
               </div>
               <div class="content-card__desc">{{ translatedField(itemIndex, 1, item.description) }}</div>
-              <div v-if="visibleTags(item).length" class="content-card__tags">
-                <span v-for="name in visibleTags(item)" :key="name" class="content-card__tag">
-                  {{ name }}
-                </span>
-                <span v-if="(item.categories?.length ?? 0) > 3" class="content-card__tag">
-                  +{{ (item.categories?.length ?? 0) - 3 }}
-                </span>
-              </div>
             </div>
 
+            <!-- 右列元信息：作者 / 下载量 / 游戏版本。与图标、标题同为第一排，顶部对齐。 -->
             <div class="content-card__meta">
               <span class="content-card__meta-item" :title="item.author || ''">
-                <User :size="12" />
+                <User :size="15" />
                 <span class="content-card__meta-text">
                   {{ item.author || t(MB_KEY + ".unknownVersion") }}
                 </span>
               </span>
-              <span class="content-card__meta-item">
-                <Download :size="12" />
+              <span class="content-card__meta-item" :title="t(MB_KEY + '.downloads')">
+                <Download :size="15" />
                 <span class="content-card__meta-text">{{ item.downloadCount.toLocaleString() }}</span>
               </span>
-              <span class="content-card__meta-item">
+              <span class="content-card__meta-item" :title="t(MB_KEY + '.version')">
                 <span class="content-card__meta-text">{{ versionRange(item) }}</span>
+              </span>
+            </div>
+
+            <!-- 标签行整宽铺在图标下方那一排，从卡片左内边距起排。 -->
+            <div class="content-card__tags">
+              <span v-for="name in visibleTags(item)" :key="name" class="content-card__tag">
+                {{ localizedTag(name) }}
+              </span>
+              <span v-if="(item.categories?.length ?? 0) > 3" class="content-card__tag">
+                +{{ (item.categories?.length ?? 0) - 3 }}
               </span>
             </div>
           </button>
@@ -529,13 +604,31 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
                 >
                   {{ t(MB_KEY + ".versionAll") }}
                 </button>
+                <template v-for="group in visibleVersionGroups" :key="group.line">
+                  <span class="filter-group__line">{{ group.label }}</span>
+                  <button
+                    v-for="v in group.versions"
+                    :key="v"
+                    :class="['chip', { 'chip--active': gameVersion === v }]"
+                    @click="gameVersion = v"
+                  >
+                    {{ v }}
+                  </button>
+                </template>
                 <button
-                  v-for="v in versions"
-                  :key="v"
-                  :class="['chip', { 'chip--active': gameVersion === v }]"
-                  @click="gameVersion = v"
+                  v-if="versions.length > VERSIONS_COLLAPSED"
+                  class="chip chip--toggle"
+                  @click="versionsExpanded = !versionsExpanded"
                 >
-                  {{ v }}
+                  {{
+                    t(
+                      MB_KEY +
+                        (versionsExpanded ? ".versionCollapse" : ".versionExpand"),
+                    )
+                  }}
+                  <span v-if="!versionsExpanded && hiddenVersionCount > 0" class="chip__count">
+                    +{{ hiddenVersionCount }}
+                  </span>
                 </button>
               </div>
             </div>
@@ -566,7 +659,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
                   :class="['chip', 'chip--tag', { 'chip--active': tag === name }]"
                   @click="tag = tag === name ? '' : name"
                 >
-                  {{ name }}
+                  {{ localizedTag(name) }}
                 </button>
               </div>
             </div>
@@ -578,23 +671,36 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
           </button>
         </div>
       </aside>
+      </div>
     </div>
+    <button v-if="showBackToTop" class="list-page__back-to-top" type="button" :aria-label="t(MB_KEY + '.backToTop')" :title="t(MB_KEY + '.backToTop')" @click="backToTop">
+      <ArrowUp :size="22" />
+    </button>
   </CoPage>
 </template>
 <style scoped>
+/* 容器查询的参照物必须是列布局的「祖先」：容器查询无法给容器自身套规则，
+ * 所以 grid 单独放在 .list-page__grid 里，窄宽度才真能折成单列。 */
 .list-page {
-  display: grid;
-  /* 7:3：列表是主区，右栏只放搜索与筛选。 */
-  grid-template-columns: minmax(0, 7fr) minmax(240px, 3fr);
-  gap: var(--copper-space-4);
-  /* 顶满可用高度：右栏不跟随页面滚动，列表自己滚。 */
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
+  container-type: inline-size;
+}
+
+.list-page__grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(240px, 3fr);
+  gap: var(--copper-space-4);
   align-items: stretch;
 }
 
 /* 左：列表自己的滚动容器。滚动条贴内容区右缘，不推动右栏。 */
 .list-page__results {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
@@ -623,9 +729,9 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 
 /* ---------------------------------------------------------------- 左：列表 */
 .list-page__rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--copper-space-2);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--copper-space-3);
 }
 
 .list-page__state {
@@ -687,37 +793,48 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   width: 60%;
 }
 
-/* 卡片：无描边，靠底色 + 阴影分层。 */
+/* 单卡结构（照 levimc / Modrinth 的项目卡）：
+ * 第一排：左图标（顶部对齐标题）→ 中间「标题 + 徽标 / 两行描述」→ 右侧「作者 / 下载量 / 版本」（顶部对齐）。
+ * 第二排：标签整宽铺开，正好落在图标下方那一行。
+ * 卡片只用 surface 微色阶与页面底色分层，不加独立阴影、不描边。 */
 .content-card {
-  display: flex;
-  align-items: center;
-  gap: var(--copper-space-3);
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) minmax(96px, auto);
+  grid-template-areas:
+    "thumb main meta"
+    "tags  tags tags";
+  align-items: start;
+  column-gap: 14px;
+  row-gap: 10px;
   width: 100%;
+  min-width: 0;
+  padding: 14px 16px;
   text-align: left;
-  padding: var(--copper-space-3);
   background: var(--copper-surface);
   border: none;
   border-radius: var(--copper-radius-card);
-  box-shadow: var(--copper-shadow-card);
+  box-shadow: none;
   cursor: pointer;
-  transition:
-    transform var(--copper-duration-fast) var(--copper-easing),
-    box-shadow var(--copper-duration-fast) var(--copper-easing);
+  transition: background-color var(--copper-duration-fast) var(--copper-easing);
 }
 
 .content-card:hover {
-  box-shadow: var(--copper-shadow-card);
-  transform: translateY(-1px);
+  background: var(--copper-surface-2);
+}
+
+.content-card:hover .content-card__name {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .content-card__thumb {
-  flex-shrink: 0;
+  grid-area: thumb;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 52px;
-  border-radius: var(--copper-radius-md);
+  width: 64px;
+  height: 64px;
+  border-radius: var(--copper-radius-lg);
   background: var(--copper-surface-2);
   overflow: hidden;
 }
@@ -732,71 +849,100 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   color: var(--copper-text-secondary);
 }
 
+/* 主信息区：标题行 + 两行描述，和图标顶边对齐。 */
 .content-card__main {
-  flex: 1;
+  grid-area: main;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
+/* 标题不占满整行：徽标紧跟在标题文字后面（参考图），标题过长时才让位给徽标。 */
 .content-card__title-row {
   display: flex;
   align-items: center;
-  gap: var(--copper-space-2);
+  gap: 6px;
   min-width: 0;
 }
 
 .content-card__name {
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--copper-text);
-  font-size: var(--copper-font-size-md);
-  font-weight: 600;
+  font-size: var(--copper-font-size-lg);
+  font-weight: 700;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.content-card__title-row :deep(.co-badge) {
+  flex: 0 0 auto;
+}
+
 .content-card__desc {
+  min-width: 0;
+  min-height: 3em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--copper-text-secondary);
   font-size: var(--copper-font-size-sm);
+  line-height: 1.5;
 }
 
+/* 标签行占满整宽、单行排布：多了横向截断，剩余数量由「+n」胶囊交代。 */
 .content-card__tags {
+  grid-area: tags;
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  height: 20px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .content-card__tag {
-  padding: 1px 7px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface-2);
   color: var(--copper-text-secondary);
-  font-size: 10px;
+  font-size: var(--copper-font-size-xs);
   text-transform: capitalize;
 }
 
+/* 右列：三项元信息纵向排列、右对齐，相对卡片垂直居中（三行加高字号后靠上会显得悬空）。 */
 .content-card__meta {
-  flex-shrink: 0;
+  grid-area: meta;
+  justify-self: end;
+  align-self: center;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
-  min-width: 120px;
+  justify-content: center;
+  gap: 8px;
   color: var(--copper-text-secondary);
-  font-size: var(--copper-font-size-xs);
+  font-size: var(--copper-font-size-md);
 }
 
 .content-card__meta-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  max-width: 170px;
+  max-width: 100%;
+}
+
+.content-card__meta-item :deep(svg) {
+  flex: 0 0 auto;
 }
 
 .content-card__meta-text {
@@ -852,7 +998,11 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 
 /* 搜索按钮：同样是独立组件。 */
 .rail__go {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   height: 40px;
+  padding: 0 var(--copper-space-4);
   border: none;
   border-radius: var(--copper-radius-full);
   background: var(--copper-accent);
@@ -918,7 +1068,23 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 .filter-group__chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
+}
+
+/* 版本线的行标题：占满一整行强制换行，后面的 chip 自然落到下一行。 */
+.filter-group__line {
+  flex: 0 0 100%;
+  margin-top: 2px;
+  padding-left: 2px;
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.filter-group__line:first-of-type {
+  margin-top: 0;
 }
 
 .chip {
@@ -949,6 +1115,27 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 
 .chip--tag {
   text-transform: capitalize;
+}
+
+/* 版本折叠开关：和普通 chip 同高，用强调色淡底区分「动作」与「选项」，
+   避免被误认为某个游戏版本。 */
+.chip--toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: color-mix(in srgb, var(--copper-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--copper-accent) 82%, var(--copper-text));
+}
+
+.chip--toggle:hover {
+  background: color-mix(in srgb, var(--copper-accent) 12%, transparent);
+  color: color-mix(in srgb, var(--copper-accent) 92%, var(--copper-text));
+}
+
+.chip__count {
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.75;
 }
 
 .filter-group__hint {
@@ -997,19 +1184,46 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   cursor: default;
 }
 
+/* 返回顶部：钉在页面左下角（侧边导航右侧的留白里），主题色实心圆，比普通图标按钮大一号。 */
+.list-page__back-to-top {
+  position: fixed;
+  z-index: 20;
+  left: calc(var(--copper-nav-w) + var(--copper-space-4));
+  bottom: max(var(--copper-space-4), env(safe-area-inset-bottom));
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: none;
+  border-radius: 50%;
+  background: var(--copper-accent);
+  color: var(--copper-accent-foreground);
+  box-shadow: var(--copper-shadow-card);
+  cursor: pointer;
+  transition:
+    background-color var(--copper-duration-fast) var(--copper-easing),
+    transform var(--copper-duration-fast) var(--copper-easing);
+}
+
+.list-page__back-to-top:hover {
+  background: color-mix(in srgb, var(--copper-accent) 88%, #000);
+  transform: translateY(-2px);
+}
+
 @container (max-width: 860px) {
-  .list-page {
+  .list-page__grid {
     grid-template-columns: minmax(0, 1fr);
+    /* 单列后按内容自然高度排布，整页交给 CoPage 正文滚动。 */
+    flex: 0 0 auto;
     height: auto;
-    overflow-y: auto;
   }
 
   .list-page__results {
     overflow: visible;
   }
 
+  /* 窄宽度下先给内容、后给筛选：一进来就看到模组列表，而不是整屏操作栏。 */
   .rail {
-    order: -1;
     height: auto;
   }
 

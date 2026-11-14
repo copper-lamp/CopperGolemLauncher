@@ -275,8 +275,12 @@ impl ContentDownloadModule {
     /// 可选游戏版本列表（供前端「版本过滤」下拉）。
     ///
     /// LL 模组无 MCBE 游戏版本元数据，故列表仅来自 CurseForge。
+    ///
+    /// key 里的 `game-versions-v2` 是**解析器版本**：旧解析器把
+    /// `/versions` 的分组响应当成了 `{name, slug}` 列表，永久性地存下空数组；
+    /// 升 key 让旧空缓存立刻失效，不必等 12 小时 TTL 到期。
     pub async fn game_versions(kernel: &KernelContext) -> Result<Vec<String>, KernelError> {
-        let key=metadata_key(kernel,"game-versions","all");
+        let key=metadata_key(kernel,"game-versions-v2","all");
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||curseforge::game_versions(kernel)).await
     }
 
