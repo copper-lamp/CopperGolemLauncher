@@ -59,19 +59,28 @@ function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const i
   <CoPage>
     <CoSplitLayout aside-position="start" aside-width="var(--copper-subnav-w)">
       <div class="settings__body">
-        <CoSkeleton v-if="!loaded" variant="settings" :label="t('common.loading')" />
-        <GeneralTab v-else-if="active === 'general'" />
-        <StorageTab v-else-if="active === 'storage'" />
-        <DownloadTab v-else-if="active === 'download'" />
-        <TranslationTab v-else-if="active === 'translation'" />
-        <PrivacyTab v-else-if="active === 'privacy'" />
-        <UpdateTab v-else-if="active === 'update'" />
-        <LaunchTab v-else-if="active === 'launch'" />
-        <AppearanceTab v-else-if="active === 'appearance'" />
-        <ModulesTab v-else-if="active === 'modules'" />
-        <ComponentsTab v-else-if="active === 'components'" />
-        <AboutTab v-else />
-        <SettingsContributions :category="active" />
+        <!--
+          分类切换做一次短过渡：out-in 让旧分类先退场，避免两屏内容在切换瞬间叠加
+          出跳动的高度；时长复用视觉偏好令牌（用户关掉动画或系统要求减少动态效果时
+          令牌会被设成 0ms，过渡自然消失，不需要在这里再判一次）。
+        -->
+        <Transition name="settings-swap" mode="out-in">
+          <div :key="loaded ? active : 'loading'" class="settings__panel">
+            <CoSkeleton v-if="!loaded" variant="settings" :label="t('common.loading')" />
+            <GeneralTab v-else-if="active === 'general'" />
+            <StorageTab v-else-if="active === 'storage'" />
+            <DownloadTab v-else-if="active === 'download'" />
+            <TranslationTab v-else-if="active === 'translation'" />
+            <PrivacyTab v-else-if="active === 'privacy'" />
+            <UpdateTab v-else-if="active === 'update'" />
+            <LaunchTab v-else-if="active === 'launch'" />
+            <AppearanceTab v-else-if="active === 'appearance'" />
+            <ModulesTab v-else-if="active === 'modules'" />
+            <ComponentsTab v-else-if="active === 'components'" />
+            <AboutTab v-else />
+            <SettingsContributions :category="active" />
+          </div>
+        </Transition>
       </div>
 
       <template #aside>
@@ -99,6 +108,33 @@ function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const i
 <style scoped>
 .settings__body {
   min-width: 0;
+}
+
+.settings__panel {
+  min-width: 0;
+}
+
+/* 进入：淡入 + 自下而上 6px；退出：淡出 + 上移 4px，比进入更快一档。 */
+.settings-swap-enter-active {
+  transition:
+    opacity var(--copper-motion-component-enter, 180ms) var(--copper-easing),
+    transform var(--copper-motion-component-enter, 180ms) var(--copper-easing);
+}
+
+.settings-swap-leave-active {
+  transition:
+    opacity var(--copper-motion-component-exit, 120ms) var(--copper-easing),
+    transform var(--copper-motion-component-exit, 120ms) var(--copper-easing);
+}
+
+.settings-swap-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.settings-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .settings__nav {
