@@ -1,6 +1,6 @@
 [package]
 name = "copper-core"
-version = "0.0.4"
+version = "0.0.5"
 description = "铜傀儡启动器 · 铜内核"
 authors = ["copper-lamp"]
 edition.workspace = true

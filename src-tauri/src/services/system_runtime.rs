@@ -29,7 +29,18 @@ pub async fn probe(dir:&Path,exe:&Path)->Result<SystemDependencyStatus,KernelErr
     let missing_vc_dlls=game_prerequisites::missing_vc_dlls(&requirements,dir);let mut missing_packages=Vec::new();
     for requirement in &requirements.package_dependencies{
         let output=powershell("$ErrorActionPreference='Stop'; $p=Get-AppxPackage -Name $env:COPPER_PACKAGE_NAME | Where-Object { $_.Publisher -eq $env:COPPER_PACKAGE_PUBLISHER -and [version]$_.Version -ge [version]$env:COPPER_PACKAGE_VERSION -and ($env:COPPER_PACKAGE_ARCH -eq 'neutral' -or $_.Architecture.ToString() -eq $env:COPPER_PACKAGE_ARCH) }; if($p){exit 0}else{exit 2}",&[("COPPER_PACKAGE_NAME",requirement.name.clone()),("COPPER_PACKAGE_PUBLISHER",requirement.publisher.clone()),("COPPER_PACKAGE_VERSION",requirement.min_version.clone()),("COPPER_PACKAGE_ARCH",requirement.architecture.clone())]).await?;
-        match output.status.code(){Some(0)=>{},Some(2)=>missing_packages.push(requirement.clone()),_=>return Err(KernelError::Module("system_dependency_probe_failed".into()))}
+        match output.status.code(){
+            Some(0)=>{},
+            Some(2)=>missing_packages.push(requirement.clone()),
+            // 查询本身失败（非 0/2 退出码）不等于依赖缺失：记录退出码与 stderr 后放行，
+            // 不能因为一次查询异常把启动入口锁死。真正缺包时游戏会给出自己的报错。
+            other=>{
+                let code=other.map(|c|c.to_string()).unwrap_or_else(||"signal".into());
+                let detail=String::from_utf8_lossy(&output.stderr);
+                let clipped: String=detail.chars().take(600).collect();
+                log::warn!("[system-runtime] 依赖探测失败 package={} code={} stderr={}",requirement.name,code,clipped.trim());
+            }
+        }
     }
     let state=if missing_vc_dlls.is_empty()&&missing_packages.is_empty(){"ready"}else{"missing"}.into();
     Ok(SystemDependencyStatus{requirements,missing_vc_dlls,missing_packages,state})

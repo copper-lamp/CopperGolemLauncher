@@ -7,18 +7,20 @@ function store(initial = null) {
 }
 test('every cursor and completed flag survive process recreation', async () => {
   const db = store(); let session = new OnboardingSession(db); await session.load();
-  for (const step of ['theme', 'levi', 'storage', 'game', 'content', 'launch', 'modules']) {
-    await session.advance(true); session = new OnboardingSession(db); await session.load(); assert.equal(session.progress.step, step); assert.equal(session.progress.completed, false);
+  for (const step of ['theme', 'storage', 'game', 'content', 'launch', 'modules']) {
+    await session.advance(); session = new OnboardingSession(db); await session.load(); assert.equal(session.progress.step, step); assert.equal(session.progress.completed, false);
   }
-  await session.advance(true); session = new OnboardingSession(db); await session.load(); assert.equal(session.progress.completed, true);
+  await session.advance(); session = new OnboardingSession(db); await session.load(); assert.equal(session.progress.completed, true);
 });
-test('missing Levi skips only detection step', async () => {
-  const session = new OnboardingSession(store()); await session.load(); await session.advance(false); await session.advance(false); assert.equal(session.progress.step, 'storage');
+test('retired levi step resumes at storage instead of corrupting progress', async () => {
+  const db = store({ schema: 1, step: 'levi', completed: false, selectedModules: [], installedModules: [] });
+  const session = new OnboardingSession(db); await session.load(); assert.equal(session.progress.step, 'storage');
+  await session.advance(); assert.equal(session.progress.step, 'game');
 });
 test('failed persistence keeps cursor and permits successful retry', async () => {
   const db = store(); const session = new OnboardingSession(db); await session.load(); db.fail = true;
-  await assert.rejects(session.advance(true), /disk full/); assert.equal(session.progress.step, 'features'); db.fail = false;
-  await session.advance(true); assert.equal(session.progress.step, 'theme');
+  await assert.rejects(session.advance(), /disk full/); assert.equal(session.progress.step, 'features'); db.fail = false;
+  await session.advance(); assert.equal(session.progress.step, 'theme');
 });
 test('failed read and malformed state are explicit; never silently complete', async () => {
   const db = store(); db.fail = true; await assert.rejects(new OnboardingSession(db).load(), /read failed/);

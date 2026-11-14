@@ -1,6 +1,6 @@
 [package]
 name = "copper-downloader"
-version = "0.0.4"
+version = "0.0.5"
 description = "铜傀儡启动器独立下载引擎：并发队列、断点续传、暂停/取消/恢复、真实进度、失败重试、校验"
 edition.workspace = true
 license.workspace = true

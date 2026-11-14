@@ -10,7 +10,16 @@ export async function ensureGamePrerequisites(name:string):Promise<boolean>{
   // Android targets have their own package manager; never probe Windows dependencies there.
   if(navigator.userAgent.includes('Android'))return true;
   if(pending)return false;
-  const status=await call<GameDependencyStatus>('game_dependencies_probe',{name});
+  // 探测命令本身失败（PowerShell 返回非预期退出码等）不等于依赖缺失：
+  // 只有「明确查到缺什么」才拦截启动，探测无结论时放行，让游戏自己报缺失，
+  // 否则一次查询失败就把启动入口整体锁死。
+  let status:GameDependencyStatus;
+  try{
+    status=await call<GameDependencyStatus>('game_dependencies_probe',{name});
+  }catch(error){
+    console.warn('[prerequisites] probe failed, launching anyway',error);
+    return true;
+  }
   if(status.state==='ready')return true;
   currentName=name;gameDependencyStatus.value=status;gameDependencyError.value='';gameDependencyPrompt.value=true;
   pending=new Promise<boolean>(resolve=>{finish=resolve;});return pending;

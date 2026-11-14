@@ -1,7 +1,7 @@
 {
   "name": "copper-core",
   "private": true,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "description": "铜傀儡启动器 · 铜核心项目入口（转发到 frontend/，Rust 后端在 src-tauri/）",
   "scripts": {

@@ -37,7 +37,9 @@ const { platform } = usePlatform();
 const MB_KEY = "module.game-download";
 
 const localLoading = ref(false);
-const loadError = computed(() => gd.manifestError.value);
+/** 导入流程自身的错误；manifest 错误由 useGameDownload 持有（只读），两者合并展示。 */
+const importError = ref<string | null>(null);
+const loadError = computed(() => importError.value ?? gd.manifestError.value);
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 /** 搜索关键字：只过滤两个「全部版本」列表，不改动顶部最新区块。 */
 const keyword = ref("");
@@ -165,7 +167,7 @@ onMounted(() => {
   if (!gd.manifest.value || gd.manifestNeedsValidation()) void refresh();
 });
 
-watch(gd.manifest, () => (loadError.value = null));
+watch(gd.manifest, () => (importError.value = null));
 
 /**
  * 由文件名推导实例名。
@@ -201,7 +203,7 @@ async function importApk() {
   if (importing.value) return;
   if (!canImport.value) return;
   importing.value = true;
-  loadError.value = null;
+  importError.value = null;
   try {
     importStatus.value = t(`${MB_KEY}.import.picking`);
     const picked = await pickApkViaHost(t(`${MB_KEY}.import.cancelled`));
@@ -228,7 +230,7 @@ async function importApk() {
     // 失败原因只存在于这一步的栈里：安卓宿主已写 logcat，这里再补一条内核日志，
     // 保证用户反馈 issue 时两边都有现场（见 apkImport.reportAndroidImportFailure）。
     reportAndroidImportFailure("import", e);
-    loadError.value = t(`${MB_KEY}.import.failed`) + "：" + String(e);
+    importError.value = t(`${MB_KEY}.import.failed`) + "：" + String(e);
   } finally {
     importing.value = false;
   }

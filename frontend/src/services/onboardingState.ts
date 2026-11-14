@@ -1,4 +1,4 @@
-export const ONBOARDING_STEPS = ['features', 'theme', 'levi', 'storage', 'game', 'content', 'launch', 'modules'] as const;
+export const ONBOARDING_STEPS = ['features', 'theme', 'storage', 'game', 'content', 'launch', 'modules'] as const;
 export type OnboardingStep = typeof ONBOARDING_STEPS[number];
 export interface OnboardingProgress {
   schema: 1;
@@ -8,16 +8,19 @@ export interface OnboardingProgress {
   installedModules: string[];
 }
 export interface StateStore { read(key: string): Promise<unknown>; write(key: string, value: unknown): Promise<void>; }
+/** 已下线的步骤：旧进度里可能停在它上面，读取时需要映射到后继步骤而不是判定为损坏。 */
+const RETIRED_STEPS: Record<string, OnboardingStep> = { levi: 'storage' };
 export const PROGRESS_KEY = 'onboarding.progress';
 export const RELEASE_KEY = 'onboarding.releaseState';
 export function parseProgress(value: unknown): OnboardingProgress {
   if (value === null || value === undefined) return { schema: 1, step: 'features', completed: false, selectedModules: [], installedModules: [] };
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid onboarding progress');
   const v = value as Record<string, unknown>;
-  if (v.schema !== 1 || !ONBOARDING_STEPS.includes(v.step as OnboardingStep) || typeof v.completed !== 'boolean' ||
+  const step = RETIRED_STEPS[String(v.step)] ?? (v.step as OnboardingStep);
+  if (v.schema !== 1 || !ONBOARDING_STEPS.includes(step) || typeof v.completed !== 'boolean' ||
     !Array.isArray(v.selectedModules) || !v.selectedModules.every(x => typeof x === 'string') ||
     !Array.isArray(v.installedModules) || !v.installedModules.every(x => typeof x === 'string')) throw new Error('Invalid onboarding progress');
-  return { schema: 1, step: v.step as OnboardingStep, completed: v.completed, selectedModules: [...new Set(v.selectedModules as string[])], installedModules: [...new Set(v.installedModules as string[])] };
+  return { schema: 1, step, completed: v.completed, selectedModules: [...new Set(v.selectedModules as string[])], installedModules: [...new Set(v.installedModules as string[])] };
 }
 /** Writes are acknowledged before the visible cursor moves. Failed writes leave the previous state usable. */
 export class OnboardingSession {
@@ -30,8 +33,8 @@ export class OnboardingSession {
     await this.store.write(PROGRESS_KEY, next);
     this.progress = next;
   }
-  async advance(leviAvailable: boolean): Promise<void> {
-    const steps = ONBOARDING_STEPS.filter(step => step !== 'levi' || leviAvailable);
+  async advance(): Promise<void> {
+    const steps = ONBOARDING_STEPS;
     const index = steps.indexOf(this.progress.step);
     const next = steps[index + 1];
     await this.save(next ? { step: next } : { completed: true });

@@ -147,7 +147,6 @@ impl Paths {
     pub fn locator_dir(&self) -> &PathBuf { &self.locator_dir }
     pub fn game_root(&self, settings:&SettingsService) -> PathBuf {
         if let Some(versions)=non_empty_env(VERSIONS_DIR_ENV){return versions.parent().unwrap_or(&versions).to_owned();}
-        if let Some(selected)=settings.get::<String>("game.versions_selection").filter(|s|!s.trim().is_empty()){let versions=PathBuf::from(selected);return versions.parent().unwrap_or(&versions).to_owned();}
         if let Some(root)=self.game_override.clone().or_else(||settings.get::<String>("game.root").filter(|s|!s.trim().is_empty()).map(PathBuf::from)){return root;}
         let versions=self.versions_root(settings); versions.parent().unwrap_or(&versions).to_owned()
     }
@@ -162,10 +161,14 @@ impl Paths {
         &self.versions_dir
     }
 
-    /// 解析版本来源：env > 显式 game.versions_selection > locator/game.root > game.directory > default。
+    /// 解析版本来源：env > locator/game.root > game.directory > default。
     /// 1. `COPPER_VERSIONS_DIR`：进程级覆盖（调试 / 受限环境隔离用），空串按未设置处理；
     /// 2. `settings.game.directory`：用户在「设置 → 版本目录」选的路径；
     /// 3. 默认 `versions_dir`（`<data>/versions`）。
+    ///
+    /// 历史遗留键 `game.versions_selection`（引导页「从 Levi 导入」写入）**不再参与解析**：
+    /// 它曾与 `game.directory` 同值写入，却排在设置项之前，导致用户之后在设置里改了游戏目录
+    /// 也永远被旧值覆盖（表现为「设置了不生效」）。目录唯一事实源是 `game.directory`。
     ///
     /// 是版本根目录的**唯一**解析入口。
     ///
@@ -176,7 +179,6 @@ impl Paths {
         if let Some(dir) = non_empty_env(VERSIONS_DIR_ENV) {
             return dir;
         }
-        if let Some(selected)=settings.get::<String>("game.versions_selection").filter(|s|!s.trim().is_empty()){return PathBuf::from(selected);}
         if let Some(root) = self.game_override.as_ref().cloned().or_else(||settings.get::<String>("game.root").filter(|s|!s.trim().is_empty()).map(PathBuf::from)) { return root.join("versions"); }
         settings
             .get::<String>("game.directory")
@@ -516,6 +518,29 @@ mod tests {
         assert_eq!(paths.versions_root(&settings), from_setting);
 
         unsafe { std::env::remove_var(VERSIONS_DIR_ENV) };
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 回归：引导页「从 Levi 导入」写入的 `game.versions_selection` 曾排在
+    /// `game.directory` 之前，用户在设置里改游戏目录后仍被旧值覆盖，
+    /// 表现为「设置了游戏目录但不生效」。目录唯一事实源必须是 `game.directory`。
+    #[test]
+    fn stale_versions_selection_never_overrides_directory_setting() {
+        let _guard = env_lock();
+        let root = temp_root("versions-selection");
+        std::fs::create_dir_all(root.join("data")).expect("创建数据目录");
+        let paths = Paths::with_root(root.clone());
+        let settings = settings_with_dir(&root);
+        let legacy = root.join("levi-import/versions");
+        let chosen = root.join("games/versions");
+        settings
+            .set("game.versions_selection", &legacy.to_string_lossy().to_string())
+            .expect("写入遗留键");
+        settings
+            .set("game.directory", &chosen.to_string_lossy().to_string())
+            .expect("写入设置");
+        assert_eq!(paths.versions_root(&settings), chosen, "设置项必须压过遗留键");
+        assert_eq!(paths.game_root(&settings), root.join("games"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
