@@ -27,7 +27,6 @@ import {
   Puzzle,
   Download,
   User,
-  RotateCcw,
   LoaderCircle,
   ArrowUp,
   SlidersHorizontal,
@@ -118,7 +117,11 @@ const SETTING_KEYS = {
  */
 const SOURCES = computed<Array<{ value: ContentSource | ""; label: string }>>(() =>
   isAndroid.value
-    ? [{ value: "lla", label: MB_KEY + ".sourceLla" }]
+    ? [
+        { value: "", label: MB_KEY + ".sourceAll" },
+        { value: "curseforge", label: MB_KEY + ".sourceCurseforge" },
+        { value: "lla", label: MB_KEY + ".sourceLla" },
+      ]
     : [
         { value: "", label: MB_KEY + ".sourceAll" },
         { value: "curseforge", label: MB_KEY + ".sourceCurseforge" },
@@ -128,7 +131,12 @@ const SOURCES = computed<Array<{ value: ContentSource | ""; label: string }>>(()
 
 const TYPES = computed<Array<{ value: ContentType | ""; label: string }>>(() =>
   isAndroid.value
-    ? [{ value: "ll_mod", label: MB_KEY + ".typeLlMod" }]
+    ? [
+        { value: "", label: MB_KEY + ".typeAll" },
+        { value: "behavior_pack", label: MB_KEY + ".typeBehaviorPack" },
+        { value: "texture_pack", label: MB_KEY + ".typeTexturePack" },
+        { value: "ll_mod", label: MB_KEY + ".typeLlMod" },
+      ]
     : [
         { value: "", label: MB_KEY + ".typeAll" },
         { value: "behavior_pack", label: MB_KEY + ".typeBehaviorPack" },
@@ -213,17 +221,6 @@ const sortOptions = computed(() =>
   SORTS.map((s) => ({ value: s, label: t(SORT_LABEL_KEY[s]) })),
 );
 
-/** 当前生效的筛选数量（用于「重置」的可用态）。 */
-const activeFilterCount = computed(() => {
-  let n = 0;
-  if (source.value) n += 1;
-  if (contentType.value) n += 1;
-  if (gameVersion.value) n += 1;
-  if (tag.value) n += 1;
-  if (sort.value !== "downloads_desc") n += 1;
-  return n;
-});
-
 function typeIcon(ct: ContentType) {
   switch (ct) {
     case "behavior_pack":
@@ -256,11 +253,11 @@ async function fetchPage() {
   error.value = null;
   try {
     const result = await contentDownloadList({
-      source: isAndroid.value ? "lla" : source.value || undefined,
-      contentType: isAndroid.value ? "ll_mod" : contentType.value || undefined,
+      source: source.value || undefined,
+      contentType: contentType.value || undefined,
       search: searchInput.value.trim() || undefined,
-      gameVersion: isAndroid.value ? undefined : gameVersion.value || undefined,
-      tag: isAndroid.value ? undefined : tag.value || undefined,
+      gameVersion: gameVersion.value || undefined,
+      tag: tag.value || undefined,
       sort: sort.value,
       page: page.value,
     });
@@ -389,8 +386,8 @@ async function loadTags() {
   const ctype = contentType.value;
   try {
     const options = await contentDownloadTags(
-      isAndroid.value ? "lla" : source.value || undefined,
-      isAndroid.value ? "ll_mod" : ctype || undefined,
+      source.value || undefined,
+      ctype || undefined,
     );
     if (contentType.value !== ctype) return;
     tagOptions.value = options;
@@ -400,14 +397,6 @@ async function loadTags() {
   }
   // 当前标签不在新词表里（例如切换了来源）时清掉，避免“选了但列表为空”。
   if (tag.value && !tagOptions.value.includes(tag.value)) tag.value = "";
-}
-
-function resetFilters() {
-  source.value = "";
-  contentType.value = "";
-  gameVersion.value = "";
-  tag.value = "";
-  sort.value = "downloads_desc";
 }
 
 watch([source, contentType, gameVersion, sort, tag], () => {
@@ -426,10 +415,8 @@ watch(source, () => void loadTags());
 
 watch(isAndroid, (android) => {
   if (!android) return;
-  source.value = "lla";
-  contentType.value = "ll_mod";
-  gameVersion.value = "";
-  tag.value = "";
+  if (!SOURCES.value.some((option) => option.value === source.value)) source.value = "";
+  if (!TYPES.value.some((option) => option.value === contentType.value)) contentType.value = "";
 });
 
 // 光影的标签是另一套（Realistic / Fantasy / Vanilla），换类型必须重取词表。
@@ -463,10 +450,8 @@ onMounted(() => {
         contentType.value !== savedType ||
         gameVersion.value !== savedVersion ||
         sort.value !== savedSort;
-      source.value = isAndroid.value ? "lla" : SOURCES.value.some((option) => option.value === savedSource)
-        ? savedSource
-        : "";
-      contentType.value = isAndroid.value ? "ll_mod" : savedType;
+      source.value = SOURCES.value.some((option) => option.value === savedSource) ? savedSource : "";
+      contentType.value = TYPES.value.some((option) => option.value === savedType) ? savedType : "";
       gameVersion.value = isAndroid.value ? "" : savedVersion;
       sort.value = savedSort;
       tag.value = isAndroid.value ? "" : savedTag;
@@ -721,10 +706,6 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
             </div>
           </div>
 
-          <button class="rail__reset" :disabled="activeFilterCount === 0" @click="resetFilters">
-            <RotateCcw :size="12" />
-            {{ t(MB_KEY + ".filterReset") }}
-          </button>
         </div>
       </aside>
       </div>
@@ -1271,6 +1252,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 .list-page__filter-backdrop { display: none; }
 
 @media (max-width: 1200px) {
+  .list-page__grid--android { grid-template-columns: minmax(0, 1fr); }
   .list-page__grid--android .list-page__results { grid-column: 1; }
   .list-page__grid--android .list-page__filters-toggle {
     position: fixed; z-index: 31; right: max(16px, env(safe-area-inset-right)); top: calc(var(--copper-titlebar-h) + 12px);

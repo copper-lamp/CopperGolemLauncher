@@ -17,10 +17,12 @@ import {
   Search,
   SlidersHorizontal,
   Upload,
+  Play,
   X,
   ArrowUp,
 } from "@lucide/vue";
 import { homeLaunch } from "../../api/home";
+import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { useI18n } from "../../i18n";
 import { usePlatform } from "../../composables/usePlatform";
 import TipsRotator from "../../components/TipsRotator.vue";
@@ -203,6 +205,15 @@ function instanceNameFrom(fileName: string): string {
  * 因此入口按钮在桌面上根本不渲染（`canImport`），导入路径也不再有桌面分支——
  * 留着「点了才发现不支持」的按钮等于把未实现的能力摆在用户面前。
  */
+async function openPlayStore() {
+  if (!canImport.value) return;
+  try {
+    await openExternal("market://details?id=com.mojang.minecraftpe");
+  } catch {
+    await openExternal("https://play.google.com/store/apps/details?id=com.mojang.minecraftpe");
+  }
+}
+
 async function importApk() {
   if (importing.value) return;
   if (!canImport.value) return;
@@ -345,11 +356,17 @@ async function importApk() {
           <VersionCard v-if="latestRelease" :version="latestRelease" />
           <p v-else class="gd-top__empty">{{ t(`${MB_KEY}.empty`) }}</p>
           <VersionCard v-if="latestPreview" :version="latestPreview" />
-          <button v-if="canImport" class="gd-page__import" type="button" :disabled="importing" @click="importApk">
-            <LoaderCircle v-if="importing" :size="15" class="spin" />
-            <Upload v-else :size="15" />
-            <span>{{ t(`${MB_KEY}.actions.import`) }}</span>
-          </button>
+          <div v-if="canImport" class="gd-page__android-actions">
+            <button class="gd-page__play" type="button" @click="openPlayStore">
+              <Play :size="15" />
+              <span>{{ t(`${MB_KEY}.actions.play_store`) }}</span>
+            </button>
+            <button class="gd-page__import" type="button" :disabled="importing" @click="importApk">
+              <LoaderCircle v-if="importing" :size="15" class="spin" />
+              <Upload v-else :size="15" />
+              <span>{{ t(`${MB_KEY}.actions.import`) }}</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -447,6 +464,35 @@ async function importApk() {
 }
 .gd-page__back-to-top:hover { background: color-mix(in srgb, var(--copper-accent) 88%, #000); transform: translateY(-2px); }
 @media (max-width: 860px) { .gd-page__back-to-top { left: var(--copper-space-4); } }
+
+.gd-page__android-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--copper-space-2);
+  align-items: center;
+}
+
+.gd-page__play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  gap: var(--copper-space-2);
+  min-height: var(--copper-control-h-sm);
+  margin-top: var(--copper-space-2);
+  padding: 0 var(--copper-space-3);
+  border: 0;
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-accent);
+  color: var(--copper-accent-foreground);
+  font-size: var(--copper-font-size-sm);
+  cursor: pointer;
+  transition: background-color var(--copper-duration-fast) var(--copper-easing);
+}
+
+.gd-page__play:hover {
+  background: color-mix(in srgb, var(--copper-accent) 88%, #000);
+}
 
 .gd-page__import-status {
   display: flex;

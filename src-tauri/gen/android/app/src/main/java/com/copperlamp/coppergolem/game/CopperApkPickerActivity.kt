@@ -90,7 +90,7 @@ class CopperApkPickerActivity : Activity() {
      * 单线程执行器保证同一时刻只处理一个选择请求。
      */
     private fun writeOffMainThread(uri: Uri) {
-        if (writing.compareAndSet(false, true)) return
+        if (!writing.compareAndSet(false, true)) return
         val displayName = queryDisplayName(uri)
         executor.execute {
             val outcome = runCatching { writeToTransaction(uri, displayName) }

@@ -109,6 +109,8 @@
     "general": {
       "language": "语言",
       "language_hint": "切换后立即生效",
+      "android_safe_compensation": "Android 左侧安全区补偿",
+      "android_safe_compensation_hint": "减少刘海或圆角屏幕造成的额外留白，范围 0–20 像素。",
       "theme_mode": "外观",
       "theme_mode_dark": "深色",
       "theme_mode_light": "浅色",

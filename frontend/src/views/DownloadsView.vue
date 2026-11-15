@@ -981,9 +981,10 @@ onBeforeUnmount(() => {
 /* 进度条宽度只由容器决定，不随右侧文案长短伸缩——安装阶段文件名长度
    变化很大，若用 flex:1 共享剩余空间会让进度条持续抖动。 */
 .downloads__item-progress {
-  flex: 0 0 38%;
+  order: -1;
+  flex: 0 0 20%;
   min-width: 96px;
-  max-width: 280px;
+  max-width: 180px;
   height: 5px;
   border-radius: var(--copper-radius-full);
   background: var(--copper-surface-3);

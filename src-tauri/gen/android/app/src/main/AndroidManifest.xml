@@ -97,7 +97,7 @@
             <!-- tauri-file-associations. AUTO-GENERATED. DO NOT REMOVE. -->
         </activity>
 
-        <!-- SAF 收件箱：把系统选择器返回的 content:// 流落盘到 cache/inbox。 -->
+        <!-- SAF 导入事务：把系统选择器返回的 content:// 流直接写入受信任的事务目录。 -->
         <!--
             configChanges 必须带上：复制 200MB 级包时若因旋转 / 字体缩放重建界面，
             复制线程会被连带销毁，收件箱里只剩半截文件，用户侧表现为「导入超时」。

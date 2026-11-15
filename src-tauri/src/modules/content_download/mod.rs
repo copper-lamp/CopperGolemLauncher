@@ -113,6 +113,16 @@ fn ll_mod_requested(source: Option<&str>, content_type: Option<&str>) -> bool {
         || content_type == Some(TYPE_LL_MOD)
 }
 
+fn android_query_allowed(source: Option<&str>, content_type: Option<&str>) -> bool {
+    let source_ok = source.is_none() || source == Some("") || matches!(source, Some(SOURCE_CURSEFORGE) | Some(SOURCE_LL_ANDROID));
+    let type_ok = content_type.is_none() || content_type == Some("") || matches!(content_type, Some(TYPE_BEHAVIOR_PACK) | Some(TYPE_TEXTURE_PACK) | Some(TYPE_LL_MOD));
+    source_ok && type_ok && !(source == Some(SOURCE_CURSEFORGE) && content_type == Some(TYPE_LL_MOD)) && !(source == Some(SOURCE_LL_ANDROID) && matches!(content_type, Some(TYPE_BEHAVIOR_PACK) | Some(TYPE_TEXTURE_PACK)))
+}
+
+fn android_id_allowed(id: &str) -> bool {
+    id.starts_with("cf:") || ll_android::parse_mod_id(id).is_some()
+}
+
 /// LL 模组列表：安卓走 LeviModHub 目录，桌面走 lipr 索引导。
 async fn ll_list(
     kernel: &KernelContext,
@@ -145,7 +155,10 @@ impl ContentDownloadModule {
         query: &ContentListQuery,
     ) -> Result<ContentListPage, KernelError> {
         let normalized;
-        let query = if android_ll_source() {
+        if android_ll_source() && !android_query_allowed(query.source.as_deref(), query.content_type.as_deref()) {
+            return Err(KernelError::InvalidArgument("Android content source/type is not supported".into()));
+        }
+        let query = if android_ll_source() && (query.source == Some(SOURCE_LL_ANDROID.into()) || query.content_type == Some(TYPE_LL_MOD.into())) {
             normalized = ContentListQuery {
                 source: Some(SOURCE_LL_ANDROID.into()),
                 content_type: Some(TYPE_LL_MOD.into()),
@@ -167,8 +180,10 @@ impl ContentDownloadModule {
             ll_list(kernel, query).await
         } else if source.is_none() || source == Some("") {
             if ctype.is_none() || ctype == Some("") {
-                if query.search.as_deref().is_some_and(|s| !s.trim().is_empty()) {
-                    // 带关键字且未指定来源：两个来源都查再合并（见 `search_list`）。
+                if android_ll_source() {
+                    mixed_list(kernel, query).await
+                } else if query.search.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+                    // 桌面端跨 CurseForge 与 LIP 合并搜索。
                     search_list(kernel, query).await
                 } else {
                     mixed_list(kernel, query).await
@@ -213,7 +228,13 @@ impl ContentDownloadModule {
         content_type: Option<&str>,
     ) -> Result<Vec<String>, KernelError> {
         if android_ll_source() {
-            return ll_android::tags(kernel).await;
+            if !android_query_allowed(source, content_type) {
+                return Err(KernelError::InvalidArgument("Android content source/type is not supported".into()));
+            }
+            if source == Some(SOURCE_LL_ANDROID) || content_type == Some(TYPE_LL_MOD) {
+                return ll_android::tags(kernel).await;
+            }
+            return curseforge::tags(kernel).await;
         }
         if content_type == Some(TYPE_SHADER) {
             return Ok(curseforge::shader_tags());
@@ -246,8 +267,8 @@ impl ContentDownloadModule {
 
     /// 详情：按跨源 id（`cf:` / `lip:` / `lla:` 前缀）路由。
     pub async fn detail(kernel: &KernelContext, id: &str) -> Result<ContentDetail, KernelError> {
-        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
-            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        if android_ll_source() && !android_id_allowed(id) {
+            return Err(KernelError::InvalidArgument(format!("Android content id is not supported: `{id}`")));
         }
         let key=metadata_key(kernel,if id.starts_with("lip:") { "detail-game-targets-v2" } else { "detail" },id);
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::detail_uncached(kernel,id)).await
@@ -281,8 +302,8 @@ impl ContentDownloadModule {
         id: &str,
         locale: &str,
     ) -> Result<Option<String>, KernelError> {
-        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
-            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        if android_ll_source() && !android_id_allowed(id) {
+            return Err(KernelError::InvalidArgument(format!("Android content id is not supported: `{id}`")));
         }
         let key=metadata_key(kernel,"readme",&serde_json::json!([id,locale]).to_string());
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::readme_uncached(kernel,id,locale)).await
@@ -320,7 +341,7 @@ impl ContentDownloadModule {
         kernel: &KernelContext,
         content_type: Option<&str>,
     ) -> Result<Vec<String>, KernelError> {
-        if android_ll_source() {
+        if android_ll_source() && content_type == Some(TYPE_LL_MOD) {
             return Ok(Vec::new());
         }
         let shader = content_type == Some(TYPE_SHADER);
@@ -373,8 +394,8 @@ impl ContentDownloadModule {
         file_id: &str,
         version: Option<&str>,
     ) -> Result<Placement, KernelError> {
-        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
-            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        if android_ll_source() && !android_id_allowed(id) {
+            return Err(KernelError::InvalidArgument(format!("Android content id is not supported: `{id}`")));
         }
         let (item, file) = resolve_source_file(kernel, id, file_id).await?;
         resolve_placement(kernel, id, &item, &file, version)
@@ -397,8 +418,8 @@ impl ContentDownloadModule {
         file_id: &str,
         version: Option<&str>,
     ) -> Result<u64, KernelError> {
-        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
-            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        if android_ll_source() && !android_id_allowed(id) {
+            return Err(KernelError::InvalidArgument(format!("Android content id is not supported: `{id}`")));
         }
         if ll_android::parse_mod_id(id).is_some() {
             return enqueue_ll_android(kernel, id, file_id, version).await;
@@ -821,6 +842,7 @@ async fn type_pick(
     game_version: Option<&str>,
     sort: Option<&str>,
     tag: Option<&str>,
+    search: Option<&str>,
 ) -> Result<(Vec<ContentItem>, bool, u64), KernelError> {
     let mut out = Vec::with_capacity(count);
     let mut has_more = false;
@@ -831,16 +853,20 @@ async fn type_pick(
         let sub_page = from / 40;
         let within = from % 40;
         let t_query = ContentListQuery {
-            source: if t == TYPE_LL_MOD { Some(SOURCE_LIP.to_string()) } else { None },
+            source: if t == TYPE_LL_MOD {
+                Some(if android_ll_source() { SOURCE_LL_ANDROID } else { SOURCE_LIP }.to_string())
+            } else {
+                None
+            },
             content_type: Some(t.to_string()),
-            search: None,
+            search: search.map(str::to_string),
             game_version: game_version.map(str::to_string),
             sort: sort.map(str::to_string),
             tag: tag.map(str::to_string),
             page: sub_page as u32,
         };
         let typed: ContentListPage = if t == TYPE_LL_MOD {
-            lip::list(kernel, &t_query).await?
+            if android_ll_source() { ll_android::list(kernel, &t_query).await? } else { lip::list(kernel, &t_query).await? }
         } else {
             curseforge::list(kernel, &t_query).await?
         };
@@ -909,6 +935,24 @@ async fn search_list(
     })
 }
 
+async fn android_mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<ContentListPage, KernelError> {
+    const TYPES: [(&str, usize); 3] = [(TYPE_BEHAVIOR_PACK, 8), (TYPE_TEXTURE_PACK, 8), (TYPE_LL_MOD, 4)];
+    let page = query.page as usize;
+    let mut pools = Vec::new();
+    let mut total = 0u64;
+    let mut has_more = false;
+    for &(ty, count) in &TYPES {
+        let (items, more, ty_total) = type_pick(kernel, ty, page * count, count, query.game_version.as_deref(), query.sort.as_deref(), query.tag.as_deref(), query.search.as_deref()).await?;
+        pools.push(items); total += ty_total; has_more |= more;
+    }
+    let mut items = Vec::new();
+    for i in 0..16 {
+        for pool in &pools { if let Some(item) = pool.get(i / 2) { items.push(item.clone()); if items.len() == PAGE_SIZE as usize { break; } } }
+        if items.len() == PAGE_SIZE as usize { break; }
+    }
+    Ok(ContentListPage { items, has_more, total, total_pages: total.div_ceil(PAGE_SIZE as u64) })
+}
+
 /// 跨源合并后的排序：与各来源内部的排序键保持一致，否则合并出来的顺序会自相矛盾。
 fn sort_items(items: &mut [ContentItem], sort: Option<&str>) {
     match sort.unwrap_or_default() {
@@ -932,6 +976,9 @@ fn sort_items(items: &mut [ContentItem], sort: Option<&str>) {
 }
 
 async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<ContentListPage, KernelError> {
+    if android_ll_source() {
+        return android_mixed_list(kernel, query).await;
+    }
     let search = query.search.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("");
     if !search.is_empty() {
         // 兜底：带关键字时一律走跨源合并（`list` 已提前分流，这里防直接调用）。
@@ -961,6 +1008,7 @@ async fn mixed_list(kernel: &KernelContext, query: &ContentListQuery) -> Result<
             query.game_version.as_deref(),
             query.sort.as_deref(),
             query.tag.as_deref(),
+            query.search.as_deref(),
         )
         .await?;
         has_more = has_more || more;
@@ -1996,6 +2044,29 @@ impl Module for ContentDownloadModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_market_allowlist_accepts_only_supported_provider_combinations() {
+        assert!(android_query_allowed(None, None));
+        assert!(android_query_allowed(Some(SOURCE_CURSEFORGE), None));
+        assert!(android_query_allowed(Some(SOURCE_CURSEFORGE), Some(TYPE_BEHAVIOR_PACK)));
+        assert!(android_query_allowed(Some(SOURCE_CURSEFORGE), Some(TYPE_TEXTURE_PACK)));
+        assert!(android_query_allowed(Some(SOURCE_LL_ANDROID), Some(TYPE_LL_MOD)));
+        assert!(android_query_allowed(None, Some(TYPE_LL_MOD)));
+        assert!(!android_query_allowed(Some(SOURCE_LIP), None));
+        assert!(!android_query_allowed(Some(SOURCE_CURSEFORGE), Some(TYPE_LL_MOD)));
+        assert!(!android_query_allowed(Some(SOURCE_LL_ANDROID), Some(TYPE_BEHAVIOR_PACK)));
+        assert!(!android_query_allowed(None, Some(TYPE_SHADER)));
+    }
+
+    #[test]
+    fn android_market_ids_are_provider_scoped() {
+        assert!(android_id_allowed("cf:12345"));
+        assert!(android_id_allowed("lla:example.mod"));
+        assert!(!android_id_allowed("lip:github.com/example/mod"));
+        assert!(!android_id_allowed("cf:not-a-number"));
+        assert!(!android_id_allowed("other:123"));
+    }
 
     #[test]
     fn sanitize_filename_strips_dangerous_chars() {

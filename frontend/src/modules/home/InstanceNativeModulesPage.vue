@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { CircleCheck, CircleSlash, Package, Trash2 } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { CircleCheck, CircleSlash, Package, SlidersHorizontal, Trash2, X } from "@lucide/vue";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
 import { useVersionInstance } from "./useVersionInstance";
@@ -37,6 +37,22 @@ async function refresh() {
     if (name === currentName.value) loading.value = false;
   }
 }
+const filtersOpen = ref(false);
+const isNarrow = ref(false);
+let mediaQuery: MediaQueryList | null = null;
+function syncNarrow() { isNarrow.value = mediaQuery?.matches ?? false; if (!isNarrow.value) filtersOpen.value = false; }
+function closeFilters() { filtersOpen.value = false; }
+function onKeydown(event: KeyboardEvent) { if (event.key === "Escape") closeFilters(); }
+onMounted(() => {
+  window.addEventListener("keydown", onKeydown);
+  mediaQuery = window.matchMedia("(max-width: 900px)");
+  syncNarrow();
+  mediaQuery.addEventListener("change", syncNarrow);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKeydown);
+  mediaQuery?.removeEventListener("change", syncNarrow);
+});
 watch(currentName, () => void refresh(), { immediate: true });
 
 async function toggle(mod: ModView) {
@@ -53,7 +69,10 @@ async function remove(mod: ModView) {
 <template>
   <div class="native-modules">
     <section class="native-modules__main">
-      <div class="native-modules__filters" role="tablist">
+      <div class="native-modules__toolbar">
+        <button type="button" class="filter-trigger" :aria-expanded="filtersOpen" aria-controls="native-module-filters" :title="t('module.home.native_modules.open_filters')" @click="filtersOpen = true"><SlidersHorizontal :size="18" /><span class="sr-only">{{ t("module.home.native_modules.open_filters") }}</span></button>
+      </div>
+      <div class="native-modules__filters native-modules__filters--desktop" role="tablist">
         <button v-for="value in (['all', 'enabled', 'disabled'] as const)" :key="value" type="button" role="tab" :aria-selected="filter === value" :class="['chip', { 'chip--active': filter === value }]" @click="filter = value">
           <span>{{ t(`module.home.native_modules.filters.${value}`) }}</span><span class="count">{{ value === 'all' ? mods.length : mods.filter(m => m.enabled === (value === 'enabled')).length }}</span>
         </button>
@@ -75,14 +94,28 @@ async function remove(mod: ModView) {
         </div>
       </div>
     </section>
-    <aside class="native-modules__aside"><InstanceSearchBox v-model="search" :placeholder="t('module.home.native_modules.search_placeholder')" /></aside>
+    <div v-if="filtersOpen" class="native-modules__backdrop" @click="closeFilters"></div>
+    <aside id="native-module-filters" class="native-modules__aside" :class="{ 'native-modules__aside--open': filtersOpen }" :aria-hidden="isNarrow && !filtersOpen" :inert="isNarrow && !filtersOpen">
+      <header class="native-modules__aside-head"><InstanceSearchBox v-model="search" :placeholder="t('module.home.native_modules.search_placeholder')" /><button type="button" class="filter-close" :title="t('module.home.native_modules.close_filters')" @click="closeFilters"><X :size="18" /><span class="sr-only">{{ t("module.home.native_modules.close_filters") }}</span></button></header>
+      <div class="native-modules__filters" role="tablist">
+        <button v-for="value in (['all', 'enabled', 'disabled'] as const)" :key="value" type="button" role="tab" :aria-selected="filter === value" :class="['chip', { 'chip--active': filter === value }]" @click="filter = value; closeFilters()">
+          <span>{{ t(`module.home.native_modules.filters.${value}`) }}</span><span class="count">{{ value === 'all' ? mods.length : mods.filter(m => m.enabled === (value === 'enabled')).length }}</span>
+        </button>
+      </div>
+    </aside>
   </div>
 </template>
 
 <style scoped>
-.native-modules { display:grid; grid-template-columns:minmax(0,6fr) minmax(0,4fr); gap:var(--copper-space-4); height:100%; min-height:0; padding:var(--copper-space-4); }
+.native-modules { position:relative; display:grid; grid-template-columns:minmax(0,6fr) minmax(0,4fr); gap:var(--copper-space-4); height:100%; min-height:0; padding:var(--copper-space-4); }
 .native-modules__main,.native-modules__aside { display:flex; flex-direction:column; min-width:0; min-height:0; gap:var(--copper-space-3); }
+.native-modules__toolbar { display:none; }
+.native-modules__aside-head { display:flex; align-items:flex-start; gap:var(--copper-space-2); }
+.filter-close { display:none; }
+.native-modules__backdrop { display:none; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .native-modules__filters { display:flex; flex-wrap:wrap; gap:var(--copper-space-1); }
+.native-modules__filters--desktop { display:flex; }
 .chip { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 var(--copper-space-3); border:0; border-radius:var(--copper-radius-full); background:transparent; color:var(--copper-text-secondary); font:inherit; cursor:pointer; }
 .chip:hover { background:var(--copper-surface-2); color:var(--copper-text); }
 .chip--active { background:color-mix(in srgb,var(--copper-accent) 14%,transparent); color:color-mix(in srgb,var(--copper-accent) 85%,var(--copper-text)); }
@@ -105,5 +138,16 @@ async function remove(mod: ModView) {
 .action { display:grid; place-items:center; width:28px; height:28px; border:0; border-radius:var(--copper-radius-sm); background:transparent; color:var(--copper-text-secondary); cursor:pointer; }
 .action:hover { background:var(--copper-hover); color:var(--copper-text); }
 .action--danger:hover { background:color-mix(in srgb,var(--copper-danger) 14%,transparent); color:var(--copper-danger); }
-@media(max-width:900px) { .native-modules { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto; overflow-y:auto; } .native-modules__aside { overflow:visible; } }
+@media(max-width:900px) {
+  .native-modules { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); overflow:hidden; }
+  .native-modules__toolbar { display:flex; justify-content:flex-end; }
+  .native-modules__filters--desktop { display:none; }
+  .filter-trigger,.filter-close { display:grid; place-items:center; width:36px; height:36px; border:0; border-radius:var(--copper-radius-sm); background:var(--copper-surface-2); color:var(--copper-text-secondary); cursor:pointer; }
+  .filter-trigger:hover,.filter-close:hover { color:var(--copper-text); background:var(--copper-hover); }
+  .native-modules__backdrop { display:block; position:fixed; inset:0; z-index:20; background:color-mix(in srgb,var(--copper-overlay) 72%,transparent); }
+  .native-modules__aside { position:fixed; z-index:21; top:0; right:0; bottom:0; width:min(50vw,420px); min-width:0; padding:var(--copper-space-4); padding-right:max(var(--copper-space-4),env(safe-area-inset-right)); padding-bottom:max(var(--copper-space-4),env(safe-area-inset-bottom)); background:var(--copper-surface-1); box-shadow:var(--copper-shadow-lg); transform:translateX(100%); transition:transform 260ms var(--copper-easing); pointer-events:none; }
+  .native-modules__aside--open { transform:translateX(0); pointer-events:auto; }
+  .filter-close { flex:none; }
+}
+@media(prefers-reduced-motion:reduce) { .native-modules__aside { transition-duration:1ms; } }
 </style>

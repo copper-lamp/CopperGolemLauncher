@@ -24,6 +24,8 @@
     <a href="https://github.com/copper-lamp/CopperGolemLauncher/issues">问题反馈</a>
     ·
     <a href=".github/CONTRIBUTING.md">参与贡献</a>
+    ·
+    <a href="https://discord.gg/sr9nMpxx9">Discord 社区</a>
   </p>
 
 </div>

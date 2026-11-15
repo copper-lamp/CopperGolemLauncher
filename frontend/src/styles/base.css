@@ -59,7 +59,7 @@ body {
 html[data-form-factor="mobile"] .app-shell {
   border-radius: 0;
   padding-top: var(--copper-safe-top);
-  padding-right: var(--copper-safe-right);
+  padding-right: max(0px, calc(var(--copper-safe-right) - var(--copper-android-safe-compensation, 0px)));
 }
 
 /*

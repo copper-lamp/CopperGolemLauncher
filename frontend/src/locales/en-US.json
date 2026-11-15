@@ -109,6 +109,8 @@
     "general": {
       "language": "Language",
       "language_hint": "Takes effect immediately",
+      "android_safe_compensation": "Android left safe-area compensation",
+      "android_safe_compensation_hint": "Reduce extra inset from notches or rounded corners, from 0 to 20 pixels.",
       "theme_mode": "Appearance",
       "theme_mode_dark": "Dark",
       "theme_mode_light": "Light",

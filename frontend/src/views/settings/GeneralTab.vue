@@ -2,6 +2,8 @@
 // 通用 Tab：语言、外观深浅色、强调色（预设 / 自定义）、LLM 配置。
 
 import { computed, onMounted, ref } from "vue";
+import { usePlatform } from "../../composables/usePlatform";
+import { ANDROID_SAFE_COMPENSATION_DEFAULT, ANDROID_SAFE_COMPENSATION_KEY, clampAndroidSafeCompensation, useSettings } from "../../composables/useSettings";
 import { Eye, EyeOff } from "@lucide/vue";
 
 import SettingSection from "./SettingSection.vue";
@@ -14,6 +16,14 @@ import { showToast } from "../../composables/useToast";
 import { llmAddModel, llmClearApiKey, llmListModels, llmRemoveModel, llmSetApiKey, llmUpdateModel, type LlmModelRow } from "../../api/llm";
 
 const { t, locale, setLocale, supportedLocales } = useI18n();
+const { isAndroid } = usePlatform();
+const settings = useSettings();
+const androidSafeCompensation = ref(settings.get<number>(ANDROID_SAFE_COMPENSATION_KEY, ANDROID_SAFE_COMPENSATION_DEFAULT));
+function updateAndroidSafeCompensation(value: string | number) {
+  const next = clampAndroidSafeCompensation(value);
+  androidSafeCompensation.value = next;
+  void settings.set(ANDROID_SAFE_COMPENSATION_KEY, next);
+}
 
 
 
@@ -185,6 +195,21 @@ onMounted(loadLlmModels);
         />
       </SettingRow>
 
+      <SettingRow v-if="isAndroid" label-key="settings.general.android_safe_compensation" hint-key="settings.general.android_safe_compensation_hint">
+        <div class="general-tab__safe-control">
+          <input
+            type="range"
+            min="0"
+            max="20"
+            step="1"
+            :value="androidSafeCompensation"
+            :aria-label="t('settings.general.android_safe_compensation')"
+            @input="updateAndroidSafeCompensation(($event.target as HTMLInputElement).value)"
+          />
+          <output>{{ androidSafeCompensation }}px</output>
+        </div>
+      </SettingRow>
+
     </SettingSection>
 
 
@@ -344,6 +369,24 @@ onMounted(loadLlmModels);
 <style scoped>
 .general-tab {
   max-width: 640px;
+}
+
+.general-tab__safe-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--copper-space-2);
+}
+
+.general-tab__safe-control input {
+  width: 132px;
+  accent-color: var(--copper-accent);
+}
+
+.general-tab__safe-control output {
+  min-width: 32px;
+  text-align: right;
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-sm);
 }
 
 .general-tab__accent {

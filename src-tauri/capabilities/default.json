@@ -13,6 +13,11 @@
     "dialog:default",
     "opener:default",
     "opener:allow-open-path",
-    "opener:allow-open-url"
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "coppergolem://import-apk?request_id=*" }
+      ]
+    }
   ]
 }

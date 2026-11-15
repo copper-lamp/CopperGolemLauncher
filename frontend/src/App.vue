@@ -32,7 +32,7 @@ import { usePlatform } from "./composables/usePlatform";
 import RouteTransition from "./components/RouteTransition.vue";
 
 const { isKernelReady } = useKernelReady();
-const { isMobile, isLandscape } = usePlatform();
+const { isMobile, isLandscape, isAndroid } = usePlatform();
 </script>
 
 <template>
@@ -71,7 +71,7 @@ const { isMobile, isLandscape } = usePlatform();
   <DiagnosticOverlay />
   <ErrorTipsHost />
   <GlobalImportHost />
-  <OnboardingHost v-if="isKernelReady" />
+  <OnboardingHost v-if="isKernelReady && !isAndroid" />
 </template>
 
 <style scoped>

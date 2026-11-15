@@ -104,8 +104,9 @@
    * 移动端由浏览器注入真实内边距，Shell 与底部标签栏据此避让系统区域。 */
   --copper-safe-top: env(safe-area-inset-top, 0px);
   --copper-safe-bottom: env(safe-area-inset-bottom, 0px);
-  --copper-safe-left: env(safe-area-inset-left, 0px);
+  --copper-safe-left: max(0px, calc(env(safe-area-inset-left, 0px) - var(--copper-android-safe-compensation, 0px)));
   --copper-safe-right: env(safe-area-inset-right, 0px);
+  --copper-android-safe-compensation: 20px;
 
   /* 字体 */
   --copper-font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei",

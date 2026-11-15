@@ -538,8 +538,12 @@ function goDownload() {
 .home-page__mode {
   display: flex;
   justify-content: flex-end;
+  position: fixed;
+  z-index: 20;
+  right: max(var(--copper-space-3), var(--copper-safe-right));
+  bottom: max(var(--copper-space-3), var(--copper-safe-bottom));
   flex-shrink: 0;
-  padding: var(--copper-space-2) max(var(--copper-space-3), env(safe-area-inset-right, 0px)) max(var(--copper-space-2), env(safe-area-inset-bottom, 0px));
+  padding: 0;
 }
 .home-simple {
   flex: 1;
@@ -554,7 +558,7 @@ function goDownload() {
 
 /* 加载 / 空态：整组在剩余高度里居中。 */
 .home-simple__center {
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   width: 100%;
   display: flex;
@@ -575,7 +579,7 @@ function goDownload() {
  * 上下行留 min-content 下限，矮窗口时舞台撑高、由外层滚动，不会裁掉内容。
  */
 .home-simple__stage {
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   width: 100%;
   display: grid;
