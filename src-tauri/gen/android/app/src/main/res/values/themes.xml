@@ -7,7 +7,7 @@
             `env(safe-area-inset-*)` 恒为 0，前端的安全区避让无从生效。
             `shortEdges` 表示只在短边方向（即横屏的左右两侧）绘制进刘海区，
             配合 MainActivity 的 enableEdgeToEdge() 与前端的
-            `viewport-fit=cover` + `--copper-safe-*`，刘海区域才会被界面自行填充。
+            viewport-fit=cover 与前端安全区变量，刘海区域才会被界面自行填充。
 
             Android 15 起系统强制 edge-to-edge，本项被忽略；保留声明是为了
             Android 14 及以下 behaves 一致（见 docs/平台适配.md 全屏章节）。
