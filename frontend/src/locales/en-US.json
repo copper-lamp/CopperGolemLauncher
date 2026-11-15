@@ -481,7 +481,18 @@
     "login_failed": "Sign-in failed: {reason}",
     "token_expired": "Your sign-in has expired, please sign in again",
     "profile_mismatch_title": "This instance is signed in with a different Microsoft account. Please sign in again.",
-    "profile_mismatch_toast": "Account mismatch: please sign in again with the account that owns this instance."
+    "profile_mismatch_toast": "Account mismatch: please sign in again with the account that owns this instance.",
+    "android": {
+      "title": "Accounts",
+      "play_title": "Google Play account",
+      "play_status": "Play Games services",
+      "play_unavailable": "Google Play Games sign-in is not connected: the kernel currently has no Android Play Games account query, sign-in, or sign-out API.",
+      "unavailable": "Not connected",
+      "xbox_title": "Minecraft / Xbox account",
+      "signed_in": "Signed in",
+      "xuid": "Xbox user ID",
+      "xbox_sign_in": "Sign in to Microsoft / Xbox"
+    }
   },
   "toast": {
     "settings_saved": "Settings saved",

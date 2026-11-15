@@ -10,6 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRoute, useRouter } from "vue-router";
 
 import AccountMenu from "./AccountMenu.vue";
+import AndroidAccountCard from "./AndroidAccountCard.vue";
 import UpdateBadge from "./update/UpdateBadge.vue";
 import { setDiagnosticOpen } from "../diag";
 import { useBootDiagnostics } from "../boot";
@@ -21,7 +22,7 @@ const route = useRoute();
 const router = useRouter();
 
 // 移动端没有窗口装饰，最小化 / 最大化 / 关闭按钮无意义，需隐藏（见 docs/平台适配.md 2.5）。
-const { isMobile } = usePlatform();
+const { isMobile, isAndroid } = usePlatform();
 
 /**
  * 启动异常入口。
@@ -224,7 +225,8 @@ function close() {
         </section>
       </div>
       <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="18" /></button>
-      <AccountMenu />
+      <AndroidAccountCard v-if="isAndroid" />
+      <AccountMenu v-else />
       <template v-if="!isMobile">
         <div class="titlebar__sep" />
         <div class="titlebar__controls">
@@ -407,9 +409,12 @@ button.titlebar__crumb:hover {
 .titlebar__crumbs, .titlebar__actions { touch-action: pan-x; }
 .titlebar__right { touch-action: manipulation; }
 @media (max-width: 560px) {
-  .titlebar { padding-left: 4px; }
+  .titlebar { padding-left: max(4px, env(safe-area-inset-left)); }
   .titlebar__left { gap: 4px; min-width: 68px !important; }
   .titlebar__spacer { flex-basis: 8px; }
+  .titlebar__right { padding-right: max(12px, env(safe-area-inset-right)); gap: 0; }
+  .titlebar__right :deep(.account-menu__trigger) { gap: 4px; padding-right: 4px; }
+  .titlebar__right :deep(.account-menu__label) { max-width: 64px; }
   .titlebar__sep { display: none; }
 }
 @media (max-width: 1050px) {

@@ -481,7 +481,18 @@
     "login_failed": "登录失败：{reason}",
     "token_expired": "登录状态已过期，请重新登录",
     "profile_mismatch_title": "当前实例的登录态属于其他 Microsoft 账户，请重新登录",
-    "profile_mismatch_toast": "账户不一致：请用实例所属的 Microsoft 账户重新登录"
+    "profile_mismatch_toast": "账户不一致：请用实例所属的 Microsoft 账户重新登录",
+    "android": {
+      "title": "账户",
+      "play_title": "Google Play 账户",
+      "play_status": "Play Games 服务",
+      "play_unavailable": "Google Play Games 登录尚未接入：当前内核没有 Android Play Games 账户查询、登录或退出接口。",
+      "unavailable": "未接入",
+      "xbox_title": "Minecraft / Xbox 账户",
+      "signed_in": "已登录",
+      "xuid": "Xbox 用户 ID",
+      "xbox_sign_in": "登录 Microsoft / Xbox"
+    }
   },
   "toast": {
     "settings_saved": "设置已保存",
