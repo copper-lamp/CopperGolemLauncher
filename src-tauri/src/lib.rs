@@ -573,6 +573,8 @@ pub fn run() {
             commands::game_download::game_download_cancel,
             commands::game_download::game_download_task_bindings,
             commands::game_download::game_download_import_apk,
+            commands::game_download::game_download_prepare_apk_import,
+            commands::game_download::game_download_discard_apk_import,
             // 安卓游戏宿主（所有平台注册，桌面端返回 None）
             commands::game_download::android_game_take_exit,
             commands::game_download::android_apk_pick_result,

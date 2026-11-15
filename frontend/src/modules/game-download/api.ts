@@ -192,8 +192,7 @@ export interface ApkImportResult {
 /**
  * 导入一个 APK / APKS。
  *
- * `sourcePath` 必须是应用私有目录内的路径：安卓端先由 `importApkToInbox`
- * 把系统选择器返回的 URI 复制进 `cache/inbox/`。
+ * `sourcePath` 必须是应用私有目录 `.import/<request-id>/` 内的选择器结果文件。
  *
  * 包名、版本号由后端从二进制 `AndroidManifest.xml` 解码，前端不参与——
  * 这些值决定原生库加载顺序。

@@ -5,16 +5,13 @@
 //!
 //! ```text
 //! <versions>/<instance>/
-//!   base.apk.levi          single base APK
-//!   splits/<name>.apk.levi split APKs, flat
-//!   package.json           importer record (package / version / digest)
+//!   base.apk.bundle          single base APK
+//!   splits/<name>.apk.bundle split APKs, flat
+//!   package.json             importer record (package / version / digest)
 //! ```
 //!
-//! The `.apk.levi` suffix is deliberate. A file named `*.apk` inside app
-//! private storage is a candidate for package installers and scanners; keeping
-//! the ZIP intact but renaming the file means the Android runtime can still
-//! mount it (`AssetManager#addAssetPath` and `ZipFile` inspect content, not the
-//! name) while nothing on the device treats it as installable.
+//! The `.apk.bundle` suffix keeps APK payloads distinguishable from packages
+//! intended for Android installation while preserving their ZIP contents.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -31,16 +28,13 @@ use super::axml::{self, AndroidManifestIdentity};
 pub const MCBE_PACKAGE: &str = "com.mojang.minecraftpe";
 
 /// Base APK file name inside the instance directory.
-pub const BASE_APK: &str = "base.apk.levi";
+pub const BASE_APK: &str = "base.apk.bundle";
 /// Split APK directory inside the instance directory.
 pub const SPLITS_DIR: &str = "splits";
 /// Split APK file suffix.
-pub const SPLIT_SUFFIX: &str = ".apk.levi";
+pub const SPLIT_SUFFIX: &str = ".apk.bundle";
 /// Importer record written next to the packages.
 pub const PACKAGE_JSON: &str = "package.json";
-
-/// Native ABI the launcher targets. Anything else cannot run on an arm64 device.
-pub const TARGET_ABI: &str = "arm64-v8a";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,30 +82,29 @@ fn read_manifest(zip: &mut ZipArchive<File>) -> Result<AndroidManifestIdentity, 
     axml::read_identity(&xml)
 }
 
-/// Confirm the APK actually ships native code for the target ABI.
-fn require_target_abi(zip: &mut ZipArchive<File>) -> Result<(), KernelError> {
-    let prefix = format!("lib/{TARGET_ABI}/");
+/// Read the first ABI represented by an APK without rejecting other layouts.
+fn discover_abi(zip: &mut ZipArchive<File>) -> String {
     for index in 0..zip.len() {
-        // `by_index` borrows the archive mutably, so the name has to be copied
-        // out before the entry is dropped; a closure would not compile here.
         let name = match zip.by_index(index) {
             Ok(entry) => entry.name().to_string(),
             Err(_) => continue,
         };
-        if name.starts_with(&prefix) && name.ends_with(".so") {
-            return Ok(());
+        let Some(rest) = name.strip_prefix("lib/") else {
+            continue;
+        };
+        let Some(abi) = rest.split('/').next() else {
+            continue;
+        };
+        if !abi.is_empty() && name.ends_with(".so") {
+            return abi.to_string();
         }
     }
-    Err(KernelError::InvalidArgument(format!(
-        "APK 不包含 {TARGET_ABI} 原生库"
-    )))
+    String::new()
 }
 
-/// Validate a staged base APK and build its import record.
+/// Validate the base APK package and build its import record.
 ///
-/// `package` / `versionName` / `versionCode` come from the binary manifest, not
-/// from the caller: these values decide which native library set the Android
-/// runtime loads, so they must be read from the artifact itself.
+/// Package and version fields come from the binary manifest, not from the caller.
 pub fn inspect_base(path: &Path) -> Result<ApkPackageInfo, KernelError> {
     if !path.is_file() {
         return Err(KernelError::InvalidArgument("APK 文件不存在".into()));
@@ -126,31 +119,25 @@ pub fn inspect_base(path: &Path) -> Result<ApkPackageInfo, KernelError> {
             identity.package_name
         )));
     }
-    require_target_abi(&mut zip)?;
+    let abi = discover_abi(&mut zip);
     drop(zip);
 
     Ok(ApkPackageInfo {
         package_name: identity.package_name,
         version_code: identity.version_code,
         version_name: identity.version_name,
-        abi: TARGET_ABI.into(),
+        abi,
         sha256: sha256_file(path)?,
         has_splits: false,
     })
 }
 
-fn copy_file(src: &Path, dst: &Path) -> Result<(), KernelError> {
-    let mut input = File::open(src)?;
-    let mut output = File::create(dst)?;
-    io::copy(&mut input, &mut output)?;
-    output.flush()?;
-    Ok(())
-}
-
 /// Import one APK or an `.apks` bundle into `staging`.
 ///
-/// The caller must atomically rename `staging` into the final instance
-/// directory; on any error `staging` is left for the caller to discard.
+/// The source must already be inside `staging`. A single APK is renamed into
+/// its final package path; an APKS bundle is extracted and removed on success.
+/// The caller atomically renames `staging` into the instance directory and
+/// discards it on any error.
 pub fn import_file(source: &Path, staging: &Path) -> Result<ApkPackageInfo, KernelError> {
     if !source.is_file() {
         return Err(KernelError::InvalidArgument("APK 文件不存在".into()));
@@ -165,6 +152,11 @@ pub fn import_file(source: &Path, staging: &Path) -> Result<ApkPackageInfo, Kern
     }
 
     fs::create_dir_all(staging)?;
+    if !source.starts_with(staging) || source == staging {
+        return Err(KernelError::InvalidArgument(
+            "APK 导入源必须位于事务目录内".into(),
+        ));
+    }
     let base = staging.join(BASE_APK);
     let mut split_count = 0usize;
 
@@ -204,8 +196,9 @@ pub fn import_file(source: &Path, staging: &Path) -> Result<ApkPackageInfo, Kern
         if !base.is_file() {
             return Err(KernelError::InvalidArgument("APKS 缺少 base.apk".into()));
         }
+        fs::remove_file(source)?;
     } else {
-        copy_file(source, &base)?;
+        fs::rename(source, &base)?;
     }
 
     let mut info = inspect_base(&base)?;
@@ -240,6 +233,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_source_outside_transaction_directory() {
+        let root = std::env::temp_dir().join("copper-apk-import-boundary");
+        let staging = root.join(".import").join("request");
+        let source = root.join("outside.apk");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(&source, b"not an apk").unwrap();
+        assert!(import_file(&source, &staging).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn rejects_unsupported_extension() {
         let source = std::env::temp_dir().join("copper-apk-import.txt");
         fs::write(&source, b"not an apk").unwrap();
@@ -250,11 +255,11 @@ mod tests {
     }
 
     #[test]
-    fn base_apk_path_uses_levi_suffix() {
+    fn base_apk_path_uses_package_suffix() {
         let dir = Path::new("/data/versions/demo");
         assert_eq!(
             base_apk_path(dir),
-            Path::new("/data/versions/demo").join("base.apk.levi")
+            Path::new("/data/versions/demo").join("base.apk.bundle")
         );
     }
 }

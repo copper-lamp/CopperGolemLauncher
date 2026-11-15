@@ -39,17 +39,17 @@ object CopperGameLayout {
      * 导入的 base APK 文件名。
      *
      * 刻意不用 `base.apk`：应用私有目录里若存在可安装的 `.apk`，系统安装器、
-     * 各类清理工具与部分安全扫描都会把它当成待安装包处理。用 `.apk.levi`
-     * 后缀存储，既保留 ZIP 结构（AssetManager 与 ZipFile 只看内容不看后缀），
+     * 各类清理工具与部分安全扫描都会把它当成待安装包处理。使用专属后缀，
+     * 既保留 ZIP 结构（AssetManager 与 ZipFile 只看内容不看后缀），
      * 又不会被系统识别为安装候选。
      */
-    const val BASE_APK = "base.apk.levi"
+    const val BASE_APK = "base.apk.bundle"
 
     /** split APK 目录名。 */
     const val SPLITS_DIR = "splits"
 
     /** split APK 文件后缀，与 [BASE_APK] 同理。 */
-    const val SPLIT_SUFFIX = ".apk.levi"
+    const val SPLIT_SUFFIX = ".apk.bundle"
 
     /** 导入时由 Rust 写入的实例元数据。 */
     const val PACKAGE_JSON = "package.json"

@@ -70,10 +70,10 @@ pub struct ExitRecord {
 /// Result of a system file-picker round trip performed by the Java host.
 ///
 /// `tauri-plugin-dialog` on Android resolves to a `content://` URI and does
-/// not materialise a file, so the host copies the picked stream into
-/// `cache/inbox/` first. Only that private copy is ever handed to the kernel:
-/// the kernel never reads a `content://` URI, and never sees a path outside
-/// app-private storage.
+/// not materialise a file, so the host streams the picked content into a unique
+/// transaction directory under the managed versions root. That transaction
+/// becomes the final instance directory after validation; the kernel never
+/// reads a `content://` URI or accepts a path outside the managed root.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApkPickResult {
@@ -110,8 +110,12 @@ pub fn take_apk_pick_result(
     data_root: &std::path::Path,
     request_id: &str,
 ) -> Result<Option<ApkPickResult>, KernelError> {
-    if request_id.is_empty() {
-        return Err(KernelError::InvalidArgument("缺少请求 ID".into()));
+    if request_id.len() != 36
+        || !request_id.as_bytes().iter().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) { *byte == b'-' } else { byte.is_ascii_hexdigit() }
+        })
+    {
+        return Err(KernelError::InvalidArgument("APK 导入请求 ID 无效".into()));
     }
     Ok(take_json::<ApkPickResult>(data_root, APK_PICK_RESULT_FILE)?
         .filter(|result| result.request_id == request_id))
@@ -188,7 +192,7 @@ mod tests {
 
         std::fs::write(
             dir.join(APK_PICK_RESULT_FILE),
-            br#"{"requestId":"req-1","path":"/data/cache/inbox/a.apk","displayName":"a.apk"}"#,
+            br#"{"requestId":"req-1","path":"/data/versions/.import/req-1/source.apk","displayName":"a.apk"}"#,
         )
         .unwrap();
         let result = take_apk_pick_result(&dir, "req-1").unwrap().expect("picked");
@@ -198,7 +202,7 @@ mod tests {
         // 另一个 requestId 不得领取同一份结果
         std::fs::write(
             dir.join(APK_PICK_RESULT_FILE),
-            br#"{"requestId":"req-1","path":"/data/cache/inbox/a.apk"}"#,
+            br#"{"requestId":"req-1","path":"/data/versions/.import/req-1/source.apk"}"#,
         )
         .unwrap();
         assert!(take_apk_pick_result(&dir, "req-2").unwrap().is_none());

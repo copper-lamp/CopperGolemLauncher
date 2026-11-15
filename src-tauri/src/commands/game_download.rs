@@ -137,10 +137,9 @@ pub fn game_download_task_bindings(
 
 /// 导入一个 APK / APKS。
 ///
-/// `source_path` 必须是**应用私有目录内**的路径：安卓端由系统文件选择器
-/// （SAF）返回的 `content://` URI 会先被复制到 `cache/inbox/`，
-/// 桌面端由文件对话框直接给出绝对路径。命令不接受任意外部路径，
-/// 避免把「用户选了一个文件」变成「内核可以读设备上任意文件」。
+/// `source_path` 必须是当前导入事务目录内的文件。命令会将所选文件接管到
+/// `.import/<request-id>/`，且不接受任意外部路径，避免把「用户选了一个文件」
+/// 变成「内核可以读设备上任意文件」。
 ///
 /// `name` 会被 [`meta::sanitize_instance_name`] 规整成**唯一权威**的实例名，
 /// 并以 `instance_name` 原样回传：安卓宿主按同一个名字定位
@@ -161,13 +160,54 @@ pub async fn game_download_import_apk(
     // 先规整再校验：调用方给的名字带空格 / 中文时在这里统一收敛，而不是
     // 让安卓宿主在定位目录时再改一次名字。
     let name = meta::sanitize_instance_name(&name);
-    meta::validate_version_name(&root, &name).map_err(into_command_error)?;
 
     let source = PathBuf::from(source_path);
-    let staging = root
-        .join(".import")
-        .join(format!("{}-{}", name.replace(['/', '\\'], "_"), std::process::id()));
-    let _ = std::fs::remove_dir_all(&staging);
+    let import_root = root.join(".import");
+    if !source.is_file() {
+        return Err(into_command_error(KernelError::InvalidArgument(
+            "APK 导入源文件不存在".into(),
+        )));
+    }
+    std::fs::create_dir_all(&import_root).map_err(|error| {
+        into_command_error(KernelError::Io(error))
+    })?;
+    let source = source.canonicalize().map_err(|error| {
+        into_command_error(KernelError::Io(error))
+    })?;
+    let import_root_canonical = import_root.canonicalize().map_err(|error| {
+        into_command_error(KernelError::Io(error))
+    })?;
+    let transaction_dir = source.parent().ok_or_else(|| {
+        into_command_error(KernelError::InvalidArgument("APK 导入路径无效".into()))
+    })?;
+    if transaction_dir.parent() != Some(import_root_canonical.as_path()) {
+        return Err(into_command_error(KernelError::InvalidArgument(
+            "APK 导入源不在有效事务目录内".into(),
+        )));
+    }
+    let staging = transaction_dir.to_path_buf();
+    let transaction_id = transaction_dir
+        .file_name()
+        .and_then(|id| id.to_str())
+        .unwrap_or_default();
+    if transaction_id.len() != 36
+        || !transaction_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err(into_command_error(KernelError::InvalidArgument(
+            "APK 导入事务 ID 无效".into(),
+        )));
+    }
+    if !source.starts_with(&staging) {
+        return Err(into_command_error(KernelError::InvalidArgument(
+            "APK 导入源路径无效".into(),
+        )));
+    }
+    if let Err(error) = meta::validate_version_name(&root, &name) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(into_command_error(error));
+    }
 
     let imported = match apk::import_file(&source, &staging) {
         Ok(info) => info,
@@ -186,8 +226,10 @@ pub async fn game_download_import_apk(
     }
     // 原子落位：先 rename 再写元数据，中断时不会留下「有目录无元数据」的
     // 半成品实例（`scan_versions` 只认带 version.json 的目录）。
-    std::fs::rename(&staging, &instance_dir)
-        .map_err(|e| into_command_error(KernelError::Io(e)))?;
+    std::fs::rename(&staging, &instance_dir).map_err(|error| {
+        let _ = std::fs::remove_dir_all(&staging);
+        into_command_error(KernelError::Io(error))
+    })?;
 
     let version_name = if imported.version_name.is_empty() {
         // 极端情况下 manifest 缺 versionName：退回 versionCode 的十进制串，
@@ -305,6 +347,76 @@ pub async fn android_apk_pick_result(
 ) -> CommandResult<Option<crate::platform::android::ApkPickResult>> {
     crate::platform::android::take_apk_pick_result(&data_root(&kernel), &request_id)
         .map_err(into_command_error)
+}
+
+/// 为 Android 宿主登记本次导入事务的目标目录。
+#[tauri::command]
+pub async fn game_download_prepare_apk_import(
+    kernel: State<'_, KernelContext>,
+    request_id: String,
+) -> CommandResult<()> {
+    if !valid_apk_request_id(&request_id) {
+        return Err(into_command_error(KernelError::InvalidArgument(
+            "APK 导入请求 ID 无效".into(),
+        )));
+    }
+    let transaction = kernel.versions_root().join(".import").join(&request_id);
+    if transaction.exists() {
+        return Err(into_command_error(KernelError::Conflict(
+            "APK 导入请求目录已存在".into(),
+        )));
+    }
+    std::fs::create_dir_all(&transaction)
+        .map_err(|error| into_command_error(KernelError::Io(error)))?;
+    let request_file = data_root(&kernel).join("apk_import_requests").join(format!("{request_id}.json"));
+    if let Some(parent) = request_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| into_command_error(KernelError::Io(error)))?;
+    }
+    let record = serde_json::json!({"requestId": request_id, "transactionPath": transaction});
+    let bytes = serde_json::to_vec(&record)
+        .map_err(|error| into_command_error(KernelError::Serialization(error.to_string())))?;
+    if let Err(error) = std::fs::write(request_file, bytes) {
+        let _ = std::fs::remove_dir_all(&transaction);
+        return Err(into_command_error(KernelError::Io(error)));
+    }
+    Ok(())
+}
+
+fn valid_apk_request_id(request_id: &str) -> bool {
+    let bytes = request_id.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit()
+        })
+}
+
+/// 删除未完成的 APK 导入事务，仅接受 UUID 请求 ID。
+#[tauri::command]
+pub async fn game_download_discard_apk_import(
+    kernel: State<'_, KernelContext>,
+    request_id: String,
+) -> CommandResult<()> {
+    if !valid_apk_request_id(&request_id) {
+        return Err(into_command_error(KernelError::InvalidArgument(
+            "APK 导入请求 ID 无效".into(),
+        )));
+    }
+    let transaction = Ctx::from_kernel(&kernel)
+        .versions_root()
+        .join(".import")
+        .join(&request_id);
+    match std::fs::remove_dir_all(&transaction) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(into_command_error(KernelError::Io(error))),
+    }?;
+    let request_file = data_root(&kernel).join("apk_import_requests").join(format!("{request_id}.json"));
+    match std::fs::remove_file(request_file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(into_command_error(KernelError::Io(error))),
+    }
 }
 
 /// 数据根目录：`<root>/data`（`Paths::with_root` 布局）。
