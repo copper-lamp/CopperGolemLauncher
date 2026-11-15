@@ -6,11 +6,13 @@ import { UserRound, LogOut, LoaderCircle, ShieldCheck } from "@lucide/vue";
 
 import { useAccount } from "../composables/useAccount";
 import { useI18n } from "../i18n";
+import { usePlatform } from "../composables/usePlatform";
 
 import { useNetworkStatus } from "../composables/useNetworkStatus";
 const { connected } = useNetworkStatus();
+const { isAndroid } = usePlatform();
 const { t } = useI18n();
-const { account, loginWaiting, beginWamSignIn, logout } = useAccount();
+const { account, loginWaiting, beginLogin, beginWamSignIn, logout } = useAccount();
 
 const open = ref(false);
 
@@ -34,8 +36,12 @@ function toggle() {
   open.value = !open.value;
 }
 
-async function handleWamSignIn() {
-  // 不关闭菜单：系统账户界面就叠加在本窗口上，菜单状态由 finally 复位。
+async function handleSignIn() {
+  if (isAndroid.value) {
+    await beginLogin();
+    return;
+  }
+  // WAM's system account UI is presented over the current window.
   await beginWamSignIn();
 }
 
@@ -94,11 +100,14 @@ async function handleLogout() {
               </span>
             </span>
           </div>
-          <div class="account-menu__hint">{{ t("account.store_authorized") }}</div>
+          <div class="account-menu__hint">
+            {{ isAndroid ? t("account.android.xbox_title") : t("account.store_authorized") }}
+          </div>
           <button
+            v-if="!isAndroid"
             class="account-menu__action"
             :disabled="loginWaiting"
-            @click="handleWamSignIn"
+            @click="handleSignIn"
           >
             <ShieldCheck :size="15" />
             <span>{{ t("account.store_reauthorize") }}</span>
@@ -112,16 +121,16 @@ async function handleLogout() {
           <div class="account-menu__info account-menu__info--out">
             <span class="account-menu__identity">
               <span class="account-menu__name">{{ t("account.not_logged_in") }}</span>
-              <span class="account-menu__sub">{{ t("account.store_sign_in") }}</span>
+              <span class="account-menu__sub">{{ t(isAndroid ? "account.android.xbox_sign_in" : "account.store_sign_in") }}</span>
             </span>
           </div>
           <button
             class="account-menu__action account-menu__action--primary"
             :disabled="loginWaiting"
-            @click="handleWamSignIn"
+            @click="handleSignIn"
           >
             <ShieldCheck :size="15" />
-            <span>{{ t("account.login") }}</span>
+            <span>{{ t(isAndroid ? "account.android.xbox_sign_in" : "account.login") }}</span>
           </button>
         </template>
       </div>

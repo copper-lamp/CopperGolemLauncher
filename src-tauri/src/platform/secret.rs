@@ -7,7 +7,7 @@
 //! |---|---|
 //! | Windows | Credential Manager（经 `keyring` 的 `windows-native` 后端） |
 //! | Linux | Secret Service / gnome-keyring（经 `keyring` 的 `linux-native` 后端） |
-//! | Android | Android Keystore（需 JNI 桥接，见 docs/平台适配.md 3.3 TODO） |
+//! | Android | Android Keystore（经 JNI 桥接到 Kotlin `SecretStoreBridge`，AES-GCM 密文落入应用私有存储） |
 //!
 //! 因此调用方（账户服务）只依赖本 trait，不感知平台。
 //!
@@ -37,7 +37,7 @@ pub type SharedSecretStore = Arc<dyn SecretStore>;
 
 /// 系统密钥环实现（Windows Credential Manager / Linux Secret Service）。
 ///
-/// 仅在桌面平台编译：`keyring` 3 无 Android 后端（见 docs/平台适配.md 2.3）。
+/// 仅在非 Android 平台编译：`keyring` 3 无 Android 后端（见 docs/平台适配.md 2.3）。
 #[cfg(not(target_os = "android"))]
 pub struct KeyringStore;
 
@@ -84,10 +84,10 @@ impl SecretStore for KeyringStore {
     }
 }
 
-/// 平台缺少安全存储时的显式失败实现（当前：Android，待接 Keystore）。
+/// 平台安全存储不可用时的显式失败实现（Android Keystore 初始化失败时使用）。
 ///
 /// 所有操作统一返回「不支持」，**不做任何降级**——避免令牌被写入不安全位置。
-/// 接入 Android Keystore 后由 `platform::mod` 按其替换本实现。
+/// 正常 Android 构造路径由 `platform::mod` 优先选择 `KeystoreStore`。
 #[cfg(target_os = "android")]
 pub struct UnsupportedStore;
 
@@ -98,7 +98,7 @@ impl UnsupportedStore {
     }
 
     const REASON: &'static str =
-        "当前平台尚未接入系统安全存储（Android Keystore），凭证无法持久化";
+        "Android 安全存储不可用（Android Keystore），凭证无法持久化";
 }
 
 #[cfg(target_os = "android")]
