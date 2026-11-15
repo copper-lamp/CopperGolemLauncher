@@ -1,0 +1,154 @@
+diff --git a/frontend/src/api/home.ts b/frontend/src/api/home.ts
+index c7e43c6..be31898 100644
+--- a/frontend/src/api/home.ts
++++ b/frontend/src/api/home.ts
+@@ -131,0 +132,12 @@ export function homeVersionGet(name: string): Promise<VersionView> {
++export interface LoaderOption { version: string; compatible: boolean; }
++
++/** LeviLamina compatibility catalog for the selected game instance. */
++export function homeLevilaminaOptions(name: string): Promise<LoaderOption[]> {
++  return call<LoaderOption[]>("home_levilamina_options", { name });
++}
++
++/** Install or update LeviLamina and return the refreshed instance view. */
++export function homeLevilaminaInstall(name: string, version: string): Promise<VersionView> {
++  return call<VersionView>("home_levilamina_install", { name, version });
++}
++
+@@ -512,0 +525,20 @@ export function homeClientsList(): Promise<ClientView[]> {
++/** 官方发布目录中的客户端资产。 */
++export interface ClientCatalogEntry {
++  id: string;
++  name: string;
++  version: string;
++  source_url: string;
++  asset_name: string;
++  compatible: boolean | null;
++}
++
++/** 获取官方客户端目录。 */
++export function homeClientCatalog(): Promise<ClientCatalogEntry[]> {
++  return call<ClientCatalogEntry[]>("home_client_catalog");
++}
++
++/** 下载官方资产并通过本地客户端导入校验。 */
++export function homeClientInstall(id: string, name?: string): Promise<ClientView> {
++  return call<ClientView>("home_client_install", { id, name });
++}
++
+diff --git a/src-tauri/src/commands/home.rs b/src-tauri/src/commands/home.rs
+index 8df9e17..f96912f 100644
+--- a/src-tauri/src/commands/home.rs
++++ b/src-tauri/src/commands/home.rs
+@@ -9,0 +10 @@ use crate::modules::home::client;
++use crate::modules::home::client_catalog;
+@@ -23,0 +25,12 @@ pub fn home_versions_list(kernel: State<'_, KernelContext>) -> CommandResult<Vec
++/// 查询当前游戏版本可用的 LeviLamina 版本。
++#[tauri::command]
++pub async fn home_levilamina_options(kernel: State<'_ , KernelContext>, name: String) -> CommandResult<Vec<crate::modules::content_download::loader_catalog::LoaderOption>> {
++    crate::modules::home::HomeModule::levilamina_options(kernel.inner(), &name).await.map_err(into_command_error)
++}
++
++/// 安装或更新 LeviLamina，并返回更新后的实例视图。
++#[tauri::command]
++pub async fn home_levilamina_install(kernel: State<'_ , KernelContext>, name: String, version: String) -> CommandResult<VersionView> {
++    crate::modules::home::HomeModule::install_levilamina(kernel.inner(), &name, &version).await.map_err(into_command_error)
++}
++
+@@ -218,0 +232,28 @@ pub fn home_clients_list(
++/// 查询官方客户端目录。目录只提供官方资产元数据，兼容性由 DLL 导入校验后确定。
++#[tauri::command]
++pub async fn home_client_catalog(
++    kernel: State<'_, KernelContext>,
++) -> CommandResult<Vec<client_catalog::ClientCatalogEntry>> {
++    client_catalog::list(&kernel.paths().data_dir())
++        .await
++        .map_err(into_command_error)
++}
++
++/// 下载并导入官方客户端 DLL，复用本地导入器的 PE、大小和哈希校验。
++#[tauri::command]
++pub async fn home_client_install(
++    kernel: State<'_, KernelContext>,
++    id: String,
++    name: Option<String>,
++) -> CommandResult<client::ClientView> {
++    client_catalog::install(
++        kernel.paths(),
++        kernel.db(),
++        kernel.events(),
++        &id,
++        name.as_deref(),
++    )
++    .await
++    .map_err(into_command_error)
++}
++
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 04af18c..4ac5559 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -522,0 +523,2 @@ pub fn run() {
++            commands::home::home_levilamina_options,
++            commands::home::home_levilamina_install,
+@@ -555,0 +558,2 @@ pub fn run() {
++            commands::home::home_client_catalog,
++            commands::home::home_client_install,
+diff --git a/src-tauri/src/modules/home/mod.rs b/src-tauri/src/modules/home/mod.rs
+index e892353..310a724 100644
+--- a/src-tauri/src/modules/home/mod.rs
++++ b/src-tauri/src/modules/home/mod.rs
+@@ -16,0 +17 @@ use crate::registry::modules::Module;
++use crate::modules::content_download::{lip_install, loader_catalog};
+@@ -28,0 +30 @@ pub mod client;
++pub mod client_catalog;
+@@ -190,0 +193,49 @@ impl HomeModule {
++    /// 获取该游戏版本支持的 LeviLamina 版本。
++    pub async fn levilamina_options(kernel: &KernelContext, name: &str) -> Result<Vec<loader_catalog::LoaderOption>, KernelError> {
++        let dir = meta::resolve_version_dir(&kernel.versions_root(), name)?;
++        let meta = VersionMeta::read(&dir).ok_or_else(|| KernelError::InvalidArgument(format!("版本 {} 不存在", name)))?;
++        if meta.is_uwp() { return Err(KernelError::InvalidArgument("uwp_loader_unsupported".into())); }
++        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
++        if launch::is_process_running_at_path(&launch::game_exe_path(&dir)) { return Err(KernelError::InvalidArgument("game_running".into())); }
++        let catalog = loader_catalog::LoaderCatalog::load(&kernel.paths().cache_dir()).await?;
++        Ok(catalog.options_for(&meta.game_version))
++    }
++
++    /// 使用内置 LIP 引擎安装或更新 LeviLamina。
++    pub async fn install_levilamina(kernel: &KernelContext, name: &str, version: &str) -> Result<VersionView, KernelError> {
++        let root = kernel.versions_root();
++        let dir = meta::resolve_version_dir(&root, name)?;
++        let mut meta = VersionMeta::read(&dir).ok_or_else(|| KernelError::InvalidArgument(format!("版本 {} 不存在", name)))?;
++        if meta.is_uwp() { return Err(KernelError::InvalidArgument("uwp_loader_unsupported".into())); }
++        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
++        if launch::is_process_running_at_path(&launch::game_exe_path(&dir)) { return Err(KernelError::InvalidArgument("game_running".into())); }
++        let selected = version.trim();
++        if selected.is_empty() { return Err(KernelError::InvalidArgument("loader_version_required".into())); }
++        let catalog = loader_catalog::LoaderCatalog::load(&kernel.paths().cache_dir()).await?;
++        if !catalog.options_for(&meta.game_version).iter().any(|option| option.version == selected) {
++            return Err(KernelError::InvalidArgument("loader_version_incompatible".into()));
++        }
++        let engine = crate::modules::lip::Engine::new(crate::modules::lip::Environment::current(), kernel.paths().cache_dir().join("lip"))
++            .map_err(|e| KernelError::InvalidArgument(format!("LIP: {}", e)))?;
++        let sink = crate::modules::lip::Sink::new({
++            let events = kernel.events().clone();
++            let instance = name.to_owned();
++            move |event| {
++                let (stage, progress, detail) = match event {
++                    crate::modules::lip::LipEvent::Stage(stage) => (stage.to_string(), None, None),
++                    crate::modules::lip::LipEvent::Progress { item, percent } => ("download.stage.lip_installing".to_string(), percent, Some(item)),
++                    crate::modules::lip::LipEvent::Log(text) => ("download.stage.lip_installing".to_string(), None, Some(text)),
++                };
++                events.publish("home.levilamina.progress", serde_json::json!({"name":instance,"stage":stage,"progress":progress,"detail":detail}));
++            }
++        });
++        let cancel = crate::modules::lip::Cancel::new();
++        let outcome = lip_install::install_resolved(&engine, loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF, selected, &dir, true, Some(&sink), &cancel).await;
++        if !outcome.success { return Err(KernelError::InvalidArgument(outcome.stderr)); }
++        meta.loader = Some(selected.to_owned());
++        meta.mode = Some("levi".to_string());
++        isolate::enforce_isolation(&mut meta);
++        VersionMeta::write(&dir, &meta)?;
++        Ok(to_view(&root, meta))
++    }
++

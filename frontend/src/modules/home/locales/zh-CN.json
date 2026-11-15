@@ -265,6 +265,19 @@
     "removed_many": "已删除 {count} 个模组",
     "remove_many_confirm": "确定删除选中的 {count} 个模组吗？模组文件夹将被移除。"
   },
+  "native_modules": {
+    "empty": "该版本暂无原生模块",
+    "empty_search": "没有匹配的原生模块",
+    "search_placeholder": "搜索原生模块…",
+    "enabled": "已启用",
+    "disabled": "已停用",
+    "enable": "启用",
+    "disable": "停用",
+    "remove": "删除",
+    "remove_confirm": "确定删除原生模块「{name}」吗？其文件夹将被移除。",
+    "removed": "原生模块已删除",
+    "filters": { "all": "全部", "enabled": "启用", "disabled": "停用" }
+  },
   "toast": {
     "launch_failed": "启动失败：{message}",
     "stopped": "游戏已退出",
@@ -313,6 +326,7 @@
       "mods_hint": "加载器读取的模组文件",
       "client": "管理客户端",
       "client_hint": "第三方客户端 DLL 与启动状态",
+      "native_modules": "管理原生模块",
       "restore": "还原版本",
       "restore_hint": "清除注入，恢复原始启动文件",
       "restore_none": "没有可还原的备份，启动文件仍是原始状态",
@@ -333,6 +347,7 @@
       "content": "资源",
       "mods": "模组",
       "client": "客户端",
+      "native_modules": "原生模块",
       "controls": "屏幕触控层"
     },
     "filter": "筛选"

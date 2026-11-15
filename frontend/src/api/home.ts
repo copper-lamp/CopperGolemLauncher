@@ -282,6 +282,19 @@ export function homeModsList(name: string): Promise<ModListResult> {
   return call<ModListResult>("home_mods_list", { name });
 }
 
+/** Android launcher-side native modules; separate from loader-managed mods. */
+export function androidNativeModulesList(name: string): Promise<ModView[]> {
+  return call<{ mods: ModView[] }>("android_native_modules_list", { name }).then((result) => result.mods);
+}
+
+export function androidNativeModuleSetEnabled(name: string, folder: string, enabled: boolean): Promise<void> {
+  return call<void>("android_native_modules_set_enabled", { name, folder, enabled });
+}
+
+export function androidNativeModuleRemove(name: string, folder: string): Promise<void> {
+  return call<void>("android_native_modules_remove", { name, folder });
+}
+
 /** 可更新的模组（只有来自内容目录、且目录里有更新版本的模组会返回）。 */
 export interface ModUpdate {
   folder: string;

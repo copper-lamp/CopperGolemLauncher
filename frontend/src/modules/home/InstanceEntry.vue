@@ -67,7 +67,7 @@ interface EntryActionGroup {
 
 const { t } = useI18n();
 const router = useRouter();
-const { isMobile, isWindows } = usePlatform();
+const { isMobile, isAndroid, isWindows } = usePlatform();
 const { current, currentName, loading, refresh, applyView } = useVersionInstance();
 
 const iconDialogOpen = ref(false);
@@ -134,7 +134,7 @@ const modeOptions = computed(() => {
   ];
   // 客户端注入只有 Windows 有实现；移动端 / Linux / macOS 不提供该选项。
   // 旧数据已是 client 模式时仍显示，否则分段控件会没有选中项。
-  if (isWindows.value || current.value?.mode === "client") {
+  if (isWindows.value || (!isAndroid.value && current.value?.mode === "client")) {
     options.push({ value: "client", label: t("module.home.instance.mode.client") });
   }
   return options;
@@ -269,12 +269,19 @@ const actionGroups = computed<EntryActionGroup[]>(() => {
       label: t("module.home.instance.action.mods"),
       run: () => go("mods"),
     });
-  } else if (view.mode === "client") {
+  } else if (view.mode === "client" && !isAndroid.value) {
     manage.push({
       key: "client",
       icon: PlugZap,
       label: t("module.home.instance.action.client"),
       run: () => go("client"),
+    });
+  } else if (isAndroid.value) {
+    manage.push({
+      key: "native-modules",
+      icon: PlugZap,
+      label: t("module.home.instance.action.native_modules"),
+      run: () => router.push({ path: "/version-settings/native-modules", query: { name: currentName.value } }),
     });
   }
   manage.push({

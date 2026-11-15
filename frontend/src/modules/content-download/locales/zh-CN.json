@@ -30,6 +30,7 @@
   "downloads": "下载 {count}",
   "filter": "筛选",
   "filterTitle": "筛选条件",
+  "filterClose": "关闭筛选",
   "filterReset": "重置",
   "filterActive": "已设置 {count} 项筛选",
   "version": "游戏版本",

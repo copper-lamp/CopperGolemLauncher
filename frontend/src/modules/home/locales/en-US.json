@@ -265,6 +265,19 @@
     "removed_many": "Removed {count} mods",
     "remove_many_confirm": "Remove the {count} selected mods? Their folders will be deleted."
   },
+  "native_modules": {
+    "empty": "No native modules for this version",
+    "empty_search": "No matching native modules",
+    "search_placeholder": "Search native modules…",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "enable": "Enable",
+    "disable": "Disable",
+    "remove": "Remove",
+    "remove_confirm": "Remove native module \"{name}\"? Its folder will be deleted.",
+    "removed": "Native module removed",
+    "filters": { "all": "All", "enabled": "Enabled", "disabled": "Disabled" }
+  },
   "toast": {
     "launch_failed": "Launch failed: {message}",
     "stopped": "Game closed",
@@ -313,6 +326,7 @@
       "mods_hint": "Mod files read by the loader",
       "client": "Manage client",
       "client_hint": "Third-party client DLL and launch state",
+      "native_modules": "Manage native modules",
       "restore": "Restore version",
       "restore_hint": "Remove injection and restore the original launch file",
       "restore_none": "Nothing to restore: the launch file is still original",
@@ -333,6 +347,7 @@
       "content": "Content",
       "mods": "Mods",
       "client": "Client",
+      "native_modules": "Native modules",
       "controls": "Touch controls"
     },
     "filter": "Filter"

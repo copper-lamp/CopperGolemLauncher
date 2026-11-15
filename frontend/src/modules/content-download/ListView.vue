@@ -30,6 +30,8 @@ import {
   RotateCcw,
   LoaderCircle,
   ArrowUp,
+  SlidersHorizontal,
+  X,
 } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
@@ -83,6 +85,7 @@ const { t } = useI18n();
 const router = useRouter();
 const settings = useSettings();
 const { isAndroid } = usePlatform();
+const filtersOpen = ref(false);
 
 const MB_KEY = "module.content-download";
 const translation = useTranslation();
@@ -113,21 +116,27 @@ const SETTING_KEYS = {
  * `lla`（安卓 LL 模组 / LeviModHub 目录）仅在 Android 出现：桌面端 lip
  * 装不了它，安卓端 lipd 又不可用，两个来源在各自平台互斥。
  */
-const SOURCES: Array<{ value: ContentSource | ""; label: string }> = [
-  { value: "", label: MB_KEY + ".sourceAll" },
-  { value: "curseforge", label: MB_KEY + ".sourceCurseforge" },
+const SOURCES = computed<Array<{ value: ContentSource | ""; label: string }>>(() =>
   isAndroid.value
-    ? { value: "lla", label: MB_KEY + ".sourceLla" }
-    : { value: "lip", label: MB_KEY + ".sourceLip" },
-];
+    ? [{ value: "lla", label: MB_KEY + ".sourceLla" }]
+    : [
+        { value: "", label: MB_KEY + ".sourceAll" },
+        { value: "curseforge", label: MB_KEY + ".sourceCurseforge" },
+        { value: "lip", label: MB_KEY + ".sourceLip" },
+      ],
+);
 
-const TYPES: Array<{ value: ContentType | ""; label: string }> = [
-  { value: "", label: MB_KEY + ".typeAll" },
-  { value: "behavior_pack", label: MB_KEY + ".typeBehaviorPack" },
-  { value: "texture_pack", label: MB_KEY + ".typeTexturePack" },
-  { value: "shader", label: MB_KEY + ".typeShader" },
-  { value: "ll_mod", label: MB_KEY + ".typeLlMod" },
-];
+const TYPES = computed<Array<{ value: ContentType | ""; label: string }>>(() =>
+  isAndroid.value
+    ? [{ value: "ll_mod", label: MB_KEY + ".typeLlMod" }]
+    : [
+        { value: "", label: MB_KEY + ".typeAll" },
+        { value: "behavior_pack", label: MB_KEY + ".typeBehaviorPack" },
+        { value: "texture_pack", label: MB_KEY + ".typeTexturePack" },
+        { value: "shader", label: MB_KEY + ".typeShader" },
+        { value: "ll_mod", label: MB_KEY + ".typeLlMod" },
+      ],
+);
 
 const SORTS: ContentSort[] = [
   "downloads_desc",
@@ -166,6 +175,13 @@ function backToTop() {
   scrollBody()?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function closeFilters() { filtersOpen.value = false; }
+function onFilterKeydown(event: KeyboardEvent) { if (event.key === "Escape") closeFilters(); }
+watch(filtersOpen, open => {
+  if (open) document.addEventListener("keydown", onFilterKeydown);
+  else document.removeEventListener("keydown", onFilterKeydown);
+});
+
 function localizedTag(name: string): string {
   const key = MB_KEY + ".tags." + name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   const translated = t(key);
@@ -188,10 +204,10 @@ const pagerLabels = computed(() => ({
 }));
 
 const sourceOptions = computed(() =>
-  SOURCES.map((o) => ({ value: o.value, label: t(o.label) })),
+  SOURCES.value.map((o) => ({ value: o.value, label: t(o.label) })),
 );
 const typeOptions = computed(() =>
-  TYPES.map((o) => ({ value: o.value, label: t(o.label) })),
+  TYPES.value.map((o) => ({ value: o.value, label: t(o.label) })),
 );
 const sortOptions = computed(() =>
   SORTS.map((s) => ({ value: s, label: t(SORT_LABEL_KEY[s]) })),
@@ -240,11 +256,11 @@ async function fetchPage() {
   error.value = null;
   try {
     const result = await contentDownloadList({
-      source: source.value || undefined,
-      contentType: contentType.value || undefined,
+      source: isAndroid.value ? "lla" : source.value || undefined,
+      contentType: isAndroid.value ? "ll_mod" : contentType.value || undefined,
       search: searchInput.value.trim() || undefined,
-      gameVersion: gameVersion.value || undefined,
-      tag: tag.value || undefined,
+      gameVersion: isAndroid.value ? undefined : gameVersion.value || undefined,
+      tag: isAndroid.value ? undefined : tag.value || undefined,
       sort: sort.value,
       page: page.value,
     });
@@ -289,6 +305,7 @@ function openDetail(item: ContentItem) {
 }
 
 async function loadVersions(force = false) {
+  if (isAndroid.value) { versions.value = []; versionsError.value = null; return; }
   const ctype = contentType.value;
   if (!force && hasLoadedVersions(ctype) && versions.value.length > 0) return;
   if (versionsLoading.value) return;
@@ -372,8 +389,8 @@ async function loadTags() {
   const ctype = contentType.value;
   try {
     const options = await contentDownloadTags(
-      source.value || undefined,
-      ctype || undefined,
+      isAndroid.value ? "lla" : source.value || undefined,
+      isAndroid.value ? "ll_mod" : ctype || undefined,
     );
     if (contentType.value !== ctype) return;
     tagOptions.value = options;
@@ -407,6 +424,14 @@ watch([source, contentType, gameVersion, sort, tag], () => {
 
 watch(source, () => void loadTags());
 
+watch(isAndroid, (android) => {
+  if (!android) return;
+  source.value = "lla";
+  contentType.value = "ll_mod";
+  gameVersion.value = "";
+  tag.value = "";
+});
+
 // 光影的标签是另一套（Realistic / Fantasy / Vanilla），换类型必须重取词表。
 watch(contentType, () => void loadTags());
 
@@ -438,13 +463,13 @@ onMounted(() => {
         contentType.value !== savedType ||
         gameVersion.value !== savedVersion ||
         sort.value !== savedSort;
-      source.value = SOURCES.some((option) => option.value === savedSource)
+      source.value = isAndroid.value ? "lla" : SOURCES.value.some((option) => option.value === savedSource)
         ? savedSource
         : "";
-      contentType.value = savedType;
-      gameVersion.value = savedVersion;
+      contentType.value = isAndroid.value ? "ll_mod" : savedType;
+      gameVersion.value = isAndroid.value ? "" : savedVersion;
       sort.value = savedSort;
-      tag.value = savedTag;
+      tag.value = isAndroid.value ? "" : savedTag;
       if (!changed) void fetchPage();
     } else {
       void fetchPage();
@@ -457,7 +482,7 @@ onMounted(() => {
     });
   }
 });
-onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInterval(refreshTimer); });
+onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInterval(refreshTimer); document.removeEventListener("keydown", onFilterKeydown); });
 </script>
 <template>
   <!-- 内容市场是宽屏工作台（列表 + 筛选栏），窗口最大化时左右铺满，不套 1240px 版心。 -->
@@ -467,7 +492,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
     </Teleport>
 
     <div class="list-page">
-      <div class="list-page__grid">
+      <div class="list-page__grid" :class="{ 'list-page__grid--android': isAndroid }">
       <!-- 左：结果列表 -->
       <section ref="resultsRef" class="list-page__results" @scroll="onResultsScroll">
         <div v-if="loading && items.length === 0" class="list-page__state">
@@ -548,7 +573,10 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
       </section>
 
       <!-- 右：搜索（独立）+ 按钮（独立）+ 卡片（翻页 / 平铺筛选） -->
-      <aside class="rail">
+      <button v-if="isAndroid" class="list-page__filters-toggle" type="button" :aria-label="t(MB_KEY + '.filterTitle')" :title="t(MB_KEY + '.filterTitle')" :aria-expanded="filtersOpen" aria-controls="content-filter-rail" @click="filtersOpen = true"><SlidersHorizontal :size="22" /></button>
+      <div v-if="isAndroid" class="list-page__filter-backdrop" :class="{ 'list-page__filter-backdrop--open': filtersOpen }" @click="closeFilters" />
+      <aside id="content-filter-rail" class="rail" :class="{ 'rail--open': filtersOpen }" :aria-hidden="isAndroid && !filtersOpen" :inert="isAndroid && !filtersOpen">
+        <button v-if="isAndroid" class="rail__close" type="button" :aria-label="t(MB_KEY + '.filterClose')" :title="t(MB_KEY + '.filterClose')" @click="closeFilters"><X :size="20" /></button>
         <div class="rail__search">
           <Search :size="15" class="rail__search-icon" />
           <input
@@ -561,7 +589,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 
         <button class="rail__go" @click="search">{{ t(MB_KEY + ".search") }}</button>
 
-        <div class="rail__card">
+        <div class="rail__card" :class="{ 'rail__card--mobile': isAndroid }">
           <div class="rail__pager">
             <CoPagination
               shape="circle"
@@ -1217,6 +1245,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   position: fixed;
   z-index: 20;
   left: calc(var(--copper-nav-w) + var(--copper-space-4));
+  right: auto;
   bottom: max(var(--copper-space-4), env(safe-area-inset-bottom));
   display: grid;
   place-items: center;
@@ -1236,6 +1265,42 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 .list-page__back-to-top:hover {
   background: color-mix(in srgb, var(--copper-accent) 88%, #000);
   transform: translateY(-2px);
+}
+
+.list-page__filters-toggle, .rail__close { display: none; }
+.list-page__filter-backdrop { display: none; }
+
+@media (max-width: 1200px) {
+  .list-page__grid--android .list-page__results { grid-column: 1; }
+  .list-page__grid--android .list-page__filters-toggle {
+    position: fixed; z-index: 31; right: max(16px, env(safe-area-inset-right)); top: calc(var(--copper-titlebar-h) + 12px);
+    display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%;
+    background: var(--copper-accent); color: var(--copper-accent-foreground); box-shadow: var(--copper-shadow-raised);
+  }
+  .list-page__grid--android .list-page__filter-backdrop {
+    display: block;
+    position: fixed; z-index: 39; inset: 0; background: var(--copper-overlay); opacity: 0; visibility: hidden;
+    transition: opacity 240ms var(--copper-easing), visibility 240ms;
+  }
+  .list-page__grid--android .list-page__filter-backdrop--open { opacity: 1; visibility: visible; }
+  .list-page__grid--android .rail {
+    position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: 50vw; min-width: 300px; max-width: 560px; height: 100dvh;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) 16px;
+    background: var(--copper-bg); box-shadow: var(--copper-shadow); transform: translateX(102%); visibility: hidden;
+    transition: transform 260ms cubic-bezier(.2,.8,.2,1), visibility 260ms;
+  }
+  .list-page__grid--android .rail--open { transform: translateX(0); visibility: visible; }
+  .list-page__grid--android .rail:not(.rail--open) { pointer-events: none; }
+  .list-page__grid--android .rail__close { align-self: flex-end; display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--copper-surface); color: var(--copper-text); }
+  .list-page__grid--android .rail__card--mobile { padding: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  .list-page__grid--android .rail__filters { overflow-y: auto; }
+}
+
+@media (max-width: 420px) {
+  .list-page__grid--android .rail { width: 50vw; min-width: 0; padding-left: 12px; padding-right: max(12px, env(safe-area-inset-right)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .list-page__grid--android .rail, .list-page__grid--android .list-page__filter-backdrop { transition-duration: 1ms; }
 }
 
 @container (max-width: 860px) {

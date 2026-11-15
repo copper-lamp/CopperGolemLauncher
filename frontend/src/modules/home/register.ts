@@ -66,6 +66,15 @@ registerModule({
       },
     },
     {
+      path: "/version-settings/native-modules",
+      name: "version-settings-native-modules",
+      component: () => import("./InstanceNativeModulesPage.vue"),
+      meta: {
+        titleKey: "module.home.instance.page.native_modules",
+        breadcrumb: [...SETTINGS_CRUMBS, { titleKey: "module.home.instance.page.native_modules", path: "/version-settings/native-modules" }],
+      },
+    },
+    {
       path: "/version-settings/client",
       name: "version-settings-client",
       component: () => import("./InstanceClientPage.vue"),

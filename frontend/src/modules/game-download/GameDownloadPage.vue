@@ -18,6 +18,7 @@ import {
   SlidersHorizontal,
   Upload,
   X,
+  ArrowUp,
 } from "@lucide/vue";
 import { homeLaunch } from "../../api/home";
 import { useI18n } from "../../i18n";
@@ -60,6 +61,9 @@ const importing = ref(false);
 const canImport = computed(() => platform.value === "android-arm64");
 
 const searching = computed(() => keyword.value.trim().length > 0);
+const showBackToTop = ref(false);
+function onPageScroll(event: Event) { showBackToTop.value = (event.currentTarget as HTMLElement).scrollTop > 280; }
+function backToTop() { document.querySelector<HTMLElement>(".gd-page")?.scrollTo({ top: 0, behavior: "smooth" }); }
 
 /** 加载器筛选档位：全部 / 仅带加载器 / 仅无加载器。 */
 type LoaderFilter = "all" | "with" | "without";
@@ -238,7 +242,7 @@ async function importApk() {
 </script>
 
 <template>
-  <div class="gd-page">
+  <div class="gd-page" @scroll="onPageScroll">
     <!-- 导入进度：常驻条，导入结束后保留结果直到下一次操作 -->
     <p v-if="importStatus" class="gd-page__import-status" role="status">
       <LoaderCircle v-if="importing" :size="13" class="spin" />
@@ -249,19 +253,6 @@ async function importApk() {
       {{ loadError }}
       <button v-if="gd.manifest.value" class="gd-page__retry" :disabled="localLoading || gd.loading.value" @click="refresh">{{ t(`${MB_KEY}.actions.retry`) }}</button>
     </p>
-    <!-- 导入按钮注入全局标题栏；清单按24小时自动校验，错误状态保留重试。 -->
-    <Teleport defer to="#copper-titlebar-actions">
-      <button
-        v-if="canImport"
-        class="gd-page__refresh"
-        :title="t(`${MB_KEY}.actions.import`)"
-        :disabled="importing"
-        @click="importApk"
-      >
-        <LoaderCircle v-if="importing" :size="15" class="spin" />
-        <Upload v-else :size="15" />
-      </button>
-    </Teleport>
 
     <!-- 骨架 -->
     <div v-if="gd.loading.value && !gd.manifest.value" class="gd-page__scope">
@@ -354,6 +345,11 @@ async function importApk() {
           <VersionCard v-if="latestRelease" :version="latestRelease" />
           <p v-else class="gd-top__empty">{{ t(`${MB_KEY}.empty`) }}</p>
           <VersionCard v-if="latestPreview" :version="latestPreview" />
+          <button v-if="canImport" class="gd-page__import" type="button" :disabled="importing" @click="importApk">
+            <LoaderCircle v-if="importing" :size="15" class="spin" />
+            <Upload v-else :size="15" />
+            <span>{{ t(`${MB_KEY}.actions.import`) }}</span>
+          </button>
         </div>
       </section>
 
@@ -418,17 +414,39 @@ async function importApk() {
         {{ t(`${MB_KEY}.match_count`, { n: matchCount }) }}
       </p>
     </div>
+    <button v-if="showBackToTop" class="gd-page__back-to-top" type="button" :aria-label="t(`${MB_KEY}.back_to_top`)" :title="t(`${MB_KEY}.back_to_top`)" @click="backToTop"><ArrowUp :size="22" /></button>
   </div>
 </template>
 
 <style scoped>
 .gd-page {
+  position: relative;
   height: 100%;
   padding: var(--copper-space-5);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
+
+.gd-page__back-to-top {
+  position: fixed;
+  z-index: 20;
+  left: calc(var(--copper-nav-w) + var(--copper-space-4));
+  bottom: max(var(--copper-space-4), env(safe-area-inset-bottom));
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--copper-accent);
+  color: var(--copper-accent-foreground);
+  box-shadow: var(--copper-shadow-card);
+  cursor: pointer;
+  transition: background-color var(--copper-duration-fast) var(--copper-easing), transform var(--copper-duration-fast) var(--copper-easing);
+}
+.gd-page__back-to-top:hover { background: color-mix(in srgb, var(--copper-accent) 88%, #000); transform: translateY(-2px); }
+@media (max-width: 860px) { .gd-page__back-to-top { left: var(--copper-space-4); } }
 
 .gd-page__import-status {
   display: flex;
@@ -445,27 +463,30 @@ async function importApk() {
   color: var(--copper-danger);
 }
 
-.gd-page__refresh {
-  display: flex;
+.gd-page__import {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: var(--copper-radius-sm);
-  background: transparent;
-  color: var(--copper-text-secondary);
+  align-self: flex-start;
+  gap: var(--copper-space-2);
+  min-height: var(--copper-control-h-sm);
+  margin-top: var(--copper-space-2);
+  padding: 0 var(--copper-space-3);
+  border: 0;
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface-2);
+  color: var(--copper-text);
+  font-size: var(--copper-font-size-sm);
   cursor: pointer;
   transition: background-color var(--copper-duration-fast) var(--copper-easing);
 }
 
-.gd-page__refresh:hover:not(:disabled) {
+.gd-page__import:hover:not(:disabled) {
   background: var(--copper-hover);
-  color: var(--copper-text);
 }
 
-.gd-page__refresh:disabled {
-  opacity: 0.5;
+.gd-page__import:disabled {
+  opacity: 0.6;
   cursor: default;
 }
 

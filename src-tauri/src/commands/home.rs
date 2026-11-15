@@ -387,6 +387,34 @@ pub fn home_mods_list(
     mods::list_mods(kernel.inner(), &name).map_err(into_command_error)
 }
 
+/// List Android preload-native modules only.
+#[tauri::command]
+pub fn android_native_modules_list(
+    kernel: State<'_, KernelContext>,
+    name: String,
+) -> CommandResult<mods::ModListResult> {
+    mods::list_android_native_modules(kernel.inner(), &name).map_err(into_command_error)
+}
+
+#[tauri::command]
+pub fn android_native_modules_set_enabled(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folder: String,
+    enabled: bool,
+) -> CommandResult<()> {
+    mods::set_android_native_module_enabled(kernel.inner(), &name, &folder, enabled).map_err(into_command_error)
+}
+
+#[tauri::command]
+pub fn android_native_modules_remove(
+    kernel: State<'_, KernelContext>,
+    name: String,
+    folder: String,
+) -> CommandResult<()> {
+    mods::remove_android_native_module(kernel.inner(), &name, &folder).map_err(into_command_error)
+}
+
 /// 从 ZIP 导入模组（重名且 `overwrite` 为假时返回 `conflict`）。
 #[tauri::command]
 pub fn home_mods_import_zip(

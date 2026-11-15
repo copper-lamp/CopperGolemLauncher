@@ -145,7 +145,71 @@ pub fn list_mods(kernel: &KernelContext, name: &str) -> Result<ModListResult, Ke
     Ok(result)
 }
 
-/// 批量启用 / 停用（多选操作）。只广播一次变更事件。
+/// List only installed Android preload-native modules with a safe shared-library entry.
+pub fn list_android_native_modules(kernel: &KernelContext, name: &str) -> Result<ModListResult, KernelError> {
+    let root = mods_dir(kernel, name, false)?;
+    let mut result = list_mods_at(&root)?;
+    result.mods.retain(|view| is_android_native_module(&root, &view.folder, view.enabled));
+    Ok(result)
+}
+
+/// Toggle or remove only a validated Android preload-native module.
+pub fn set_android_native_module_enabled(kernel: &KernelContext, name: &str, folder: &str, enabled: bool) -> Result<(), KernelError> {
+    let root = mods_dir(kernel, name, false)?;
+    let dir = validate_android_native_module(&root, folder)?;
+    let (manifest, current_enabled) = load_manifest(&dir).ok_or_else(|| KernelError::InvalidArgument("Android native module manifest is invalid".into()))?;
+    validate_native_entry(&dir, &manifest.entry)?;
+    if current_enabled != enabled { set_enabled_at(&root, folder, enabled)?; }
+    publish_changed(kernel, name);
+    Ok(())
+}
+
+pub fn remove_android_native_module(kernel: &KernelContext, name: &str, folder: &str) -> Result<(), KernelError> {
+    let root = mods_dir(kernel, name, false)?;
+    validate_android_native_module(&root, folder)?;
+    remove_mod_at(&root, folder)?;
+    publish_changed(kernel, name);
+    Ok(())
+}
+
+fn is_android_native_module(root: &Path, folder: &str, enabled: bool) -> bool {
+    validate_android_native_module(root, folder).ok().and_then(|dir| {
+        let manifest_name = if enabled { MANIFEST_FILE.to_owned() } else { disabled_manifest_name() };
+        let manifest = read_manifest(&dir.join(manifest_name))?;
+        if manifest.mod_type != DEFAULT_DLL_TYPE { return None; }
+        validate_native_entry(&dir, &manifest.entry).ok().map(|_| ())
+    }).is_some()
+}
+
+fn validate_android_native_module(root: &Path, folder: &str) -> Result<PathBuf, KernelError> {
+    let dir = resolve_mod_dir(root, folder)?;
+    if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
+        return Err(KernelError::InvalidArgument("Native module directories cannot be symlinks".into()));
+    }
+    let (manifest, _) = load_manifest(&dir).ok_or_else(|| KernelError::InvalidArgument("Android native module manifest is invalid".into()))?;
+    if manifest.mod_type != DEFAULT_DLL_TYPE { return Err(KernelError::InvalidArgument("Not an Android native module".into())); }
+    validate_native_entry(&dir, &manifest.entry)?;
+    Ok(dir)
+}
+
+fn validate_native_entry(dir: &Path, entry: &str) -> Result<PathBuf, KernelError> {
+    let normalized = normalize_archive_path(entry.trim()).ok_or_else(|| KernelError::InvalidArgument("Invalid native module entry".into()))?;
+    if normalized.is_empty() || !normalized.to_ascii_lowercase().ends_with(".so") { return Err(KernelError::InvalidArgument("Native module entry must be a .so file".into())); }
+    let root = std::fs::canonicalize(dir)?;
+    let candidate = root.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let mut cursor = root.clone();
+    for part in normalized.split('/') {
+        cursor.push(part);
+        if std::fs::symlink_metadata(&cursor)?.file_type().is_symlink() {
+            return Err(KernelError::InvalidArgument("Native module entry cannot traverse symlinks".into()));
+        }
+    }
+    let path = std::fs::canonicalize(candidate)?;
+    if !path.starts_with(&root) || !path.is_file() { return Err(KernelError::InvalidArgument("Native module entry escapes its module directory".into())); }
+    Ok(path)
+}
+
+/// 批量启用 / 停用（多选操作）。只广播一次变更事件.
 pub fn set_mods_enabled(
     kernel: &KernelContext,
     name: &str,
@@ -1260,6 +1324,36 @@ mod tests {
         assert!(!record_covers(Some("/v/inst/mods/beta"), mod_path));
         assert!(!record_covers(Some("/v/inst/mods"), mod_path));
         assert!(!record_covers(None, mod_path));
+    }
+
+    #[test]
+    fn android_native_entries_require_a_contained_real_so_file() {
+        let root = temp_root("native-entry");
+        let module = root.join("module");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(module.join("libmodule.so"), b"so").unwrap();
+        assert!(validate_native_entry(&module, "libmodule.so").is_ok());
+        assert!(validate_native_entry(&module, "sub/../libmodule.so").is_err());
+        assert!(validate_native_entry(&module, "missing.so").is_err());
+        assert!(validate_native_entry(&module, "module.dll").is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn android_native_modules_ignore_non_native_and_invalid_entries() {
+        let root = temp_root("native-filter");
+        let native = root.join("native");
+        let regular = root.join("regular");
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::create_dir_all(&regular).unwrap();
+        std::fs::write(native.join(MANIFEST_FILE), manifest_json("Native", "lib.so")).unwrap();
+        std::fs::write(native.join("lib.so"), b"so").unwrap();
+        std::fs::write(regular.join(MANIFEST_FILE), br#"{"name":"Regular","entry":"lib.so","version":"1","type":"behavior_pack"}"#).unwrap();
+        assert!(is_android_native_module(&root, "native", true));
+        assert!(!is_android_native_module(&root, "regular", true));
+        std::fs::remove_file(native.join("lib.so")).unwrap();
+        assert!(!is_android_native_module(&root, "native", true));
+        let _ = std::fs::remove_dir_all(root);
     }
     use super::*;
     use std::io::Cursor;

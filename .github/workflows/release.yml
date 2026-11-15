@@ -59,6 +59,12 @@ jobs:
           $body | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
           $delimiter | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      # 附加模块 helper 是独立 crate 的 bin，不在主 crate 的编译单元里，
+      # externalBin 只负责「把它放进安装包」，不会替我们编译，所以打包前先产出
+      # src-tauri/binaries/copper-module-helper-<triple>.exe。
+      - name: 构建附加模块 helper
+        run: node scripts/stage-module-helper.mjs
+
       - name: 安装前端依赖并构建发布
         uses: tauri-apps/tauri-action@v0
         env:
@@ -67,7 +73,7 @@ jobs:
           # 注意：tauri-action@v0 没有 `path` 输入（会被忽略并告警），
           # 工程目录用 `projectPath`，默认即仓库根，因此这里不需要填。
           # runner 上没有 OpenSSL，启用 vendored 特性从源码静态编译 openssl
-          args: --features vendored-openssl
+          args: --features vendored-openssl --config src-tauri/tauri.release.conf.json
           tagName: ${{ steps.changelog.outputs.tag }}
           releaseName: '铜傀儡 ${{ steps.changelog.outputs.tag }}'
           releaseBody: ${{ steps.changelog.outputs.body }}

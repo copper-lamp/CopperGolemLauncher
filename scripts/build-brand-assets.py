@@ -11,8 +11,9 @@
 
 依赖
 ----
-- Pillow（本机 Python 环境已带）
-- 仓库内的 Tauri CLI：node_modules/@tauri-apps/cli/tauri.js（生成 ico/icns 与 Android mipmap）
+- Pillow（本机 Python 环境已带）。这里**不**再走 `tauri icon`：它内部用
+  Lanczos 缩放，而品牌图是像素画，缩到 32/48px 会把方块边缘抹成灰边，
+  正是「图标看起来发虚」的根因。全部档位改由本脚本最近邻缩放后自行编码。
 
 用法
 ----
@@ -30,9 +31,8 @@
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
+import io
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -41,16 +41,19 @@ from PIL import Image, ImageColor, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent          # CopperCore/
 BRAND = ROOT / "brand"
-TAURI_CLI = ROOT / "node_modules" / "@tauri-apps" / "cli" / "tauri.js"
-
 DESKTOP_ICONS = ROOT / "src-tauri" / "icons"
 DESKTOP_ICONS_PREVIEW = ROOT / "src-tauri" / "icons-preview"
 ANDROID_RES = ROOT / "src-tauri" / "gen" / "android" / "app" / "src" / "main" / "res"
 PUBLIC = ROOT / "frontend" / "public"
 
-# 桌面端真正被 tauri.conf.json 引用的 6 个文件；其余（Square*Logo、ios/、android/）
-# 是 tauri icon 的副产品，不参与 Windows/Android 打包，直接丢弃。
+# 桌面端真正被 tauri.conf.json 引用的 6 个文件。
 DESKTOP_KEEP = ["32x32.png", "128x128.png", "128x128@2x.png", "icon.png", "icon.ico", "icon.icns"]
+
+# 桌面端每一档的像素尺寸。16/24/32/48 给任务栏与列表，256 给资源管理器大图标，
+# 512 供高 DPI 与商店物料复用。
+DESKTOP_PNG_SIZES = {"32x32.png": 32, "128x128.png": 128, "128x128@2x.png": 256, "icon.png": 512}
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+ICNS_SIZES = (32, 64, 128, 256, 512, 1024)
 
 # 与 app-android.png 里的方块底色一致，供自适应图标背景层使用。
 ICON_BACKGROUND = "#42210B"
@@ -58,23 +61,67 @@ ICON_BACKGROUND = "#42210B"
 FOREGROUND_CONTENT_RATIO = 0.60
 
 
-def run_tauri_icon(source: Path, output: Path) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    cmd = ["node", str(TAURI_CLI), "icon", str(source), "-o", str(output)]
-    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stdout + "\n" + proc.stderr + "\n")
-        raise SystemExit(f"tauri icon 失败，退出码 {proc.returncode}")
+def pixel_resize(image: Image.Image, size: int) -> Image.Image:
+    """最近邻缩放：像素画必须逐像素落到目标网格，插值只会制造灰边。"""
+    return image.resize((size, size), Image.NEAREST)
 
 
-def copy_desktop_icons(generated: Path, target: Path) -> None:
+def encode_ico(images: list[Image.Image]) -> bytes:
+    """把若干已缩好的图拼成多尺寸 ICO。
+
+    Pillow 的 ICO 保存会对每档重新做 Lanczos 缩放（糊图来源），所以只借它编码
+    单尺寸条目（`bitmap_format="bmp"`，DIB 载体，Windows 全版本兼容；默认的
+    256 档会写成 PNG 内嵌，个别资源嵌入器不认），容器由这里自己拼。
+    """
+    entries: list[tuple[bytes, bytes]] = []
+    for image in images:
+        buf = io.BytesIO()
+        # 传入的图已经是目标尺寸，Pillow 的 thumbnail 不会再缩放。
+        image.save(buf, format="ICO", sizes=[image.size], bitmap_format="bmp")
+        data = buf.getvalue()
+        count = struct.unpack_from("<H", data, 4)[0]
+        if count != 1:
+            raise SystemExit("单尺寸 ICO 编码结果异常")
+        entry = bytearray(data[6:22])
+        payload_size = struct.unpack_from("<I", entry, 8)[0]
+        payload_offset = struct.unpack_from("<I", entry, 12)[0]
+        payload = data[payload_offset : payload_offset + payload_size]
+        if len(payload) != payload_size:
+            raise SystemExit("ICO 条目长度与声明不符")
+        entries.append((bytes(entry), payload))
+
+    header = struct.pack("<HHH", 0, 1, len(entries))
+    offset = len(header) + 16 * len(entries)
+    toc = bytearray()
+    body = bytearray()
+    for entry, payload in entries:
+        item = bytearray(entry)
+        struct.pack_into("<I", item, 12, offset + len(body))
+        toc += item
+        body += payload
+    return bytes(header) + bytes(toc) + bytes(body)
+
+
+def build_desktop(source: Path, target: Path) -> None:
+    """按「最近邻缩放到目标档位 → 自行编码」的路径产出桌面图标全家桶。"""
+    origin = Image.open(source).convert("RGBA")
     target.mkdir(parents=True, exist_ok=True)
-    for name in DESKTOP_KEEP:
-        src = generated / name
-        if not src.is_file():
-            raise SystemExit(f"缺失 {src}，tauri icon 输出与预期不符")
-        shutil.copyfile(src, target / name)
-    # 清掉旧版本残留（Square*Logo 为 MSIX 专用，本项目无 MSIX target）。
+
+    for name, size in DESKTOP_PNG_SIZES.items():
+        pixel_resize(origin, size).save(target / name, optimize=True)
+
+    (target / "icon.ico").write_bytes(
+        encode_ico([pixel_resize(origin, size) for size in ICO_SIZES])
+    )
+
+    # ICNS 只服务 macOS 打包（当前不发 macOS 包），但保持同一套锐利档位，
+    # 避免以后启用 macOS 时又带一份糊图。
+    origin.save(
+        target / "icon.icns",
+        format="ICNS",
+        append_images=[pixel_resize(origin, size) for size in ICNS_SIZES],
+    )
+
     for stale in target.iterdir():
         if stale.is_file() and stale.name not in DESKTOP_KEEP:
             stale.unlink()
@@ -207,12 +254,12 @@ def build_frontend_public() -> None:
     favicon.ico：浏览器标签页（开发期）与 PWA 兜底，16/32/48 三档。
     """
     full = Image.open(BRAND / "copper-golem-full.png").convert("RGBA")
-    full.resize((256, 256), Image.LANCZOS).save(PUBLIC / "app-256.png", optimize=True)
+    # 界面里的品牌位也是像素画，同样用最近邻，避免 26px 侧导航处发灰。
+    pixel_resize(full, 256).save(PUBLIC / "app-256.png", optimize=True)
 
     head = Image.open(BRAND / "copper-golem-head.png").convert("RGBA")
-    head.resize((48, 48), Image.LANCZOS).save(
-        PUBLIC / "favicon.ico",
-        sizes=[(16, 16), (32, 32), (48, 48)],
+    (PUBLIC / "favicon.ico").write_bytes(
+        encode_ico([pixel_resize(head, size) for size in (16, 32, 48)])
     )
 
     for stale in ["app-32.png", "app-64.png", "app-180.png", "app-192.png", "app-512.png"]:
@@ -223,8 +270,6 @@ def build_frontend_public() -> None:
 
 
 def main() -> None:
-    if not TAURI_CLI.is_file():
-        raise SystemExit(f"未找到 Tauri CLI：{TAURI_CLI}（先在 CopperCore 执行 npm install）")
     for name in [
         "app-win.png",
         "app-android.png",
@@ -237,14 +282,8 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="cgl-brand-") as tmp:
         workdir = Path(tmp)
-        release_out = workdir / "release"
-        run_tauri_icon(BRAND / "app-win.png", release_out)
-        copy_desktop_icons(release_out, DESKTOP_ICONS)
-
-        preview_out = workdir / "preview"
-        run_tauri_icon(BRAND / "app-win-preview.png", preview_out)
-        copy_desktop_icons(preview_out, DESKTOP_ICONS_PREVIEW)
-
+        build_desktop(BRAND / "app-win.png", DESKTOP_ICONS)
+        build_desktop(BRAND / "app-win-preview.png", DESKTOP_ICONS_PREVIEW)
         build_android(workdir)
 
     build_frontend_public()

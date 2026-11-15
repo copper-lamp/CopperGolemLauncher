@@ -246,6 +246,9 @@ class CopperGamePrepareActivity : Activity(), CopperGameRuntimePreparer.Progress
                 onProgress(44, "加载原生库")
                 CopperGameRuntimePreparer.loadNativeLibraries(game, manager, this)
                 trace?.milestone("原生库加载完成")
+                onProgress(92, "加载原生模组")
+                game.loadEnabledNativeModules(this)
+                trace?.milestone("原生模组加载完成")
 
                 CopperGameSession.set(game, manager)
                 onProgress(100, "正在进入游戏")

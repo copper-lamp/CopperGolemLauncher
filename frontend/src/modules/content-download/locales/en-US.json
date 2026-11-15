@@ -30,6 +30,7 @@
   "downloads": "{count} downloads",
   "filter": "Filters",
   "filterTitle": "Filter options",
+  "filterClose": "Close filters",
   "filterReset": "Reset",
   "filterActive": "{count} filters applied",
   "version": "Game version",

@@ -29,6 +29,7 @@ pub mod extractor;
 pub mod installer;
 pub mod manifest;
 pub mod meta_bridge;
+pub mod play_catalog;
 pub mod msixvc;
 pub mod uwp;
 pub mod uwp_catalog;

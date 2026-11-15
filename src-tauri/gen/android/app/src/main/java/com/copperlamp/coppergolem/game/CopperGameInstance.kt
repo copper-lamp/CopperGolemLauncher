@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 
 /**
  * 一个已导入的 MCBE 实例。所有启动链路（准备、加载、退出）都只通过
@@ -34,6 +35,44 @@ data class CopperGameInstance(
     fun gameDataDir(): File = CopperGameLayout.gameDataDir(root)
 
     fun gameCacheDir(): File = CopperGameLayout.gameCacheDir(root)
+
+    /** Load enabled Android preload-native modules from this trusted instance. */
+    fun loadEnabledNativeModules(listener: CopperGameRuntimePreparer.ProgressListener) {
+        val modsDir = File(root, "mods")
+        if (!modsDir.exists()) return
+        require(!android.system.Os.lstat(modsDir.absolutePath).let { (it.st_mode and android.system.OsConstants.S_IFMT) == android.system.OsConstants.S_IFLNK }) { "实例 mods 路径不能是符号链接" }
+        require(modsDir.isDirectory) { "实例 mods 路径不是目录" }
+        val modules = modsDir.listFiles() ?: throw IOException("无法读取实例 mods 目录")
+        for (moduleDir in modules.sortedBy { it.name }) {
+            if (!moduleDir.exists()) continue
+            require(!android.system.Os.lstat(moduleDir.absolutePath).let { (it.st_mode and android.system.OsConstants.S_IFMT) == android.system.OsConstants.S_IFLNK }) { "模组目录不能是符号链接: ${moduleDir.name}" }
+            if (!moduleDir.isDirectory) continue
+            val manifestFile = File(moduleDir, "manifest.json")
+            if (!manifestFile.exists()) continue
+            require(manifestFile.isFile) { "模组 ${moduleDir.name} 的 manifest.json 不是文件" }
+            val manifest = try { JSONObject(manifestFile.readText()) } catch (error: Exception) {
+                throw IllegalStateException("模组 ${moduleDir.name} 的 manifest.json 无效: ${error.message}", error)
+            }
+            if (manifest.optString("type") != "preload-native") continue
+            val entry = manifest.optString("entry").trim()
+            require(entry.isNotEmpty() && entry.endsWith(".so", ignoreCase = true)) {
+                "模组 ${moduleDir.name} 的 entry 必须是 .so 文件"
+            }
+            val canonicalModule = moduleDir.canonicalFile
+            var cursor = canonicalModule
+            for (part in entry.replace('\\', '/').split('/')) {
+                cursor = File(cursor, part)
+                require(!android.system.Os.lstat(cursor.absolutePath).let { (it.st_mode and android.system.OsConstants.S_IFMT) == android.system.OsConstants.S_IFLNK }) {"模组 entry 不能经过符号链接: $entry"}
+            }
+            val canonicalEntry = File(canonicalModule, entry).canonicalFile
+            val modulePath = canonicalModule.path + File.separator
+            require(canonicalEntry.path.startsWith(modulePath) && canonicalEntry.isFile) {
+                "模组 ${moduleDir.name} 的 entry 非法或不在模组目录内: $entry"
+            }
+            listener.onLog("加载原生模组: ${moduleDir.name}/${canonicalModule.toPath().relativize(canonicalEntry.toPath())}")
+            System.load(canonicalEntry.path)
+        }
+    }
 
     companion object {
         const val EXTRA_INSTANCE = "com.copperlamp.coppergolem.extra.INSTANCE"

@@ -16,12 +16,14 @@ import CoBadge from "../../components/ui/CoBadge.vue";
 import CoButton from "../../components/ui/CoButton.vue";
 import CoDropdown, { type DropdownOption } from "../../components/ui/CoDropdown.vue";
 import { useI18n } from "../../i18n";
+import { usePlatform } from "../../composables/usePlatform";
 import InstanceNameDialog from "./InstanceNameDialog.vue";
 import type { GameVersionView } from "./api";
 import { gameVersionIcon } from "./gameVersionIcon";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
 
 const { t } = useI18n();
+const { isAndroid } = usePlatform();
 const route = useRoute();
 const router = useRouter();
 const gd = useGameDownload();
@@ -120,6 +122,7 @@ function goBack() {
               :empty-text="t(`${MB_KEY}.loader_unavailable`)"
             />
             <CoDropdown
+              v-if="!isAndroid"
               v-model="client"
               :label="t(`${MB_KEY}.client_label`)"
               :placeholder="t(`${MB_KEY}.select_none`)"

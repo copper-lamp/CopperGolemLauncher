@@ -144,6 +144,19 @@ impl ContentDownloadModule {
         kernel: &KernelContext,
         query: &ContentListQuery,
     ) -> Result<ContentListPage, KernelError> {
+        let normalized;
+        let query = if android_ll_source() {
+            normalized = ContentListQuery {
+                source: Some(SOURCE_LL_ANDROID.into()),
+                content_type: Some(TYPE_LL_MOD.into()),
+                game_version: None,
+                tag: None,
+                ..query.clone()
+            };
+            &normalized
+        } else {
+            query
+        };
         let key = metadata_key(kernel,"list",&serde_json::to_string(query)?);
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::list_uncached(kernel,query)).await
     }
@@ -199,6 +212,9 @@ impl ContentDownloadModule {
         source: Option<&str>,
         content_type: Option<&str>,
     ) -> Result<Vec<String>, KernelError> {
+        if android_ll_source() {
+            return ll_android::tags(kernel).await;
+        }
         if content_type == Some(TYPE_SHADER) {
             return Ok(curseforge::shader_tags());
         }
@@ -230,6 +246,9 @@ impl ContentDownloadModule {
 
     /// 详情：按跨源 id（`cf:` / `lip:` / `lla:` 前缀）路由。
     pub async fn detail(kernel: &KernelContext, id: &str) -> Result<ContentDetail, KernelError> {
+        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
+            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        }
         let key=metadata_key(kernel,if id.starts_with("lip:") { "detail-game-targets-v2" } else { "detail" },id);
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::detail_uncached(kernel,id)).await
     }
@@ -262,6 +281,9 @@ impl ContentDownloadModule {
         id: &str,
         locale: &str,
     ) -> Result<Option<String>, KernelError> {
+        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
+            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        }
         let key=metadata_key(kernel,"readme",&serde_json::json!([id,locale]).to_string());
         crate::services::metadata_cache::load(kernel.paths().cache_dir(),&key,crate::services::metadata_cache::CONTENT_REFRESH,||Self::readme_uncached(kernel,id,locale)).await
     }
@@ -298,6 +320,9 @@ impl ContentDownloadModule {
         kernel: &KernelContext,
         content_type: Option<&str>,
     ) -> Result<Vec<String>, KernelError> {
+        if android_ll_source() {
+            return Ok(Vec::new());
+        }
         let shader = content_type == Some(TYPE_SHADER);
         let kind = if shader {
             "game-versions-v3-java"
@@ -348,6 +373,9 @@ impl ContentDownloadModule {
         file_id: &str,
         version: Option<&str>,
     ) -> Result<Placement, KernelError> {
+        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
+            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        }
         let (item, file) = resolve_source_file(kernel, id, file_id).await?;
         resolve_placement(kernel, id, &item, &file, version)
     }
@@ -369,6 +397,9 @@ impl ContentDownloadModule {
         file_id: &str,
         version: Option<&str>,
     ) -> Result<u64, KernelError> {
+        if android_ll_source() && ll_android::parse_mod_id(id).is_none() {
+            return Err(KernelError::InvalidArgument(format!("Android content id must be lla: `{id}`")));
+        }
         if ll_android::parse_mod_id(id).is_some() {
             return enqueue_ll_android(kernel, id, file_id, version).await;
         }

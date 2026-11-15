@@ -2,6 +2,10 @@ package com.copperlamp.coppergolem
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Build
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.util.Log
 import androidx.activity.enableEdgeToEdge
 import com.copperlamp.coppergolem.game.CopperApkPickerActivity
@@ -33,6 +37,7 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        hideLauncherSystemUi()
         handleGameIntent(intent)
         handleResourceIntent(intent)
     }
@@ -109,10 +114,29 @@ class MainActivity : TauriActivity() {
      */
     override fun onResume() {
         super.onResume()
+        hideLauncherSystemUi()
         if (CopperGameSession.instance() == null) {
             // 回到启动器且没有活跃游戏实例：属于正常退出后的恢复路径。
             CopperGameExitRecord.resetDebounce()
         }
+    }
+
+    private fun hideLauncherSystemUi() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { controller ->
+                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+            }
+        }
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
     }
 
     override fun onDestroy() {

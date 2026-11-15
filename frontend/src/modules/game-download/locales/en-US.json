@@ -12,6 +12,7 @@
   "search_placeholder": "Search version",
   "no_match": "No matching version",
   "match_count": "{n} version(s) matched",
+  "back_to_top": "Back to top",
   "filter": {
     "label": "Filter",
     "all": "All versions",

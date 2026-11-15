@@ -374,7 +374,7 @@ pub async fn game_download_prepare_apk_import(
     }
     let record = serde_json::json!({"requestId": request_id, "transactionPath": transaction});
     let bytes = serde_json::to_vec(&record)
-        .map_err(|error| into_command_error(KernelError::Serialization(error.to_string())))?;
+        .map_err(|error| into_command_error(KernelError::Serde(serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::Other, error.to_string())))))?;
     if let Err(error) = std::fs::write(request_file, bytes) {
         let _ = std::fs::remove_dir_all(&transaction);
         return Err(into_command_error(KernelError::Io(error)));

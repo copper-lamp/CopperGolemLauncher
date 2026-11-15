@@ -5,6 +5,8 @@ frontend/node_modules/
 # Rust / Tauri
 target/
 src-tauri/target/
+# Tauri sidecar 暂存目录（scripts/stage-module-helper.mjs 生成，不入库）
+src-tauri/binaries/
 
 # 前端构建产物
 frontend/dist/
