@@ -123,7 +123,7 @@ class CopperApkPickerActivity : Activity() {
         val versionsRoot = root.parentFile ?: return null
         if (transaction.name != requestId || root.name != ".import") return null
         val defaultVersions = File(File(filesDir, "data"), "versions").canonicalFile
-        val privateRoot = File(filesDir).canonicalFile
+        val privateRoot = filesDir.canonicalFile
         if (versionsRoot != defaultVersions && !versionsRoot.toPath().startsWith(privateRoot.toPath())) return null
         return transaction
     }
