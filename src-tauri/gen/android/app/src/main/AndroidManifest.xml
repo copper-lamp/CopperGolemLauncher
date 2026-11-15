@@ -81,6 +81,20 @@
                 <data android:mimeType="application/x-minecraft-world" />
                 <data android:mimeType="application/x-minecraft-resourcepack" />
             </intent-filter>
+            <!-- tauri-file-associations. AUTO-GENERATED. DO NOT REMOVE. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:pathPattern=".*\\.mcpack" />
+                <data android:pathPattern=".*\\.mcaddon" />
+                <data android:pathPattern=".*\\.addon" />
+                <data android:pathPattern=".*\\.mcworld" />
+                <data android:pathPattern=".*\\.mctemplate" />
+                <data android:pathPattern=".*\\.cglm" />
+            </intent-filter>
+            
+            <!-- tauri-file-associations. AUTO-GENERATED. DO NOT REMOVE. -->
         </activity>
 
         <!-- SAF 收件箱：把系统选择器返回的 content:// 流落盘到 cache/inbox。 -->
