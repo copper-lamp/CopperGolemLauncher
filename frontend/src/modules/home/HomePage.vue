@@ -160,7 +160,7 @@ const clientReinjectVisible = computed(
 const clientOptions = computed(() =>
   clients.value
     .filter((client) => client.available)
-    .map((client) => ({ value: client.id, label: client.name, icon: null })),
+    .map((client) => ({ value: client.id, label: client.name, icon: /latite/i.test(client.name) ? "/latite.png" : null })),
 );
 
 async function loadClients() {

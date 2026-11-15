@@ -185,7 +185,8 @@ function formatDate(millis: number): string {
       <section class="panel__client">
         <header class="panel__client-head">
           <span class="panel__client-icon">
-            <PlugZap :size="18" :stroke-width="1.7" />
+            <img v-if="/latite/i.test(client.name)" src="/latite.png" alt="Latite" />
+            <PlugZap v-else :size="18" :stroke-width="1.7" />
           </span>
           <div class="panel__client-text">
             <span class="panel__client-name">{{ client.name }}</span>
@@ -415,6 +416,13 @@ function formatDate(millis: number): string {
   border-radius: var(--copper-radius-md);
   background: color-mix(in srgb, var(--copper-accent) 16%, transparent);
   color: var(--copper-accent);
+}
+
+.panel__client-icon img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  border-radius: 4px;
 }
 
 .panel__client-text {

@@ -94,7 +94,7 @@ const versionOptions = computed(() =>
 const clientOptions = computed(() =>
   props.clients
     .filter((client) => client.available)
-    .map((client) => ({ value: client.id, label: client.name, icon: null })),
+    .map((client) => ({ value: client.id, label: client.name, icon: /latite/i.test(client.name) ? "/latite.png" : null })),
 );
 
 // ---------------------------------------------------------------- 列表区

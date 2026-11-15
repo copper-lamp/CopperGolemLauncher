@@ -10,7 +10,7 @@
 
 import { computed, onMounted, ref } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Boxes, Check, PlugZap } from "@lucide/vue";
+import { Boxes, Check, Download, PlugZap, RefreshCw } from "@lucide/vue";
 
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -18,11 +18,14 @@ import { usePlatform } from "../../composables/usePlatform";
 import InstanceSearchBox from "./InstanceSearchBox.vue";
 import ClientPanel from "./ClientPanel.vue";
 import {
+  homeClientCatalog,
   homeClientDelete,
   homeClientImport,
+  homeClientInstall,
   homeClientsList,
   homeClientSetInjectDelay,
   homeVersionSaveMeta,
+  type ClientCatalogEntry,
   type ClientView,
 } from "../../api/home";
 import { useVersionInstance } from "./useVersionInstance";
@@ -33,9 +36,17 @@ const { isWindows } = usePlatform();
 const { current, applyView } = useVersionInstance();
 const compatText = useCompatibilityText();
 
+onMounted(() => {
+  void loadLibrary();
+  void loadCatalog();
+});
+
 const busy = ref(false);
 const clients = ref<ClientView[]>([]);
+const catalog = ref<ClientCatalogEntry[]>([]);
 const loading = ref(true);
+const catalogLoading = ref(false);
+const installingId = ref("");
 const query = ref("");
 
 /** 已选好文件、等待命名的导入表单。 */
@@ -56,6 +67,10 @@ const filteredClients = computed(() => {
   if (!keyword) return clients.value;
   return clients.value.filter((client) => client.name.toLowerCase().includes(keyword));
 });
+
+function isLatite(name: string): boolean {
+  return /latite/i.test(name);
+}
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return "0 MB";
@@ -83,6 +98,33 @@ async function loadLibrary() {
     showToast(String(e), "error");
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadCatalog() {
+  if (!isWindows.value || catalogLoading.value) return;
+  catalogLoading.value = true;
+  try {
+    catalog.value = await homeClientCatalog();
+  } catch (e) {
+    catalog.value = [];
+    showToast(t("module.home.client.catalog_failed", { message: String(e) }), "error");
+  } finally {
+    catalogLoading.value = false;
+  }
+}
+
+async function installCatalogEntry(entry: ClientCatalogEntry) {
+  if (installingId.value) return;
+  installingId.value = entry.id;
+  try {
+    await homeClientInstall(entry.id);
+    await loadLibrary();
+    showToast(t("module.home.client.catalog_installed"), "success");
+  } catch (e) {
+    showToast(t("module.home.client.catalog_install_failed", { message: String(e) }), "error");
+  } finally {
+    installingId.value = "";
   }
 }
 
@@ -227,7 +269,6 @@ async function saveDelay(seconds: number) {
   }
 }
 
-onMounted(loadLibrary);
 </script>
 
 <template>
@@ -244,7 +285,8 @@ onMounted(loadLibrary);
 
           <div v-if="selectedClient" class="current" :class="{ 'current--off': !clientMode }">
             <span class="row__icon">
-              <PlugZap :size="17" :stroke-width="1.7" />
+              <img v-if="isLatite(selectedClient.name)" class="client-logo" src="/latite.png" alt="Latite" />
+              <PlugZap v-else :size="17" :stroke-width="1.7" />
             </span>
             <span class="row__text">
               <span class="row__name">{{ selectedClient.name }}</span>
@@ -265,6 +307,31 @@ onMounted(loadLibrary);
           <p v-else class="state" :class="{ 'state--hint': !loading }">
             {{ loading ? "..." : clientMode ? t("module.home.client.mode_no_client") : t("module.home.client.none") }}
           </p>
+        </section>
+
+        <section v-if="isWindows" class="group">
+          <header class="group__head">
+            <Download :size="14" :stroke-width="1.8" />
+            <span class="group__title">{{ t("module.home.client.catalog") }}</span>
+            <button class="icon-action" type="button" :disabled="catalogLoading" :aria-label="t('module.home.client.catalog_refresh')" @click="loadCatalog">
+              <RefreshCw :size="14" :class="{ 'is-spinning': catalogLoading }" />
+            </button>
+          </header>
+          <p v-if="catalogLoading && !catalog.length" class="state">{{ t("module.home.client.catalog_loading") }}</p>
+          <p v-else-if="!catalog.length" class="state state--hint">{{ t("module.home.client.catalog_empty") }}</p>
+          <div v-else class="group__list">
+            <div v-for="entry in catalog" :key="entry.id" class="row row--catalog">
+              <span class="row__icon"><img class="client-logo" src="/latite.png" alt="Latite" /></span>
+              <span class="row__text">
+                <span class="row__name">{{ entry.name }}</span>
+                <span class="row__meta">{{ entry.version }} · {{ entry.asset_name }} · {{ t("module.home.client.compatibility_unknown") }}</span>
+              </span>
+              <button class="icon-action" type="button" :disabled="!!installingId" :aria-label="t('module.home.client.catalog_install')" :title="t('module.home.client.catalog_install')" @click="installCatalogEntry(entry)">
+                <span v-if="installingId === entry.id">…</span>
+                <Download v-else :size="16" />
+              </button>
+            </div>
+          </div>
         </section>
 
         <section class="group">
@@ -294,7 +361,8 @@ onMounted(loadLibrary);
               @click="assignClient(client)"
             >
               <span class="row__icon">
-                <PlugZap :size="17" :stroke-width="1.7" />
+                <img v-if="isLatite(client.name)" class="client-logo" src="/latite.png" alt="Latite" />
+                <PlugZap v-else :size="17" :stroke-width="1.7" />
               </span>
               <span class="row__text">
                 <span class="row__name">{{ client.name }}</span>
@@ -413,6 +481,37 @@ onMounted(loadLibrary);
   gap: 1px;
 }
 
+.icon-action {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--copper-radius-sm);
+  background: var(--copper-surface-2);
+  color: var(--copper-text-secondary);
+  cursor: pointer;
+}
+
+.icon-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.is-spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.row--catalog {
+  cursor: default;
+}
+
 /* 列表行：整行可点，无描边；悬停是薄雾，选中是微色阶 + 投影。 */
 .row {
   width: 100%;
@@ -468,6 +567,13 @@ onMounted(loadLibrary);
 .row--active .row__icon {
   background: color-mix(in srgb, var(--copper-accent) 20%, transparent);
   color: var(--copper-accent);
+}
+
+.client-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  border-radius: 4px;
 }
 
 .row__text {
