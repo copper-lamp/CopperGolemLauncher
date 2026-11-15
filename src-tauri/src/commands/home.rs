@@ -7,6 +7,7 @@ use tauri::State;
 use crate::commands::into_command_error;
 use crate::error::{CommandResult, KernelError};
 use crate::modules::home::client;
+use crate::modules::home::client_catalog;
 use crate::modules::home::content;
 use crate::modules::home::dashboard;
 use crate::modules::home::controls;
@@ -19,6 +20,18 @@ use crate::state::KernelContext;
 #[tauri::command]
 pub fn home_versions_list(kernel: State<'_, KernelContext>) -> CommandResult<Vec<VersionView>> {
     Ok(crate::modules::home::HomeModule::list_versions(kernel.inner()))
+}
+
+/// 查询当前游戏版本可用的 LeviLamina 版本。
+#[tauri::command]
+pub async fn home_levilamina_options(kernel: State<'_ , KernelContext>, name: String) -> CommandResult<Vec<crate::modules::content_download::loader_catalog::LoaderOption>> {
+    crate::modules::home::HomeModule::levilamina_options(kernel.inner(), &name).await.map_err(into_command_error)
+}
+
+/// 安装或更新 LeviLamina，并返回更新后的实例视图。
+#[tauri::command]
+pub async fn home_levilamina_install(kernel: State<'_ , KernelContext>, name: String, version: String) -> CommandResult<VersionView> {
+    crate::modules::home::HomeModule::install_levilamina(kernel.inner(), &name, &version).await.map_err(into_command_error)
 }
 
 /// 当前解析的版本根目录（供前端显示实际游戏目录）。
@@ -214,6 +227,34 @@ pub fn home_clients_list(
 ) -> CommandResult<Vec<client::ClientView>> {
     client::ensure_supported().map_err(into_command_error)?;
     client::list(kernel.paths(), kernel.db()).map_err(into_command_error)
+}
+
+/// 查询官方客户端目录。目录只提供官方资产元数据，兼容性由 DLL 导入校验后确定。
+#[tauri::command]
+pub async fn home_client_catalog(
+    kernel: State<'_, KernelContext>,
+) -> CommandResult<Vec<client_catalog::ClientCatalogEntry>> {
+    client_catalog::list(&kernel.paths().data_dir())
+        .await
+        .map_err(into_command_error)
+}
+
+/// 下载并导入官方客户端 DLL，复用本地导入器的 PE、大小和哈希校验。
+#[tauri::command]
+pub async fn home_client_install(
+    kernel: State<'_, KernelContext>,
+    id: String,
+    name: Option<String>,
+) -> CommandResult<client::ClientView> {
+    client_catalog::install(
+        kernel.paths(),
+        kernel.db(),
+        kernel.events(),
+        &id,
+        name.as_deref(),
+    )
+    .await
+    .map_err(into_command_error)
 }
 
 /// 导入客户端 DLL（落启动器数据目录 + 写库）。

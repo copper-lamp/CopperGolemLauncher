@@ -289,6 +289,13 @@
       "hint_client_set": "启动时预加载 {file}",
       "hint_client_unset": "尚未选择客户端，进入「管理客户端」完成选择",
       "hint_client_unsupported": "客户端 DLL 注入仅支持 Windows 实例",
+      "loader_label": "LeviLamina 版本",
+      "loader_none": "未安装",
+      "loader_install": "安装",
+      "loader_update": "更新",
+      "loader_installing": "处理中…",
+      "loader_success": "LeviLamina 安装完成",
+      "loader_failed": "LeviLamina 安装失败：{message}",
       "changed": "实例模式已切换",
       "switch_failed": "切换实例模式失败：{message}"
     },
@@ -399,7 +406,16 @@
     "inject_hint": "游戏启动后等待 {seconds} 秒，再把客户端 DLL 注入进程。修改后下次启动生效。",
     "inject_unit": "秒",
     "inject_range": "注入时机需要在 1 到 120 秒之间。",
-    "inject_saved": "注入时机已更新"
+    "inject_saved": "注入时机已更新",
+    "catalog": "官方客户端",
+    "catalog_refresh": "刷新官方客户端目录",
+    "catalog_loading": "正在读取官方发布…",
+    "catalog_empty": "当前没有可用的官方客户端发布。",
+    "catalog_install": "下载并安装",
+    "catalog_installed": "客户端已下载并导入本地库",
+    "catalog_failed": "读取官方客户端目录失败：{message}",
+    "catalog_install_failed": "下载或导入客户端失败：{message}",
+    "compatibility_unknown": "兼容性待 DLL 检测"
   },
   "widget": {
     "mods": {

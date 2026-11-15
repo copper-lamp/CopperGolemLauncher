@@ -129,6 +129,18 @@ export function homeVersionGet(name: string): Promise<VersionView> {
   return call<VersionView>("home_version_get", { name });
 }
 
+export interface LoaderOption { version: string; compatible: boolean; }
+
+/** LeviLamina compatibility catalog for the selected game instance. */
+export function homeLevilaminaOptions(name: string): Promise<LoaderOption[]> {
+  return call<LoaderOption[]>("home_levilamina_options", { name });
+}
+
+/** Install or update LeviLamina and return the refreshed instance view. */
+export function homeLevilaminaInstall(name: string, version: string): Promise<VersionView> {
+  return call<VersionView>("home_levilamina_install", { name, version });
+}
+
 /** 部分更新版本设置，返回更新后的视图。 */
 export function homeVersionSaveMeta(
   name: string,
@@ -508,6 +520,26 @@ export interface ClientInjectResult {
 /** 本地客户端库列表（开始页模块内部，Windows 专属）。 */
 export function homeClientsList(): Promise<ClientView[]> {
   return call<ClientView[]>("home_clients_list");
+}
+
+/** 官方发布目录中的客户端资产。 */
+export interface ClientCatalogEntry {
+  id: string;
+  name: string;
+  version: string;
+  source_url: string;
+  asset_name: string;
+  compatible: boolean | null;
+}
+
+/** 获取官方客户端目录。 */
+export function homeClientCatalog(): Promise<ClientCatalogEntry[]> {
+  return call<ClientCatalogEntry[]>("home_client_catalog");
+}
+
+/** 下载官方资产并通过本地客户端导入校验。 */
+export function homeClientInstall(id: string, name?: string): Promise<ClientView> {
+  return call<ClientView>("home_client_install", { id, name });
 }
 
 /** 导入客户端 DLL（会复制进启动器数据目录并写库）。 */

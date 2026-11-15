@@ -10,7 +10,8 @@
 // 为什么先改设置页：它是「左导航 + 右内容」最纯粹的一屏，不依赖模块数据，
 // 用它验证分栏原语的吸顶、折叠与滚动归属，风险最低。
 
-import { ref } from "vue";
+import { ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { SlidersHorizontal, FolderOpen, Rocket, Palette, Blocks, Info, Download, Languages, Puzzle, ShieldCheck, RefreshCw } from "@lucide/vue";
 
 import GeneralTab from "./settings/GeneralTab.vue";
@@ -35,6 +36,7 @@ import CoSplitLayout from "../components/layout/CoSplitLayout.vue";
 import { useI18n } from "../i18n";
 
 const { t } = useI18n();
+const route = useRoute();
 
 /** 分类导航：图标与文案一一对应，文案仍走 i18n，不写死。 */
 const tabs = [
@@ -52,6 +54,10 @@ const tabs = [
 ] as const;
 
 const active = ref<(typeof tabs)[number]["id"]>("general");
+watch(() => route.query.tab, (value) => {
+  const requested = typeof value === "string" ? value : "";
+  if (tabs.some((tab) => tab.id === requested)) active.value = requested as (typeof tabs)[number]["id"];
+}, { immediate: true });
 function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const index=tabs.findIndex(tab=>tab.id===id);const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:['ArrowDown','ArrowRight'].includes(event.key)?(index+1)%tabs.length:['ArrowUp','ArrowLeft'].includes(event.key)?(index+tabs.length-1)%tabs.length:-1;if(next<0)return;event.preventDefault();active.value=tabs[next]!.id;const buttons=(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]');buttons?.[next]?.focus();}
 </script>
 

@@ -168,10 +168,10 @@ async function probeKernel(): Promise<void> {
   }
 }
 
-// 核心挂载完全不等待附加模块或 IPC。
+// 先挂载加载页并让浏览器完成首帧绘制，再启动异步能力装配。
 app.mount("#app");
-markKernelReady();
-logBoot("info", "界面已挂载，开始装配内核能力");
+logBoot("info", "加载界面已挂载，开始装配内核能力");
+await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 // Addons load after the core is visible; pending ESM is observed, never cancelled.
 beginStep("addons", "boot.error.step.addons");
@@ -199,7 +199,14 @@ void Promise.all([
   // 失败也不打扰用户（见 services::updater::spawn_background_check）。
   withTimeout("update", "boot.error.step.update", initUpdate),
   withTimeout("account", "boot.error.step.account", initAccount),
-]).then(() => logBoot("info", "内核能力装配流程结束"));
+]).then(() => {
+  logBoot("info", "内核能力装配流程结束");
+  markKernelReady();
+}).catch((error: unknown) => {
+  // Unexpected orchestration errors still release the UI; individual steps report their own degraded state.
+  logBoot("error", `内核能力装配流程异常：${String(error)}`);
+  markKernelReady();
+});
 
 void listen<{ instance_name: string; package_name: string; version_name: string }>(
   "android-game-prepare",

@@ -14,6 +14,7 @@ use crate::error::KernelError;
 use crate::registry::events::Subscription;
 use crate::registry::intents::IntentHandler;
 use crate::registry::modules::Module;
+use crate::modules::content_download::{lip_install, loader_catalog};
 use crate::state::KernelContext;
 
 pub mod content;
@@ -26,6 +27,7 @@ pub mod controls;
 pub mod account_check;
 /// 第三方客户端库：导入、存储、选择与注入编排。
 pub mod client;
+pub mod client_catalog;
 /// 注入编排：hook DLL 落位 + 导入表改写 + 原始文件备份与还原。
 pub mod inject;
 /// 挂起启动 + 远程线程注入：游戏 exe 不改一个字节。
@@ -185,6 +187,55 @@ impl HomeModule {
         let dir = meta::resolve_version_dir(&root, name)?;
         let meta = VersionMeta::read(&dir)
             .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 不存在")))?;
+        Ok(to_view(&root, meta))
+    }
+
+    /// 获取该游戏版本支持的 LeviLamina 版本。
+    pub async fn levilamina_options(kernel: &KernelContext, name: &str) -> Result<Vec<loader_catalog::LoaderOption>, KernelError> {
+        let dir = meta::resolve_version_dir(&kernel.versions_root(), name)?;
+        let meta = VersionMeta::read(&dir).ok_or_else(|| KernelError::InvalidArgument(format!("版本 {} 不存在", name)))?;
+        if meta.is_uwp() { return Err(KernelError::InvalidArgument("uwp_loader_unsupported".into())); }
+        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
+        if launch::is_process_running_at_path(&launch::game_exe_path(&dir)) { return Err(KernelError::InvalidArgument("game_running".into())); }
+        let catalog = loader_catalog::LoaderCatalog::load(&kernel.paths().cache_dir()).await?;
+        Ok(catalog.options_for(&meta.game_version))
+    }
+
+    /// 使用内置 LIP 引擎安装或更新 LeviLamina。
+    pub async fn install_levilamina(kernel: &KernelContext, name: &str, version: &str) -> Result<VersionView, KernelError> {
+        let root = kernel.versions_root();
+        let dir = meta::resolve_version_dir(&root, name)?;
+        let mut meta = VersionMeta::read(&dir).ok_or_else(|| KernelError::InvalidArgument(format!("版本 {} 不存在", name)))?;
+        if meta.is_uwp() { return Err(KernelError::InvalidArgument("uwp_loader_unsupported".into())); }
+        if compatibility::is_bound(&dir) { return Err(KernelError::InvalidArgument("compat_mode_unsupported".into())); }
+        if launch::is_process_running_at_path(&launch::game_exe_path(&dir)) { return Err(KernelError::InvalidArgument("game_running".into())); }
+        let selected = version.trim();
+        if selected.is_empty() { return Err(KernelError::InvalidArgument("loader_version_required".into())); }
+        let catalog = loader_catalog::LoaderCatalog::load(&kernel.paths().cache_dir()).await?;
+        if !catalog.options_for(&meta.game_version).iter().any(|option| option.version == selected) {
+            return Err(KernelError::InvalidArgument("loader_version_incompatible".into()));
+        }
+        let engine = crate::modules::lip::Engine::new(crate::modules::lip::Environment::current(), kernel.paths().cache_dir().join("lip"))
+            .map_err(|e| KernelError::InvalidArgument(format!("LIP: {}", e)))?;
+        let sink = crate::modules::lip::Sink::new({
+            let events = kernel.events().clone();
+            let instance = name.to_owned();
+            move |event| {
+                let (stage, progress, detail) = match event {
+                    crate::modules::lip::LipEvent::Stage(stage) => (stage.to_string(), None, None),
+                    crate::modules::lip::LipEvent::Progress { item, percent } => ("download.stage.lip_installing".to_string(), percent, Some(item)),
+                    crate::modules::lip::LipEvent::Log(text) => ("download.stage.lip_installing".to_string(), None, Some(text)),
+                };
+                events.publish("home.levilamina.progress", serde_json::json!({"name":instance,"stage":stage,"progress":progress,"detail":detail}));
+            }
+        });
+        let cancel = crate::modules::lip::Cancel::new();
+        let outcome = lip_install::install_resolved(&engine, loader_catalog::LEVILAMINA_CLIENT_PACKAGE_REF, selected, &dir, true, Some(&sink), &cancel).await;
+        if !outcome.success { return Err(KernelError::InvalidArgument(outcome.stderr)); }
+        meta.loader = Some(selected.to_owned());
+        meta.mode = Some("levi".to_string());
+        isolate::enforce_isolation(&mut meta);
+        VersionMeta::write(&dir, &meta)?;
         Ok(to_view(&root, meta))
     }
 

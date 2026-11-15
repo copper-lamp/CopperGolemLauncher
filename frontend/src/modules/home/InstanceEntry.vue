@@ -34,6 +34,9 @@ import IconEditDialog from "./IconEditDialog.vue";
 import InstanceEditDialog from "./InstanceEditDialog.vue";
 import {
   homeLaunchFileRestore,
+  homeLevilaminaOptions,
+  homeLevilaminaInstall,
+  type LoaderOption,
   homeLaunchFileState,
   homeVersionDelete,
   homeVersionSaveMeta,
@@ -73,6 +76,40 @@ const switching = ref(false);
 const saving = ref(false);
 const restoring = ref(false);
 const launchState = ref<LaunchFileState | null>(null);
+const loaderOptions = ref<LoaderOption[]>([]);
+const selectedLoader = ref("");
+const loaderBusy = ref(false);
+const loaderLoading = ref(false);
+
+async function refreshLoaderOptions() {
+  const view = current.value;
+  loaderOptions.value = [];
+  selectedLoader.value = "";
+  if (!view || view.compatibility) return;
+  loaderLoading.value = true;
+  try {
+    loaderOptions.value = await homeLevilaminaOptions(view.name);
+    selectedLoader.value = view.loader && loaderOptions.value.some(option => option.version === view.loader) ? view.loader : loaderOptions.value[0]?.version ?? "";
+  } catch {
+    loaderOptions.value = [];
+  } finally {
+    loaderLoading.value = false;
+  }
+}
+
+async function installLoader() {
+  const view = current.value;
+  if (!view || !selectedLoader.value || loaderBusy.value) return;
+  loaderBusy.value = true;
+  try {
+    applyView(await homeLevilaminaInstall(view.name, selectedLoader.value));
+    showToast(t("module.home.instance.mode.loader_success"), "success");
+  } catch (error) {
+    showToast(t("module.home.instance.mode.loader_failed", { message: String(error) }), "error");
+  } finally {
+    loaderBusy.value = false;
+  }
+}
 
 /** 创建日期只取年月日，RFC3339 的时分秒对用户没有意义。 */
 const createdLabel = computed(() => {
@@ -296,7 +333,7 @@ const actionGroups = computed<EntryActionGroup[]>(() => {
 // ---------------------------------------------------------------- 生命周期
 
 /** 当前实例变化后重取启动文件状态（还原按钮的可用性依赖它）。 */
-watch(currentName, () => void refreshLaunchState(), { immediate: true });
+watch(currentName, () => { void refreshLaunchState(); void refreshLoaderOptions(); }, { immediate: true });
 
 async function deleteVersion() {
   const target = current.value;
@@ -367,6 +404,16 @@ function onUpdated(updated: VersionView) {
           </div>
           <p v-if="modeWarning" class="entry__warning">{{ modeWarning }}</p>
           <p v-else-if="modeHint" class="entry__hint">{{ modeHint }}</p>
+          <div v-if="current.mode === 'levi'" class="entry__loader">
+            <span class="entry__section-label">{{ t("module.home.instance.mode.loader_label") }}</span>
+            <span class="entry__loader-version">{{ current.loader || t("module.home.instance.mode.loader_none") }}</span>
+            <select v-model="selectedLoader" class="entry__loader-select" :disabled="loaderLoading || loaderBusy || !loaderOptions.length || !!current.compatibility || isMobile">
+              <option v-for="option in loaderOptions" :key="option.version" :value="option.version">{{ option.version }}</option>
+            </select>
+            <button class="entry__loader-button" type="button" :disabled="loaderLoading || loaderBusy || !selectedLoader || !!current.compatibility || isMobile" @click="void installLoader">
+              {{ loaderBusy ? t("module.home.instance.mode.loader_installing") : current.loader ? t("module.home.instance.mode.loader_update") : t("module.home.instance.mode.loader_install") }}
+            </button>
+          </div>
         </div>
 
         <div class="entry__section">
@@ -568,6 +615,42 @@ function onUpdated(updated: VersionView) {
 
 .entry__mode :deep(.co-segmented__item) {
   flex: 1;
+}
+
+.entry__loader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--copper-space-2);
+  padding: var(--copper-space-2);
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface-raised, var(--copper-surface));
+  box-shadow: var(--copper-shadow-inset);
+}
+
+.entry__loader-version {
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-sm);
+}
+
+.entry__loader-select, .entry__loader-button {
+  min-height: 34px;
+  max-width: 100%;
+  padding: 0 var(--copper-space-3);
+  border: 0;
+  border-radius: var(--copper-radius-sm);
+  background: var(--copper-surface);
+  color: var(--copper-text);
+  box-shadow: var(--copper-shadow-raised);
+  font: inherit;
+}
+
+.entry__loader-button { cursor: pointer; }
+.entry__loader-button:disabled, .entry__loader-select:disabled { opacity: .55; cursor: not-allowed; }
+@media (max-width: 600px) {
+.entry__loader { grid-template-columns: minmax(0, 1fr) auto; }
+.entry__loader .entry__section-label { grid-column: 1 / -1; }
+.entry__loader-version { grid-column: 1 / -1; }
 }
 
 .entry__hint {

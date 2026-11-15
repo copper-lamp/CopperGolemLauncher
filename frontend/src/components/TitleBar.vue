@@ -3,7 +3,7 @@
 // Existing route metadata supplies localized/dynamic labels; pages inject actions via Teleport.
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope, FolderOpen, Download, Languages } from "@lucide/vue";
 import { useNavigationTrail } from "../composables/useNavigationTrail";
 import { showToast } from "../composables/useToast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -80,6 +80,42 @@ function goBack() {
   if (canBack.value) router.back();
 }
 
+interface SearchItem { id: "translation" | "download" | "storage"; icon: typeof Languages; terms: string[]; }
+const searchOpen = ref(false);
+const searchQuery = ref("");
+const searchItems: SearchItem[] = [
+  { id: "translation", icon: Languages, terms: ["翻译", "语言", "translation", "language"] },
+  { id: "download", icon: Download, terms: ["下载", "下载设置", "download", "downloads"] },
+  { id: "storage", icon: FolderOpen, terms: ["储存", "存储", "储存位置", "存储位置", "storage", "location"] },
+];
+const searchResults = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase();
+  return searchItems
+    .map((item) => ({ ...item, label: t(`settings.tabs.${item.id}`) }))
+    .filter((item) => !query || [item.label, ...item.terms].some((term) => term.toLocaleLowerCase().includes(query)))
+    .slice(0, 5);
+});
+function toggleSearch() {
+  searchOpen.value = !searchOpen.value;
+  if (!searchOpen.value) searchQuery.value = "";
+}
+function closeSearch() {
+  searchOpen.value = false;
+  searchQuery.value = "";
+}
+function goSearchResult(id: SearchItem["id"]) {
+  closeSearch();
+  void router.push({ path: "/settings", query: { tab: id } });
+}
+function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") closeSearch();
+}
+function onDocumentPointerdown(event: PointerEvent) {
+  if (!searchOpen.value) return;
+  const target = event.target;
+  if (target instanceof Element && !target.closest(".titlebar__search")) closeSearch();
+}
+
 const maximized = ref(false);
 let unlistenMaximize: (() => void) | null = null;
 
@@ -95,6 +131,8 @@ function startWindowDrag(event: PointerEvent) {
 }
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", onDocumentPointerdown);
+  document.addEventListener("keydown", onSearchKeydown);
   try {
     maximized.value = await appWindow.isMaximized();
     unlistenMaximize = await appWindow.onResized(() => {
@@ -106,6 +144,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("pointerdown", onDocumentPointerdown);
+  document.removeEventListener("keydown", onSearchKeydown);
   unlistenMaximize?.();
 });
 
@@ -166,7 +206,23 @@ function close() {
       >
         <Stethoscope :size="15" />
       </button>
-      <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" @click="showToast(t('titlebar.search_pending'))"><Search :size="18" /></button>
+      <div class="titlebar__search">
+        <button class="titlebar__back" :title="t('titlebar.search')" :aria-label="t('titlebar.search')" :aria-expanded="searchOpen" @click="toggleSearch"><Search :size="18" /></button>
+        <section v-if="searchOpen" class="titlebar__search-popover" role="dialog" :aria-label="t('titlebar.search')">
+          <label class="titlebar__search-field">
+            <Search :size="16" aria-hidden="true" />
+            <input v-model="searchQuery" type="search" :placeholder="t('common.search')" :aria-label="t('common.search')" autofocus />
+          </label>
+          <div class="titlebar__search-results">
+            <button v-for="item in searchResults" :key="item.id" type="button" class="titlebar__search-result" @click="goSearchResult(item.id)">
+              <component :is="item.icon" :size="16" aria-hidden="true" />
+              <span>{{ item.label }}</span>
+              <ChevronRight :size="14" aria-hidden="true" />
+            </button>
+            <p v-if="!searchResults.length" class="titlebar__search-empty">{{ t('common.empty') }}</p>
+          </div>
+        </section>
+      </div>
       <button class="titlebar__back" :title="t('titlebar.notifications')" :aria-label="t('titlebar.notifications')" @click="showToast(t('titlebar.notifications_pending'))"><Bell :size="18" /></button>
       <AccountMenu />
       <template v-if="!isMobile">
@@ -440,4 +496,25 @@ button.titlebar__crumb:hover {
   .titlebar__right { gap: 2px; height: var(--copper-titlebar-h); }
 }
 @media (max-width: 560px) { .titlebar__sep { display: none; } }
+
+.titlebar__search { position: relative; }
+.titlebar__search-popover {
+  position: absolute;
+  z-index: 100;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(360px, calc(100vw - 24px));
+  padding: 12px;
+  border-radius: var(--copper-radius-md);
+  background: var(--copper-surface, var(--copper-bg));
+  box-shadow: var(--copper-shadow-lg, 0 8px 28px rgb(0 0 0 / 18%));
+  color: var(--copper-text);
+}
+.titlebar__search-field { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px; border-radius: var(--copper-radius-sm); background: var(--copper-hover); color: var(--copper-text-secondary); }
+.titlebar__search-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--copper-text); font: inherit; }
+.titlebar__search-results { max-height: 240px; overflow-y: auto; margin-top: 8px; }
+.titlebar__search-result { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 0 8px; border: 0; border-radius: var(--copper-radius-sm); background: transparent; color: var(--copper-text); text-align: left; cursor: pointer; }
+.titlebar__search-result:hover { background: var(--copper-hover); }
+.titlebar__search-result span { flex: 1; }
+.titlebar__search-empty { margin: 0; padding: 12px 8px; color: var(--copper-text-secondary); font-size: var(--copper-font-size-sm); }
 </style>

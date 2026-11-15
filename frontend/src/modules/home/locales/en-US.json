@@ -289,6 +289,13 @@
       "hint_client_set": "Preload {file} at launch",
       "hint_client_unset": "No client selected yet. Open Manage client to pick one",
       "hint_client_unsupported": "Client DLL injection is Windows-only",
+      "loader_label": "LeviLamina version",
+      "loader_none": "Not installed",
+      "loader_install": "Install",
+      "loader_update": "Update",
+      "loader_installing": "Working…",
+      "loader_success": "LeviLamina installation completed",
+      "loader_failed": "LeviLamina installation failed: {message}",
       "changed": "Instance mode switched",
       "switch_failed": "Could not switch instance mode: {message}"
     },
@@ -399,7 +406,16 @@
     "inject_hint": "Wait {seconds} seconds after the game starts, then inject the client DLL. Changes apply on the next launch.",
     "inject_unit": "s",
     "inject_range": "Injection delay must be between 1 and 120 seconds.",
-    "inject_saved": "Injection delay updated"
+    "inject_saved": "Injection delay updated",
+    "catalog": "Official clients",
+    "catalog_refresh": "Refresh official client catalog",
+    "catalog_loading": "Loading official releases…",
+    "catalog_empty": "No official client releases are available.",
+    "catalog_install": "Download and install",
+    "catalog_installed": "Client downloaded and added to the local library",
+    "catalog_failed": "Could not load the official client catalog: {message}",
+    "catalog_install_failed": "Client download or import failed: {message}",
+    "compatibility_unknown": "Compatibility pending DLL inspection"
   },
   "widget": {
     "mods": {
