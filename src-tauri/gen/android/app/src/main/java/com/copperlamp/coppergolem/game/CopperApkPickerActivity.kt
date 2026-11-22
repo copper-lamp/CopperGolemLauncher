@@ -2,6 +2,12 @@ package com.copperlamp.coppergolem.game
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.util.Base64
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -192,13 +198,68 @@ class CopperApkPickerActivity : Activity() {
     }
 
     private fun publishResult(path: String, displayName: String) {
+        val icon = runCatching { extractPackageIcon(path, displayName) }
+            .onFailure { Log.w(TAG, "读取 APK 图标失败: ${it.message}") }
+            .getOrNull()
         publish(
             JSONObject()
                 .put("requestId", requestId)
                 .put("path", path)
                 .put("displayName", displayName)
+                .put("versionName", extractPackageVersion(path, displayName) ?: JSONObject.NULL)
+                .put("iconPng", icon ?: JSONObject.NULL)
                 .put("error", "")
         )
+    }
+
+    private fun extractPackageIcon(path: String, displayName: String): String? {
+        val archive = if (displayName.endsWith(".apks", ignoreCase = true)) {
+            val temp = File(cacheDir, "apk-icon-$requestId.apk")
+            val zip = java.util.zip.ZipFile(path)
+            try {
+                val entry = zip.getEntry("base.apk") ?: return null
+                zip.getInputStream(entry).use { input -> temp.outputStream().use(input::copyTo) }
+            } finally { zip.close() }
+            temp
+        } else File(path)
+        return try {
+            @Suppress("DEPRECATION")
+            val packageInfo = packageManager.getPackageArchiveInfo(archive.absolutePath, PackageManager.GET_ACTIVITIES)
+                ?: return null
+            val appInfo = packageInfo.applicationInfo ?: return null
+            appInfo.sourceDir = archive.absolutePath
+            appInfo.publicSourceDir = archive.absolutePath
+            val drawable = appInfo.loadIcon(packageManager)
+            val size = 256
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            val output = java.io.ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            bitmap.recycle()
+            "data:image/png;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+        } finally {
+            if (archive.parentFile == cacheDir) archive.delete()
+        }
+    }
+
+    private fun extractPackageVersion(path: String, displayName: String): String? {
+        val archive = if (displayName.endsWith(".apks", ignoreCase = true)) {
+            val temp = File(cacheDir, "apk-version-$requestId.apk")
+            val zip = java.util.zip.ZipFile(path)
+            try {
+                val entry = zip.getEntry("base.apk") ?: return null
+                zip.getInputStream(entry).use { input -> temp.outputStream().use(input::copyTo) }
+            } finally { zip.close() }
+            temp
+        } else File(path)
+        return try {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageArchiveInfo(archive.absolutePath, 0)?.versionName
+        } finally {
+            if (archive.parentFile == cacheDir) archive.delete()
+        }
     }
 
     private fun publishError(message: String) {

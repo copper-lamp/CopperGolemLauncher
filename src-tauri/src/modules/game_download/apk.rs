@@ -45,6 +45,8 @@ pub struct ApkPackageInfo {
     pub abi: String,
     pub sha256: String,
     pub has_splits: bool,
+    #[serde(default)]
+    pub icon_png: Option<String>,
 }
 
 /// 导入结果：**规整后的实例名** + 从包内解出的身份信息。
@@ -129,6 +131,7 @@ pub fn inspect_base(path: &Path) -> Result<ApkPackageInfo, KernelError> {
         abi,
         sha256: sha256_file(path)?,
         has_splits: false,
+        icon_png: None,
     })
 }
 

@@ -19,6 +19,10 @@ use crate::state::KernelContext;
 /// 「两个渠道都拿不到」——那种情况下页面确实没有任何可装内容。
 #[tauri::command]
 pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: Option<bool>) -> CommandResult<ManifestView> {
+    #[cfg(target_os = "android")]
+    { let _ = (kernel, refresh); return Ok(manifest::empty_view()); }
+    #[cfg(not(target_os = "android"))]
+    {
     let ctx = Ctx::from_kernel(&kernel);
     let versions = match manifest::load_manifest(&ctx, refresh.unwrap_or(false)).await {
         Ok(versions) => Some(versions),
@@ -46,12 +50,16 @@ pub async fn game_download_manifest(kernel: State<'_, KernelContext>, refresh: O
         return Ok(manifest::build_view(&empty, catalog.as_ref(), &local_packages));
     };
     Ok(manifest::build_view(&versions, catalog.as_ref(), &local_packages))
+    }
 }
 
 /// 某版本可选的加载器清单（详情页「加载器」下拉）。
 #[tauri::command]
 pub async fn game_download_loaders(kernel: State<'_, KernelContext>, id: String) -> CommandResult<installer::LoaderOptions> {
-    installer::loader_options(kernel.inner(), &id).await.map_err(into_command_error)
+    #[cfg(target_os = "android")]
+    { let _ = (kernel, id); return Err(into_command_error(KernelError::InvalidArgument("Android 当前没有可用的官方游戏安装源".into()))); }
+    #[cfg(not(target_os = "android"))]
+    { installer::loader_options(kernel.inner(), &id).await.map_err(into_command_error) }
 }
 
 /// 为该版本推荐一个可用实例名（安装确认弹窗的初值）。
@@ -85,6 +93,9 @@ pub async fn game_download_install(
     instance: String,
     loader: Option<String>,
 ) -> CommandResult<u64> {
+    #[cfg(target_os = "android")]
+    { let _ = (kernel, id, instance, loader); return Err(into_command_error(KernelError::InvalidArgument("Android 当前只能通过 Google Play 或导入正版 APK 安装游戏".into()))); }
+    #[cfg(not(target_os = "android"))]
     installer::enqueue(
         &Ctx::from_kernel(&kernel),
         &installer::install_lock(),
@@ -99,6 +110,9 @@ pub async fn game_download_install(
 /// 实例级重试安装：整包在本地时**不重新下载**。
 #[tauri::command]
 pub fn game_download_retry(kernel: State<'_, KernelContext>, instance: String) -> CommandResult<()> {
+    #[cfg(target_os = "android")]
+    { let _ = (kernel, instance); return Err(into_command_error(KernelError::InvalidArgument("Android 不支持 Windows 游戏安装重试".into()))); }
+    #[cfg(not(target_os = "android"))]
     installer::retry_instance(&Ctx::from_kernel(&kernel), &installer::install_lock(), &instance)
         .map_err(into_command_error)
 }
@@ -106,6 +120,9 @@ pub fn game_download_retry(kernel: State<'_, KernelContext>, instance: String) -
 /// 版本级重试安装：把该版本下所有未装好的实例重新排进安装（下载中心的「安装」入口）。
 #[tauri::command]
 pub fn game_download_retry_version(kernel: State<'_, KernelContext>, id: String) -> CommandResult<()> {
+    #[cfg(target_os = "android")]
+    { let _ = (kernel, id); return Err(into_command_error(KernelError::InvalidArgument("Android 不支持 Windows 游戏安装重试".into()))); }
+    #[cfg(not(target_os = "android"))]
     installer::retry_version(&Ctx::from_kernel(&kernel), &installer::install_lock(), &id)
         .map_err(into_command_error)
 }

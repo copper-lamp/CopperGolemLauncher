@@ -63,7 +63,7 @@
     "name_placeholder": "e.g. 1.21.130.22",
     "checking": "Checking instance name",
     "available": "Instance name is available",
-    "confirm": "Start install",
+    "confirm": "Import APK",
     "reason": {
       "empty": "Instance name cannot be empty",
       "too_long": "Instance name is too long (64 characters max)",
@@ -112,12 +112,19 @@
     "refresh_ok": "List refreshed"
   },
   "import": {
+    "checking_name": "Checking instance name",
     "picking": "Choosing a file",
     "copying": "Copying into app storage",
     "importing": "Importing",
     "launching": "Starting the game",
     "cancelled": "Import cancelled",
     "failed": "Import failed",
+    "launchFailed": "Instance imported, but launch failed",
+    "postImportWarning": {
+      "icon_failed": "Imported successfully, but the icon could not be saved.",
+      "refresh_failed": "Imported successfully, but the instance list could not refresh. Retry loading the list.",
+      "icon_and_refresh_failed": "Imported successfully, but the icon could not be saved and the instance list could not refresh."
+    },
     "picked": "Imported {name} ({version})"
   },
   "empty": "No downloadable versions"

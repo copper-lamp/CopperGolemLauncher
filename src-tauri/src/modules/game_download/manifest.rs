@@ -191,6 +191,11 @@ pub struct ManifestView {
     pub previews: Vec<VersionView>,
 }
 
+/// 空清单：Android 当前没有获得支持的 Google Play 安装下载通道。
+pub fn empty_view() -> ManifestView {
+    ManifestView { latest_release: None, latest_preview: None, releases: Vec::new(), previews: Vec::new() }
+}
+
 /// 单版本卡片视图。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]

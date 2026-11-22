@@ -212,11 +212,14 @@ const needsTargetConfirm = computed(() => isLip.value || isLla.value);
 /** lip 安装目标版本（`launch.default_version`，与后端解析口径一致）。 */
 const targetVersion = ref("");
 const targetFolder = ref("");
+const targetCandidates = ref<VersionView[]>([]);
 
 async function resolveTargetVersion() {
   const selected = settings.get<string>("launch.default_version", "").trim();
   const versions = await homeVersionsList();
-  const current = versions.find((version: VersionView) => version.name === selected);
+  const candidates = isLla.value ? versions.filter((version: VersionView) => version.is_android) : versions;
+  targetCandidates.value = candidates;
+  const current = candidates.find((version: VersionView) => version.name === selected) ?? candidates[0];
   targetVersion.value = current?.name ?? "";
   targetFolder.value = current?.folder ?? "";
 }
@@ -479,11 +482,11 @@ async function openInstall(file: ContentFile) {
   try {
     await resolveTargetVersion();
   } catch {
-    showToast(t(`${KB}.lipErrTargetNotFound`), "error");
+    showToast(t(isLla.value ? `${KB}.llaErrTargetNotFound` : `${KB}.lipErrTargetNotFound`), "error");
     return;
   }
-  if (!targetVersion.value || !targetFolder.value) {
-    showToast(t(`${KB}.lipErrTargetNotFound`), "error");
+  if (!targetVersion.value || !targetFolder.value || (isLla.value && !targetCandidates.value.some((version) => version.is_android))) {
+    showToast(t(isLla.value ? `${KB}.llaErrTargetNotFound` : `${KB}.lipErrTargetNotFound`), "error");
     return;
   }
   installFile.value = file;

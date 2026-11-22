@@ -1266,7 +1266,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   }
   .list-page__grid--android .list-page__filter-backdrop--open { opacity: 1; visibility: visible; }
   .list-page__grid--android .rail {
-    position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: 50vw; min-width: 300px; max-width: 560px; height: 100dvh;
+    position: fixed; z-index: 40; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); min-width: 0; max-width: 560px; height: 100dvh;
     padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) 16px;
     background: var(--copper-bg); box-shadow: var(--copper-shadow); transform: translateX(102%); visibility: hidden;
     transition: transform 260ms cubic-bezier(.2,.8,.2,1), visibility 260ms;
@@ -1279,7 +1279,7 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
 }
 
 @media (max-width: 420px) {
-  .list-page__grid--android .rail { width: 50vw; min-width: 0; padding-left: 12px; padding-right: max(12px, env(safe-area-inset-right)); }
+  .list-page__grid--android .rail { width: min(420px, 100vw); min-width: 0; padding-left: 12px; padding-right: max(12px, env(safe-area-inset-right)); }
 }
 @media (prefers-reduced-motion: reduce) {
   .list-page__grid--android .rail, .list-page__grid--android .list-page__filter-backdrop { transition-duration: 1ms; }
@@ -1298,11 +1298,11 @@ onUnmounted(() => { ++loadSeq; loading.value = false; if (refreshTimer) clearInt
   }
 
   /* 窄宽度下先给内容、后给筛选：一进来就看到模组列表，而不是整屏操作栏。 */
-  .rail {
+  .list-page__grid:not(.list-page__grid--android) .rail {
     height: auto;
   }
 
-  .rail__filters {
+  .list-page__grid:not(.list-page__grid--android) .rail__filters {
     overflow: visible;
   }
 }

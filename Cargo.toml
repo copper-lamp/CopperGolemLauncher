@@ -20,6 +20,10 @@ opt-level = 3
 panic = "abort"
 strip = true
 
+# Android debug APKs retain debuggable Java/Kotlin code but omit bulky Rust DWARF.
+[profile.dev]
+strip = "debuginfo"
+
 # 注入侧 hook DLL 覆盖工作区的发布配置：
 # - `strip = false` + `debug = "line-tables-only"`：游戏崩溃时必须能拿到符号，
 #   否则注入侧问题（重定向没生效 / 预加载失败）无从定位。体积换可诊断性。

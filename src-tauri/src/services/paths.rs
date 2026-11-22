@@ -79,8 +79,12 @@ impl Paths {
     /// `ProjectDirs::from` 通常返回 `None`，硬依赖会直接中断启动
     /// （见 docs/平台适配.md 3.1 风险 2）。
     pub fn resolve(app: &AppHandle) -> Result<Self, KernelError> {
-        let legacy = app.path().app_data_dir()
+        let app_data = app.path().app_data_dir()
             .map_err(|e| KernelError::Config(format!("无法解析应用数据目录 app_data_dir: {e}")))?;
+        #[cfg(target_os = "android")]
+        let legacy = app_data.join("files");
+        #[cfg(not(target_os = "android"))]
+        let legacy = app_data;
         let locator = legacy.join("bootstrap");
         #[cfg(not(target_os = "android"))]
         let default = std::env::current_exe()?.parent().ok_or_else(||KernelError::Config("无法解析启动器所在目录".into()))?.join(".cgl");

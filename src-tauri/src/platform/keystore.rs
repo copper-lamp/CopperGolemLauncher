@@ -83,6 +83,7 @@ pub extern "system" fn JNI_OnLoad(vm: *mut jni::sys::JavaVM, _reserved: *mut std
     // SAFETY: 见上。
     match unsafe { JavaVM::from_raw(vm) } {
         Ok(java_vm) => {
+            super::android::register_android_vm(&java_vm);
             if VM.set(java_vm).is_err() {
                 log::warn!("[keystore] JavaVM 已注册，忽略重复的 JNI_OnLoad");
             }

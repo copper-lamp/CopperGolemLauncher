@@ -73,6 +73,7 @@ pub struct VersionView {
     pub name: String,
     pub game_version: String,
     pub version_type: String,
+    pub is_android: bool,
     /// 恒为 `true`：隔离强制开启，没有关闭入口。仍然下发是为了让前端
     /// 能明确告诉用户「本实例的数据是独立的」，而不是让用户猜。
     pub enable_isolation: bool,
@@ -429,7 +430,8 @@ fn to_view(root: &std::path::Path, mut meta: VersionMeta) -> VersionView {
         name: meta.name.clone(),
         game_version: meta.game_version.clone(),
         version_type: meta.version_type.clone(),
-        // 隔离强制开启：元数据里的 false 一律按 true 对外。
+        is_android: meta.android.is_some(),
+        // 隔离强制开启：元数据里的 false 一律按 true 对外.
         enable_isolation: true,
         enable_editor_mode: meta.enable_editor_mode,
         enable_console: meta.enable_console,

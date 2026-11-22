@@ -30,7 +30,10 @@ android {
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
+            // Do not embed native debug symbols in the APK. Keep the debug build
+            // debuggable while producing a package that is practical to install.
+            packaging {
+                jniLibs.keepDebugSymbols.clear()
             }
         }
         getByName("release") {

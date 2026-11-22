@@ -13,6 +13,7 @@ import com.copperlamp.coppergolem.game.CopperGameExitRecord
 import com.copperlamp.coppergolem.game.CopperGameInstance
 import com.copperlamp.coppergolem.game.CopperGamePrepareActivity
 import com.copperlamp.coppergolem.game.CopperGameSession
+import com.copperlamp.coppergolem.game.CopperGameHostBridge
 
 /**
  * 启动器主界面（Tauri WebView 宿主）。
@@ -38,6 +39,7 @@ class MainActivity : TauriActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         hideLauncherSystemUi()
+        CopperGameHostBridge.attach(this)
         handleGameIntent(intent)
         handleResourceIntent(intent)
     }
@@ -140,6 +142,7 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        CopperGameHostBridge.detach(this)
         Log.d(TAG, "MainActivity onDestroy")
         super.onDestroy()
     }

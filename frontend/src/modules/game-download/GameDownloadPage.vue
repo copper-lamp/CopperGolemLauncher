@@ -21,17 +21,19 @@ import {
   X,
   ArrowUp,
 } from "@lucide/vue";
-import { homeLaunch } from "../../api/home";
+import { homeLaunch, homeLogoSet } from "../../api/home";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { useI18n } from "../../i18n";
 import { usePlatform } from "../../composables/usePlatform";
 import TipsRotator from "../../components/TipsRotator.vue";
 import CoSkeleton from "../../components/ui/CoSkeleton.vue";
-import { gameImportApk } from "./api";
+import { gameImportApk, gameInstanceCheck } from "./api";
 import { pickApkViaHost, reportAndroidImportFailure } from "./apkImport";
 import { initGameDownload, useGameDownload } from "./useGameDownload";
 import type { GameVersionView } from "./api";
 import VersionCard from "./VersionCard.vue";
+import CoButton from "../../components/ui/CoButton.vue";
+import CoTextField from "../../components/ui/CoTextField.vue";
 
 const { t } = useI18n();
 const gd = useGameDownload();
@@ -54,6 +56,9 @@ const previewOpen = ref(false);
 const importStatus = ref<string | null>(null);
 /** 导入是否在正在进行中（按钮禁用 + 防重入）。 */
 const importing = ref(false);
+const nameDialogOpen = ref(false);
+const pickedApk = ref<Awaited<ReturnType<typeof pickApkViaHost>> | null>(null);
+const importName = ref("");
 /**
  * 是否提供「导入 APK」入口：仅安卓。
  *
@@ -215,38 +220,80 @@ async function openPlayStore() {
 }
 
 async function importApk() {
-  if (importing.value) return;
-  if (!canImport.value) return;
+  if (importing.value || !canImport.value) return;
   importing.value = true;
   importError.value = null;
   try {
-    importStatus.value = t(`${MB_KEY}.import.picking`);
-    const picked = await pickApkViaHost(t(`${MB_KEY}.import.cancelled`));
-    const sourcePath = picked.path;
-    const displayName = picked.displayName;
-
-    importStatus.value = t(`${MB_KEY}.import.importing`);
-    const info = await gameImportApk(sourcePath, instanceNameFrom(displayName));
-    // 实例名以内核规整后的结果为准：这个名字同时是版本目录名与安卓宿主
-    // 定位实例的键，前端不再自己推导第二遍。
-    const name = info.instanceName;
-
-    // 导入目录里现在多了这个实例，刷新清单让开始页与本页立即可见。
-    await gd.loadManifest(false);
-    importStatus.value = t(`${MB_KEY}.import.launching`);
-    // 版本号由内核从实例元数据读取，前端不需要（也不应该）再传一遍。
-    await homeLaunch(name);
-    importStatus.value = t(`${MB_KEY}.import.picked`, {
-      name,
-      version: info.packageInfo.versionName,
-    });
+    importStatus.value = t(MB_KEY + ".import.picking");
+    pickedApk.value = await pickApkViaHost(t(MB_KEY + ".import.cancelled"));
+    importName.value = instanceNameFrom(pickedApk.value.versionName || pickedApk.value.displayName);
+    nameDialogOpen.value = true;
+    importStatus.value = null;
   } catch (e) {
     importStatus.value = null;
-    // 失败原因只存在于这一步的栈里：安卓宿主已写 logcat，这里再补一条内核日志，
-    // 保证用户反馈 issue 时两边都有现场（见 apkImport.reportAndroidImportFailure）。
-    reportAndroidImportFailure("import", e);
-    importError.value = t(`${MB_KEY}.import.failed`) + "：" + String(e);
+    reportAndroidImportFailure("pick", e);
+    importError.value = t(MB_KEY + ".import.failed") + ": " + String(e);
+  } finally { importing.value = false; }
+}
+
+async function confirmApkImport() {
+  if (!pickedApk.value || importing.value) return;
+  const picked = pickedApk.value;
+  importing.value = true;
+  importError.value = null;
+  let importStarted = false;
+  let imported = false;
+  let postImportIssue: string | null = null;
+  try {
+    const candidate = importName.value.trim();
+    if (!candidate) { importError.value = t(MB_KEY + ".dialog.reason.empty"); return; }
+    importStatus.value = t(MB_KEY + ".import.checking_name");
+    let check;
+    try { check = await gameInstanceCheck(candidate); } catch { importError.value = t(MB_KEY + ".dialog.reason.unknown"); return; }
+    if (!check.available) { importError.value = t(MB_KEY + ".dialog.reason." + (check.reason || "taken")); return; }
+    importName.value = check.name;
+    nameDialogOpen.value = false;
+    importStarted = true;
+    importStatus.value = t(MB_KEY + ".import.importing");
+    const info = await gameImportApk(picked.path, check.name);
+    imported = true;
+    const name = info.instanceName;
+    if (picked.iconPng) {
+      try { await homeLogoSet(name, picked.iconPng); }
+      catch (iconError) {
+        reportAndroidImportFailure("icon", iconError);
+        postImportIssue = "icon_failed";
+      }
+    }
+    try { await gd.loadManifest(false); }
+    catch (refreshError) {
+      reportAndroidImportFailure("manifest-refresh", refreshError);
+      postImportIssue = postImportIssue ? "icon_and_refresh_failed" : "refresh_failed";
+    }
+    importStatus.value = t(MB_KEY + ".import.picked", { name, version: info.packageInfo.versionName });
+    if (postImportIssue) importError.value = t(MB_KEY + ".import.postImportWarning." + postImportIssue);
+    try {
+      importStatus.value = t(MB_KEY + ".import.launching");
+      await homeLaunch(name);
+      importStatus.value = t(MB_KEY + ".import.picked", { name, version: info.packageInfo.versionName });
+    } catch (launchError) {
+      reportAndroidImportFailure("launch", launchError);
+      importError.value = t(MB_KEY + ".import.launchFailed") + ": " + String(launchError);
+      importStatus.value = t(MB_KEY + ".import.picked", { name, version: info.packageInfo.versionName });
+    }
+  } catch (e) {
+    if (imported) {
+      reportAndroidImportFailure("post-import", e);
+      importError.value = t(MB_KEY + ".import.postImportWarning.refresh_failed");
+      importStatus.value = t(MB_KEY + ".import.picked", { name: importName.value, version: picked.versionName || "" });
+    } else {
+      reportAndroidImportFailure("import", e);
+      importError.value = t(MB_KEY + ".import.failed") + ": " + String(e);
+      importStatus.value = null;
+      if (importStarted) nameDialogOpen.value = true;
+    }
   } finally {
+    if (importStarted) pickedApk.value = null;
     importing.value = false;
   }
 }
@@ -260,6 +307,16 @@ async function importApk() {
       <CircleCheck v-else :size="13" />
       {{ importStatus }}
     </p>
+    <div v-if="nameDialogOpen && pickedApk" class="gd-page__name-dialog" role="dialog" aria-modal="true" aria-labelledby="apk-import-title">
+      <div class="gd-page__name-card">
+        <h2 id="apk-import-title">{{ t(`${MB_KEY}.dialog.title`) }}</h2>
+        <p>{{ pickedApk.displayName }}<span v-if="pickedApk.versionName"> · {{ pickedApk.versionName }}</span></p>
+        <CoTextField v-model="importName" :placeholder="t(`${MB_KEY}.dialog.name_placeholder`)" :disabled="importing" @enter="confirmApkImport" />
+        <p v-if="importError" class="gd-page__import-error" role="alert">{{ importError }}</p>
+        <p v-if="importStatus" class="gd-page__import-status" role="status">{{ importStatus }}</p>
+        <footer><CoButton variant="ghost" :disabled="importing" @click="nameDialogOpen = false; pickedApk = null">{{ t(`${MB_KEY}.actions.cancel`) }}</CoButton><CoButton variant="primary" :disabled="!importName.trim() || importing" @click="confirmApkImport">{{ t(`${MB_KEY}.dialog.confirm`) }}</CoButton></footer>
+      </div>
+    </div>
     <p v-if="loadError" class="gd-page__import-error" role="alert">
       {{ loadError }}
       <button v-if="gd.manifest.value" class="gd-page__retry" :disabled="localLoading || gd.loading.value" @click="refresh">{{ t(`${MB_KEY}.actions.retry`) }}</button>
@@ -287,6 +344,10 @@ async function importApk() {
       class="gd-page__state"
     >
       <p class="gd-page__state-text">{{ t(`${MB_KEY}.empty`) }}</p>
+      <div v-if="canImport" class="gd-page__android-actions">
+        <button class="gd-page__play" type="button" @click="openPlayStore"><Play :size="15" /><span>{{ t(`${MB_KEY}.actions.play_store`) }}</span></button>
+        <button class="gd-page__import" type="button" :disabled="importing" @click="importApk"><Upload :size="15" /><span>{{ t(`${MB_KEY}.actions.import`) }}</span></button>
+      </div>
     </div>
 
     <!-- 内容 -->
@@ -940,4 +1001,10 @@ async function importApk() {
     transform: rotate(360deg);
   }
 }
+.gd-page__name-dialog { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--copper-overlay); }
+.gd-page__name-card { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: var(--copper-space-3); padding: 20px; background: var(--copper-surface); border-radius: var(--copper-radius-card); box-shadow: var(--copper-shadow-card); }
+.gd-page__name-card h2 { margin: 0; font-size: var(--copper-font-size-lg); }
+.gd-page__name-card p { margin: 0; color: var(--copper-text-secondary); font-size: var(--copper-font-size-sm); overflow-wrap: anywhere; }
+.gd-page__name-card p.gd-page__import-error { color: var(--copper-danger); }
+.gd-page__name-card footer { display: flex; justify-content: flex-end; gap: var(--copper-space-2); margin-top: var(--copper-space-2); }
 </style>

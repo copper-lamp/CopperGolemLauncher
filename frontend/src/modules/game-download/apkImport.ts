@@ -26,6 +26,8 @@ export interface PickedApk {
   /** 应用私有目录内的绝对路径，可直接交给 `gameImportApk`。 */
   path: string;
   displayName: string;
+  iconPng: string | null;
+  versionName: string | null;
 }
 
 /**
@@ -57,7 +59,7 @@ export async function pickApkViaHost(cancelMessage: string): Promise<PickedApk> 
       // `displayName` 与内核的序列化键名一致（camelCase）；读 snake_case 会得到
       // undefined，随后在实例名规整处抛出一个与真实原因无关的 TypeError.
       const displayName = result.displayName || result.path.split("/").pop() || "import.apk";
-      return { path: result.path, displayName };
+      return { path: result.path, displayName, iconPng: result.iconPng ?? null, versionName: result.versionName ?? null };
     }
     throw new Error("文件选择超时");
   } catch (error) {

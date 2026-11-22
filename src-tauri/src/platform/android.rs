@@ -16,10 +16,103 @@
 
 use serde_json::json;
 
+#[cfg(target_os = "android")]
+use std::sync::{OnceLock, RwLock};
+#[cfg(target_os = "android")]
+use jni::{objects::{GlobalRef, JClass, JObject, JValue}, JNIEnv, JavaVM};
+
+
 use crate::error::KernelError;
 use crate::registry::events::EventBus;
 
 pub const PREPARE_EVENT: &str = "android-game-prepare";
+
+#[cfg(target_os = "android")]
+static ANDROID_VM: OnceLock<JavaVM> = OnceLock::new();
+#[cfg(target_os = "android")]
+static ANDROID_HOST: OnceLock<RwLock<Option<GlobalRef>>> = OnceLock::new();
+#[cfg(target_os = "android")]
+static ANDROID_BRIDGE: OnceLock<GlobalRef> = OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn register_android_vm(vm: &JavaVM) {
+    // SAFETY: this pointer is owned by the process-wide JVM and remains valid for its lifetime.
+    match unsafe { JavaVM::from_raw(vm.get_java_vm_pointer()) } {
+        Ok(vm) => { let _ = ANDROID_VM.set(vm); }
+        Err(error) => log::error!("[android-launch] unable to retain JavaVM: {error}"),
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge_nativeRegisterBridge(
+    mut env: JNIEnv,
+    _class: JClass,
+    bridge: JClass,
+) {
+    match env.new_global_ref(&bridge) {
+        Ok(reference) => {
+            if ANDROID_BRIDGE.set(reference).is_err() {
+                log::warn!("[android-launch] game host bridge already registered");
+            }
+        }
+        Err(error) => log::error!("[android-launch] unable to retain game host bridge class: {error}"),
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge_nativeRegisterHost(
+    mut env: JNIEnv,
+    _class: JClass,
+    host: JObject,
+) {
+    match env.new_global_ref(host) {
+        Ok(reference) => {
+            let slot = ANDROID_HOST.get_or_init(|| RwLock::new(None));
+            if let Ok(mut current) = slot.write() { *current = Some(reference); }
+        }
+        Err(error) => log::error!("[android-launch] unable to retain host Activity: {error}"),
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge_nativeClearHost(
+    mut env: JNIEnv,
+    _class: jni::objects::JClass,
+    host: JObject,
+) {
+    let Some(slot) = ANDROID_HOST.get() else { return; };
+    let Ok(mut current) = slot.write() else { return; };
+    let Some(reference) = current.as_ref() else { return; };
+    match env.is_same_object(host, reference.as_obj()) {
+        Ok(true) => *current = None,
+        Ok(false) => {},
+        Err(error) => log::warn!("[android-launch] host identity check failed: {error}"),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn launch_host_prepare(instance: &str) -> Result<(), KernelError> {
+    let host = ANDROID_HOST
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .map_err(|_| KernelError::Config("Android 启动器状态锁已损坏".into()))?
+        .clone()
+        .ok_or_else(|| KernelError::Config("Android 启动器界面尚未就绪，无法启动游戏".into()))?;
+    let vm = ANDROID_VM.get().ok_or_else(|| KernelError::Config("Android Java 虚拟机尚未就绪".into()))?;
+    let mut env = vm.attach_current_thread().map_err(|error| KernelError::Config(format!("连接 Android 游戏启动器失败: {error}")))?;
+    let value = env.new_string(instance).map_err(|error| KernelError::Config(format!("创建 Android 实例名失败: {error}")))?;
+    let bridge = ANDROID_BRIDGE.get().ok_or_else(|| KernelError::Config("Android 游戏启动桥尚未注册".into()))?;
+    env.call_static_method(
+        bridge.as_obj(),
+        "prepare",
+        "(Ljava/lang/String;)V",
+        &[JValue::Object(&value)],
+    ).map_err(|error| KernelError::Config(format!("请求 Android 启动界面失败: {error}")))?;
+    Ok(())
+}
 
 /// Ask the Java host to start an instance.
 ///
@@ -41,6 +134,9 @@ pub fn request_prepare(
             "Android 实例缺少版本号，无法确定原生库加载顺序".into(),
         ));
     }
+    #[cfg(target_os = "android")]
+    launch_host_prepare(instance)?;
+
     events.publish(
         PREPARE_EVENT,
         json!({
@@ -83,6 +179,10 @@ pub struct ApkPickResult {
     pub path: String,
     #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
+    pub icon_png: Option<String>,
+    #[serde(default)]
+    pub version_name: Option<String>,
     #[serde(default)]
     pub error: String,
 }
@@ -187,25 +287,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("copper_android_pick_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(take_apk_pick_result(&dir, "req-1").unwrap().is_none());
+        let request_id = "123e4567-e89b-12d3-a456-426614174000";
+        let other_request_id = "123e4567-e89b-12d3-a456-426614174001";
+        assert!(take_apk_pick_result(&dir, request_id).unwrap().is_none());
         assert!(take_apk_pick_result(&dir, "").is_err());
 
         std::fs::write(
             dir.join(APK_PICK_RESULT_FILE),
-            br#"{"requestId":"req-1","path":"/data/versions/.import/req-1/source.apk","displayName":"a.apk"}"#,
+            br#"{"requestId":"123e4567-e89b-12d3-a456-426614174000","path":"/data/versions/.import/req-1/source.apk","displayName":"a.apk"}"#,
         )
         .unwrap();
-        let result = take_apk_pick_result(&dir, "req-1").unwrap().expect("picked");
+        let result = take_apk_pick_result(&dir, request_id).unwrap().expect("picked");
         assert!(result.is_ok());
         assert_eq!(result.display_name, "a.apk");
 
         // 另一个 requestId 不得领取同一份结果
         std::fs::write(
             dir.join(APK_PICK_RESULT_FILE),
-            br#"{"requestId":"req-1","path":"/data/versions/.import/req-1/source.apk"}"#,
+            br#"{"requestId":"123e4567-e89b-12d3-a456-426614174000","path":"/data/versions/.import/req-1/source.apk"}"#,
         )
         .unwrap();
-        assert!(take_apk_pick_result(&dir, "req-2").unwrap().is_none());
+        assert!(take_apk_pick_result(&dir, other_request_id).unwrap().is_none());
     }
 
     #[test]
@@ -214,12 +316,13 @@ mod tests {
             std::env::temp_dir().join(format!("copper_android_pick_err_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let request_id = "123e4567-e89b-12d3-a456-426614174002";
         std::fs::write(
             dir.join(APK_PICK_RESULT_FILE),
-            br#"{"requestId":"r","error":"permission denied"}"#,
+            br#"{"requestId":"123e4567-e89b-12d3-a456-426614174002","error":"permission denied"}"#,
         )
         .unwrap();
-        let result = take_apk_pick_result(&dir, "r").unwrap().expect("picked");
+        let result = take_apk_pick_result(&dir, request_id).unwrap().expect("picked");
         assert!(!result.is_ok());
         assert_eq!(result.error, "permission denied");
     }

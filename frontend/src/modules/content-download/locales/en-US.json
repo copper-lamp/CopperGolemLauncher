@@ -100,6 +100,7 @@
     "lipErrInvalidIdentifier": "This item's package identifier is not recognized, so it cannot be installed via lip",
     "lipErrVersionRequired": "This entry has no version, so it cannot be installed via lip",
     "lipErrTargetNotFound": "Target version directory not found. Please set a default version in Settings first",
+    "llaErrTargetNotFound": "No Android game instance found. Import an Android APK first.",
     "confirmInstall": "Install \"{name}\" to \"{dir}\"? Continue?",
     "confirmInstallTitle": "Confirm install",
     "noVersionTarget": "No version selected on the home page",

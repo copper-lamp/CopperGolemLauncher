@@ -175,6 +175,7 @@ export interface ApkPackageInfo {
   abi: string;
   sha256: string;
   hasSplits: boolean;
+  iconPng?: string | null;
 }
 
 /**
@@ -231,6 +232,8 @@ export interface AndroidApkPickResult {
   /** 应用私有目录内的绝对路径；失败时为空。 */
   path: string;
   displayName: string;
+  iconPng?: string | null;
+  versionName?: string | null;
   error: string;
 }
 

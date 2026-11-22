@@ -100,6 +100,7 @@
     "lipErrInvalidIdentifier": "该内容的包标识无法识别，无法经 lip 安装",
     "lipErrVersionRequired": "该条目不包含版本号，无法经 lip 安装",
     "lipErrTargetNotFound": "未找到目标版本目录，请先在设置中指定「默认版本」",
+    "llaErrTargetNotFound": "未找到 Android 游戏实例，请先导入 Android APK",
     "confirmInstall": "将安装「{name}」到「{dir}」，继续吗？",
     "confirmInstallTitle": "确认安装",
     "noVersionTarget": "未在开始页选择版本",

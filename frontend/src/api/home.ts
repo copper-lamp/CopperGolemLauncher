@@ -14,6 +14,8 @@ export interface VersionView {
   name: string;
   game_version: string;
   version_type: string;
+  /** True only for APK/APKS-backed Android game instances. */
+  is_android: boolean;
   /** 恒为 true：隔离强制开启，没有关闭入口。 */
   enable_isolation: boolean;
   enable_editor_mode: boolean;

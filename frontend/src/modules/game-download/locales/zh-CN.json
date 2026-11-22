@@ -63,7 +63,7 @@
     "name_placeholder": "例如 1.21.130.22",
     "checking": "正在检查实例名",
     "available": "实例名可用",
-    "confirm": "开始安装",
+    "confirm": "开始导入",
     "reason": {
       "empty": "实例名不能为空",
       "too_long": "实例名过长（最多 64 字符）",
@@ -112,12 +112,19 @@
     "refresh_ok": "清单已刷新"
   },
   "import": {
+    "checking_name": "正在检查实例名",
     "picking": "正在选择文件",
     "copying": "正在复制到应用目录",
     "importing": "正在导入",
     "launching": "正在启动游戏",
     "cancelled": "已取消导入",
     "failed": "导入失败",
+    "launchFailed": "实例已导入，但启动失败",
+    "postImportWarning": {
+      "icon_failed": "实例已成功导入，但图标保存失败。",
+      "refresh_failed": "实例已成功导入，但实例列表刷新失败，请重试刷新。",
+      "icon_and_refresh_failed": "实例已成功导入，但图标保存与实例列表刷新均失败。"
+    },
     "picked": "已导入 {name}（{version}）"
   },
   "empty": "暂无可下载的版本"
