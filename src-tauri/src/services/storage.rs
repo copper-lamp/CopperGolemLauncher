@@ -57,27 +57,30 @@ fn copy_tree(source:&Path,target:&Path)->Result<(),KernelError>{
     else{return Err(error("迁移不支持设备或特殊文件"));}Ok(())
 }
 /// Called before Paths::prepare and before opening the application database.
-pub fn bootstrap(locator:&Path,default:&Path,legacy:&Path,env:Option<PathBuf>)->Result<PathBuf,KernelError>{
+pub fn bootstrap(locator:&Path,default:&Path,_legacy:&Path,env:Option<PathBuf>)->Result<PathBuf,KernelError>{
     // Development overrides must work even if the platform app-data locator is read-only.
     if let Some(root)=env {return Ok(root);}
     let mut c=db(locator)?;
     let active=get(&c,"active")?.map(PathBuf::from);
-    // 桌面端的唯一数据根是 exe 同目录的 .cgl。旧版把数据放在 %APPDATA%，若不处理，
-    // 老用户会一直留在旧根，用户看到的「数据在 exe 旁边」就永远不成立；因此首次启动
-    // 时整树搬迁一次并钉住 locator。源目录保留；搬不动（只读安装位置）则沿用旧根，
-    // 保证仍然能启动。
-    let adopt_legacy = active.is_none()
-        && default != legacy
-        && !default.join("data/copper.db").is_file()
-        && legacy.join("data/copper.db").is_file();
-    let initial = if adopt_legacy {
-        match adopt(&mut c, legacy, default) {
-            Ok(()) => { log::info!("[storage] 旧数据根已迁移到 exe 同目录 .cgl: {}", default.display()); default.to_owned() }
-            Err(e) => { log::error!("[storage] 迁移到 .cgl 失败，继续使用 {}: {e}", legacy.display()); legacy.to_owned() }
+    let active = match active {
+        Some(path) if path.file_name().is_some_and(|name| name == ".cgl") => {
+            log::warn!("[storage] 忽略旧 exe 旁 .cgl 数据根 locator: {}", path.display());
+            c.execute("DELETE FROM locator WHERE key='active'", [])?;
+            None
         }
-    } else { active.unwrap_or_else(||default.to_owned()) };
+        other => other,
+    };
+    let initial = active.unwrap_or_else(||default.to_owned());
     if let Some(raw)=get(&c,"pending")?{
         let plan:Plan=serde_json::from_str(&raw)?;
+        if plan.source != plan.target {
+            let message="当前版本已禁用启动器数据目录迁移；待执行迁移已取消";
+            c.execute("DELETE FROM locator WHERE key='pending'", [])?;
+            set(&c,"lastError",message)?;
+            log::warn!("[storage] {message}");
+            reset_versions_selection(&c,&initial)?;
+            return Ok(initial);
+        }
         match execute(&plan){
             Ok(created)=>{
                 let result=(||{let tx=c.transaction()?;set(&tx,"active",&plan.target.to_string_lossy())?;if let Some(game)=&plan.game_root{set(&tx,"gameRoot",&game.to_string_lossy())?;set(&tx,"resetVersionsSelection","1")?;}tx.execute("DELETE FROM locator WHERE key IN ('pending','lastError')",[])?;tx.commit()?;Ok::<(),KernelError>(())})();
@@ -89,20 +92,6 @@ pub fn bootstrap(locator:&Path,default:&Path,legacy:&Path,env:Option<PathBuf>)->
             Err(e)=>{set(&c,"lastError",&e.to_string())?;log::error!("[storage] migration failed; original data preserved: {e}");return Ok(initial);}
         }
     }reset_versions_selection(&c,&initial)?;Ok(initial)
-}
-/// 把旧数据根整体搬到 exe 同目录的 `.cgl`，成功后把 locator 钉到新根。
-///
-/// 复用 `execute` 的暂存 + 校验 + 重命名流程：复制校验失败只会回滚暂存目录，
-/// 旧根保持原样；因此这是一次「可放弃」的搬迁，不会让老用户彻底打不开启动器。
-fn adopt(c:&mut rusqlite::Connection,legacy:&Path,target:&Path)->Result<(),KernelError>{
-    let plan=Plan{source:legacy.to_owned(),target:target.to_owned(),old_versions:legacy.join("versions"),old_packages:legacy.join(".download"),game_root:None};
-    execute(&plan)?;
-    let tx=c.transaction()?;
-    set(&tx,"active",target.to_string_lossy().as_ref())?;
-    // 旧根里可能仍留着「从 Levi 导入」写入的版本选择；搬迁后它指向旧位置，必须清掉。
-    set(&tx,"resetVersionsSelection","1")?;
-    tx.commit()?;
-    reset_versions_selection(c,target)
 }
 fn reset_versions_selection(locator:&rusqlite::Connection,root:&Path)->Result<(),KernelError>{
     if get(locator,"resetVersionsSelection")?.is_none(){return Ok(());}
@@ -169,6 +158,7 @@ pub fn preview(paths:&Paths,settings:&super::settings::SettingsService,request:&
 }
 fn plan(paths:&Paths,settings:&super::settings::SettingsService,r:&StorageRequest)->Result<Plan,KernelError>{
     let target=r.launcher_root.as_deref().map(path).transpose()?.unwrap_or_else(||paths.launcher_root().clone());
+    if target!=*paths.launcher_root(){return Err(error("当前版本不支持更改启动器数据目录，请使用默认位置"));}
     let game=r.game_root.as_deref().map(path).transpose()?;
     if std::env::var_os("COPPER_DATA_DIR").is_some(){return Err(error("COPPER_DATA_DIR 覆盖生效，请先退出并清除此覆盖后修改持久存储位置"));}
     if target==*paths.launcher_root() && game.is_none(){return Err(error("请选择新的存储位置"));}
@@ -186,11 +176,13 @@ pub fn cancel(paths:&Paths)->Result<(),KernelError>{let c=db(paths.locator_dir()
 mod tests{
  use super::*;
  fn root()->PathBuf{std::env::temp_dir().join(format!("storage-test-{}",uuid::Uuid::new_v4()))}
- #[test] fn bootstrap_adopts_legacy_and_env_wins(){let r=root();let legacy=r.join("legacy");std::fs::create_dir_all(legacy.join("data")).unwrap();{let src=rusqlite::Connection::open(legacy.join("data/copper.db")).unwrap();src.execute_batch("CREATE TABLE core_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);INSERT INTO core_settings VALUES('game.versions_selection','stale');").unwrap();}
- let default=r.join("default");let root_now=bootstrap(&r.join("locator"),&default,&legacy,None).unwrap();assert_eq!(root_now,default,"旧数据应迁移到 exe 同目录数据根");assert!(default.join("data/copper.db").is_file());let moved=rusqlite::Connection::open(default.join("data/copper.db")).unwrap();let left:i64=moved.query_row("SELECT COUNT(*) FROM core_settings WHERE key='game.versions_selection'",[],|r|r.get(0)).unwrap();assert_eq!(left,0,"搬迁后必须清掉旧版本选择，否则设置里的目录仍会被旧值覆盖");drop(moved);assert!(legacy.join("data/copper.db").is_file(),"搬迁不得删除源数据");assert_eq!(bootstrap(&r.join("locator"),&default,&legacy,None).unwrap(),default,"重启后仍钉在新根");let env=r.join("env");assert_eq!(bootstrap(&r.join("locator2"),&default,&legacy,Some(env.clone())).unwrap(),env);std::fs::remove_dir_all(r).unwrap();}
- #[test] fn failed_migration_preserves_source_and_locator(){let r=root();let source=r.join("source");std::fs::create_dir_all(&source).unwrap();std::fs::write(source.join("keep"),b"original").unwrap();let target=r.join("target");std::fs::create_dir_all(&target).unwrap();std::fs::write(target.join("occupied"),b"existing").unwrap();let c=db(&r.join("locator")).unwrap();let plan=Plan{source:source.clone(),target:target.clone(),old_versions:source.join("versions"),old_packages:source.join("packages"),game_root:None};set(&c,"pending",&serde_json::to_string(&plan).unwrap()).unwrap();drop(c);assert_eq!(bootstrap(&r.join("locator"),&source,&r.join("legacy"),None).unwrap(),source);assert_eq!(std::fs::read(source.join("keep")).unwrap(),b"original");assert!(target.join("occupied").exists());std::fs::remove_dir_all(r).unwrap();}
- #[test] fn successful_bootstrap_copies_and_restarts_at_target(){let r=root();let source=r.join("source");std::fs::create_dir_all(&source).unwrap();std::fs::write(source.join("keep"),b"original").unwrap();let target=r.join("target");let c=db(&r.join("locator")).unwrap();let p=Plan{source:source.clone(),target:target.clone(),old_versions:source.join("versions"),old_packages:source.join("packages"),game_root:None};set(&c,"pending",&serde_json::to_string(&p).unwrap()).unwrap();drop(c);assert_eq!(bootstrap(&r.join("locator"),&source,&r.join("legacy"),None).unwrap(),target);assert!(source.join("keep").exists());assert!(target.join("keep").exists());assert_eq!(bootstrap(&r.join("locator"),&source,&r.join("legacy"),None).unwrap(),target);std::fs::remove_dir_all(r).unwrap();}
+ #[test] fn bootstrap_uses_default_and_env_wins(){let r=root();let legacy=r.join("legacy");std::fs::create_dir_all(legacy.join("data")).unwrap();std::fs::write(legacy.join("data/copper.db"),b"legacy").unwrap();
+ let default=r.join("default");let locator=r.join("locator");assert_eq!(bootstrap(&locator,&default,&legacy,None).unwrap(),default);assert!(!default.exists());assert_eq!(std::fs::read(legacy.join("data/copper.db")).unwrap(),b"legacy");assert_eq!(bootstrap(&locator,&default,&legacy,None).unwrap(),default);let env=r.join("env");assert_eq!(bootstrap(&r.join("locator2"),&default,&legacy,Some(env.clone())).unwrap(),env);std::fs::remove_dir_all(r).unwrap();}
+ #[test] fn obsolete_cgl_active_is_deleted_but_other_active_is_kept(){let r=root();let default=r.join("default");let legacy=r.join("legacy");let locator=r.join("locator");let c=db(&locator).unwrap();set(&c,"active",r.join("old/.cgl").to_string_lossy().as_ref()).unwrap();drop(c);assert_eq!(bootstrap(&locator,&default,&legacy,None).unwrap(),default);assert_eq!(get(&db(&locator).unwrap(),"active").unwrap(),None);let other=r.join("custom-data");let c=db(&locator).unwrap();set(&c,"active",other.to_string_lossy().as_ref()).unwrap();drop(c);assert_eq!(bootstrap(&locator,&default,&legacy,None).unwrap(),other);assert_eq!(get(&db(&locator).unwrap(),"active").unwrap(),Some(other.to_string_lossy().into_owned()));std::fs::remove_dir_all(r).unwrap();}
+ #[test] fn launcher_pending_is_cancelled_without_moving_data(){let r=root();let source=r.join("source");std::fs::create_dir_all(&source).unwrap();std::fs::write(source.join("keep"),b"original").unwrap();let target=r.join("target");let locator=r.join("locator");let p=Plan{source:source.clone(),target:target.clone(),old_versions:source.join("versions"),old_packages:source.join("packages"),game_root:None};let c=db(&locator).unwrap();set(&c,"pending",&serde_json::to_string(&p).unwrap()).unwrap();drop(c);assert_eq!(bootstrap(&locator,&source,&r.join("legacy"),None).unwrap(),source);assert_eq!(std::fs::read(source.join("keep")).unwrap(),b"original");assert!(!target.exists());let c=db(&locator).unwrap();assert!(get(&c,"pending").unwrap().is_none());assert!(get(&c,"lastError").unwrap().unwrap().contains("已禁用"));drop(c);std::fs::remove_dir_all(r).unwrap();}
+ #[test] fn failed_launcher_migration_is_cancelled_without_touching_source_or_target(){let r=root();let source=r.join("source");std::fs::create_dir_all(&source).unwrap();std::fs::write(source.join("keep"),b"original").unwrap();let target=r.join("target");std::fs::create_dir_all(&target).unwrap();std::fs::write(target.join("occupied"),b"existing").unwrap();let locator=r.join("locator");let c=db(&locator).unwrap();let plan=Plan{source:source.clone(),target:target.clone(),old_versions:source.join("versions"),old_packages:source.join("packages"),game_root:None};set(&c,"pending",&serde_json::to_string(&plan).unwrap()).unwrap();drop(c);assert_eq!(bootstrap(&locator,&source,&r.join("legacy"),None).unwrap(),source);assert_eq!(std::fs::read(source.join("keep")).unwrap(),b"original");assert_eq!(std::fs::read(target.join("occupied")).unwrap(),b"existing");assert!(get(&db(&locator).unwrap(),"pending").unwrap().is_none());std::fs::remove_dir_all(r).unwrap();}
  #[test] fn game_only_restart_moves_versions_and_packages(){let r=root();let source=r.join("source");let old=source.join("data/versions");std::fs::create_dir_all(old.join(".download")).unwrap();std::fs::write(old.join(".download/package.msix"),b"package").unwrap();std::fs::create_dir_all(old.join("1.0")).unwrap();std::fs::write(old.join("1.0/version.json"),b"{}").unwrap();let game=r.join("game");let locator=r.join("locator");let c=db(&locator).unwrap();let p=Plan{source:source.clone(),target:source.clone(),old_versions:old.clone(),old_packages:old.join(".download"),game_root:Some(game.clone())};set(&c,"pending",&serde_json::to_string(&p).unwrap()).unwrap();drop(c);assert_eq!(bootstrap(&locator,&source,&r.join("legacy"),None).unwrap(),source);assert_eq!(game_override(&locator).unwrap(),Some(game.clone()));assert!(game.join("versions/1.0/version.json").exists());assert!(game.join(".download/package.msix").exists());assert!(old.join(".download/package.msix").exists());std::fs::remove_dir_all(r).unwrap();}
- #[test] fn interrupted_activation_is_recovered_only_with_matching_marker(){let r=root();let source=r.join("source");std::fs::create_dir_all(&source).unwrap();std::fs::write(source.join("keep"),b"original").unwrap();let target=r.join("target");let locator=r.join("locator");let p=Plan{source:source.clone(),target:target.clone(),old_versions:source.join("versions"),old_packages:source.join("packages"),game_root:None};let c=db(&locator).unwrap();set(&c,"pending",&serde_json::to_string(&p).unwrap()).unwrap();drop(c);execute(&p).unwrap();assert!(target.join(".cgl-migration-owner").exists());assert_eq!(bootstrap(&locator,&source,&r.join("legacy"),None).unwrap(),target);assert!(target.join("keep").exists());assert!(!target.join(".cgl-migration-owner").exists());assert!(source.join("keep").exists());std::fs::remove_dir_all(r).unwrap();}
+
+ #[test] fn launcher_root_changes_are_rejected_but_game_root_is_allowed(){let r=root();let paths=Paths::with_root(r.join("launcher"));let db=std::sync::Arc::new(super::super::database::DatabaseService::open(paths.db_file()).unwrap());db.migrate_scope("core",super::super::database::CORE_MIGRATIONS).unwrap();let settings=super::super::settings::SettingsService::new(db,std::sync::Arc::new(crate::registry::events::EventBus::new()),std::collections::HashMap::new()).unwrap();let requested=r.join("other-launcher");let err=plan(&paths,&settings,&StorageRequest{launcher_root:Some(requested.to_string_lossy().into_owned()),game_root:None}).unwrap_err();assert!(matches!(err,KernelError::Config(ref message) if message=="当前版本不支持更改启动器数据目录，请使用默认位置"));let game=r.join("game");let p=plan(&paths,&settings,&StorageRequest{launcher_root:None,game_root:Some(game.to_string_lossy().into_owned())}).unwrap();assert_eq!(p.target,paths.launcher_root().clone());assert_eq!(p.game_root,Some(game));std::fs::remove_dir_all(r).unwrap();}
  #[test] fn saf_and_relative_paths_are_rejected(){assert!(path("content://documents/tree/1").is_err());assert!(path("relative/folder").is_err());}
 }

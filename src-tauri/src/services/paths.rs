@@ -84,10 +84,10 @@ impl Paths {
         #[cfg(target_os = "android")]
         let legacy = app_data.join("files");
         #[cfg(not(target_os = "android"))]
-        let legacy = app_data;
+        let legacy = app_data.clone();
         let locator = legacy.join("bootstrap");
         #[cfg(not(target_os = "android"))]
-        let default = std::env::current_exe()?.parent().ok_or_else(||KernelError::Config("无法解析启动器所在目录".into()))?.join(".cgl");
+        let default = app_data.clone();
         #[cfg(target_os = "android")]
         let default = legacy.clone();
         let root = super::storage::bootstrap(&locator,&default,&legacy,non_empty_env("COPPER_DATA_DIR"))?;
