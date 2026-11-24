@@ -75,7 +75,8 @@ impl ErrorContext {
                     E::InteractionRequired => "interaction_required",
                     E::AccountChanged | E::InvalidIdentity => "account_changed",
                     E::NoContentKey | E::KeyIdNotUnique => "no_content_key",
-                    E::ServiceRefused(_) => "service_refused",
+                    E::ServiceRefused { code: 501, .. } => "store_device_group_full",
+                    E::ServiceRefused { .. } => "service_refused",
                     E::HttpStatus(status) => { self.http_status = Some(status.as_u16()); "http_status" },
                     E::MalformedLicenseResponse => "malformed_license_response",
                     _ => "account_unclassified",
@@ -123,9 +124,11 @@ mod tests {
     #[test]
     fn typed_entitlement_refusal_and_http_status_survive() {
         use crate::services::store_entitlement::StoreEntitlementError as E;
-        let refused = ErrorContext::from_kernel(&KernelError::StoreEntitlement(E::ServiceRefused("private server reason".into())));
+        let refused = ErrorContext::from_kernel(&KernelError::StoreEntitlement(E::ServiceRefused { code: 999, description: "private server reason".into(), remediation_action: String::new() }));
         assert_eq!(refused.code, "service_refused");
         assert!(!serde_json::to_string(&refused).unwrap().contains("private server reason"));
+        let full = ErrorContext::from_kernel(&KernelError::StoreEntitlement(E::ServiceRefused { code: 501, description: "private server reason".into(), remediation_action: String::new() }));
+        assert_eq!(full.code, "store_device_group_full");
         let http = ErrorContext::from_kernel(&KernelError::StoreEntitlement(E::HttpStatus(reqwest::StatusCode::FORBIDDEN)));
         assert_eq!(http.http_status, Some(403));
         assert_eq!(http.source, "store_entitlement");

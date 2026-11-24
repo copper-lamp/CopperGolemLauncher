@@ -22,6 +22,8 @@ import {
   ArrowUp,
 } from "@lucide/vue";
 import { homeLaunch, homeLogoSet } from "../../api/home";
+import { kernelInfo } from "../../api/theme";
+import { useAccount } from "../../composables/useAccount";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { useI18n } from "../../i18n";
 import { usePlatform } from "../../composables/usePlatform";
@@ -37,7 +39,42 @@ import CoTextField from "../../components/ui/CoTextField.vue";
 
 const { t } = useI18n();
 const gd = useGameDownload();
+const { account } = useAccount();
 const { platform } = usePlatform();
+const diagnosticVersion = ref("unknown");
+const diagnosticCopied = ref(false);
+
+void kernelInfo().then((info) => { diagnosticVersion.value = info.version; }).catch(() => {});
+const storeDeviceGroupFull = computed(() => gd.storeDeviceGroupFull.value);
+const currentAccount = computed(() => account.value);
+const xuidSuffix = computed(() => {
+  const value = storeDeviceGroupFull.value?.xuid_suffix ?? account.value?.xuid?.slice(-4) ?? null;
+  return value && /^\d{4}$/.test(value) ? value : null;
+});
+
+function dismissDeviceGroupFull() { gd.dismissStoreDeviceGroupFull(); }
+async function openDeviceManagement() {
+  await openExternal("https://account.microsoft.com/devices");
+}
+async function retryStoreInstall(instance: string) {
+  if (await gd.retry(instance)) dismissDeviceGroupFull();
+}
+async function copyStoreDiagnostic() {
+  const details = [
+    `version=${diagnosticVersion.value}`,
+    `time=${new Date().toISOString()}`,
+    "error_code=501",
+    `xuid_suffix=${xuidSuffix.value ?? "unavailable"}`,
+    `repro=game download install; package ${storeDeviceGroupFull.value?.id ?? "unknown"}`,
+  ].join("\n");
+  try {
+    await navigator.clipboard.writeText(details);
+    diagnosticCopied.value = true;
+    window.setTimeout(() => { diagnosticCopied.value = false; }, 2000);
+  } catch {
+    diagnosticCopied.value = false;
+  }
+}
 
 const MB_KEY = "module.game-download";
 
@@ -301,6 +338,25 @@ async function confirmApkImport() {
 
 <template>
   <div class="gd-page" @scroll="onPageScroll">
+    <div v-if="storeDeviceGroupFull" class="gd-page__store-dialog" role="dialog" aria-modal="true" aria-labelledby="store-device-full-title">
+      <section class="gd-page__store-panel">
+        <button class="gd-page__store-close" type="button" :aria-label="t(`${MB_KEY}.storeFull.close`)" @click="dismissDeviceGroupFull"><X :size="18" /></button>
+        <h2 id="store-device-full-title">{{ t(`${MB_KEY}.storeFull.title`) }}</h2>
+        <p>{{ t(`${MB_KEY}.storeFull.explanation`) }}</p>
+        <p class="gd-page__store-account">{{ storeDeviceGroupFull.gamertag || currentAccount?.gamertag || t(`${MB_KEY}.storeFull.unknownAccount`) }}<span v-if="xuidSuffix"> · {{ t(`${MB_KEY}.storeFull.xuidSuffix`, { suffix: xuidSuffix }) }}</span></p>
+        <ol>
+          <li>{{ t(`${MB_KEY}.storeFull.step1`) }}</li>
+          <li>{{ t(`${MB_KEY}.storeFull.step2`) }}</li>
+          <li>{{ t(`${MB_KEY}.storeFull.step3`) }}</li>
+        </ol>
+        <p class="gd-page__store-note">{{ t(`${MB_KEY}.storeFull.note`) }}</p>
+        <div class="gd-page__store-actions">
+          <button class="gd-page__retry" type="button" @click="openDeviceManagement">{{ t(`${MB_KEY}.storeFull.openDevices`) }}</button>
+          <button v-for="instance in storeDeviceGroupFull.instances" :key="instance" class="gd-page__retry" type="button" @click="retryStoreInstall(instance)">{{ t(`${MB_KEY}.storeFull.retry`, { instance }) }}</button>
+          <button class="gd-page__retry" type="button" @click="copyStoreDiagnostic">{{ diagnosticCopied ? t(`${MB_KEY}.storeFull.copied`) : t(`${MB_KEY}.storeFull.copyDiagnostic`) }}</button>
+        </div>
+      </section>
+    </div>
     <!-- 导入进度：常驻条，导入结束后保留结果直到下一次操作 -->
     <p v-if="importStatus" class="gd-page__import-status" role="status">
       <LoaderCircle v-if="importing" :size="13" class="spin" />
@@ -1001,6 +1057,18 @@ async function confirmApkImport() {
     transform: rotate(360deg);
   }
 }
+.gd-page__store-dialog { position: fixed; inset: 0; z-index: 110; display: grid; place-items: center; padding: var(--copper-space-4); background: var(--copper-overlay); }
+.gd-page__store-panel { position: relative; width: min(540px, 100%); max-height: min(84vh, 760px); overflow: auto; display: flex; flex-direction: column; gap: var(--copper-space-3); padding: var(--copper-space-5); background: var(--copper-surface); border-radius: var(--copper-radius-card); box-shadow: var(--copper-shadow-card); }
+.gd-page__store-panel h2, .gd-page__store-panel p { margin: 0; }
+.gd-page__store-panel h2 { padding-right: 32px; font-size: var(--copper-font-size-lg); }
+.gd-page__store-panel p, .gd-page__store-panel li { color: var(--copper-text-secondary); font-size: var(--copper-font-size-sm); line-height: 1.55; overflow-wrap: anywhere; }
+.gd-page__store-panel ol { margin: 0; padding-left: 22px; display: grid; gap: var(--copper-space-2); }
+.gd-page__store-account { color: var(--copper-text) !important; font-weight: 600; }
+.gd-page__store-note { padding: var(--copper-space-2) var(--copper-space-3); background: var(--copper-surface-2); border-radius: var(--copper-radius-sm); }
+.gd-page__store-close { position: absolute; top: var(--copper-space-3); right: var(--copper-space-3); width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: var(--copper-radius-sm); background: var(--copper-surface-2); color: var(--copper-text); cursor: pointer; }
+.gd-page__store-actions { display: flex; flex-wrap: wrap; gap: var(--copper-space-2); }
+.gd-page__store-actions .gd-page__retry { min-height: var(--copper-control-h-sm); padding: 0 var(--copper-space-3); border: 0; border-radius: var(--copper-radius-sm); background: var(--copper-surface-2); color: var(--copper-text); cursor: pointer; }
+.gd-page__store-actions .gd-page__retry:hover { background: var(--copper-hover); }
 .gd-page__name-dialog { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--copper-overlay); }
 .gd-page__name-card { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: var(--copper-space-3); padding: 20px; background: var(--copper-surface); border-radius: var(--copper-radius-card); box-shadow: var(--copper-shadow-card); }
 .gd-page__name-card h2 { margin: 0; font-size: var(--copper-font-size-lg); }

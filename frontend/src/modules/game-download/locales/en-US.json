@@ -127,5 +127,20 @@
     },
     "picked": "Imported {name} ({version})"
   },
-  "empty": "No downloadable versions"
+  "empty": "No downloadable versions",
+  "storeFull": {
+    "title": "Microsoft Store device limit reached",
+    "explanation": "Microsoft Store refused this content license (error 501). Xbox sign-in does not guarantee an available Store device slot; the launcher cannot remove Store devices for you.",
+    "unknownAccount": "Current Microsoft account",
+    "xuidSuffix": "XUID ending {suffix}",
+    "step1": "Confirm the Microsoft account shown at the top of the device page is the one used for this authorization.",
+    "step2": "Review the device list and remove an old device you no longer use. Remove only devices you recognize and no longer need.",
+    "step3": "Return and retry the installation. If it still fails, Microsoft may need time to sync or support may need to help.",
+    "note": "Device removal is handled on Microsoft's account page. The launcher does not unlink devices, and cleanup does not guarantee immediate authorization.",
+    "openDevices": "Open Microsoft devices",
+    "retry": "Retry {instance}",
+    "copyDiagnostic": "Copy diagnostics",
+    "copied": "Copied",
+    "close": "Close device limit help"
+  }
 }

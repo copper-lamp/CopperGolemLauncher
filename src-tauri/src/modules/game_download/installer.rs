@@ -28,6 +28,7 @@ use md5::{Digest as _Md5Digest, Md5};
 use serde_json::Value;
 
 use crate::error::KernelError;
+use crate::services::store_entitlement::StoreEntitlementError;
 use crate::modules::content_download::lip_install;
 use crate::modules::lip::{self, Environment, LipEvent, Sink};
 use crate::modules::content_download::loader_catalog;
@@ -1612,7 +1613,7 @@ fn mark_version_failed(ctx: &Ctx, version_id: &str, error: &str) {
             "[game-download] {version_id} 的失败状态回写失败: {write_error}（记录可能停在非终态）"
         );
     }
-    publish_failed(ctx, version_id, error);
+    publish_failed(ctx, version_id, error, None);
 }
 
 /// 把某版本下所有未装好的实例标记为失败（附带原因）。
@@ -1759,7 +1760,16 @@ pub async fn run_batch(
             // 整包留着：授权恢复后重试不必重新下载。
             let _ = set_package_state(ctx, &version_id, "ready", Some(&message));
             progress.finish(Some(message.clone()));
-            publish_failed(ctx, &version_id, &message);
+            let device_group_full = matches!(
+                &error,
+                KernelError::StoreEntitlement(StoreEntitlementError::ServiceRefused { code: 501, .. })
+            );
+            publish_failed(
+                ctx,
+                &version_id,
+                &message,
+                device_group_full.then(|| targets.iter().map(|target| target.instance.clone()).collect()),
+            );
             return;
         }
     };
@@ -1819,7 +1829,7 @@ pub async fn run_batch(
             // 保留整包以便「重试安装」不必重新下载；失败原因落在实例记录上。
             let _ = set_package_state(ctx, &version_id, "ready", Some(message));
             progress.finish(Some(message.clone()));
-            publish_failed(ctx, &version_id, message);
+            publish_failed(ctx, &version_id, message, None);
         }
     }
 }
@@ -2107,15 +2117,29 @@ async fn install_loader(
 }
 
 /// 广播安装失败（供下载中心 / 详情提示）。
-fn publish_failed(ctx: &Ctx, version_id: &str, error: &str) {
-    ctx.events.publish(
-        "version.download_failed",
-        serde_json::json!({ "id": version_id, "error": error }),
-    );
-    ctx.events.publish(
-        "game-download.failed",
-        serde_json::json!({ "id": version_id, "error": error }),
-    );
+fn publish_failed(
+    ctx: &Ctx,
+    version_id: &str,
+    error: &str,
+    device_group_full_instances: Option<Vec<String>>,
+) {
+    let mut payload = serde_json::json!({ "id": version_id, "error": error });
+    if let Some(instances) = device_group_full_instances {
+        let account = ctx.account.current();
+        let xuid_suffix = account
+            .as_ref()
+            .and_then(|account| account.xuid.as_deref())
+            .filter(|xuid| xuid.len() >= 4 && xuid.bytes().all(|byte| byte.is_ascii_digit()))
+            .map(|xuid| xuid[xuid.len() - 4..].to_owned());
+        payload["store_device_group_full"] = serde_json::json!({
+            "code": 501,
+            "instances": instances,
+            "gamertag": account.map(|account| account.gamertag),
+            "xuid_suffix": xuid_suffix,
+        });
+    }
+    ctx.events.publish("version.download_failed", payload.clone());
+    ctx.events.publish("game-download.failed", payload);
 }
 
 /// 商店授权可复用的缓存 key 文件路径（`store-key/<key_id>.dpapi`）。

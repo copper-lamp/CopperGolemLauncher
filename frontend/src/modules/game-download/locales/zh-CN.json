@@ -127,5 +127,20 @@
     },
     "picked": "已导入 {name}（{version}）"
   },
-  "empty": "暂无可下载的版本"
+  "empty": "暂无可下载的版本",
+  "storeFull": {
+    "title": "Microsoft Store 设备位已满",
+    "explanation": "微软商店拒绝了本次内容授权（错误码 501）。Xbox 登录成功不代表商店设备组仍有空位；启动器无法替你移除商店设备。",
+    "unknownAccount": "当前 Microsoft 账户",
+    "xuidSuffix": "XUID 末四位 {suffix}",
+    "step1": "确认页面右上角显示的是本次授权使用的 Microsoft 账户。",
+    "step2": "检查设备列表，移除不再使用的旧设备；只移除你确认不需要的设备。",
+    "step3": "返回后重试安装；若仍失败，可能需要等待微软同步或联系微软支持。",
+    "note": "移除设备由微软账户页面处理，启动器不会自动解除绑定；清理后也不保证授权立即恢复。",
+    "openDevices": "打开 Microsoft 设备页面",
+    "retry": "重试 {instance}",
+    "copyDiagnostic": "复制诊断信息",
+    "copied": "已复制",
+    "close": "关闭设备位帮助"
+  }
 }

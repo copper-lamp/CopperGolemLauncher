@@ -48,7 +48,8 @@ pub enum StoreEntitlementError {
     /// 必须与 `MalformedLicenseResponse` 区分开：后者是**我方**解析失败，前者是
     /// 服务端说了话。把前者折叠成后者会让「设备组已满，请移除一台设备」这种
     /// 可操作的原因完全消失，排查只能靠猜。
-    #[error("Store license request was refused: {0}")] ServiceRefused(String),
+    #[error("Store license request was refused: {description} (code {code})")]
+    ServiceRefused { code: i64, description: String, remediation_action: String },
     #[error("Store HTTP request failed: {0}")] Http(String),
 }
 
@@ -137,13 +138,12 @@ struct SatisfactionFailure {
 }
 
 impl SatisfactionFailure {
-    /// 给用户看的原因：服务端描述 + 代码 + 建议动作。
-    fn reason(&self) -> String {
-        let mut reason = format!("{} (code {})", self.description.trim(), self.code);
-        if !self.remediation_action.trim().is_empty() {
-            reason.push_str(&format!(", remediation={}", self.remediation_action.trim()));
+    fn into_error(&self) -> StoreEntitlementError {
+        StoreEntitlementError::ServiceRefused {
+            code: self.code,
+            description: self.description.trim().to_owned(),
+            remediation_action: self.remediation_action.trim().to_owned(),
         }
-        reason
     }
 }
 
@@ -303,8 +303,8 @@ fn parse_license_type<'a>(event: &quick_xml::events::BytesStart<'a>, decoder: qu
 pub fn classify_license_response(data: &[u8]) -> Result<EntitlementState, StoreEntitlementError> {
     let parsed: LicenseResponse = bounded_json(data)?;
     if let Some(failure) = parsed.satisfaction_failure.as_ref() {
-        log::warn!("[store-entitlement] license request refused: {}", failure.reason());
-        return Err(StoreEntitlementError::ServiceRefused(failure.reason()));
+        log::warn!("[store-entitlement] license request refused: code {}", failure.code);
+        return Err(failure.into_error());
     }
     let license = parsed
         .license
@@ -359,8 +359,8 @@ pub(crate) fn extract_content_key(
     // 服务端拒绝优先：它带着可操作的原因（如设备数超限），
     // 不能与「我方解析失败」混为一谈。
     if let Some(failure) = parsed.satisfaction_failure.as_ref() {
-        log::warn!("[store-entitlement] license request refused: {}", failure.reason());
-        return Err(StoreEntitlementError::ServiceRefused(failure.reason()));
+        log::warn!("[store-entitlement] license request refused: code {}", failure.code);
+        return Err(failure.into_error());
     }
     let license = parsed
         .license
@@ -460,14 +460,15 @@ mod tests {
     #[test]
     fn service_refusal_keeps_the_server_reason() {
         let body = br#"{"satisfactionFailure":{"alternateContentIds":[],"code":501,"data":[],"description":"Device group is full, please remove a device and try again.","remediationAction":"PresentUpsell","remediationProductSkus":[]}}"#;
-        assert!(matches!(classify_license_response(body), Err(StoreEntitlementError::ServiceRefused(_))),
+        assert!(matches!(classify_license_response(body), Err(StoreEntitlementError::ServiceRefused { code: 501, .. })),
             "a service refusal must not be reported as NotEntitled");
         let error = extract_content_key(body, "bdb9e791-c97c-3734-e1a8-bc602552df06", &[0u8; 8], &[0u8; 16])
             .unwrap_err();
         match error {
-            StoreEntitlementError::ServiceRefused(reason) => {
-                assert!(reason.contains("Device group is full"), "原因丢失: {reason}");
-                assert!(reason.contains("501"), "错误码丢失: {reason}");
+            StoreEntitlementError::ServiceRefused { code, description, remediation_action } => {
+                assert_eq!(code, 501);
+                assert!(description.contains("Device group is full"), "原因丢失: {description}");
+                assert_eq!(remediation_action, "PresentUpsell");
             }
             other => panic!("应报 ServiceRefused，实际: {other:?}"),
         }

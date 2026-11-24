@@ -14,6 +14,7 @@ import {
   clearInstallOverlays,
   finishInstallOverlay,
 } from "../../composables/useDownloads";
+import type { GameDownloadFailure } from "../../events";
 import {
   onDownload,
   onGameDownloadCancelled,
@@ -47,6 +48,7 @@ function manifestNeedsValidation(now = Date.now()): boolean {
   return now - Math.max(lastManifestSuccess, lastManifestAttempt) >= MANIFEST_CHECK_INTERVAL;
 }
 const initialized = ref(false);
+const storeDeviceGroupFull = ref<(NonNullable<GameDownloadFailure["store_device_group_full"]> & { id: string }) | null>(null);
 /** 版本 id → 加载器清单（按需拉取后在本次会话内缓存）。 */
 const loaderCatalogs = ref<Record<string, LoaderOptions>>({});
 /** 同一版本的加载器清单并发请求去重（详情页快速切换时会出现）。 */
@@ -66,8 +68,12 @@ export async function initGameDownload(): Promise<void> {
       showToast(t("module.game-download.toast.installed", { name: instance }), "success");
       void loadManifest(false);
     }),
-    onGameDownloadFailed(({ error }) => {
+    onGameDownloadFailed(({ id, error, store_device_group_full }) => {
       clearInstallOverlays();
+      if (store_device_group_full?.code === 501) {
+        storeDeviceGroupFull.value = { ...store_device_group_full, id };
+        return;
+      }
       showToast(error || t("module.game-download.toast.failed"), "error");
     }),
     onGameDownloadCancelled(() => {
@@ -202,12 +208,14 @@ export async function cancel(instance: string): Promise<void> {
 }
 
 /** 重试某实例的安装：整包在本地时不重新下载。 */
-export async function retry(instance: string): Promise<void> {
+export async function retry(instance: string): Promise<boolean> {
   try {
     await gameRetry(instance);
     showToast(t("module.game-download.toast.installing"), "info");
+    return true;
   } catch (e) {
     showToast(String(e), "error");
+    return false;
   }
 }
 
@@ -215,6 +223,8 @@ export async function retry(instance: string): Promise<void> {
 export function useGameDownload() {
   return {
     manifest: readonly(manifest),
+    storeDeviceGroupFull: readonly(storeDeviceGroupFull),
+    dismissStoreDeviceGroupFull: () => { storeDeviceGroupFull.value = null; },
     loading: readonly(loading),
     manifestError: readonly(manifestError),
     manifestNeedsValidation,
