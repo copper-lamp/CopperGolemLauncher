@@ -127,13 +127,21 @@ export function onGameDownloadInstalled(
   );
 }
 
-/** 游戏下载模块：任务失败（负载 `{ id, error }`）。 */
+/** 游戏下载安装失败，可选附加只含脱敏字段的 Store 501 分类。 */
+export interface GameDownloadFailure {
+  id: string;
+  error: string;
+  store_device_group_full?: {
+    code: 501;
+    instances: string[];
+    gamertag: string | null;
+    xuid_suffix: string | null;
+  };
+}
 export function onGameDownloadFailed(
-  handler: (payload: { id: string; error: string }) => void,
+  handler: (payload: GameDownloadFailure) => void,
 ): Promise<Unlisten> {
-  return listen<{ id: string; error: string }>("game-download-failed", (e) =>
-    handler(e.payload),
-  );
+  return listen<GameDownloadFailure>("game-download-failed", (e) => handler(e.payload));
 }
 
 /** 游戏下载模块：安装被取消（负载 `{ id, instance? }`；`instance` 缺省表示整包放弃）。 */
