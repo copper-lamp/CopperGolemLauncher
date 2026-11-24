@@ -219,7 +219,7 @@
       "motion_silky": "Silky"
     },
     "storage": {
-      "section": "Storage locations",
+      "section": "Storage",
       "game_dir": "Game data directory",
       "game_dir_hint": "Where installed versions and game data live. Leave empty to use the default directory.",
       "game_dir_default": "Use default directory",
@@ -228,8 +228,36 @@
       "open": "Open",
       "resolved": "Resolved to: {path}",
       "overridden": "The effective directory differs from this value: an environment variable or a higher-priority directory setting is taking precedence, so changes here may not apply.",
-      "launcher_dir": "Launcher data directory",
-      "launcher_dir_hint": "The launcher's own database, logs and cache. Managed by the kernel; provided as a shortcut only."
+      "usage": {
+        "title": "Storage usage",
+        "total": "Total used",
+        "empty": "No storage usage to show yet.",
+        "error": "Storage usage could not be loaded.",
+        "percent": "{percent}%",
+        "category": {
+          "content": "Content",
+          "downloads": "Download temporary files",
+          "loaders": "Loaders",
+          "index": "Indexes",
+          "logs": "Logs",
+          "game": "Game data",
+          "other": "Other"
+        }
+      },
+      "cleanup": {
+        "title": "Clean storage",
+        "back": "Back to usage",
+        "desc": "Choose cache categories to remove. Game data and other files are not cleaned.",
+        "select_all": "Select all cleanable items",
+        "selected": "{count} selected",
+        "free": "Estimated space to free",
+        "confirm": "Clean selected items",
+        "cancel": "Cancel",
+        "confirm_text": "Selected items will be cleaned, freeing an estimated {size}. This action cannot be undone.",
+        "success": "Freed {size} of storage.",
+        "empty": "There are no cleanable items right now.",
+        "not_cleanable_hint": "This category cannot be cleaned."
+      }
     },
     "modules": {
       "module_list": "Modules",
