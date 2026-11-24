@@ -45,6 +45,7 @@ import {
   type VersionView,
 } from "../../api/home";
 import { onModsChanged } from "../../events";
+import { motionEnabled } from "../../composables/useVisualPreferences";
 import type { GameSessionState } from "../../composables/useGameSession";
 
 const props = defineProps<{
@@ -155,6 +156,70 @@ function cardStyle(entry: DashboardEntry): Record<string, string> | undefined {
   return image ? { backgroundImage: `url("${image}")` } : undefined;
 }
 
+const listEl = ref<HTMLElement | null>(null);
+const contentVisible = ref(true);
+const animatedSurface = ref("transparent");
+const heightStyle = ref<string | undefined>();
+let transitionToken = 0;
+const CONTENT_FADE_MS = 120;
+
+function averageImageColor(source: string | null): Promise<string | null> {
+  if (!source || typeof createImageBitmap !== "function") return Promise.resolve(null);
+  return fetch(source)
+    .then((response) => response.blob())
+    .then((blob) => createImageBitmap(blob))
+    .then((bitmap) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return null;
+      context.drawImage(bitmap, 0, 0, 1, 1);
+      bitmap.close();
+      const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+      return `rgb(${red} ${green} ${blue})`;
+    })
+    .catch(() => null);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function transitionEntry(entry: DashboardEntry) {
+  const token = ++transitionToken;
+  const opening = expandedId.value !== entry.id;
+  const element = listEl.value;
+  if (!motionEnabled.value || !element) {
+    expandedId.value = opening ? entry.id : null;
+    animatedSurface.value = "transparent";
+    heightStyle.value = undefined;
+    return;
+  }
+
+  const startHeight = element.getBoundingClientRect().height;
+  heightStyle.value = `${startHeight}px`;
+  contentVisible.value = false;
+  await wait(CONTENT_FADE_MS);
+  if (token !== transitionToken) return;
+
+  const targetColor = opening ? await averageImageColor(previewOf(entry)) : "transparent";
+  if (token !== transitionToken) return;
+  animatedSurface.value = targetColor ?? "transparent";
+  expandedId.value = opening ? entry.id : null;
+  await nextTick();
+  const targetHeight = element.scrollHeight;
+  heightStyle.value = `${targetHeight}px`;
+  const duration = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(
+    opening ? "--copper-motion-component-enter" : "--copper-motion-component-exit",
+  )) || (opening ? 180 : 120);
+  await wait(duration);
+  if (token !== transitionToken) return;
+  heightStyle.value = undefined;
+  contentVisible.value = true;
+  animatedSurface.value = "transparent";
+}
+
 function cyclePreview(entry: DashboardEntry) {
   const images = entry.images ?? [];
   if (images.length <= 1) return;
@@ -196,9 +261,14 @@ function dropEntry(target: string) {
 }
 
 function toggleEntry(entry: DashboardEntry) {
-  expandedId.value = expandedId.value === entry.id ? null : entry.id;
+  void transitionEntry(entry);
   menuFor.value = null;
 }
+
+const groupedEntries = computed(() => [
+  { kind: "world" as const, label: t("module.home.default.worlds"), items: sortedEntries.value.filter((entry) => entry.kind === "world") },
+  { kind: "server" as const, label: t("module.home.default.servers"), items: sortedEntries.value.filter((entry) => entry.kind === "server") },
+]);
 
 function kindLabel(entry: DashboardEntry): string {
   return entry.kind === "world"
@@ -392,9 +462,14 @@ watch(
       <section class="list" :aria-busy="loading">
         <header class="list__head">
           <h2 class="list__title">{{ t("module.home.default.list") }}</h2>
-          <span class="list__hint">{{ t("module.home.default.list_hint") }}</span>
-          <button type="button" class="list__rescan" @click="load">
-            {{ t("module.home.default.rescan") }}
+          <button
+            type="button"
+            class="list__rescan"
+            :title="t('module.home.default.rescan')"
+            :aria-label="t('module.home.default.rescan')"
+            @click="load"
+          >
+            <RefreshCw :size="16" :class="{ spin: loading }" />
           </button>
         </header>
 
@@ -406,10 +481,17 @@ watch(
           {{ t("module.home.default.empty") }}
         </p>
 
-        <TransitionGroup v-else name="rows" tag="div" class="list__items">
-          <div
-            v-for="entry in sortedEntries"
-            :key="entry.id"
+        <div
+          v-else
+          ref="listEl"
+          class="list__items"
+          :style="{ height: heightStyle, backgroundColor: animatedSurface }"
+          :class="{ 'list__items--fading': !contentVisible }"
+        >
+          <template v-for="group in groupedEntries" :key="group.kind">
+            <section v-if="group.items.length" class="list__group">
+              <h3 class="list__group-title">{{ group.label }}</h3>
+              <div v-for="entry in group.items" :key="entry.id"
             :class="['row', { 'row--open': expandedId === entry.id }]"
             role="button"
             tabindex="0"
@@ -500,8 +582,10 @@ watch(
                 </div>
               </div>
             </template>
-          </div>
-        </TransitionGroup>
+              </div>
+            </section>
+          </template>
+        </div>
       </section>
     </div>
 
@@ -733,16 +817,49 @@ watch(
 
 .list__rescan {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   border: none;
+  border-radius: var(--copper-radius-sm);
   background: transparent;
   color: var(--copper-text-secondary);
-  font-family: inherit;
-  font-size: var(--copper-font-size-xs);
   cursor: pointer;
+  transition: background-color var(--copper-duration-fast) var(--copper-easing), color var(--copper-duration-fast) var(--copper-easing);
 }
 
 .list__rescan:hover {
+  background: var(--copper-hover);
   color: var(--copper-text);
+}
+
+.list__items {
+  overflow: hidden;
+  transition: height var(--copper-motion-component-enter) var(--copper-easing), background-color var(--copper-motion-component-enter) var(--copper-easing);
+}
+
+.list__items--fading {
+  opacity: 0;
+  transition: opacity var(--copper-motion-component-exit) var(--copper-easing), height var(--copper-motion-component-enter) var(--copper-easing), background-color var(--copper-motion-component-enter) var(--copper-easing);
+}
+
+.list__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list__group + .list__group {
+  margin-top: var(--copper-space-3);
+}
+
+.list__group-title {
+  padding: 0 var(--copper-space-3) var(--copper-space-1);
+  color: var(--copper-text-secondary);
+  font-size: var(--copper-font-size-xs);
+  font-weight: 600;
 }
 
 .list__state {

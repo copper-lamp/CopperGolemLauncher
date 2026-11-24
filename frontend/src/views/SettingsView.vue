@@ -34,8 +34,10 @@ import {useSettings} from '../composables/useSettings';
 const {loaded}=useSettings();
 import CoSplitLayout from "../components/layout/CoSplitLayout.vue";
 import { useI18n } from "../i18n";
+import { usePlatform } from "../composables/usePlatform";
 
 const { t } = useI18n();
+const { isAndroid } = usePlatform();
 const route = useRoute();
 
 /** 分类导航：图标与文案一一对应，文案仍走 i18n，不写死。 */
@@ -63,7 +65,11 @@ function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const i
 
 <template>
   <CoPage>
-    <CoSplitLayout aside-position="start" aside-width="var(--copper-subnav-w)">
+    <CoSplitLayout
+      :class="{ 'settings-layout--android': isAndroid }"
+      aside-position="start"
+      :aside-width="isAndroid ? '30%' : 'var(--copper-subnav-w)'"
+    >
       <div class="settings__body">
         <!--
           分类切换做一次短过渡：out-in 让旧分类先退场，避免两屏内容在切换瞬间叠加
@@ -112,6 +118,22 @@ function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const i
 </template>
 
 <style scoped>
+/* Android landscape has a fixed, narrow content viewport; keep navigation at 3/10. */
+.settings-layout--android :deep(.co-split__inner),
+.settings-layout--android :deep(.co-split__inner--start) {
+  grid-template-columns: 30% minmax(0, 1fr) !important;
+}
+
+.settings-layout--android :deep(.co-split__inner--start .co-split__main) {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+}
+
+.settings-layout--android :deep(.co-split__inner--start .co-split__aside) {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+}
+
 .settings__body {
   min-width: 0;
 }

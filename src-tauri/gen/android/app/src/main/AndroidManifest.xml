@@ -92,6 +92,7 @@
                 <data android:pathPattern=".*\\.mcworld" />
                 <data android:pathPattern=".*\\.mctemplate" />
                 <data android:pathPattern=".*\\.cglm" />
+                <data android:pathPattern=".*\.cgl" />
             </intent-filter>
             
             <!-- tauri-file-associations. AUTO-GENERATED. DO NOT REMOVE. -->

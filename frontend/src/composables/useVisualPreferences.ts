@@ -4,7 +4,16 @@ import { useSettings } from "./useSettings";
 
 const reduced = ref(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 const { get } = useSettings();
+const motionPresets: Record<string, number> = { fast: 0.7, smooth: 1, silky: 1.4 };
+function bounded(value: unknown, fallback: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(max, value)) : fallback;
+}
 export const motionEnabled = computed(() => get<boolean>("appearance.animations", true) !== false && !reduced.value);
+
+export const motionDurations = {
+  pageEnter: computed(() => bounded(get("appearance.motion.page_enter", 220), 220, 2000) * (motionPresets[get<string>("appearance.motion_preset", "smooth")] ?? 1)),
+  pageExit: computed(() => bounded(get("appearance.motion.page_exit", 140), 140, 2000) * (motionPresets[get<string>("appearance.motion_preset", "smooth")] ?? 1)),
+} as const;
 let initialized = false;
 const durations = {
   "component-enter": 180, "component-exit": 120, "component-press": 80,
@@ -12,10 +21,6 @@ const durations = {
 } as const;
 
 /** 动画预设：以「流畅」为 1 倍基准。快速更快，丝滑更缓（见设置 → 个性化）。 */
-const motionPresets: Record<string, number> = { fast: 0.7, smooth: 1, silky: 1.4 };
-function bounded(value: unknown, fallback: number, max: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(max, value)) : fallback;
-}
 export function initVisualPreferences(): void {
   if (initialized) return;
   initialized = true;

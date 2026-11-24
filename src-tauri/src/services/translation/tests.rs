@@ -1,8 +1,22 @@
 use super::*;
 #[test]
-fn passive_routing_counts_operations_not_batches_and_resets_on_failure(){
+fn successful_translation_counts_learning_progress_before_candidates_finish(){
  let s=service();let generation=s.config().unwrap().generation;let mut routing=routing::Routing::load(&s.settings,generation);
- for index in 0..10{let id=format!("operation-{index}");let(_,epoch)=routing.begin(&id,"en:zh".into(),generation,vec!["microsoft".into(),"indextranslate".into()],false).unwrap();routing.observe(&id,"microsoft",epoch,80,true,false,&s.settings);routing.finish(&id,epoch,&s.settings);assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],index);routing.begin(&id,"en:zh".into(),generation,vec![],true).unwrap();routing.observe(&id,"indextranslate",epoch,30,true,false,&s.settings);routing.finish(&id,epoch,&s.settings);}
+ let(_,epoch)=routing.begin("fast-operation","en:zh".into(),generation,vec!["fast".into(),"slow".into()],true).unwrap();
+ routing.observe("fast-operation","fast",epoch,25,true,false,&s.settings);
+ assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],1);
+ routing.observe("fast-operation","fast",epoch,25,true,false,&s.settings);
+ assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],1);
+ routing.observe("fast-operation","slow",epoch,500,true,false,&s.settings);
+ routing.finish("fast-operation",epoch,&s.settings);
+ let state=serde_json::to_value(routing.status(generation)).unwrap();assert_eq!(state["operations"],1);assert_eq!(state["providers"].as_array().unwrap().len(),2);
+}
+
+#[test]
+fn passive_routing_counts_operations_not_batches_and_resets_on_failure(){
+
+ let s=service();let generation=s.config().unwrap().generation;let mut routing=routing::Routing::load(&s.settings,generation);
+ for index in 0..10{let id=format!("operation-{index}");let(_,epoch)=routing.begin(&id,"en:zh".into(),generation,vec!["microsoft".into(),"indextranslate".into()],false).unwrap();routing.observe(&id,"microsoft",epoch,80,true,false,&s.settings);assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],index+1);routing.finish(&id,epoch,&s.settings);routing.begin(&id,"en:zh".into(),generation,vec![],true).unwrap();routing.observe(&id,"indextranslate",epoch,30,true,false,&s.settings);routing.finish(&id,epoch,&s.settings);}
  let state=serde_json::to_value(routing.status(generation)).unwrap();assert_eq!(state["operations"],10);assert_eq!(state["selected"][0],"indextranslate");
  let(_,epoch)=routing.begin("failure","en:zh".into(),generation,vec!["microsoft".into(),"indextranslate".into()],true).unwrap();routing.observe("failure","indextranslate",epoch,1,true,true,&s.settings);assert_eq!(serde_json::to_value(routing.status(generation)).unwrap()["operations"],0);
 }

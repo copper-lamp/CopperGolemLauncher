@@ -125,7 +125,6 @@ function pickAccent(event: Event): void {
           <span class="theme-card__label">{{ option.label }}</span>
         </button>
       </div>
-      <p class="appearance-tab__hint">{{ t("settings.appearance.theme_hint") }}</p>
     </SettingSection>
 
     <SettingSection title-key="settings.general.accent_color">
@@ -176,7 +175,7 @@ function pickAccent(event: Event): void {
 
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--copper-space-3);
   padding: var(--copper-space-3) 0 var(--copper-space-2);
 }
@@ -204,9 +203,7 @@ function pickAccent(event: Event): void {
 
 .theme-card--active {
   background: color-mix(in srgb, var(--copper-accent) 10%, var(--copper-surface-raised, var(--copper-surface)));
-  box-shadow:
-    0 14px 28px -20px color-mix(in srgb, var(--copper-accent) 65%, transparent),
-    var(--copper-shadow-card);
+  box-shadow: var(--copper-shadow-card);
   transform: translateY(-2px);
 }
 
@@ -382,9 +379,4 @@ function pickAccent(event: Event): void {
   cursor: pointer;
 }
 
-@media (max-width: 560px) {
-  .theme-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 </style>

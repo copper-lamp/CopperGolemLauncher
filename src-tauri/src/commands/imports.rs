@@ -17,7 +17,37 @@ pub struct ImportCoordinator { tickets: Mutex<HashMap<String, Ticket>>, pending:
 impl ImportCoordinator {
     pub fn receive(&self, paths: impl IntoIterator<Item=PathBuf>) { let mut pending = self.pending.lock(); for path in paths { if pending.len() >= 32 { break; } if accepted(&path) { pending.push(path); } } }
 }
-fn accepted(path: &Path) -> bool { path.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "mcpack"|"mcaddon"|"addon"|"mcworld"|"mctemplate"|"zip"|"cglm")) }
+fn accepted(path: &Path) -> bool { path.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "mcpack"|"mcaddon"|"addon"|"mcworld"|"mctemplate"|"zip"|"cglm"|"mcmod")) }
+fn is_mcmod(path: &Path) -> bool { path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mcmod")) }
+fn resource_manifest(root: &Path) -> Result<(usize, String), KernelError> {
+    fn walk(root: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<(), KernelError> {
+        if depth > 4 { return Ok(()); }
+        if root.join("manifest.json").is_file() { found.push(root.to_path_buf()); return Ok(()); }
+        for entry in std::fs::read_dir(root)? { let entry = entry?; if entry.file_type()?.is_dir() { walk(&entry.path(), depth + 1, found)?; } }
+        Ok(())
+    }
+    let mut roots = Vec::new(); walk(root, 0, &mut roots)?;
+    if roots.is_empty() { return Err(KernelError::InvalidArgument("Resource archive has no manifest.json".into())); }
+    let found_count = roots.len();
+    let mut first_name = None;
+    for root in &roots {
+        let bytes = std::fs::read(root.join("manifest.json"))?;
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| KernelError::InvalidArgument(format!("Resource manifest.json is invalid: {e}")))?;
+        let header = manifest.get("header").and_then(serde_json::Value::as_object).ok_or_else(|| KernelError::InvalidArgument("Resource manifest header is missing or invalid".into()))?;
+        let name = header.get("name").and_then(serde_json::Value::as_str).map(str::trim).filter(|name| !name.is_empty()).ok_or_else(|| KernelError::InvalidArgument("Resource manifest name is missing".into()))?;
+        let modules = manifest.get("modules").and_then(serde_json::Value::as_array).filter(|modules| !modules.is_empty()).ok_or_else(|| KernelError::InvalidArgument("Resource manifest modules are missing".into()))?;
+        if !modules.iter().any(|module| module.get("type").and_then(serde_json::Value::as_str).is_some_and(|kind| matches!(kind, "resources"|"data"|"script"|"client_data"|"world_template"))) {
+            return Err(KernelError::InvalidArgument("Resource manifest has no supported module type".into()));
+        }
+        if first_name.is_none() { first_name = Some(name.to_owned()); }
+    }
+    Ok((found_count, first_name.unwrap_or_default()))
+}
+fn inspect_mcmod(snapshot: &Path, work: &Path, filename: &str, sha256: String, ticket: String) -> Result<Ticket, KernelError> {
+    let archive = crate::modules::lip::archive::ArchiveView::from_zip(snapshot).map_err(|e| KernelError::InvalidArgument(format!("Invalid .mcmod archive: {e}")))?;
+    let name = crate::modules::lip::workspace::inspect_mcmod_name(&archive).map_err(|e| KernelError::InvalidArgument(format!("Invalid .mcmod resource info: {e}")))?;
+    Ok(Ticket { path: snapshot.to_path_buf(), work: work.to_path_buf(), created: Instant::now(), preview: ImportPreview { ticket, filename: filename.to_owned(), kind: "llomd".into(), name, version: None, permissions: vec![], module_id: None, publisher_verified: false, installed_version: None, sha256 } })
+}
 fn inspect(path: &Path, cache: &Path) -> Result<Ticket, KernelError> {
     use std::io::{Read, Write};
     if !accepted(path) || std::fs::symlink_metadata(path)?.file_type().is_symlink() { return Err(KernelError::InvalidArgument("Unsupported or linked import source".into())); }
@@ -37,6 +67,7 @@ fn inspect(path: &Path, cache: &Path) -> Result<Ticket, KernelError> {
         loop { let count = file.read(&mut buffer)?; if count == 0 { break; } digest.update(&buffer[..count]); }
         let sha256 = format!("{:x}", digest.finalize());
         let ticket = uuid::Uuid::new_v4().to_string();
+        if is_mcmod(&snapshot) { return inspect_mcmod(&snapshot, &work, &filename, sha256, ticket); }
         let mut preview = ImportPreview { ticket, filename: filename.clone(), kind: String::new(), name: install_target::dir_name_hint(&filename), version: None, permissions: vec![], module_id: None, publisher_verified: false, installed_version: None, sha256 };
         if snapshot.extension().is_some_and(|e| e.eq_ignore_ascii_case("cglm")) {
             let package = crate::registry::package::extract_package(&snapshot, &work.join("inspect"))?;
@@ -49,26 +80,35 @@ fn inspect(path: &Path, cache: &Path) -> Result<Ticket, KernelError> {
             let ext = install_target::classify(&filename).ok_or_else(|| KernelError::InvalidArgument("Unsupported import".into()))?;
             preview.kind = match ext { ExtKind::World => "world", ExtKind::Template => "template", ExtKind::Addon => "addon", ExtKind::Pack => "pack", ExtKind::Zip => {
                 if extracted.join("level.dat").is_file() { "world" } else {
-                    let manifests = count_manifests(&extracted, 0)?;
+                    let (manifests, _) = resource_manifest(&extracted)?;
                     if manifests == 1 { "pack" } else if manifests > 1 { "addon" } else { return Err(KernelError::InvalidArgument("Zip does not uniquely identify a supported resource".into())); }
                 }
             }, _ => return Err(KernelError::InvalidArgument("Unsupported import".into())) }.into();
             if preview.kind == "world" && !extracted.join("level.dat").is_file() { return Err(KernelError::InvalidArgument("World archive has no level.dat".into())); }
-            if matches!(preview.kind.as_str(), "pack"|"addon"|"template") && count_manifests(&extracted, 0)? == 0 { return Err(KernelError::InvalidArgument("Resource has no manifest".into())); }
+            if matches!(preview.kind.as_str(), "pack"|"addon"|"template") { let (_, name) = resource_manifest(&extracted)?; preview.name = name; }
         }
         Ok(Ticket { path: snapshot, work: work.clone(), created: Instant::now(), preview })
     })();
     if result.is_err() { let _ = std::fs::remove_dir_all(&work); } result
 }
-fn count_manifests(root: &Path, depth: usize) -> Result<usize, KernelError> {
-    if root.join("manifest.json").is_file() { return Ok(1); }
-    if depth >= 4 { return Ok(0); } let mut count = 0;
-    for entry in std::fs::read_dir(root)? { let entry = entry?; if entry.file_type()?.is_dir() { count += count_manifests(&entry.path(), depth + 1)?; } } Ok(count)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn mcmod_is_accepted_and_resource_manifest_must_parse() {
+        let root = std::env::temp_dir().join(format!("import-manifest-test-{}", uuid::Uuid::new_v4()));
+        let pack = root.join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        assert!(resource_manifest(&pack).is_err());
+        std::fs::write(pack.join("manifest.json"), br#"{"header":{"name":"Pack"},"modules":[{"type":"resources"}]}"#).unwrap();
+        assert_eq!(resource_manifest(&pack).unwrap(), (1, "Pack".into()));
+        std::fs::write(pack.join("manifest.json"), b"not-json").unwrap();
+        assert!(resource_manifest(&pack).is_err());
+        assert!(accepted(Path::new("test.mcmod")));
+        assert!(is_mcmod(Path::new("test.MCMOD")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn inspected_snapshot_survives_source_change_and_unknown_zip_is_rejected() {
         let root = std::env::temp_dir().join(format!("import-ticket-test-{}", uuid::Uuid::new_v4()));
@@ -128,7 +168,7 @@ pub fn imports_pick(app: tauri::AppHandle, kernel: State<'_, KernelContext>) -> 
     #[cfg(not(target_os = "android"))]
     {
     use tauri_plugin_dialog::DialogExt;
-    let paths = app.dialog().file().add_filter("Minecraft / Copper", &["mcpack","mcaddon","addon","mcworld","mctemplate","zip","cglm"]).blocking_pick_files().unwrap_or_default();
+    let paths = app.dialog().file().add_filter("Minecraft / Copper", &["mcpack","mcaddon","addon","mcworld","mctemplate","zip","cglm","mcmod"]).blocking_pick_files().unwrap_or_default();
     let paths = paths.into_iter().map(|p| p.into_path().map_err(|_| into_command_error(KernelError::InvalidArgument("Invalid file selection".into())))).collect::<CommandResult<Vec<_>>>()?;
     enqueue(&app, kernel.inner(), paths)
     }
@@ -189,6 +229,7 @@ pub fn imports_commit(app: tauri::AppHandle, kernel: State<'_, KernelContext>, t
         } else {
             let instance = instance.ok_or_else(|| KernelError::InvalidArgument("Select an instance".into()))?;
             let roots = crate::modules::home::content::content_roots_for_write(kernel.inner(), &instance)?;
+            if item.preview.kind == "llomd" { return Err(KernelError::InvalidArgument(".mcmod installation requires an llomd workspace selection".into())); }
             let ext = match item.preview.kind.as_str() { "world" => ExtKind::World, "template" => ExtKind::Template, "addon" => ExtKind::Addon, _ => ExtKind::Pack };
             install_target::install_confirmed(&item.path, ext, &roots, &item.preview.name, replace)?;
         } Ok(())

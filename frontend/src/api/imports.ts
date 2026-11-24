@@ -4,7 +4,7 @@ import { call } from './core';
 export interface ImportPreview {
   ticket: string;
   filename: string;
-  kind: 'pack' | 'addon' | 'world' | 'template' | 'module';
+  kind: 'pack' | 'addon' | 'world' | 'template' | 'module' | 'llomd';
   name: string;
   version: string | null;
   permissions: string[];

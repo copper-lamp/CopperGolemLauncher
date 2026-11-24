@@ -11,7 +11,7 @@ const en = {
   worldCopy: 'This world will be imported as a new copy. Existing worlds are preserved.',
   commit: 'Import', cancel: 'Cancel', working: 'Importing…', picking: 'Opening file picker…', success: 'Import completed',
   loading: 'Loading instances…', next: 'Queued files', hash: 'SHA-256', unknown: 'Not supplied',
-  pack: 'Resource / behavior pack', addon: 'Add-on', world: 'World', template: 'World template', module: 'Launcher module',
+  pack: 'Resource / behavior pack', addon: 'Add-on', world: 'World', template: 'World template', module: 'Launcher module', llomd: 'LL mod archive', llomdNeedsWorkspace: 'This .mcmod archive is identified as an llomd mod asset. Open it from the llomd workspace to install it.',
   drop: 'Drop files to inspect and confirm import', failed: 'Import failed. The ticket remains available for retry until it expires.',
 };
 const zh: Record<keyof typeof en, string> = {
@@ -23,7 +23,7 @@ const zh: Record<keyof typeof en, string> = {
   replace: '我明确同意替换已安装的内容或模块。', replacement: '已有同名模块。请比较版本后确认替换；导入更早版本会降级。',
   conflict: '此导入与已存在的内容冲突。请检查错误详情，明确同意替换后重试。', worldCopy: '世界将作为新副本导入，已有世界会保留。',
   commit: '导入', cancel: '取消', working: '正在导入…', picking: '正在打开文件选择器…', success: '导入完成', loading: '正在读取实例…',
-  next: '排队文件', hash: 'SHA-256', unknown: '未提供', pack: '资源／行为包', addon: '附加包', world: '世界', template: '世界模板', module: '启动器模块',
+  next: '排队文件', hash: 'SHA-256', unknown: '未提供', pack: '资源／行为包', addon: '附加包', world: '世界', template: '世界模板', module: '启动器模块', llomd: 'LL 模组归档', llomdNeedsWorkspace: '已识别为 llomd 模组资源。请在 llomd 工作区中打开并安装此 .mcmod 文件。',
   drop: '拖放文件以检查并确认导入', failed: '导入失败，票据过期前可在此重试。',
 };
 export function useImportText() {

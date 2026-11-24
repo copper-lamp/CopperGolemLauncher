@@ -46,7 +46,7 @@ pub(crate) fn register_android_vm(vm: &JavaVM) {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge_nativeRegisterBridge(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     bridge: JClass,
 ) {
@@ -63,7 +63,7 @@ pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge_nativeRegisterHost(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     host: JObject,
 ) {
@@ -79,7 +79,7 @@ pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge_nativeClearHost(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: jni::objects::JClass,
     host: JObject,
 ) {
@@ -106,7 +106,7 @@ fn launch_host_prepare(instance: &str) -> Result<(), KernelError> {
     let value = env.new_string(instance).map_err(|error| KernelError::Config(format!("创建 Android 实例名失败: {error}")))?;
     let bridge = ANDROID_BRIDGE.get().ok_or_else(|| KernelError::Config("Android 游戏启动桥尚未注册".into()))?;
     env.call_static_method(
-        bridge.as_obj(),
+        bridge,
         "prepare",
         "(Ljava/lang/String;)V",
         &[JValue::Object(&value)],

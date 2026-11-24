@@ -299,7 +299,7 @@ impl<'a> Applier<'a> {
                     let downloader = byte_reporter(report);
                     self.client.download_zip(urls, &temp, self.cancel, Some(&downloader)).await?;
                     let archive = ArchiveView::from_zip(&temp)?;
-                    let name = mod_name(&archive)?;
+                    let name = inspect_mcmod_name(&archive)?;
                     if self.workspace.join("mods").is_symlink() {
                         return Err(LipError::Conflict("workspace mods is a symlink; refusing to write mods".into()));
                     }
@@ -523,7 +523,7 @@ fn purge_targets(workspace: &Path, pattern: &str) -> Result<Vec<String>, LipErro
     Ok(out)
 }
 
-fn mod_name(archive: &ArchiveView) -> Result<String, LipError> {
+pub(crate) fn inspect_mcmod_name(archive: &ArchiveView) -> Result<String, LipError> {
     let candidates: Vec<&String> = archive.files().iter().filter(|file| file.as_str() == "manifest.json" || file.ends_with("/manifest.json") || file.ends_with("pack_manifest.json")).collect();
     let Some(path) = candidates.first() else {
         return Err(LipError::Archive("mcmod archive has no manifest.json".into()));

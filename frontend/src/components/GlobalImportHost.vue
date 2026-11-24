@@ -32,7 +32,9 @@ const acknowledge = ref(false);
 const conflict = ref(false);
 const errorText = ref('');
 const dragging = ref(false);
+const kernelImportDisabled = computed(() => route.path === '/version-settings/mods' || route.path === '/version-settings/client');
 const modulePackage = computed(() => current.value?.kind === 'module');
+const unsupportedPackage = computed(() => current.value?.kind === 'llomd');
 const versionChange = computed(() => {
   const value = current.value;
   if (!value?.installedVersion || !value.version) return text('versionUnknown');
@@ -40,7 +42,7 @@ const versionChange = computed(() => {
   return text(comparison === null ? 'versionUnknown' : comparison > 0 ? 'upgrade' : comparison < 0 ? 'downgrade' : 'reinstall');
 });
 const replacementRequired = computed(() => modulePackage.value ? !!current.value?.installedVersion : conflict.value);
-const allowed = computed(() => !!current.value && !busy.value && !loading.value && (modulePackage.value || instances.value.some(item => item.name === instance.value)) && (!replacementRequired.value || replace.value) && (!modulePackage.value || current.value?.publisherVerified || acknowledge.value));
+const allowed = computed(() => !!current.value && !unsupportedPackage.value && !busy.value && !loading.value && (modulePackage.value || instances.value.some(item => item.name === instance.value)) && (!replacementRequired.value || replace.value) && (!modulePackage.value || current.value?.publisherVerified || acknowledge.value));
 let previousFocus: HTMLElement | null = null;
 let disposed = false;
 let pollBusy = false;
@@ -97,7 +99,7 @@ function keydown(event: KeyboardEvent) {
   else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel.value)) { event.preventDefault(); first.focus(); }
 }
 async function poll() {
-  if (!isKernelReady.value || pollBusy || busy.value || importPickingActive()) return;
+  if (kernelImportDisabled.value || !isKernelReady.value || pollBusy || busy.value || importPickingActive()) return;
   pollBusy = true;
   try { const pending = await importsPending(); if (!disposed) enqueueImports(pending); }
   catch (error) {
@@ -113,6 +115,7 @@ onMounted(async () => {
   window.addEventListener('focus', focus); void poll();
   try {
     const off = await getCurrentWebview().onDragDropEvent(async ({ payload }) => {
+      if (kernelImportDisabled.value) return;
       if (payload.type === 'over' || payload.type === 'enter') dragging.value = true;
       else dragging.value = false;
       if (payload.type === 'drop') {
@@ -127,12 +130,13 @@ onUnmounted(() => { releaseModal?.(); disposed = true; if (timer) clearInterval(
 </script>
 <template>
   <Teleport to="body">
-    <div v-if="dragging" class="import-drop" role="status"><Upload :size="32" />{{ text('drop') }}</div>
+    <div v-if="dragging && !kernelImportDisabled" class="import-drop" role="status"><Upload :size="32" />{{ text('drop') }}</div>
     <div v-if="current && isModalActive('global-import')" class="import-mask" @keydown="keydown">
       <section ref="panel" class="import-panel" role="dialog" aria-modal="true" aria-labelledby="global-import-title" tabindex="-1" :aria-busy="busy">
         <header><PackageOpen :size="24" /><h2 id="global-import-title">{{ text('title') }}</h2><button :disabled="busy" :aria-label="text('cancel')" @click="cancel"><X :size="18" /></button></header>
-        <p class="import-kind">{{ text(current.kind) }}</p><h3>{{ current.name }}</h3>
+        <p class="import-kind">{{ current.kind === 'llomd' ? text('llomd') : text(current.kind) }}</p><h3>{{ current.name }}</h3>
         <dl><dt>{{ text('filename') }}</dt><dd>{{ current.filename }}</dd><template v-if="current.version"><dt>{{ text('version') }}</dt><dd>{{ current.version }}</dd></template><template v-if="current.installedVersion"><dt>{{ text('installed') }}</dt><dd>{{ current.installedVersion }}</dd></template><template v-if="current.moduleId"><dt>ID</dt><dd>{{ current.moduleId }}</dd></template></dl>
+        <p v-if="unsupportedPackage" class="import-error" role="alert">{{ text('llomdNeedsWorkspace') }}</p>
         <template v-if="modulePackage">
           <h4>{{ text('permissions') }}</h4><ul v-if="current.permissions.length"><li v-for="permission in current.permissions" :key="permission">{{ permission }}</li></ul><p v-else>{{ text('noPermissions') }}</p>
           <div v-if="!current.publisherVerified" class="import-warning"><strong><ShieldAlert :size="18" />{{ text('unsigned') }}</strong><p>{{ text('risk') }}</p><label><input v-model="acknowledge" type="checkbox" :disabled="busy" />{{ text('acknowledge') }}</label></div>

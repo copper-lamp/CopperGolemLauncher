@@ -21,6 +21,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use copper_downloader::{DownloadOptions, DownloadStatus};
 use md5::{Digest as _Md5Digest, Md5};
@@ -36,6 +37,7 @@ use crate::services::account::AccountService;
 use crate::services::database::DatabaseService;
 use crate::services::download::DownloadService;
 use crate::services::native_install;
+use crate::services::http_client;
 use crate::services::paths::Paths;
 use crate::services::settings::SettingsService;
 use crate::state::KernelContext;
@@ -943,6 +945,63 @@ fn annotate_versions_root(ctx: &Ctx, error: KernelError) -> KernelError {
     crate::services::paths::annotate_versions_root_error(&ctx.versions_root(), error)
 }
 
+/// 对 GDK 候选地址做轻量探测，按首字节延迟选择最快可用节点。
+///
+/// 探测使用 `Range: bytes=0-0`，不会下载整包；并行执行且总时限很短，避免点击下载后
+/// 先把请求投递到不可达 CDN，导致用户看到立即超时。探测全失败时保留清单顺序，仍由
+/// 下载引擎负责重试和最终错误展示。
+async fn rank_download_urls(urls: Vec<String>) -> Vec<String> {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+    let client = match http_client::client_builder(PROBE_TIMEOUT).build() {
+        Ok(client) => client,
+        Err(error) => {
+            log::warn!("[game-download] 无法创建 CDN 探测客户端，保留清单顺序: {error}");
+            return urls;
+        }
+    };
+    let mut probes = Vec::with_capacity(urls.len());
+    for (index, url) in urls.iter().cloned().enumerate() {
+        let client = client.clone();
+        probes.push(async move {
+            let started = Instant::now();
+            let result = client
+                .get(&url)
+                .header(reqwest::header::RANGE, "bytes=0-0")
+                .send()
+                .await;
+            match result {
+                Ok(response) if response.status().is_success() || response.status().as_u16() == 206 => {
+                    Some((started.elapsed(), index, url))
+                }
+                Ok(response) => {
+                    log::debug!("[game-download] CDN 探测返回 {}: {}", response.status(), url);
+                    None
+                }
+                Err(error) => {
+                    log::debug!("[game-download] CDN 探测失败 {url}: {error}");
+                    None
+                }
+            }
+        });
+    }
+    let mut ranked = futures_util::future::join_all(probes)
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    ranked.sort_by_key(|(elapsed, index, _)| (*elapsed, *index));
+    if ranked.is_empty() {
+        return urls;
+    }
+    let mut ordered = ranked.into_iter().map(|(_, _, url)| url).collect::<Vec<_>>();
+    for url in urls {
+        if !ordered.iter().any(|candidate| candidate == &url) {
+            ordered.push(url);
+        }
+    }
+    ordered
+}
+
 /// 创建实例并开始安装（幂等）。
 ///
 /// 流程：校验实例名 → 落实例记录 → 复用本地整包或投递下载 → 该装就立刻装。
@@ -1077,6 +1136,8 @@ pub async fn enqueue(
     let urls = entry.all_urls().ok_or_else(|| {
         KernelError::InvalidArgument(format!("版本 `{version_id}` 没有可用下载链接"))
     })?;
+    let urls = rank_download_urls(urls).await;
+    log::info!("[game-download] CDN 探测排序完成，首选节点: {}", urls[0]);
     let opts = DownloadOptions {
         resume: true,
         remove_on_cancel: true,
