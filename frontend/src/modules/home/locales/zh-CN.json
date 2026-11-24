@@ -21,6 +21,8 @@
     "worlds": "世界",
     "server": "服务器",
     "servers": "服务器",
+    "pinned_group": "置顶",
+    "recommended": "推荐",
     "drag_hint": "拖拽可调整顺序",
     "list_hint": "点击卡片展开",
     "rescan": "重新扫描",
@@ -40,7 +42,9 @@
     "unpin": "取消顶置",
     "configure": "设置",
     "switch_preview": "切换预览图",
-    "preview_single": "该条目只有一张预览图"
+    "preview_single": "该条目只有一张预览图",
+    "server_request_sent": "已发出服务器连接请求，是否成功由 Minecraft 决定",
+    "server_target_missing": "服务器地址信息不完整"
   },
   "detail": "详情",
   "welcome": {

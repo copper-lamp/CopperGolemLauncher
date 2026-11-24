@@ -294,11 +294,16 @@ async function onControlKeydown(event: KeyboardEvent) {
 .co-dropdown__panel {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows var(--copper-duration) var(--copper-easing);
+  transition: grid-template-rows var(--copper-motion-dropdown-expand) var(--copper-easing);
 }
 
 .co-dropdown--open .co-dropdown__panel {
   grid-template-rows: 1fr;
+  transition-duration: var(--copper-motion-dropdown-expand);
+}
+
+.co-dropdown:not(.co-dropdown--open) .co-dropdown__panel {
+  transition-duration: var(--copper-motion-dropdown-collapse);
 }
 
 .co-dropdown--open .co-dropdown__panel-inner {
@@ -319,7 +324,11 @@ async function onControlKeydown(event: KeyboardEvent) {
   visibility: hidden;
   /* 收起后 visibility:hidden 而不是 display:none —— 前者能在收起动画播完之后
    * 把选项移出无障碍树与 Tab 序（display:none 会直接砍掉过渡）。 */
-  transition: visibility 0s linear var(--copper-duration);
+  transition: visibility 0s linear var(--copper-motion-dropdown-collapse);
+}
+
+.co-dropdown--open .co-dropdown__panel-inner {
+  transition-delay: 0s;
 }
 
 .co-dropdown__list {

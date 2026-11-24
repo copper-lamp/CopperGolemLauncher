@@ -68,6 +68,7 @@ html[data-theme="light"] {
 .fade-leave-to { transform:translateY(-4px);opacity:0; }
 .co-loading-enter-active { transition:transform var(--copper-motion-loading-enter) var(--copper-easing-jelly),opacity var(--copper-motion-loading-enter); }
 .co-loading-leave-active { transition:transform var(--copper-motion-loading-exit),opacity var(--copper-motion-loading-exit); }
-.co-loading-enter-from,.co-loading-leave-to { transform:scale(.98);opacity:0; }
+.co-loading-enter-from { transform:translateY(6px);opacity:0; }
+.co-loading-leave-to { transform:translateY(-3px);opacity:0; }
 html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-motion="reduced"] *::after { animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:0ms!important;scroll-behavior:auto!important; }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:0ms!important;scroll-behavior:auto!important; } }

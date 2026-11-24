@@ -105,6 +105,10 @@ export interface DashboardEntry {
   name: string;
   version: string;
   detail: string;
+  /** 服务器主机（世界为 null）。 */
+  server_address?: string | null;
+  /** 服务器端口（世界为 null）。 */
+  server_port?: number | null;
   /** 封面（`images` 的第一张）；服务器为 null。 */
   image_data_url: string | null;
   /** 该条目全部可用预览图；服务器为空数组。 */
@@ -167,6 +171,11 @@ export function homeVersionDelete(name: string): Promise<void> {
 /** 启动游戏（成功后后台确认进程并广播 `game.launched` / `game.exited`）。 */
 export function homeLaunch(name: string): Promise<LaunchOutcome> {
   return call<LaunchOutcome>("home_launch", { name });
+}
+
+/** Windows Bedrock protocol direct-connect request. Protocol acceptance is not connection confirmation. */
+export function homeConnectServer(address: string, port: number): Promise<LaunchOutcome> {
+  return call<LaunchOutcome>("home_connect_server", { address, port });
 }
 
 /** 该版本的游戏进程是否在运行（开始页按钮形态的依据）。 */

@@ -36,6 +36,7 @@ import TipsRotator from "../../components/TipsRotator.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import CoSplitLayout from "../../components/layout/CoSplitLayout.vue";
 import CoBadge from "../../components/ui/CoBadge.vue";
+import CoTabs from "../../components/ui/CoTabs.vue";
 import {
   sourceBadgeLabel,
   sourceBadgeTone,
@@ -79,6 +80,11 @@ const settings = useSettings();
 const detail = ref<ContentDetail | null>(null);
 const readmeHtml = ref<string | null>(null);
 const readmeLoading = ref(false);
+interface DetailDocument { key: string; label: string; html: string }
+const documents = ref<DetailDocument[]>([]);
+const activeDetailTab = ref("readme");
+const documentPanelRef = ref<HTMLElement | null>(null);
+const documentSectionRef = ref<HTMLElement | null>(null);
 const translation = useTranslation();
 const translationMessages = useTranslationMessages();
 const { busy: translationBusy, translated: showTranslation, error: translationError } = translation;
@@ -120,6 +126,11 @@ async function toggleTranslation() {
   await translation.run(source, publish);
 }
 watch(displayedReadme, () => void buildToc());
+watch(activeDetailTab, async () => {
+  await nextTick();
+  docRef.value = documentPanelRef.value?.querySelector<HTMLElement>(".cd-doc") ?? null;
+  await buildToc();
+});
 const loading = ref(true);
 const error = ref<string | null>(null);
 const lipEnv = ref<LipEnv | null>(null);
@@ -138,17 +149,16 @@ const tocItems = computed(() =>
 );
 /** 正文的滚动容器：CoPage 挂载后才能拿到。 */
 const scrollEl = computed(() => pageRef.value?.bodyEl ?? null);
-/** 导航条目 = 三个固定一级区块（信息 / 介绍 / 版本）+ 介绍下的文档标题 + 版本分组。 */
+/** 导航条目 = 固定概览 + 当前标签面板的标题与正文目录。 */
 const railItems = computed(() => [
   { id: "cd-sec-info", label: t(KB + ".sectionInfo"), depth: 0 },
-  { id: "cd-sec-intro", label: t(KB + ".sectionIntro"), depth: 0 },
-  ...tocItems.value.map((item) => ({ ...item, depth: item.depth + 1 })),
-  { id: "cd-sec-versions", label: t(KB + ".sectionVersions"), depth: 0 },
-  ...versionTree.value.map((group, index) => ({
-    id: "cd-version-" + index,
-    label: group.branch,
-    depth: 1,
-  })),
+  ...(activeDetailTab.value === "versions" ? [
+    { id: "cd-sec-versions", label: t(KB + ".sectionVersions"), depth: 0 },
+    ...versionTree.value.map((group, index) => ({ id: "cd-version-" + index, label: group.branch, depth: 1 })),
+  ] : [
+    { id: activeDetailTab.value === "readme" ? "cd-sec-doc-readme" : "cd-sec-doc-" + (activeDocument.value?.key ?? activeDetailTab.value), label: activeDetailTab.value === "readme" ? t(KB + ".readme") : activeDocument.value?.label ?? documentTabItems.value.find(item => item.value === activeDetailTab.value)?.label ?? activeDetailTab.value, depth: 0 },
+    ...tocItems.value.map((item) => ({ ...item, depth: item.depth + 1 })),
+  ]),
 ]);
 
 
@@ -162,6 +172,7 @@ async function buildToc() {
   await nextTick();
   tocFlat.value = [];
   const root = docRef.value;
+  if (activeDetailTab.value === "versions") return;
   if (!root) return;
   // CurseForge 的描述里大量用标题标签排版整段文字，原样收进目录就是一堆段落。
   // 这里只认「像标题的标题」：长度受控、不以句末标点结尾；层级收敛到 h1~h3。
@@ -175,7 +186,7 @@ async function buildToc() {
   if (headings.length === 0) return;
   const items: Array<{ id: string; text: string; level: number }> = [];
   headings.forEach((el, index) => {
-    const id = "cd-sec-" + index;
+    const id = `cd-doc-${encodeURIComponent(activeDetailTab.value)}-${index}`;
     el.id = id;
     el.classList.add("cd-doc__heading");
     items.push({
@@ -304,6 +315,38 @@ function toggleGroup(key: string) {
 }
 
 /** readme 原文格式：CF 为 HTML 片段，lip / 安卓目录（`lla`）为 GitHub Markdown。 */
+interface DetailDocument { key: string; label: string; html: string }
+function normalizeDocuments(value: unknown): DetailDocument[] {
+  if (typeof value === "string") return value.trim() ? [{ key: "readme", label: t(`${KB}.readme`), html: renderReadme(value, readmeFormat(detail.value?.item.source ?? "curseforge"), detail.value ? readmeBaseUrl(detail.value) : null) }] : [];
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((entry, index) => {
+    if (!entry || typeof entry !== "object") return [];
+    const document = entry as { key?: unknown; id?: unknown; label?: unknown; title?: unknown; content?: unknown; html?: unknown; format?: unknown };
+    const raw = typeof document.content === "string" ? document.content : typeof document.html === "string" ? document.html : "";
+    const key = typeof document.key === "string" ? document.key : typeof document.id === "string" ? document.id : `document-${index}`;
+    const label = typeof document.label === "string" ? document.label : typeof document.title === "string" ? document.title : key;
+    if (!raw.trim() || !key.trim() || !label.trim() || seen.has(key)) return [];
+    seen.add(key);
+    const format = document.format === "html" || document.format === "markdown"
+      ? document.format
+      : key === "readme" ? readmeFormat(detail.value?.item.source ?? "curseforge") : "markdown";
+    const html = renderReadme(raw, format, detail.value ? readmeBaseUrl(detail.value) : null);
+    return [{ key, label, html }];
+  });
+}
+
+const documentItems = computed<DetailDocument[]>(() => documents.value.map((item) => item.key === "readme" ? { ...item, html: displayedReadme.value ?? item.html } : item));
+const activeDocument = computed(() => documentItems.value.find((item) => item.key === activeDetailTab.value) ?? null);
+const documentTabItems = computed(() => [
+  { value: "readme", label: t(`${KB}.readme`) },
+  { value: "versions", label: t(`${KB}.versions`) },
+  ...documentItems.value.filter((item) => item.key !== "readme").map(({ key, label }) => ({ value: key, label })),
+]);
+watch(documentItems, (items) => {
+  if (activeDetailTab.value !== "readme" && activeDetailTab.value !== "versions" && !items.some((item) => item.key === activeDetailTab.value)) activeDetailTab.value = "readme";
+}, { immediate: true });
+
 function readmeFormat(src: string): ReadmeFormat {
   return src === "lip" || src === "lla" ? "markdown" : "html";
 }
@@ -320,6 +363,8 @@ async function load() {
   const seq = ++loadSeq;
   resetTranslation();
   readmeHtml.value = null;
+  documents.value = [];
+  activeDetailTab.value = "readme";
   loading.value = true;
   error.value = null;
   expanded.value = new Set();
@@ -337,7 +382,7 @@ async function load() {
     if (data.item.source === "lip") {
       contentDownloadLipEnv().then((env) => (lipEnv.value = env)).catch(() => null);
     }
-    void loadReadme(id, data);
+    void loadReadme(id);
   } catch (e) {
     if (seq === loadSeq) error.value = String(e);
   } finally {
@@ -346,17 +391,18 @@ async function load() {
 }
 
 /** 拉取并渲染 readme：CF 与 lip 都支持，格式按来源区分。 */
-async function loadReadme(id: string, data: ContentDetail) {
+async function loadReadme(id: string) {
   const seq = loadSeq;
   readmeLoading.value = true;
   try {
     const raw = await contentDownloadReadme(id, locale.value);
     if (seq !== loadSeq) return;
-    readmeHtml.value = raw
-      ? renderReadme(raw, readmeFormat(data.item.source), readmeBaseUrl(data))
-      : null;
+    documents.value = normalizeDocuments(raw);
+    const readme = documents.value.find((item) => item.key === "readme");
+    readmeHtml.value = readme?.html ?? null;
+    activeDetailTab.value = "readme";
   } catch {
-    if (seq === loadSeq) readmeHtml.value = null;
+    if (seq === loadSeq) { readmeHtml.value = null; documents.value = []; }
   } finally {
     if (seq === loadSeq) readmeLoading.value = false;
   }
@@ -387,6 +433,10 @@ async function onPickFile(file: ContentFile, event: MouseEvent) {
 const downloadOnlyConfirm = ref<ContentFile | null>(null);
 /** 落点预演结果（确认框要显示落点目录）。 */
 const downloadOnlyDir = ref("");
+const downloadOnlyWarningMuted = computed({
+  get: () => settings.get<boolean>("download.download_only_warning_muted", false),
+  set: (value: boolean) => void settings.set("download.download_only_warning_muted", value),
+});
 
 /** 未装 Arke 的提示弹窗：保存用户点过的文件，装完 Arke 回来再点一次即可。 */
 const arkeMissing = ref<ContentFile | null>(null);
@@ -413,17 +463,25 @@ function goInstallArke() {
   void router.push("/content/" + encodeURIComponent("lip:github.com/LiteLDev/Arke"));
 }
 
+async function downloadWithoutArke() {
+  const file = arkeMissing.value;
+  const origin = pendingOrigin.value;
+  arkeMissing.value = null;
+  pendingOrigin.value = undefined;
+  if (file) await downloadFile(file, origin, true);
+}
+
 /** CurseForge 文件直链下载。
  *
  * 先调 `plan` 预演落点：无 MC 实例时后端会把落点改到系统下载目录，这种情况下
  * **必须每次都问一次**——内容没进游戏，用户不知道就会一直以为装好了。
  * 确认后把 `plan` 解析出的版本钉住下发，避免两次调用之间用户改了开始页选择。
  */
-async function downloadFile(file: ContentFile, origin?: { x: number; y: number }) {
+async function downloadFile(file: ContentFile, origin?: { x: number; y: number }, bypassArke = false) {
   if (!detail.value) return;
   const itemId = detail.value.item.id;
   // 光影先过 Arke 前置检查：没有加载器，下再多的包也进不了游戏。
-  if (isShader.value && !await arkeReady()) {
+  if (isShader.value && !bypassArke && !await arkeReady()) {
     pendingOrigin.value = origin;
     arkeMissing.value = file;
     return;
@@ -432,8 +490,14 @@ async function downloadFile(file: ContentFile, origin?: { x: number; y: number }
     const plan = await contentDownloadPlan(itemId, file.id);
     if (plan.kind === "downloadOnly") {
       downloadOnlyDir.value = plan.dir;
-      downloadOnlyConfirm.value = file;
       pendingOrigin.value = origin;
+      if (!downloadOnlyWarningMuted.value) {
+        downloadOnlyConfirm.value = file;
+        return;
+      }
+      await contentDownloadDownload(itemId, file.id);
+      flyToDownloads(origin);
+      showToast(t(`${KB}.downloadedTo`, { dir: plan.dir }), "info");
       return;
     }
     // `llpMod` 的目标版本已在弹窗里确认过，钉住它。
@@ -635,90 +699,75 @@ onUnmounted(() => {
           <!-- 说明文档 -->
         </section>
 
-        <section id="cd-sec-intro" class="cd-doc-section">
-                      <h2 class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
-            <div v-if="readmeLoading" class="cd-doc__state">
-              <LoaderCircle :size="15" class="spin" />
-              {{ t(`${KB}.docLoading`) }}
-            </div>
-            <template v-else-if="readmeHtml">
-                <div ref="docRef" class="cd-doc" v-html="displayedReadme" />
-
-
-            </template>
-            <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
-        </section>
-
-        <!-- ================= 下部：版本（按大版本折叠） ================= -->
-        <section id="cd-sec-versions" class="cd-versions">
-          <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
-          <p v-if="isLip" class="cd-doc__state">{{ t(`${KB}.installTarget`, { target: targetLabel }) }}</p>
-
-          <p v-if="!versionTree.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
-
-          <div
-            v-for="(g, index) in versionTree"
-            :id="'cd-version-' + index"
-            :key="g.branch"
-            class="cd-version-card"
-            :class="{ 'is-open': isExpanded(g.branch) }"
-          >
-            <button
-              class="cd-version-card__head"
-              :aria-expanded="isExpanded(g.branch)"
-              @click="toggleGroup(g.branch)"
-            >
-              <ChevronRight
-                :size="16"
-                class="cd-version-card__caret"
-                :class="{ 'is-open': isExpanded(g.branch) }"
-              />
-              <CoVersionCube :channel="g.files.every(file => file.releaseType === 'release') ? 'release' : 'preview'" :label="g.files.every(file => file.releaseType === 'release') ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')" />
-              <span class="cd-version-card__label">{{ g.branch }}</span>
-              <span class="cd-version-card__count">
-                {{ t(`${KB}.versionCount`, { count: g.files.length }) }}
-              </span>
-            </button>
-
-            <div v-show="isExpanded(g.branch)" class="cd-version-card__body">
+        <section id="cd-sec-intro" ref="documentSectionRef" class="cd-doc-section">
+          <div v-if="readmeLoading" class="cd-doc__state">
+            <LoaderCircle :size="15" class="spin" />
+            {{ t(`${KB}.docLoading`) }}
+          </div>
+          <template v-else>
+            <CoTabs v-model="activeDetailTab" :items="documentTabItems" />
+            <section v-if="activeDetailTab === 'versions'" id="cd-sec-versions" class="cd-versions cd-detail-tab-panel">
+              <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
+              <p v-if="isLip" class="cd-doc__state">{{ t(`${KB}.installTarget`, { target: targetLabel }) }}</p>
+              <p v-if="!versionTree.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
               <div
-                v-for="file in g.files"
-                :key="file.id"
-                class="cd-file"
-                role="button"
-                tabindex="0"
-                :title="pickHint"
-                @click="onPickFile(file, $event)"
-                @keydown.enter="onPickFile(file, $event as unknown as MouseEvent)"
+                v-for="(g, index) in versionTree"
+                :id="'cd-version-' + index"
+                :key="g.branch"
+                class="cd-version-card"
+                :class="{ 'is-open': isExpanded(g.branch) }"
               >
-                <CoVersionCube :channel="file.releaseType" :label="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')" />
-                <div class="cd-file__main">
-                  <div class="cd-file__row">
-                    <span class="cd-file__version">{{ file.version }}</span>
-
-                    <span v-if="file.size > 0" class="cd-file__meta">
-                      {{ formatBytes(file.size) }}
-                    </span>
-                  </div>
-                  <div v-if="file.dependencies.length" class="cd-file__deps">
-                    <Link2 :size="12" class="cd-file__deps-icon" />
-                    <span
-                      v-for="dep in file.dependencies"
-                      :key="dep.refId"
-                      class="cd-file__dep"
-                      :class="`is-${dep.kind}`"
-                    >
-                      {{ dep.name || dep.refId }}
-                    </span>
+                <button class="cd-version-card__head" :aria-expanded="isExpanded(g.branch)" @click="toggleGroup(g.branch)">
+                  <ChevronRight :size="16" class="cd-version-card__caret" :class="{ 'is-open': isExpanded(g.branch) }" />
+                  <CoVersionCube :channel="g.files.every(file => file.releaseType === 'release') ? 'release' : 'preview'" :label="g.files.every(file => file.releaseType === 'release') ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')" />
+                  <span class="cd-version-card__label">{{ g.branch }}</span>
+                  <span class="cd-version-card__count">{{ t(`${KB}.versionCount`, { count: g.files.length }) }}</span>
+                </button>
+                <div v-show="isExpanded(g.branch)" class="cd-version-card__body">
+                  <div
+                    v-for="file in g.files"
+                    :key="file.id"
+                    class="cd-file"
+                    role="button"
+                    tabindex="0"
+                    :title="pickHint"
+                    @click="onPickFile(file, $event)"
+                    @keydown.enter="onPickFile(file, $event as unknown as MouseEvent)"
+                  >
+                    <CoVersionCube :channel="file.releaseType" :label="file.releaseType === 'release' ? releaseBadgeLabel('release') : t(MB_KEY + '.previewChannel')" />
+                    <div class="cd-file__main">
+                      <div class="cd-file__row">
+                        <span class="cd-file__version">{{ file.version }}</span>
+                        <span v-if="file.size > 0" class="cd-file__meta">{{ formatBytes(file.size) }}</span>
+                      </div>
+                      <div v-if="file.dependencies.length" class="cd-file__deps">
+                        <Link2 :size="12" class="cd-file__deps-icon" />
+                        <span v-for="dep in file.dependencies" :key="dep.refId" class="cd-file__dep" :class="`is-${dep.kind}`">{{ dep.name || dep.refId }}</span>
+                      </div>
+                    </div>
+                    <span class="cd-file__hint"><PackageCheck v-if="needsTargetConfirm" :size="15" />{{ pickHint }}</span>
                   </div>
                 </div>
-                <span class="cd-file__hint">
-                  <PackageCheck v-if="needsTargetConfirm" :size="15" />
-                  {{ pickHint }}
-                </span>
               </div>
-            </div>
-          </div>
+            </section>
+            <template v-else-if="activeDetailTab === 'readme'">
+              <h2 id="cd-sec-doc-readme" class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
+              <div v-if="activeDocument" ref="documentPanelRef" class="cd-doc-panel">
+                <div class="cd-doc" v-html="activeDocument.html" />
+              </div>
+              <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
+            </template>
+            <template v-else-if="activeDocument">
+              <h2 :id="'cd-sec-doc-' + activeDocument.key" class="cd-block__title">{{ activeDocument.label }}</h2>
+              <div ref="documentPanelRef" class="cd-doc-panel">
+                <div class="cd-doc" v-html="activeDocument.html" />
+              </div>
+            </template>
+            <template v-else>
+              <h2 :id="'cd-sec-doc-' + activeDetailTab" class="cd-block__title">{{ documentTabItems.find(item => item.value === activeDetailTab)?.label }}</h2>
+              <p class="cd-doc__state">{{ t(`${KB}.docUnavailable`) }}</p>
+            </template>
+          </template>
         </section>
       </template>
       <template #aside>
@@ -726,6 +775,7 @@ onUnmounted(() => {
           v-if="railItems.length"
           :items="railItems"
           :scroller="scrollEl"
+          :content-root="documentSectionRef"
           :title="t(KB + '.onThisPage')"
         />
       </template>
@@ -744,6 +794,7 @@ onUnmounted(() => {
           <AlertTriangle :size="13" />
           {{ t(`${KB}.noInstanceHint`) }}
         </p>
+        <label class="cd-modal__check"><input v-model="downloadOnlyWarningMuted" type="checkbox" /> {{ t(`${KB}.muteDownloadOnlyWarning`) }}</label>
         <div class="cd-modal__actions">
           <button class="cd-modal__btn" @click="cancelDownloadOnly">
             {{ t("common.cancel") }}
@@ -768,6 +819,9 @@ onUnmounted(() => {
         <div class="cd-modal__actions">
           <button class="cd-modal__btn" @click="arkeMissing = null">
             {{ t("common.cancel") }}
+          </button>
+          <button class="cd-modal__btn" @click="downloadWithoutArke">
+            {{ t(`${KB}.arkeDownloadAnyway`) }}
           </button>
           <button class="cd-modal__btn cd-modal__btn--primary" @click="goInstallArke">
             {{ t(`${KB}.arkeGoInstall`) }}
@@ -1512,6 +1566,8 @@ onUnmounted(() => {
   color: var(--copper-text);
   font-size: var(--copper-font-size-md);
 }
+
+.cd-modal__check { display: flex; align-items: center; gap: var(--copper-space-2); color: var(--copper-text-secondary); font-size: var(--copper-font-size-sm); margin: var(--copper-space-3) 0; }
 
 .cd-modal__hint {
   display: flex;

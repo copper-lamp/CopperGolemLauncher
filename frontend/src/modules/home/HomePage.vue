@@ -69,7 +69,7 @@ const compatText = useCompatibilityText();
 const settings = useSettings();
 const { isWindows } = usePlatform();
 const mode = ref<HomeMode>(
-  settings.get<string>("home.mode", "simple") === "default" ? "default" : "simple",
+  settings.get<string>("home.mode", "default") === "simple" ? "simple" : "default",
 );
 const versions = ref<VersionView[]>([]);
 const selectedName = ref("");
@@ -84,7 +84,7 @@ const modeOptions = computed(() => [
 
 // 模式落盘：下次打开保持用户上次的选择。
 watch(mode, (value) => {
-  if (settings.get<string>("home.mode", "simple") !== value) {
+  if (settings.get<string>("home.mode", "default") !== value) {
     void settings.set("home.mode", value);
   }
 });
@@ -404,147 +404,147 @@ function goDownload() {
 <template>
   <CoPage :scroll="false">
     <div class="home-page">
-    <div :class="['home-simple', { 'home-simple--default': mode === 'default' }]">
-      <!-- 默认模式：启动区 / 列表区 / 小组件区 -->
-      <DefaultHome
-        v-if="mode === 'default' && !loading"
-        :versions="versions"
-        :selected-name="selectedName"
-        :session="session"
-        :launching="launching"
-        :running="running"
-        :stopping="stopping"
-        :welcome="welcome"
-        :client-mode="clientMode"
-        :clients="clients"
-        :selected-client-id="selectedClientId"
-        :reinjecting="clientInjecting"
-        :reinject-visible="clientReinjectVisible"
-        @select="selectedName = $event"
-        @select-client="chooseClient"
-        @launch="launchNamed"
-        @stop="stopNamed"
-        @reinject="reinjectClient"
-        @detail="openVersionSettingsFor"
-      />
+      <div :class="['home-simple', { 'home-simple--default': mode === 'default' }]">
+        <!-- 默认模式：启动区 / 列表区 / 小组件区 -->
+        <DefaultHome
+          v-if="mode === 'default' && !loading"
+          class="home-default home-page__content"
+          :versions="versions"
+          :selected-name="selectedName"
+          :session="session"
+          :launching="launching"
+          :running="running"
+          :stopping="stopping"
+          :welcome="welcome"
+          :client-mode="clientMode"
+          :clients="clients"
+          :selected-client-id="selectedClientId"
+          :reinjecting="clientInjecting"
+          :reinject-visible="clientReinjectVisible"
+          @select="selectedName = $event"
+          @select-client="chooseClient"
+          @launch="launchNamed"
+          @stop="stopNamed"
+          @reinject="reinjectClient"
+          @detail="openVersionSettingsFor"
+        />
 
-      <div v-else class="home-simple__center">
-        <template v-if="loading">
-          <CoSkeleton variant="home" :rows="3" :label="t('common.loading')" />
-          <!-- 版本清单扫描期间展示内核随机提示，避免空白等待 -->
-          <TipsRotator compact />
-        </template>
+        <div v-else class="home-simple__center">
+          <template v-if="loading">
+            <CoSkeleton variant="home" :rows="3" :label="t('common.loading')" />
+            <!-- 版本清单扫描期间展示内核随机提示，避免空白等待 -->
+            <TipsRotator compact />
+          </template>
 
-        <template v-else-if="!current">
-          <h1 class="home-simple__welcome">{{ welcome }}</h1>
-          <p class="home-simple__empty">{{ t("module.home.empty") }}</p>
-          <p class="home-simple__hint">{{ t("module.home.install_hint") }}</p>
-          <CoButton variant="primary" size="md" @click="goDownload">
-            <Download :size="16" />
-            <span>{{ t("module.home.go_download") }}</span>
-          </CoButton>
-        </template>
+          <template v-else-if="!current">
+            <h1 class="home-simple__welcome">{{ welcome }}</h1>
+            <p class="home-simple__empty">{{ t("module.home.empty") }}</p>
+            <p class="home-simple__hint">{{ t("module.home.install_hint") }}</p>
+            <CoButton variant="primary" size="md" @click="goDownload">
+              <Download :size="16" />
+              <span>{{ t("module.home.go_download") }}</span>
+            </CoButton>
+          </template>
 
-        <div v-else class="home-simple__stage">
-          <h1 class="home-simple__welcome">{{ welcome }}</h1>
+          <div v-else class="home-simple__stage">
+            <h1 class="home-simple__welcome">{{ welcome }}</h1>
 
-          <!--
-            胶囊面板：整页的视觉中心。
-            左 = 实例选择（图标 + 名字，点开是圆角矩形浮层，最多同屏 5 项），
-            右 = 详情（只显示图标，标题用 tooltip 补）+ 开始游戏。
-            注意：这一支走网格舞台（不是 flex 居中）—— 只有面板本身居中，
-            欢迎语挂在面板上方，否则整组居中会让面板看起来偏下。
-          -->
-          <div :class="['home-simple__dock', { 'home-simple__dock--client': clientMode }]">
-            <!-- 客户端模式：客户端 -> 注入图标 -> 实例。两个下拉框平级，互不绑定。 -->
-            <template v-if="clientMode">
-              <div class="home-simple__dock-selects">
-                <CoInstanceSelect
-                  :model-value="selectedClientId"
-                  :options="clientOptions"
-                  :icon="PlugZap"
-                  class="home-simple__dock-select"
-                  :placeholder="t('module.home.client.client_select')"
-                  @update:model-value="chooseClient"
-                />
-                <span class="home-simple__inject" :title="t('module.home.client.inject_arrow')">
-                  <Syringe :size="15" :stroke-width="1.9" />
-                  <ArrowRight :size="13" :stroke-width="2.2" />
-                </span>
-                <CoInstanceSelect
-                  v-model="selectedName"
-                  :options="versionOptions"
-                  class="home-simple__dock-select"
-                />
+            <!--
+              胶囊面板：整页的视觉中心。
+              左 = 实例选择（图标 + 名字，点开是圆角矩形浮层，最多同屏 5 项），
+              右 = 详情（只显示图标，标题用 tooltip 补）+ 开始游戏。
+              注意：这一支走网格舞台（不是 flex 居中）—— 只有面板本身居中，
+              欢迎语挂在面板上方，否则整组居中会让面板看起来偏下。
+            -->
+            <div :class="['home-simple__dock', { 'home-simple__dock--client': clientMode }]">
+              <!-- 客户端模式：客户端 -> 注入图标 -> 实例。两个下拉框平级，互不绑定。 -->
+              <template v-if="clientMode">
+                <div class="home-simple__dock-selects">
+                  <CoInstanceSelect
+                    :model-value="selectedClientId"
+                    :options="clientOptions"
+                    :icon="PlugZap"
+                    class="home-simple__dock-select"
+                    :placeholder="t('module.home.client.client_select')"
+                    @update:model-value="chooseClient"
+                  />
+                  <span class="home-simple__inject" :title="t('module.home.client.inject_arrow')">
+                    <Syringe :size="15" :stroke-width="1.9" />
+                    <ArrowRight :size="13" :stroke-width="2.2" />
+                  </span>
+                  <CoInstanceSelect
+                    v-model="selectedName"
+                    :options="versionOptions"
+                    class="home-simple__dock-select"
+                  />
+                </div>
+              </template>
+              <CoInstanceSelect
+                v-else
+                v-model="selectedName"
+                :options="versionOptions"
+                class="home-simple__dock-select"
+              />
+
+              <div class="home-simple__dock-actions">
+                <button
+                  v-if="clientReinjectVisible"
+                  type="button"
+                  class="home-simple__reinject"
+                  :title="t('module.home.client.retry_inject')"
+                  :aria-label="t('module.home.client.retry_inject')"
+                  :disabled="clientInjecting"
+                  @click="reinjectClient"
+                >
+                  <RefreshCw :size="16" :class="{ spin: clientInjecting }" />
+                  <span>{{ t("module.home.client.retry_inject") }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="home-simple__detail"
+                  :title="t('module.home.detail')"
+                  :aria-label="t('module.home.detail')"
+                  @click="openVersionSettings"
+                >
+                  <Settings2 :size="19" />
+                </button>
+                <CoButton
+                  class="home-simple__play"
+                  :variant="running ? 'danger' : 'primary'"
+                  size="md"
+                  :disabled="launching || stopping"
+                  @click="onPrimaryClick"
+                >
+                  <CoRingProgress v-if="launching" :size="17" :stroke="2" />
+                  <Square v-else-if="running" :size="14" />
+                  <Play v-else :size="17" />
+                  <span>{{ primaryLabel }}</span>
+                </CoButton>
               </div>
-            </template>
-            <CoInstanceSelect
-              v-else
-              v-model="selectedName"
-              :options="versionOptions"
-              class="home-simple__dock-select"
-            />
-
-            <div class="home-simple__dock-actions">
-              <button
-                v-if="clientReinjectVisible"
-                type="button"
-                class="home-simple__reinject"
-                :title="t('module.home.client.retry_inject')"
-                :aria-label="t('module.home.client.retry_inject')"
-                :disabled="clientInjecting"
-                @click="reinjectClient"
-              >
-                <RefreshCw :size="16" :class="{ spin: clientInjecting }" />
-                <span>{{ t("module.home.client.retry_inject") }}</span>
-              </button>
-              <button
-                type="button"
-                class="home-simple__detail"
-                :title="t('module.home.detail')"
-                :aria-label="t('module.home.detail')"
-                @click="openVersionSettings"
-              >
-                <Settings2 :size="19" />
-              </button>
-              <CoButton
-                class="home-simple__play"
-                :variant="running ? 'danger' : 'primary'"
-                size="md"
-                :disabled="launching || stopping"
-                @click="onPrimaryClick"
-              >
-                <CoRingProgress v-if="launching" :size="17" :stroke="2" />
-                <Square v-else-if="running" :size="14" />
-                <Play v-else :size="17" />
-                <span>{{ primaryLabel }}</span>
-              </CoButton>
             </div>
-          </div>
 
-          <!-- 启动确认期间在面板下方给一条提示：这段时间可达数十秒，不能留白 -->
-          <TipsRotator v-if="launching" compact class="home-simple__tips" />
+            <!-- 启动确认期间在面板下方给一条提示：这段时间可达数十秒，不能留白 -->
+            <TipsRotator v-if="launching" compact class="home-simple__tips" />
+          </div>
         </div>
       </div>
-    </div>
-    <p v-if="current?.compatibility" role="status">{{ compatText('bound') }} · {{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
-    <footer class="home-page__mode"><CoSegmented v-model="mode" :options="modeOptions" /></footer>
+      <p v-if="current?.compatibility" role="status">{{ compatText('bound') }} · {{ compatibilityReason(current.compatibility.disabled_reason, compatText) || compatText(current.compatibility.capabilities.shared_save ? 'sharedData' : 'sharedUnavailable') }}</p>
+      <footer class="home-page__mode"><CoSegmented v-model="mode" :options="modeOptions" /></footer>
     </div>
   </CoPage>
 </template>
 
 <style scoped>
-.home-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.home-page { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .home-page__mode {
+  position: absolute;
+  right: max(var(--copper-space-4), var(--copper-safe-right));
+  bottom: max(var(--copper-space-2), var(--copper-safe-bottom));
+  z-index: 2;
   display: flex;
   justify-content: flex-end;
-  position: fixed;
-  z-index: 20;
-  right: max(var(--copper-space-3), var(--copper-safe-right));
-  bottom: max(var(--copper-space-3), var(--copper-safe-bottom));
-  flex-shrink: 0;
-  padding: 0;
 }
+
 .home-simple {
   flex: 1;
   min-height: 0;
@@ -558,7 +558,7 @@ function goDownload() {
 
 /* 加载 / 空态：整组在剩余高度里居中。 */
 .home-simple__center {
-  flex: 0 1 auto;
+  flex: 1 0 auto;
   min-height: 0;
   width: 100%;
   display: flex;
@@ -605,7 +605,7 @@ function goDownload() {
   /* 识别度：欢迎语是整页唯一的大字，过小会让页面显得空。 */
   font-size: 30px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   line-height: 1.28;
   text-align: center;
 }
@@ -763,7 +763,12 @@ function goDownload() {
   align-items: stretch;
   justify-content: flex-start;
   overflow-y: auto;
-  padding-bottom: var(--copper-space-5);
+  padding: var(--copper-space-4) 0 calc(var(--copper-space-6) + 56px + var(--copper-safe-bottom));
+}
+.home-page__content {
+  flex: 0 1 auto;
+  width: min(100%, 1440px);
+  margin: 0 auto;
 }
 
 .home-simple__placeholder {

@@ -526,6 +526,7 @@ pub fn run() {
             commands::home::home_version_rename,
             commands::home::home_version_delete,
             commands::home::home_launch,
+            commands::home::home_connect_server,
             commands::home::home_game_running,
             commands::home::home_game_kill,
             commands::home::home_launch_file_state,

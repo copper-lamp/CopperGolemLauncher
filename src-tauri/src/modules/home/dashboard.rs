@@ -38,6 +38,10 @@ pub struct DashboardEntry {
     pub version: String,
     /// 附加说明：世界用目录名，服务器用 `地址:端口`。
     pub detail: String,
+    /// 服务器主机（世界为 None）。
+    pub server_address: Option<String>,
+    /// 服务器端口（世界为 None）。
+    pub server_port: Option<u16>,
     /// 世界封面（`data:image/...;base64,...`，等于 `images` 的第一张）；服务器没有封面。
     pub image_data_url: Option<String>,
     /// 该条目可用的全部预览图（官方图标在前，其后是用户自己放进世界目录的图片）。
@@ -85,6 +89,8 @@ fn collect_worlds(worlds: &Path, version: &str, out: &mut Vec<DashboardEntry>) {
             name,
             version: version.to_string(),
             detail: folder.clone(),
+            server_address: None,
+            server_port: None,
             image_data_url: images.first().cloned(),
             images,
         });
@@ -178,6 +184,8 @@ fn collect_servers(com_mojang: &Path, version: &str, out: &mut Vec<DashboardEntr
             name: server.name,
             version: version.to_string(),
             detail: format!("{}:{}", server.address, server.port),
+            server_address: Some(server.address),
+            server_port: Some(server.port),
             image_data_url: None,
             images: Vec::new(),
         });

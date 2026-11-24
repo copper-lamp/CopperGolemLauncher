@@ -32,10 +32,12 @@ import {
 
 import { useI18n } from "../../i18n";
 import { useSettings } from "../../composables/useSettings";
+import { useToast } from "../../composables/useToast";
 import CoInstanceSelect from "../../components/ui/CoInstanceSelect.vue";
 import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import McText from "./McText.vue";
 import {
+  homeConnectServer,
   homeDashboardEntries,
   homeModsList,
   homeModsUpdates,
@@ -77,6 +79,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const router = useRouter();
 const settings = useSettings();
+const { info: showInfo, error: showError } = useToast();
 
 /** 默认模式列表里最多同时展开一张卡，展开态需要量标题宽度做 marquee。 */
 const SETTINGS_PINNED = "home.dashboard.pinned";
@@ -150,37 +153,12 @@ function previewOf(entry: DashboardEntry): string | null {
   return images[index % images.length] ?? entry.image_data_url;
 }
 
-/** 展开卡的背景图样式（没有预览图时保持纯底色）。 */
-function cardStyle(entry: DashboardEntry): Record<string, string> | undefined {
-  const image = previewOf(entry);
-  return image ? { backgroundImage: `url("${image}")` } : undefined;
-}
-
 const listEl = ref<HTMLElement | null>(null);
 const contentVisible = ref(true);
 const animatedSurface = ref("transparent");
 const heightStyle = ref<string | undefined>();
 let transitionToken = 0;
-const CONTENT_FADE_MS = 120;
-
-function averageImageColor(source: string | null): Promise<string | null> {
-  if (!source || typeof createImageBitmap !== "function") return Promise.resolve(null);
-  return fetch(source)
-    .then((response) => response.blob())
-    .then((blob) => createImageBitmap(blob))
-    .then((bitmap) => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 1;
-      canvas.height = 1;
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      if (!context) return null;
-      context.drawImage(bitmap, 0, 0, 1, 1);
-      bitmap.close();
-      const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
-      return `rgb(${red} ${green} ${blue})`;
-    })
-    .catch(() => null);
-}
+const CONTENT_FADE_MS = 60;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -202,10 +180,7 @@ async function transitionEntry(entry: DashboardEntry) {
   contentVisible.value = false;
   await wait(CONTENT_FADE_MS);
   if (token !== transitionToken) return;
-
-  const targetColor = opening ? await averageImageColor(previewOf(entry)) : "transparent";
-  if (token !== transitionToken) return;
-  animatedSurface.value = targetColor ?? "transparent";
+  animatedSurface.value = "transparent";
   expandedId.value = opening ? entry.id : null;
   await nextTick();
   const targetHeight = element.scrollHeight;
@@ -266,9 +241,9 @@ function toggleEntry(entry: DashboardEntry) {
 }
 
 const groupedEntries = computed(() => [
-  { kind: "world" as const, label: t("module.home.default.worlds"), items: sortedEntries.value.filter((entry) => entry.kind === "world") },
-  { kind: "server" as const, label: t("module.home.default.servers"), items: sortedEntries.value.filter((entry) => entry.kind === "server") },
-]);
+  { kind: "pinned" as const, label: t("module.home.default.pinned_group"), items: sortedEntries.value.filter(isPinned) },
+  { kind: "recommended" as const, label: t("module.home.default.recommended"), items: sortedEntries.value.filter((entry) => !isPinned(entry)) },
+].filter((group) => group.items.length > 0));
 
 function kindLabel(entry: DashboardEntry): string {
   return entry.kind === "world"
@@ -281,7 +256,20 @@ function detailOf(name: string) {
 }
 
 /** 展开卡点「启动」：先把实例切到该条目所属实例，再启动。 */
-function launchEntry(entry: DashboardEntry) {
+async function launchEntry(entry: DashboardEntry) {
+  if (entry.kind === "server") {
+    if (!entry.server_address || !entry.server_port) {
+      showError(t("module.home.default.server_target_missing"));
+      return;
+    }
+    try {
+      await homeConnectServer(entry.server_address, entry.server_port);
+      showInfo(t("module.home.default.server_request_sent"));
+    } catch (error) {
+      showError(String(error));
+    }
+    return;
+  }
   if (props.selectedName !== entry.version) emit("select", entry.version);
   emit("launch", entry.version);
 }
@@ -491,97 +479,100 @@ watch(
           <template v-for="group in groupedEntries" :key="group.kind">
             <section v-if="group.items.length" class="list__group">
               <h3 class="list__group-title">{{ group.label }}</h3>
-              <div v-for="entry in group.items" :key="entry.id"
-            :class="['row', { 'row--open': expandedId === entry.id }]"
-            role="button"
-            tabindex="0"
-            draggable="true"
-            @dragstart="dragEntry = entry.id"
-            @dragover.prevent
-            @drop="dropEntry(entry.id)"
-            @click="toggleEntry(entry)"
-            @keydown.enter="toggleEntry(entry)"
-          >
-            <!-- 未展开：图标 + 文本，无背景，文字向右铺满 -->
-            <template v-if="expandedId !== entry.id">
-              <span class="row__icon">
-                <!-- 有预览图就直接用图（世界几乎都有），没有时退回图标。 -->
-                <img v-if="previewOf(entry)" :src="previewOf(entry) ?? ''" alt="" />
-                <Globe2 v-else-if="entry.kind === 'server'" :size="18" :stroke-width="1.9" />
-                <Folder v-else :size="18" :stroke-width="1.9" />
-              </span>
-              <span class="row__text">
-                <span class="row__name"><McText :text="entry.name" /></span>
-                <span class="row__meta">
-                  {{ kindLabel(entry) }} · {{ entry.version }}
-                  <span v-if="isPinned(entry)" class="row__pin">· {{ t("module.home.default.pinned") }}</span>
-                </span>
-              </span>
-              <span v-if="isPinned(entry)" class="row__pin-dot" />
-            </template>
-
-            <!-- 展开：封面 + 黑体大标题 + 来源实例 + 启动 / 设置 -->
-            <template v-else>
-              <div class="card" :style="cardStyle(entry)">
-                <div class="card__shade" />
-
-                <div class="card__info">
-                  <span
-                    ref="titleEl"
-                    class="card__title"
-                    :class="{ 'card__title--marquee': titleOverflow }"
-                    :style="{ '--marquee-shift': marqueeShift }"
-                  >
-                    <span class="card__title-inner">
-                      <McText :text="entry.name" on-dark />
+              <div
+                v-for="entry in group.items"
+                :key="entry.id"
+                :class="['row', { 'row--open': expandedId === entry.id }]"
+                role="button"
+                tabindex="0"
+                draggable="true"
+                @dragstart.prevent="dragEntry = entry.id"
+                @dragover.prevent
+                @drop.stop="dropEntry(entry.id)"
+                @click="toggleEntry(entry)"
+                @keydown.enter="toggleEntry(entry)"
+              >
+                <!-- 未展开：图标 + 文本，无背景，文字向右铺满 -->
+                <template v-if="expandedId !== entry.id">
+                  <span class="row__icon">
+                    <!-- 有预览图就直接用图（世界几乎都有），没有时退回图标。 -->
+                    <img v-if="previewOf(entry)" :src="previewOf(entry) ?? ''" alt="" />
+                    <Globe2 v-else-if="entry.kind === 'server'" :size="18" :stroke-width="1.9" />
+                    <Folder v-else :size="18" :stroke-width="1.9" />
+                  </span>
+                  <span class="row__text">
+                    <span class="row__name"><McText :text="entry.name" /></span>
+                    <span class="row__meta">
+                      {{ kindLabel(entry) }} · {{ entry.version }}
+                      <span v-if="isPinned(entry)" class="row__pin">· {{ t("module.home.default.pinned") }}</span>
                     </span>
                   </span>
-                  <span class="card__source">
-                    {{ kindLabel(entry) }} · {{ entry.version }}
-                    <template v-if="entry.detail"> · {{ entry.detail }}</template>
-                  </span>
-                </div>
+                  <span v-if="isPinned(entry)" class="row__pin-dot" />
+                </template>
 
-                <div class="card__actions" @click.stop>
-                  <div class="card__menu-wrap">
-                    <button
-                      type="button"
-                      class="card__icon-btn"
-                      :title="t('module.home.default.configure')"
-                      :aria-label="t('module.home.default.configure')"
-                      @click="toggleMenu(entry)"
-                    >
-                      <Settings2 :size="17" />
-                    </button>
-                    <div v-if="menuFor === entry.id" class="card__menu">
-                      <button type="button" class="card__menu-item" @click="togglePin(entry)">
-                        {{ isPinned(entry) ? t("module.home.default.unpin") : t("module.home.default.pin") }}
-                      </button>
+                <!-- 展开：封面 + 黑体大标题 + 来源实例 + 启动 / 设置 -->
+                <template v-else>
+                  <div class="card">
+                    <img v-if="previewOf(entry)" class="card__image" :src="previewOf(entry) ?? ''" alt="" />
+                    <div class="card__shade" />
+
+                    <div class="card__info">
+                      <span
+                        ref="titleEl"
+                        class="card__title"
+                        :class="{ 'card__title--marquee': titleOverflow }"
+                        :style="{ '--marquee-shift': marqueeShift }"
+                      >
+                        <span class="card__title-inner">
+                          <McText :text="entry.name" on-dark />
+                        </span>
+                      </span>
+                      <span class="card__source">
+                        {{ kindLabel(entry) }} · {{ entry.version }}
+                        <template v-if="entry.detail"> · {{ entry.detail }}</template>
+                      </span>
+                    </div>
+
+                    <div class="card__actions" @click.stop>
+                      <div class="card__menu-wrap" @click.stop>
+                        <button
+                          type="button"
+                          class="card__icon-btn"
+                          :title="t('module.home.default.configure')"
+                          :aria-label="t('module.home.default.configure')"
+                          @click="toggleMenu(entry)"
+                        >
+                          <Settings2 :size="17" />
+                        </button>
+                        <div v-if="menuFor === entry.id" class="card__menu">
+                          <button type="button" class="card__menu-item" @click="togglePin(entry)">
+                            {{ isPinned(entry) ? t("module.home.default.unpin") : t("module.home.default.pin") }}
+                          </button>
+                          <button
+                            type="button"
+                            class="card__menu-item"
+                            :disabled="(entry.images?.length ?? 0) <= 1"
+                            :title="(entry.images?.length ?? 0) <= 1 ? t('module.home.default.preview_single') : ''"
+                            @click="cyclePreview(entry)"
+                          >
+                            {{ t("module.home.default.switch_preview") }}
+                          </button>
+                        </div>
+                      </div>
+
                       <button
                         type="button"
-                        class="card__menu-item"
-                        :disabled="(entry.images?.length ?? 0) <= 1"
-                        :title="(entry.images?.length ?? 0) <= 1 ? t('module.home.default.preview_single') : ''"
-                        @click="cyclePreview(entry)"
+                        class="card__play"
+                        :disabled="launching || stopping"
+                        @click.stop="launchEntry(entry)"
                       >
-                        {{ t("module.home.default.switch_preview") }}
+                        <LoaderCircle v-if="launching" :size="16" class="spin" />
+                        <Play v-else :size="15" />
+                        <span>{{ t("module.home.default.play") }}</span>
                       </button>
                     </div>
                   </div>
-
-                  <button
-                    type="button"
-                    class="card__play"
-                    :disabled="launching || stopping"
-                    @click="launchEntry(entry)"
-                  >
-                    <LoaderCircle v-if="launching" :size="16" class="spin" />
-                    <Play v-else :size="15" />
-                    <span>{{ t("module.home.default.play") }}</span>
-                  </button>
-                </div>
-              </div>
-            </template>
+                </template>
               </div>
             </section>
           </template>
@@ -590,7 +581,7 @@ watch(
     </div>
 
     <!-- 小组件区：本轮只落地模组管理 -->
-    <aside class="dash__widgets">
+    <aside v-if="modsLoading || modsError || mods.length" class="dash__widgets">
       <section class="widget">
         <header class="widget__head">
           <h3 class="widget__title">{{ t("module.home.widget.mods.title") }}</h3>
@@ -820,8 +811,8 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: none;
   border-radius: var(--copper-radius-sm);
   background: transparent;
@@ -965,13 +956,25 @@ watch(
 /* 展开卡：封面铺满，底部渐变压住标题。 */
 .card {
   position: relative;
-  height: 240px;
+  width: min(100%, 960px);
+  aspect-ratio: 16 / 7;
+  max-height: 320px;
+  min-height: 180px;
+  margin-inline: auto;
   border-radius: var(--copper-radius-card);
   background-color: var(--copper-surface-2);
-  background-position: center;
-  background-size: cover;
   overflow: hidden;
   box-shadow: var(--copper-shadow-card);
+}
+
+.card__image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #808080;
+  filter: grayscale(1);
 }
 
 .card__shade {
@@ -1014,7 +1017,17 @@ watch(
 }
 
 .card__title--marquee .card__title-inner {
-  animation: marquee 9s ease-in-out infinite alternate;
+  animation: marquee 6s ease-in-out infinite alternate;
+}
+
+:global([data-motion="reduced"]) .card__title--marquee .card__title-inner {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card__title--marquee .card__title-inner {
+    animation: none;
+  }
 }
 
 @keyframes marquee {
@@ -1306,6 +1319,12 @@ watch(
 @container (max-width: 760px) {
   .dash {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .card {
+    aspect-ratio: 16 / 9;
+    min-height: 0;
+    max-height: 280px;
   }
 
   .card__info {

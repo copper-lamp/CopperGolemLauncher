@@ -18,6 +18,7 @@ let initialized = false;
 const durations = {
   "component-enter": 180, "component-exit": 120, "component-press": 80,
   "page-enter": 220, "page-exit": 140, "loading-enter": 160, "loading-exit": 120,
+  "dropdown-expand": 240, "dropdown-collapse": 170,
 } as const;
 
 /** 动画预设：以「流畅」为 1 倍基准。快速更快，丝滑更缓（见设置 → 个性化）。 */

@@ -84,8 +84,23 @@ pub fn find_pid_at_path(_exe_path: &std::path::Path) -> Option<u32> {
 pub enum LaunchOutcome {
     /// 直接启动了游戏进程。
     Spawned,
-    /// 通过 `minecraft://` 协议唤起（AppX 注册版本）。
+    /// 通过 `minecraft://` 协议唤起；不代表已建立服务器连接。
     Protocol,
+}
+
+/// Build the documented Bedrock direct-connect URI.
+///
+/// This is intentionally separate from `launch_game`: protocol activation cannot
+/// carry Copper's process handle or isolation environment.
+pub fn server_connect_uri(address: &str, port: u16) -> Result<String, KernelError> {
+    let address = address.trim();
+    if address.is_empty() || address.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(KernelError::InvalidArgument("服务器地址无效".into()));
+    }
+    if address.contains(['?', '#', '&', '=']) {
+        return Err(KernelError::InvalidArgument("服务器地址包含非法字符".into()));
+    }
+    Ok(format!("minecraft://connect?serverUrl={address}&serverPort={port}"))
 }
 
 /// 校验启动名并解析版本目录（复用 meta 的防逃逸逻辑）。
@@ -469,6 +484,23 @@ pub fn launch_game(
 
     monitor_after_launch(ctx, name, dir, pid);
     Ok(LaunchOutcome::Spawned)
+}
+
+#[cfg(test)]
+mod server_connect_tests {
+    use super::server_connect_uri;
+
+    #[test]
+    fn builds_documented_uri() {
+        assert_eq!(server_connect_uri("play.example.com", 19132).unwrap(), "minecraft://connect?serverUrl=play.example.com&serverPort=19132");
+    }
+
+    #[test]
+    fn rejects_injection_and_empty_address() {
+        assert!(server_connect_uri("", 19132).is_err());
+        assert!(server_connect_uri("play.example.com&evil", 19132).is_err());
+        assert!(server_connect_uri("play example.com", 19132).is_err());
+    }
 }
 
 fn launch_compatibility(ctx:&LaunchCtx,name:&str,dir:&std::path::Path,meta:&VersionMeta)->Result<LaunchOutcome,KernelError>{

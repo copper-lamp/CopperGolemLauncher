@@ -21,6 +21,8 @@
     "worlds": "Worlds",
     "server": "Server",
     "servers": "Servers",
+    "pinned_group": "Pinned",
+    "recommended": "Recommended",
     "drag_hint": "Drag to reorder",
     "list_hint": "Click a card to expand",
     "rescan": "Rescan",
@@ -40,7 +42,9 @@
     "unpin": "Unpin",
     "configure": "Settings",
     "switch_preview": "Switch preview",
-    "preview_single": "Only one preview image for this item"
+    "preview_single": "Only one preview image for this item",
+    "server_request_sent": "Connection request sent; Minecraft determines whether it succeeds",
+    "server_target_missing": "Server address information is incomplete"
   },
   "detail": "Details",
   "welcome": {

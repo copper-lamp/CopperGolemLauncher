@@ -90,6 +90,25 @@ pub async fn home_launch(kernel: State<'_, KernelContext>, name: String) -> Comm
     tauri::async_runtime::spawn_blocking(move ||crate::modules::home::launch::launch_game(&ctx,&name,true)).await.map_err(|e|into_command_error(KernelError::Module(e.to_string())))?.map_err(into_command_error)
 }
 
+/// 通过系统注册的 Bedrock 协议请求直接连接服务器（仅 Windows）。
+#[tauri::command]
+pub fn home_connect_server(app: tauri::AppHandle, address: String, port: u16) -> CommandResult<LaunchOutcome> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let uri = crate::modules::home::launch::server_connect_uri(&address, port)
+            .map_err(into_command_error)?;
+        app.opener().open_url(uri, None::<&str>)
+            .map_err(|e| into_command_error(KernelError::Module(format!("无法唤起 Minecraft 协议: {e}"))))?;
+        return Ok(LaunchOutcome::Protocol);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, address, port);
+        Err(into_command_error(KernelError::InvalidArgument("当前平台不支持通过 minecraft:// 直接连接服务器；仅启动实例不会连接服务器".into())))
+    }
+}
+
 /// 该版本的游戏进程是否在运行（开始页「启动 / 退出」按钮形态的依据）。
 #[tauri::command]
 pub fn home_game_running(kernel: State<'_, KernelContext>, name: String) -> CommandResult<bool> {

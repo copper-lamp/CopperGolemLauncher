@@ -15,13 +15,15 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 const props = withDefaults(
   defineProps<{
     items: Array<{ id: string; label: string; depth?: number }>;
+    /** Limit anchor lookup to the visible document panel. */
+    contentRoot?: HTMLElement | null;
     /** 滚动容器；为空时监听 window。 */
     scroller?: HTMLElement | null;
     offset?: number;
     indent?: number;
     title?: string;
   }>(),
-  { scroller: null, offset: 96, indent: 14, title: "" },
+  { scroller: null, contentRoot: null, offset: 96, indent: 14, title: "" },
 );
 
 const RAIL_X = 5;
@@ -177,7 +179,8 @@ function sync() {
 
   const tops = props.items.map((item) => {
     const node = document.getElementById(item.id);
-    return node ? node.getBoundingClientRect().top - originTop : Infinity;
+    return node && (!props.contentRoot || props.contentRoot.contains(node))
+      ? node.getBoundingClientRect().top - originTop : Infinity;
   });
   let index = -1;
   for (let i = 0; i < tops.length; i += 1) if (tops[i] <= anchor) index = i;
@@ -196,7 +199,7 @@ function sync() {
 
 function select(item: { id: string }) {
   const el = document.getElementById(item.id);
-  if (!el) return;
+  if (!el || (props.contentRoot && !props.contentRoot.contains(el))) return;
   const scroller = props.scroller;
   const top = scroller
     ? el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
@@ -223,8 +226,12 @@ function bind() {
 onMounted(() => {
   measure();
   bind();
-  resizeObserver = new ResizeObserver(measure);
+  resizeObserver = new ResizeObserver(() => {
+    measure();
+    sync();
+  });
   if (listEl.value) resizeObserver.observe(listEl.value);
+  if (props.contentRoot) resizeObserver.observe(props.contentRoot);
   void document.fonts?.ready.then(measure).catch(() => {});
 });
 
@@ -241,6 +248,16 @@ watch(
   () => {
     measure();
     bind();
+  },
+);
+
+watch(
+  () => props.contentRoot,
+  (root, previous) => {
+    if (previous) resizeObserver?.unobserve(previous);
+    if (root) resizeObserver?.observe(root);
+    measure();
+    sync();
   },
 );
 
