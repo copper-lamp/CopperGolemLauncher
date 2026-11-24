@@ -93,8 +93,39 @@ pub extern "system" fn Java_com_copperlamp_coppergolem_game_CopperGameHostBridge
     }
 }
 
+fn encode_uri_query_component(value: &str) -> String {
+    value.bytes().fold(String::new(), |mut encoded, byte| {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+        encoded
+    })
+}
+
+/// Build the Bedrock quick-connect URI without allowing query delimiters into the host.
+///
+/// The host is deliberately encoded as a query component: Android receives the same
+/// URI through `Intent.setData`, while the game remains launched from the isolated
+/// instance directory by the existing prepare activity.
+pub fn minecraft_connect_uri(address: &str, port: u16) -> Result<String, KernelError> {
+    let address = address.trim();
+    if address.is_empty() || address.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(KernelError::InvalidArgument("服务器地址无效".into()));
+    }
+    if port == 0 {
+        return Err(KernelError::InvalidArgument("服务器端口无效".into()));
+    }
+    Ok(format!(
+        "minecraft://connect/?serverUrl={}&serverPort={port}",
+        encode_uri_query_component(address)
+    ))
+}
+
 #[cfg(target_os = "android")]
-fn launch_host_prepare(instance: &str) -> Result<(), KernelError> {
+fn launch_host_prepare(instance: &str, connect_uri: Option<&str>) -> Result<(), KernelError> {
     let host = ANDROID_HOST
         .get_or_init(|| RwLock::new(None))
         .read()
@@ -105,12 +136,21 @@ fn launch_host_prepare(instance: &str) -> Result<(), KernelError> {
     let mut env = vm.attach_current_thread().map_err(|error| KernelError::Config(format!("连接 Android 游戏启动器失败: {error}")))?;
     let value = env.new_string(instance).map_err(|error| KernelError::Config(format!("创建 Android 实例名失败: {error}")))?;
     let bridge = ANDROID_BRIDGE.get().ok_or_else(|| KernelError::Config("Android 游戏启动桥尚未注册".into()))?;
-    env.call_static_method(
-        bridge,
-        "prepare",
-        "(Ljava/lang/String;)V",
-        &[JValue::Object(&value)],
-    ).map_err(|error| KernelError::Config(format!("请求 Android 启动界面失败: {error}")))?;
+    let uri = connect_uri
+        .map(|raw| env.new_string(raw))
+        .transpose()
+        .map_err(|error| KernelError::Config(format!("创建 Android 服务器地址失败: {error}")))?;
+    let args = match uri.as_ref() {
+        Some(uri) => vec![JValue::Object(&value), JValue::Object(uri)],
+        None => vec![JValue::Object(&value)],
+    };
+    let signature = if uri.is_some() {
+        "(Ljava/lang/String;Ljava/lang/String;)V"
+    } else {
+        "(Ljava/lang/String;)V"
+    };
+    env.call_static_method(bridge, "prepare", signature, &args)
+        .map_err(|error| KernelError::Config(format!("请求 Android 启动界面失败: {error}")))?;
     Ok(())
 }
 
@@ -126,6 +166,16 @@ pub fn request_prepare(
     package_name: &str,
     version_name: &str,
 ) -> Result<(), KernelError> {
+    request_prepare_with_connect(events, instance, package_name, version_name, None)
+}
+
+pub fn request_prepare_with_connect(
+    events: &EventBus,
+    instance: &str,
+    package_name: &str,
+    version_name: &str,
+    connect: Option<(&str, u16)>,
+) -> Result<(), KernelError> {
     if instance.is_empty() || package_name.is_empty() {
         return Err(KernelError::InvalidArgument("Android 游戏启动参数为空".into()));
     }
@@ -134,8 +184,11 @@ pub fn request_prepare(
             "Android 实例缺少版本号，无法确定原生库加载顺序".into(),
         ));
     }
+    let connect_uri = connect
+        .map(|(address, port)| minecraft_connect_uri(address, port))
+        .transpose()?;
     #[cfg(target_os = "android")]
-    launch_host_prepare(instance)?;
+    launch_host_prepare(instance, connect_uri.as_deref())?;
 
     events.publish(
         PREPARE_EVENT,
@@ -143,6 +196,7 @@ pub fn request_prepare(
             "instance_name": instance,
             "package_name": package_name,
             "version_name": version_name,
+            "connect_uri": connect_uri,
         }),
     );
     Ok(())
@@ -238,6 +292,20 @@ fn take_json<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minecraft_connect_uri_encodes_host_and_rejects_invalid_input() {
+        assert_eq!(
+            minecraft_connect_uri("play.example.com", 19132).unwrap(),
+            "minecraft://connect/?serverUrl=play.example.com&serverPort=19132"
+        );
+        assert_eq!(
+            minecraft_connect_uri("2001:db8::1", 19132).unwrap(),
+            "minecraft://connect/?serverUrl=2001%3Adb8%3A%3A1&serverPort=19132"
+        );
+        assert!(minecraft_connect_uri("play example.com", 19132).is_err());
+        assert!(minecraft_connect_uri("play.example.com", 0).is_err());
+    }
 
     #[test]
     fn rejects_empty_prepare_request() {

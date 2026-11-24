@@ -38,6 +38,7 @@ import CoSkeleton from "../../components/ui/CoSkeleton.vue";
 import McText from "./McText.vue";
 import {
   homeConnectServer,
+  homeLaunchWorld,
   homeDashboardEntries,
   homeModsList,
   homeModsUpdates,
@@ -48,6 +49,7 @@ import {
 } from "../../api/home";
 import { onModsChanged } from "../../events";
 import { motionEnabled } from "../../composables/useVisualPreferences";
+import { usePlatform } from "../../composables/usePlatform";
 import type { GameSessionState } from "../../composables/useGameSession";
 
 const props = defineProps<{
@@ -80,6 +82,7 @@ const { t } = useI18n();
 const router = useRouter();
 const settings = useSettings();
 const { info: showInfo, error: showError } = useToast();
+const { isAndroid } = usePlatform();
 
 /** 默认模式列表里最多同时展开一张卡，展开态需要量标题宽度做 marquee。 */
 const SETTINGS_PINNED = "home.dashboard.pinned";
@@ -263,8 +266,19 @@ async function launchEntry(entry: DashboardEntry) {
       return;
     }
     try {
-      await homeConnectServer(entry.server_address, entry.server_port);
-      showInfo(t("module.home.default.server_request_sent"));
+      await homeConnectServer(entry.version, entry.server_address, entry.server_port);
+      showInfo(t(isAndroid.value
+        ? "module.home.default.server_started_android"
+        : "module.home.default.server_started_windows", { instance: entry.version }));
+    } catch (error) {
+      showError(String(error));
+    }
+    return;
+  }
+  if (entry.detail) {
+    try {
+      await homeLaunchWorld(entry.version, entry.detail);
+      showInfo(t("module.home.default.world_request_sent"));
     } catch (error) {
       showError(String(error));
     }

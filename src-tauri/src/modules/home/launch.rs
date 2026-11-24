@@ -84,23 +84,26 @@ pub fn find_pid_at_path(_exe_path: &std::path::Path) -> Option<u32> {
 pub enum LaunchOutcome {
     /// 直接启动了游戏进程。
     Spawned,
-    /// 通过 `minecraft://` 协议唤起；不代表已建立服务器连接。
-    Protocol,
 }
 
-/// Build the documented Bedrock direct-connect URI.
-///
-/// This is intentionally separate from `launch_game`: protocol activation cannot
-/// carry Copper's process handle or isolation environment.
-pub fn server_connect_uri(address: &str, port: u16) -> Result<String, KernelError> {
+#[derive(Debug, Clone)]
+pub enum QuickPlayTarget {
+    Singleplayer(String),
+    Multiplayer(String),
+}
+
+/// 组装 Bedrock GDK 的服务器快速进入目标，供隔离启动参数使用。
+pub fn quick_play_server_target(address: &str, port: u16) -> Result<String, KernelError> {
     let address = address.trim();
     if address.is_empty() || address.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err(KernelError::InvalidArgument("服务器地址无效".into()));
     }
-    if address.contains(['?', '#', '&', '=']) {
-        return Err(KernelError::InvalidArgument("服务器地址包含非法字符".into()));
-    }
-    Ok(format!("minecraft://connect?serverUrl={address}&serverPort={port}"))
+    let target = if address.contains(':') && !address.starts_with('[') {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
+    };
+    Ok(target)
 }
 
 /// 校验启动名并解析版本目录（复用 meta 的防逃逸逻辑）。
@@ -322,6 +325,15 @@ pub fn launch_game(
     name: &str,
     check_running: bool,
 ) -> Result<LaunchOutcome, KernelError> {
+    launch_game_with_quick_play(ctx, name, check_running, None)
+}
+
+pub fn launch_game_with_quick_play(
+    ctx: &LaunchCtx,
+    name: &str,
+    check_running: bool,
+    quick_play: Option<QuickPlayTarget>,
+) -> Result<LaunchOutcome, KernelError> {
     let dir = resolve_launch_dir(&ctx.paths, &ctx.settings, name)?;
     let mut meta = VersionMeta::read(&dir)
         .ok_or_else(|| KernelError::InvalidArgument(format!("版本 `{name}` 元数据缺失")))?;
@@ -333,9 +345,14 @@ pub fn launch_game(
     }
     #[cfg(target_os = "android")]
     if let Some(android) = meta.android.as_ref() {
-        return launch_android(ctx, name, &dir, android);
+        return launch_android(ctx, name, &dir, android, quick_play.as_ref());
     }
-    if super::compatibility::is_bound(&dir) { return launch_compatibility(ctx, name, &dir, &meta); }
+    if super::compatibility::is_bound(&dir) {
+        if quick_play.is_some() {
+            return Err(KernelError::InvalidArgument("兼容绑定实例不支持快速进入参数".into()));
+        }
+        return launch_compatibility(ctx, name, &dir, &meta);
+    }
     let exe = game_exe_path(&dir);
     if !exe.is_file() {
         return Err(KernelError::InvalidArgument(format!(
@@ -353,6 +370,9 @@ pub fn launch_game(
     // 也不切控制台子系统：包必须纯 AppContainer 注册（全信任清单会让游戏启动即崩），
     // 隔离由包状态子目录的连接点承担（见 `home::uwp_launch`）。
     if meta.is_uwp() {
+        if quick_play.is_some() {
+            return Err(KernelError::InvalidArgument("UWP 实例没有快速进入参数通道，请切换到 GDK 实例".into()));
+        }
         if meta.mode.as_deref() == Some("client") {
             return Err(KernelError::InvalidArgument(
                 "客户端模式不支持 UWP 实例；请切换到 GDK 实例或关闭客户端模式".into(),
@@ -456,6 +476,22 @@ pub fn launch_game(
         .get_or::<String>("launch.env_vars", String::new());
     let mut args = parse_launch_args(&global_args);
     args.extend(launch_args(&meta, name));
+    if let Some(target) = quick_play {
+        match target {
+            QuickPlayTarget::Singleplayer(world) => {
+                if world.trim().is_empty() || world.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                    return Err(KernelError::InvalidArgument("世界目录名无效".into()));
+                }
+                args.extend(["-quickPlaySingleplayer".into(), world]);
+            }
+            QuickPlayTarget::Multiplayer(server) => {
+                if server.trim().is_empty() || server.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                    return Err(KernelError::InvalidArgument("服务器目标无效".into()));
+                }
+                args.extend(["-quickPlayMultiplayer".into(), server]);
+            }
+        }
+    }
     let mut env = user_env(&global_env);
     env = merge_env(env, user_env(&meta.env_vars));
     env = merge_env(env, hook_env(&dir, &meta));
@@ -487,19 +523,19 @@ pub fn launch_game(
 }
 
 #[cfg(test)]
-mod server_connect_tests {
-    use super::server_connect_uri;
+mod quick_play_tests {
+    use super::quick_play_server_target;
 
     #[test]
-    fn builds_documented_uri() {
-        assert_eq!(server_connect_uri("play.example.com", 19132).unwrap(), "minecraft://connect?serverUrl=play.example.com&serverPort=19132");
+    fn builds_server_target_and_brackets_ipv6() {
+        assert_eq!(quick_play_server_target("play.example.com", 19132).unwrap(), "play.example.com:19132");
+        assert_eq!(quick_play_server_target("2001:db8::1", 19132).unwrap(), "[2001:db8::1]:19132");
     }
 
     #[test]
-    fn rejects_injection_and_empty_address() {
-        assert!(server_connect_uri("", 19132).is_err());
-        assert!(server_connect_uri("play.example.com&evil", 19132).is_err());
-        assert!(server_connect_uri("play example.com", 19132).is_err());
+    fn rejects_invalid_server_address() {
+        assert!(quick_play_server_target("", 19132).is_err());
+        assert!(quick_play_server_target("play example.com", 19132).is_err());
     }
 }
 
@@ -783,7 +819,13 @@ fn monitor_after_launch(ctx: &LaunchCtx, name: &str, dir: PathBuf, launch_pid: u
 }
 
 #[cfg(target_os = "android")]
-fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &AndroidVersionMeta) -> Result<LaunchOutcome, KernelError> {
+fn launch_android(
+    ctx: &LaunchCtx,
+    name: &str,
+    dir: &std::path::Path,
+    android: &AndroidVersionMeta,
+    quick_play: Option<&QuickPlayTarget>,
+) -> Result<LaunchOutcome, KernelError> {
     let base = crate::modules::game_download::apk::base_apk_path(dir);
     if !base.is_file() {
         return Err(KernelError::InvalidArgument(format!(
@@ -791,7 +833,23 @@ fn launch_android(ctx: &LaunchCtx, name: &str, dir: &std::path::Path, android: &
             crate::modules::game_download::apk::BASE_APK
         )));
     }
-    crate::platform::android::request_prepare(&ctx.events, name, &android.package_name, android.version_name.as_str())?;
+    let connect = match quick_play {
+        Some(QuickPlayTarget::Multiplayer(target)) => {
+            let (address, port) = target.rsplit_once(':').ok_or_else(|| KernelError::InvalidArgument("服务器地址无效".into()))?;
+            Some((address.trim_matches(['[', ']']), port.parse::<u16>().map_err(|_| KernelError::InvalidArgument("服务器端口无效".into()))?))
+        }
+        Some(QuickPlayTarget::Singleplayer(_)) => {
+            return Err(KernelError::InvalidArgument("Android 仅支持服务器快速进入".into()));
+        }
+        None => None,
+    };
+    crate::platform::android::request_prepare_with_connect(
+        &ctx.events,
+        name,
+        &android.package_name,
+        android.version_name.as_str(),
+        connect,
+    )?;
     // 安卓没有进程可轮询：Java 宿主收到 prepare 请求即接管启动，
     // 因此这里直接广播 `game.launched`。退出由宿主的文件信箱回传
     // （`useAndroidGameExit`），不经过本模块的监控任务。

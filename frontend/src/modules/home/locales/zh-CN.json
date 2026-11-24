@@ -43,8 +43,10 @@
     "configure": "设置",
     "switch_preview": "切换预览图",
     "preview_single": "该条目只有一张预览图",
-    "server_request_sent": "已发出服务器连接请求，是否成功由 Minecraft 决定",
-    "server_target_missing": "服务器地址信息不完整"
+    "server_started_windows": "已通过实例 {instance} 启动，并请求进入服务器",
+    "server_started_android": "已通过实例 {instance} 启动，并请求加入服务器",
+    "server_target_missing": "服务器地址信息不完整",
+    "world_request_sent": "已按隔离启动链路发出世界启动请求"
   },
   "detail": "详情",
   "welcome": {

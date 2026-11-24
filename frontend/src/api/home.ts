@@ -174,8 +174,13 @@ export function homeLaunch(name: string): Promise<LaunchOutcome> {
 }
 
 /** Windows Bedrock protocol direct-connect request. Protocol acceptance is not connection confirmation. */
-export function homeConnectServer(address: string, port: number): Promise<LaunchOutcome> {
-  return call<LaunchOutcome>("home_connect_server", { address, port });
+export function homeConnectServer(instance: string, address: string, port: number): Promise<LaunchOutcome> {
+  return call<LaunchOutcome>("home_connect_server", { instance, address, port });
+}
+
+/** Start an isolated instance and quick-play a local world. */
+export function homeLaunchWorld(instance: string, world: string): Promise<LaunchOutcome> {
+  return call<LaunchOutcome>("home_launch_world", { instance, world });
 }
 
 /** 该版本的游戏进程是否在运行（开始页按钮形态的依据）。 */

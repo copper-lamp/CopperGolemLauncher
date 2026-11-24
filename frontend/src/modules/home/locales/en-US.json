@@ -43,8 +43,10 @@
     "configure": "Settings",
     "switch_preview": "Switch preview",
     "preview_single": "Only one preview image for this item",
-    "server_request_sent": "Connection request sent; Minecraft determines whether it succeeds",
-    "server_target_missing": "Server address information is incomplete"
+    "server_started_windows": "Started through instance {instance}; requesting entry to the server",
+    "server_started_android": "Started through instance {instance}; requesting to join the server",
+    "server_target_missing": "Server address information is incomplete",
+    "world_request_sent": "World launch request sent through the isolated launch path"
   },
   "detail": "Details",
   "welcome": {

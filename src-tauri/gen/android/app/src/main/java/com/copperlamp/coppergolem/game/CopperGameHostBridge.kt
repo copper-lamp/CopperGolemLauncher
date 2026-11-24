@@ -2,6 +2,7 @@ package com.copperlamp.coppergolem.game
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import com.copperlamp.coppergolem.MainActivity
 import java.lang.ref.WeakReference
 import java.util.concurrent.CountDownLatch
@@ -32,7 +33,10 @@ object CopperGameHostBridge {
     }
 
     @JvmStatic
-    fun prepare(instance: String) {
+    fun prepare(instance: String) = prepare(instance, null)
+
+    @JvmStatic
+    fun prepare(instance: String, connectUri: String?) {
         val host = activity.get()
             ?: throw IllegalStateException("启动器 Activity 不可用")
         if (host.isFinishing || host.isDestroyed) {
@@ -42,10 +46,10 @@ object CopperGameHostBridge {
         val completed = CountDownLatch(1)
         val launch = {
             try {
-                host.startActivity(
-                    Intent(host, CopperGamePrepareActivity::class.java)
-                        .putExtra(CopperGameInstance.EXTRA_INSTANCE, instance)
-                )
+                val launchIntent = Intent(host, CopperGamePrepareActivity::class.java)
+                    .putExtra(CopperGameInstance.EXTRA_INSTANCE, instance)
+                connectUri?.let { launchIntent.data = Uri.parse(it) }
+                host.startActivity(launchIntent)
             } catch (error: Throwable) {
                 failure.set(error)
             } finally {
