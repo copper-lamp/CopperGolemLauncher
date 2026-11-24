@@ -371,23 +371,35 @@ pub fn arke_status(kernel: &KernelContext, version: &str) -> Result<ArkeStatus, 
 /// 带上说明——不静默假装「下载目录」可用，那会让提示文案指向一个错的地方。
 fn download_only(kernel: &KernelContext, filename: &str) -> Placement {
     let name = sanitize_filename(filename);
+    let configured = kernel.settings().get_or("download.fallback_dir", String::new());
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        let dir = std::path::PathBuf::from(configured);
+        match crate::services::paths::ensure_writable_dir(&dir, "自定义下载目录") {
+            Ok(()) => return download_only_at(&dir, &name),
+            Err(e) => log::warn!("[content-download] 自定义下载目录不可写 {dir:?}: {e}，回退系统下载目录"),
+        }
+    }
     let dirs = kernel.backends().user_dirs().clone();
     match dirs.downloads_dir() {
         Some(dir) => {
-            let dest = dir.join(&name);
             if let Err(e) = crate::services::paths::ensure_writable_dir(&dir, "下载目录") {
                 log::warn!("[content-download] 下载目录不可写 {dir:?}: {e}");
                 return cache_download_only(kernel, filename);
             }
-            Placement {
-                kind: PlacementKind::DownloadOnly {
-                    dir: dir.to_string_lossy().into_owned(),
-                },
-                dir: dest.to_string_lossy().into_owned(),
-                install_kind: "download_only",
-            }
+            download_only_at(&dir, &name)
         }
         None => cache_download_only(kernel, filename),
+    }
+}
+
+fn download_only_at(dir: &std::path::Path, name: &str) -> Placement {
+    Placement {
+        kind: PlacementKind::DownloadOnly {
+            dir: dir.to_string_lossy().into_owned(),
+        },
+        dir: dir.join(name).to_string_lossy().into_owned(),
+        install_kind: "download_only",
     }
 }
 
