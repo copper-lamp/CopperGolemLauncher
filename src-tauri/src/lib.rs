@@ -411,6 +411,8 @@ pub fn run() {
             commands::storage::storage_preview,
             commands::storage::storage_apply,
             commands::storage::storage_cancel,
+            commands::storage::storage_usage,
+            commands::storage::storage_clean,
             commands::levi_preferences::levi_preferences_read,
             commands::levi_preferences::levi_preferences_select_versions,
             commands::kernel::debug_log,
