@@ -27,7 +27,6 @@ const progress = ref<{ category: string; files: number; bytes: number } | null>(
 const starting = ref(false);
 const requestError = ref<string | null>(null);
 
-let initialized = false;
 const listeners: Unlisten[] = [];
 
 /** 同一会话内短时间内重复进入设置页不重扫：刚扫完的结果仍然有效。 */
@@ -107,18 +106,25 @@ async function refreshSnapshot(): Promise<void> {
   }
 }
 
-/** 进入设置页时调用：幂等；已有新鲜结果时只做一次快照同步。 */
+/** 进入设置页时调用：并发调用合并成一次；每次进入都重新判断结果是否还新鲜。 */
+let initPromise: Promise<void> | null = null;
+
 async function init(): Promise<void> {
-  if (initialized) return;
-  initialized = true;
-  await subscribe();
-  await refreshSnapshot();
-  const current = snapshot.value;
-  const fresh =
-    current?.state === "ready" &&
-    current.finishedAt !== null &&
-    Date.now() - current.finishedAt < RESCAN_GAP_MS;
-  if (!fresh) await rescan(false);
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    await subscribe();
+    await refreshSnapshot();
+    const current = snapshot.value;
+    const fresh =
+      current?.state === "ready" &&
+      current.finishedAt !== null &&
+      Date.now() - current.finishedAt < RESCAN_GAP_MS;
+    // 上次结果已过保鲜期（或从没扫过）：只投递扫描，页面照常先渲染。
+    if (!fresh) await rescan(false);
+  })().finally(() => {
+    initPromise = null;
+  });
+  return initPromise;
 }
 
 /** 清理缓存；成功后返回实际释放字节数。 */
