@@ -239,6 +239,14 @@
         "empty": "No storage usage to show yet.",
         "error": "Storage usage could not be loaded.",
         "percent": "{percent}%",
+        "scanIdle": "Not scanned yet",
+        "scanning": "Scanning",
+        "scannedAt": "Last scanned at {time}",
+        "scanFailed": "Scan failed",
+        "scanFiles": "{count} files scanned",
+        "files": "{count} files",
+        "pendingValue": "Scanning",
+        "retry": "Rescan",
         "category": {
           "content": "Content",
           "downloads": "Download temporary files",
@@ -261,6 +269,7 @@
         "confirm_text": "Selected items will be cleaned, freeing an estimated {size}. This action cannot be undone.",
         "success": "Freed {size} of storage.",
         "empty": "There are no cleanable items right now.",
+        "scanning": "Storage usage is still being scanned. Caches can be cleaned once it finishes.",
         "not_cleanable_hint": "This category cannot be cleaned."
       }
     },

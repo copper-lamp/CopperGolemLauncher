@@ -8,6 +8,7 @@ import type { AccountInfo, LoginState } from "../api/account";
 import type { UpdateStatus } from "../api/updater";
 import type { JsonValue } from "../api/types";
 import type { ClientInjectResult } from "../api/home";
+import type { StorageCategoryScan, StorageScanSnapshot } from "../api/storage";
 
 /** 订阅取消函数。 */
 export type Unlisten = () => void;
@@ -227,3 +228,59 @@ export function onClientInjectResult(
     handler(e.payload),
   );
 }
+
+/** 存储扫描进度（后端按分类节流推送，200ms 一次）。 */
+export interface StorageScanProgress {
+  scanId: number;
+  category: string;
+  files: number;
+  bytes: number;
+}
+
+export function onStorageScanProgress(
+  handler: (payload: StorageScanProgress) => void,
+): Promise<Unlisten> {
+  return listen<StorageScanProgress>("storage-scan-progress", (e) =>
+    handler(e.payload),
+  );
+}
+
+/** 单个存储分类扫描完成（先到先显示的数据来源）。 */
+export function onStorageCategoryScanned(
+  handler: (payload: { scanId: number; category: StorageCategoryScan }) => void,
+): Promise<Unlisten> {
+  return listen<{ scanId: number; category: StorageCategoryScan }>(
+    "storage-category-scanned",
+    (e) => handler(e.payload),
+  );
+}
+
+/** 整次存储扫描完成，附最终快照。 */
+export function onStorageScanFinished(
+  handler: (payload: { scanId: number; snapshot: StorageScanSnapshot }) => void,
+): Promise<Unlisten> {
+  return listen<{ scanId: number; snapshot: StorageScanSnapshot }>(
+    "storage-scan-finished",
+    (e) => handler(e.payload),
+  );
+}
+
+/** 存储扫描整体失败。 */
+export function onStorageScanFailed(
+  handler: (payload: { scanId: number; error: string }) => void,
+): Promise<Unlisten> {
+  return listen<{ scanId: number; error: string }>("storage-scan-failed", (e) =>
+    handler(e.payload),
+  );
+}
+
+/** 存储清理完成，负载为释放字节数与各分类实际删除量。 */
+export function onStorageCleaned(
+  handler: (payload: { freedBytes: number; cleared: Record<string, number> }) => void,
+): Promise<Unlisten> {
+  return listen<{ freedBytes: number; cleared: Record<string, number> }>(
+    "storage-cleaned",
+    (e) => handler(e.payload),
+  );
+}
+

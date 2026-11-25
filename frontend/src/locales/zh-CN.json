@@ -239,6 +239,14 @@
         "empty": "暂无可统计的存储占用。",
         "error": "暂时无法读取存储用量。",
         "percent": "{percent}%",
+        "scanIdle": "尚未统计",
+        "scanning": "扫描中",
+        "scannedAt": "上次统计于 {time}",
+        "scanFailed": "扫描失败",
+        "scanFiles": "已扫描 {count} 个文件",
+        "files": "{count} 个文件",
+        "pendingValue": "统计中",
+        "retry": "重新扫描",
         "category": {
           "content": "内容",
           "downloads": "下载临时文件",
@@ -261,6 +269,7 @@
         "confirm_text": "将尝试清理所选内容，预计释放 {size}。此操作无法撤销。",
         "success": "已释放 {size} 存储空间。",
         "empty": "当前没有可清理的项目。",
+        "scanning": "正在统计存储占用，完成后即可清理缓存。",
         "not_cleanable_hint": "此类别不可清理。"
       }
     },
