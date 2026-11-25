@@ -316,6 +316,9 @@ impl HomeModule {
         }
         meta.name = new_name.to_string();
         VersionMeta::write(&new_dir, &meta)?;
+        // 目录名变了：旧名字的清单条目作废，新名字下次重扫。
+        crate::services::storage_scan::invalidate_instance(old_name);
+        crate::services::storage_scan::invalidate_instance(new_name);
         Ok(to_view(&root, meta))
     }
 
@@ -341,6 +344,7 @@ impl HomeModule {
             }
         }
         if compatibility::is_bound(&dir) { compatibility::detach(&dir)?; } else { std::fs::remove_dir_all(&dir)?; }
+        crate::services::storage_scan::invalidate_instance(name);
         kernel
             .events()
             .publish("version.removed", serde_json::json!({ "name": name }));

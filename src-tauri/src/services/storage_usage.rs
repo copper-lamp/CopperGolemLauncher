@@ -1,239 +1,479 @@
-//! Storage accounting and narrowly allowlisted cache cleanup.
+//! 存储占用核算原语：分类表、可取消的目录遍历、白名单清理。
+//!
+//! 这里只做「量」和「删」两件事，不带任何状态：
+//! 扫描编排、快照与清单缓存都在 storage_scan 里，清理入口也由它转调本模块。
+//!
+//! 遍历刻意避开两次全盘：
+//! - 分类各自遍历自己的根，不再为求 total 再扫一遍整盘；
+//! - 根路径只做一次 symlink_metadata，递归里不再逐目录 canonicalize；
+//! - 遇到重解析点（junction / symlink）直接跳过，避免跨盘重复计数与环。
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
 use crate::error::KernelError;
+
 use super::paths::Paths;
 use super::settings::SettingsService;
 
-const CATEGORY_IDS: [&str; 7] = ["content", "downloads", "loaders", "index", "logs", "game", "other"];
+/// 分类 ID 的固定顺序：先小后大，界面上先出结果的就是先扫完的。
+pub const CATEGORY_IDS: [&str; 7] = [
+    "content",
+    "downloads",
+    "loaders",
+    "index",
+    "logs",
+    "game",
+    "other",
+];
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CategoryUsage {
-    pub id: String,
-    pub bytes: u64,
+/// 允许清理的分类（缓存、临时文件、日志、索引）。
+pub const CLEANABLE_IDS: [&str; 5] = ["content", "downloads", "loaders", "index", "logs"];
+
+/// 每遍历多少条目录项检查一次取消与进度。
+const CHECK_INTERVAL: u64 = 2048;
+
+/// 一个分类的根路径定义。
+#[derive(Debug, Clone)]
+pub struct CategoryDef {
+    pub id: &'static str,
+    pub roots: Vec<PathBuf>,
     pub cleanable: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StorageUsage {
-    pub root: String,
-    pub total_bytes: u64,
-    pub categories: Vec<CategoryUsage>,
+/// 遍历控制：取消信号与进度回调（回调按目录项节奏调用，天然节流）。
+pub struct Walk<'a> {
+    pub cancel: Option<&'a AtomicBool>,
+    pub on_progress: Option<&'a dyn Fn(u64, u64)>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StorageCleanResult {
-    pub freed_bytes: u64,
-    pub usage: StorageUsage,
-}
-
-fn normalized(path: &Path) -> Result<PathBuf, KernelError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(path.canonicalize()?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = path.parent().ok_or_else(|| KernelError::InvalidArgument("存储路径无效".into()))?;
-            if parent == path { return Ok(path.to_owned()); }
-            let name = path.file_name().ok_or_else(|| KernelError::InvalidArgument("存储路径无效".into()))?;
-            Ok(normalized(parent)?.join(name))
-        }
-        Err(error) => Err(error.into()),
+impl<'a> Walk<'a> {
+    pub fn cancelled(&self) -> bool {
+        self.cancel
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .unwrap_or(false)
     }
 }
 
-fn collect_excluding(path: &Path, excluded: &[PathBuf]) -> Result<u64, KernelError> {
-    let meta = match std::fs::symlink_metadata(path) {
+impl Default for Walk<'_> {
+    fn default() -> Self {
+        Self {
+            cancel: None,
+            on_progress: None,
+        }
+    }
+}
+
+/// 遍历结果：字节数、文件数、被跳过的条目数。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WalkTotals {
+    pub bytes: u64,
+    pub files: u64,
+    pub skipped: u64,
+}
+
+/// 是否重解析点（Windows junction / symlink，Unix symlink）。
+#[cfg(windows)]
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    meta.file_type().is_symlink()
+}
+
+/// 遍历一个根，累加普通文件字节数。
+///
+/// 出错不冒泡：读不了的目录计入 skipped 继续走，扫描不能因为一个坏目录整盘失败。
+/// excludes 按路径全等排除（用来从仓库根里挖掉分类根，避免重复计数）。
+pub fn walk(root: &Path, excludes: &[PathBuf], control: &Walk) -> WalkTotals {
+    let mut totals = WalkTotals::default();
+    if excludes.iter().any(|exclude| exclude == root) {
+        return totals;
+    }
+    let meta = match std::fs::symlink_metadata(root) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return totals,
+        Err(_) => {
+            totals.skipped += 1;
+            return totals;
+        }
+    };
+    if is_reparse_point(&meta) {
+        return totals;
+    }
+    if meta.is_file() {
+        totals.bytes = meta.len();
+        totals.files = 1;
+        return totals;
+    }
+    if !meta.is_dir() {
+        return totals;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    let mut seen: u64 = 0;
+    while let Some(dir) = stack.pop() {
+        if control.cancelled() {
+            return totals;
+        }
+        let reader = match std::fs::read_dir(&dir) {
+            Ok(reader) => reader,
+            Err(_) => {
+                totals.skipped += 1;
+                continue;
+            }
+        };
+        for entry in reader {
+            seen += 1;
+            if seen % CHECK_INTERVAL == 0 {
+                if control.cancelled() {
+                    return totals;
+                }
+                if let Some(callback) = control.on_progress {
+                    callback(totals.files, totals.bytes);
+                }
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    totals.skipped += 1;
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if excludes.iter().any(|exclude| *exclude == path) {
+                continue;
+            }
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    totals.skipped += 1;
+                    continue;
+                }
+            };
+            if is_reparse_point(&meta) {
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                totals.bytes = totals.bytes.saturating_add(meta.len());
+                totals.files += 1;
+            }
+        }
+    }
+    totals
+}
+
+/// 遍历一个可能是重解析点的根：先解析到真实目录再走。
+///
+/// 实例的数据目录在 GDK / UWP 实例里常是指向 LocalState 的 junction，
+/// 直接按路径走会停在链接本身上；这里只对根做一次 canonicalize。
+pub fn walk_following_root(root: &Path, excludes: &[PathBuf], control: &Walk) -> WalkTotals {
+    match std::fs::canonicalize(root) {
+        Ok(real) => walk(&real, excludes, control),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => WalkTotals::default(),
+        Err(_) => WalkTotals {
+            bytes: 0,
+            files: 0,
+            skipped: 1,
+        },
+    }
+}
+
+/// 分类根定义（顺序即扫描顺序的前 6 个，other 由剩余部分推导）。
+pub fn categories(paths: &Paths, settings: &SettingsService) -> Vec<CategoryDef> {
+    let cache = paths.cache_dir();
+    let logs = paths.logs_dir();
+    let versions = paths.versions_root(settings);
+    let packages = paths.package_root(settings);
+    vec![
+        CategoryDef {
+            id: "content",
+            roots: vec![cache.join("content"), cache.join("global-import")],
+            cleanable: true,
+        },
+        CategoryDef {
+            id: "downloads",
+            roots: vec![
+                cache.join("game-download"),
+                cache.join("system-installers"),
+                packages,
+            ],
+            cleanable: true,
+        },
+        CategoryDef {
+            id: "loaders",
+            roots: vec![cache.join("lip")],
+            cleanable: true,
+        },
+        CategoryDef {
+            id: "index",
+            roots: vec![
+                cache.join("registry"),
+                cache.join("gdkshared"),
+                cache.join("metadata.sqlite"),
+            ],
+            cleanable: true,
+        },
+        CategoryDef {
+            id: "logs",
+            roots: vec![logs.to_path_buf()],
+            cleanable: true,
+        },
+        CategoryDef {
+            id: "game",
+            roots: vec![versions],
+            cleanable: false,
+        },
+        CategoryDef {
+            id: "other",
+            roots: Vec::new(),
+            cleanable: false,
+        },
+    ]
+}
+
+/// 需要统计全部占用时的顶层根（去重、去掉被另一个根包含的根）。
+pub fn managed_roots(paths: &Paths, settings: &SettingsService) -> Vec<PathBuf> {
+    let mut roots = vec![
+        paths.data_dir().clone(),
+        paths.cache_dir().clone(),
+        paths.versions_root(settings),
+        paths.package_root(settings),
+    ];
+    roots.sort();
+    roots.dedup();
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        if kept.iter().any(|parent| root.starts_with(parent)) {
+            continue;
+        }
+        kept.push(root);
+    }
+    kept
+}
+
+/// 分类根路径的扁平集合（供 other 排除）。
+pub fn category_roots(paths: &Paths, settings: &SettingsService) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = categories(paths, settings)
+        .into_iter()
+        .flat_map(|def| def.roots)
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// 清理结果：释放字节数与各分类实际删除的字节数。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanReport {
+    pub freed_bytes: u64,
+    pub cleared: HashMap<String, u64>,
+}
+
+/// 按分类清理白名单目录。
+///
+/// 只删 cleanable 分类，且每个目标都要通过 clear_allowlisted 的边界校验；
+/// 释放字节数直接累加每个目标实际删掉的字节数，不再前后全盘对比。
+pub fn clean(
+    paths: &Paths,
+    settings: &SettingsService,
+    requested: &[String],
+) -> Result<CleanReport, KernelError> {
+    let defs = categories(paths, settings);
+    let mut wanted: Vec<&CategoryDef> = Vec::new();
+    for id in requested {
+        let def = defs
+            .iter()
+            .find(|def| def.id == id)
+            .ok_or_else(|| KernelError::InvalidArgument(format!("未知存储分类: {id}")))?;
+        if !def.cleanable {
+            return Err(KernelError::InvalidArgument(format!("分类不可清理: {id}")));
+        }
+        if !wanted.iter().any(|item| item.id == def.id) {
+            wanted.push(def);
+        }
+    }
+
+    let data_root = paths.data_dir();
+    let mut report = CleanReport {
+        freed_bytes: 0,
+        cleared: HashMap::new(),
+    };
+    for def in wanted {
+        let mut freed = 0u64;
+        for root in &def.roots {
+            freed = freed.saturating_add(clear_allowlisted(root, &data_root, root)?);
+        }
+        report.freed_bytes = report.freed_bytes.saturating_add(freed);
+        report.cleared.insert(def.id.to_string(), freed);
+    }
+    Ok(report)
+}
+
+/// 清空一个白名单目标的内容，返回删除的字节数。
+///
+/// 这是一个破坏性入口，因此边界校验写死在这里：目标必须是调用方声明的那个路径、
+/// 不能等于数据根、也不能是数据根的祖先。
+fn clear_allowlisted(target: &Path, data_root: &Path, expected: &Path) -> Result<u64, KernelError> {
+    if target != expected {
+        return Err(KernelError::InvalidArgument(format!(
+            "清理目标与白名单不一致: {}",
+            target.display()
+        )));
+    }
+    if target == data_root {
+        return Err(KernelError::InvalidArgument("拒绝清理数据根目录".into()));
+    }
+    if data_root.starts_with(target) {
+        return Err(KernelError::InvalidArgument(
+            "拒绝清理包含数据根的目录".into(),
+        ));
+    }
+
+    let meta = match std::fs::symlink_metadata(target) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error.into()),
     };
-    if meta.file_type().is_symlink() { return Ok(0); }
-    let canonical = path.canonicalize()?;
-    if excluded.iter().any(|excluded| canonical == *excluded) { return Ok(0); }
-    if meta.is_file() { return Ok(meta.len()); }
-    if !meta.is_dir() { return Ok(0); }
-    let mut total = 0u64;
-    for entry in std::fs::read_dir(path)? {
-        total = total.saturating_add(collect_excluding(&entry?.path(), excluded)?);
+    if is_reparse_point(&meta) {
+        return Err(KernelError::InvalidArgument(format!(
+            "拒绝清理重解析点: {}",
+            target.display()
+        )));
     }
-    Ok(total)
-}
-
-fn category_paths(paths: &Paths, settings: &SettingsService) -> Vec<(&'static str, Vec<PathBuf>, bool)> {
-    let cache = paths.cache_dir();
-    vec![
-        ("content", vec![cache.join("content"), cache.join("global-import")], true),
-        ("downloads", vec![cache.join("game-download"), cache.join("system-installers"), paths.package_root(settings)], true),
-        ("loaders", vec![cache.join("lip")], true),
-        ("index", vec![cache.join("registry"), cache.join("gdkshared"), cache.join("metadata.sqlite")], true),
-        ("logs", vec![paths.logs_dir().clone()], true),
-        ("game", vec![paths.versions_root(settings)], false),
-        ("other", Vec::new(), false),
-    ]
-}
-
-fn unique_roots(paths: &Paths, settings: &SettingsService) -> Result<Vec<PathBuf>, KernelError> {
-    let mut roots = vec![paths.data_dir().clone(), paths.cache_dir().clone(), paths.versions_root(settings), paths.package_root(settings)];
-    for root in &mut roots { *root = normalized(root)?; }
-    roots.sort();
-    roots.dedup();
-    Ok(roots)
-}
-
-fn total_bytes(paths: &Paths, settings: &SettingsService) -> Result<u64, KernelError> {
-    let roots = unique_roots(paths, settings)?;
-    let mut total = 0u64;
-    for (index, root) in roots.iter().enumerate() {
-        let excluded = roots[..index].iter().filter(|previous| root.starts_with(previous)).cloned().collect::<Vec<_>>();
-        total = total.saturating_add(collect_excluding(root, &excluded)?);
+    if meta.is_file() {
+        let bytes = meta.len();
+        std::fs::remove_file(target)?;
+        return Ok(bytes);
     }
-    Ok(total)
+    if !meta.is_dir() {
+        return Err(KernelError::InvalidArgument(format!(
+            "拒绝清理特殊文件: {}",
+            target.display()
+        )));
+    }
+
+    let bytes = walk(target, &[], &Walk::default()).bytes;
+    remove_tree_contents(target)?;
+    Ok(bytes)
 }
 
-pub fn usage(paths: &Paths, settings: &SettingsService) -> Result<StorageUsage, KernelError> {
-    let roots = unique_roots(paths, settings)?;
-    let mut categories = Vec::with_capacity(CATEGORY_IDS.len());
-    let mut categorized = 0u64;
-    for (id, category_roots, cleanable) in category_paths(paths, settings).into_iter().take(6) {
-        let mut bytes = 0u64;
-        for root in category_roots {
-            let normalized_root = normalized(&root)?;
-            let excluded = roots.iter().filter(|managed| normalized_root != **managed && managed.starts_with(&normalized_root)).cloned().collect::<Vec<_>>();
-            bytes = bytes.saturating_add(collect_excluding(&root, &excluded)?);
+/// 递归删除目录内容，但保留目录本身；遇到 symlink / 特殊文件直接拒绝，避免跟出盘外。
+fn remove_tree_contents(dir: &Path) -> Result<(), KernelError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(KernelError::InvalidArgument(format!(
+                "拒绝删除符号链接: {}",
+                path.display()
+            )));
         }
-        categorized = categorized.saturating_add(bytes);
-        categories.push(CategoryUsage { id: id.to_owned(), bytes, cleanable });
-    }
-    let total_bytes = total_bytes(paths, settings)?;
-    categories.push(CategoryUsage { id: "other".into(), bytes: total_bytes.saturating_sub(categorized), cleanable: false });
-    Ok(StorageUsage { root: paths.launcher_root().display().to_string(), total_bytes, categories })
-}
-
-fn tree_bytes(root: &Path) -> Result<u64, KernelError> { collect_excluding(root, &[]) }
-
-fn remove_tree_contents(path: &Path) -> Result<(), KernelError> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() { return Err(KernelError::InvalidArgument("清理目录中发现符号链接，已停止以保护目录边界".into())); }
-    if !meta.is_dir() { return Err(KernelError::InvalidArgument("清理目标不是目录".into())); }
-    for entry in std::fs::read_dir(path)? {
-        let child = entry?.path();
-        let child_meta = std::fs::symlink_metadata(&child)?;
-        if child_meta.file_type().is_symlink() { std::fs::remove_file(child)?; }
-        else if child_meta.is_dir() { remove_tree_contents(&child)?; std::fs::remove_dir(child)?; }
-        else if child_meta.is_file() { std::fs::remove_file(child)?; }
-        else { return Err(KernelError::InvalidArgument("清理目标包含特殊文件，已停止".into())); }
+        if file_type.is_dir() {
+            remove_tree_contents(&path)?;
+            std::fs::remove_dir(&path)?;
+        } else if file_type.is_file() {
+            std::fs::remove_file(&path)?;
+        } else {
+            return Err(KernelError::InvalidArgument(format!(
+                "拒绝删除特殊文件: {}",
+                path.display()
+            )));
+        }
     }
     Ok(())
-}
-
-fn clear_allowlisted(path: &Path, data_root: &Path, expected: &Path) -> Result<u64, KernelError> {
-    let target = normalized(path)?;
-    let data = normalized(data_root)?;
-    let expected = normalized(expected)?;
-    if target != expected || target == data || data.starts_with(&target) {
-        return Err(KernelError::InvalidArgument("拒绝清理白名单外或位于数据根之外的路径".into()));
-    }
-    if !path.exists() { return Ok(0); }
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() { return Err(KernelError::InvalidArgument("清理目标是符号链接，已拒绝".into())); }
-    if meta.is_file() {
-        let size = meta.len();
-        std::fs::remove_file(path)?;
-        return Ok(size);
-    }
-    if !meta.is_dir() { return Err(KernelError::InvalidArgument("清理目标不是普通文件或目录".into())); }
-    let size = tree_bytes(path)?;
-    remove_tree_contents(path)?;
-    Ok(size)
-}
-
-pub fn clean(paths: &Paths, settings: &SettingsService, requested: &[String]) -> Result<StorageCleanResult, KernelError> {
-    let before = usage(paths, settings)?;
-    let definitions = category_paths(paths, settings);
-    let allowed = ["content", "downloads", "loaders", "index", "logs"];
-    let data_root = paths.data_dir();
-    for id in requested {
-        if !allowed.contains(&id.as_str()) { continue; }
-        let Some((_, roots, _)) = definitions.iter().find(|(category, _, _)| *category == id) else { continue };
-        for root in roots {
-            // Targets are derived solely from the fixed category map, never from caller-supplied paths.
-            let _ = clear_allowlisted(root, data_root, root)?;
-        }
-    }
-    let current = usage(paths, settings)?;
-    let measured_freed = before.total_bytes.saturating_sub(current.total_bytes);
-    Ok(StorageCleanResult { freed_bytes: measured_freed, usage: current })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::registry::events::EventBus;
-    use crate::services::database::{DatabaseService, CORE_MIGRATIONS};
+    use crate::services::database::DatabaseService;
+    use crate::services::paths::Paths;
+    use crate::services::settings::SettingsService;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
-    fn fixture() -> (PathBuf, Paths, SettingsService) {
-        let root = std::env::temp_dir().join(format!("storage-usage-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("data")).unwrap();
-        let paths = Paths::with_root(root.clone());
-        let db = Arc::new(DatabaseService::open(paths.db_file()).unwrap());
-        db.migrate_scope("core", CORE_MIGRATIONS).unwrap();
-        let settings = SettingsService::new(db, Arc::new(EventBus::new()), std::collections::HashMap::new()).unwrap();
-        (root, paths, settings)
+    fn fixture() -> (tempfile::TempDir, Paths, SettingsService) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::with_root(temp.path().join("data"));
+        let db = DatabaseService::open(paths.db_file()).expect("db");
+        db.migrate_scope("core", crate::services::database::CORE_MIGRATIONS)
+            .expect("migrations");
+        let settings = SettingsService::new(Arc::new(db), Arc::new(EventBus::new()), HashMap::new())
+            .expect("settings");
+        (temp, paths, settings)
+    }
+
+    fn write_bytes(path: &Path, len: usize) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("parent");
+        }
+        std::fs::write(path, vec![0u8; len]).expect("write");
     }
 
     #[test]
-    fn usage_categories_follow_frontend_contract_and_game_is_protected() {
-        let (root, paths, settings) = fixture();
-        let result = usage(&paths, &settings).unwrap();
-        assert_eq!(result.root, paths.launcher_root().display().to_string());
-        assert_eq!(result.categories.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), CATEGORY_IDS);
-        assert!(!result.categories.iter().find(|item| item.id == "game").unwrap().cleanable);
-        assert!(!result.categories.iter().find(|item| item.id == "other").unwrap().cleanable);
-        drop(settings);
-        std::fs::remove_dir_all(root).unwrap();
+    fn categories_keep_stable_order() {
+        let (_temp, paths, settings) = fixture();
+        let defs = categories(&paths, &settings);
+        let ids: Vec<&str> = defs.iter().map(|def| def.id).collect();
+        assert_eq!(ids, CATEGORY_IDS.to_vec());
     }
 
     #[test]
-    fn usage_classifies_paths_and_batch_clean_returns_freed_and_latest_usage() {
-        let (root, paths, settings) = fixture();
+    fn clean_accumulates_freed_bytes_per_category() {
+        let (_temp, paths, settings) = fixture();
         let cache = paths.cache_dir();
-        std::fs::create_dir_all(cache.join("content")).unwrap();
-        std::fs::write(cache.join("content/item"), [0u8; 7]).unwrap();
-        std::fs::create_dir_all(cache.join("game-download")).unwrap();
-        std::fs::write(cache.join("game-download/item"), [0u8; 5]).unwrap();
-        std::fs::create_dir_all(paths.package_root(&settings)).unwrap();
-        std::fs::write(paths.package_root(&settings).join("pkg"), [0u8; 3]).unwrap();
-        std::fs::create_dir_all(paths.versions_dir()).unwrap();
-        std::fs::write(paths.versions_dir().join("game.bin"), [0u8; 11]).unwrap();
-        let result = usage(&paths, &settings).unwrap();
-        assert_eq!(result.categories[0].bytes, 7);
-        assert_eq!(result.categories[1].bytes, 8);
-        assert_eq!(result.categories[5].bytes, 11);
-        let cleaned = clean(&paths, &settings, &["content".into(), "game".into(), "other".into(), "unknown".into()]).unwrap();
-        assert_eq!(cleaned.freed_bytes, 7);
-        assert_eq!(cleaned.usage.categories[0].bytes, 0);
-        assert_eq!(cleaned.usage.categories[5].bytes, 11);
-        assert!(paths.versions_dir().join("game.bin").is_file());
-        drop(settings);
-        std::fs::remove_dir_all(root).unwrap();
+        write_bytes(&cache.join("content").join("a.bin"), 4096);
+        write_bytes(&cache.join("lip").join("b.bin"), 2048);
+
+        let report =
+            clean(&paths, &settings, &["content".into(), "loaders".into()]).expect("clean");
+        assert_eq!(report.freed_bytes, 6144);
+        assert_eq!(report.cleared.get("content").copied(), Some(4096));
+        assert_eq!(report.cleared.get("loaders").copied(), Some(2048));
+        assert!(!cache.join("content").join("a.bin").exists());
+
+        let again = clean(&paths, &settings, &["content".into()]).expect("idempotent");
+        assert_eq!(again.freed_bytes, 0);
     }
 
     #[test]
-    fn clean_refuses_allowlist_targets_that_escape_data_root() {
-        let (root, paths, settings) = fixture();
-        let outside = std::env::temp_dir().join(format!("storage-outside-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&outside).unwrap();
-        // Simulate a managed cache path that resolves outside the data root.
-        let expected = paths.cache_dir().join("content");
-        let result = clear_allowlisted(&outside, paths.data_dir(), &expected);
-        assert!(result.is_err());
-        drop(settings);
-        std::fs::remove_dir_all(outside).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+    fn clean_refuses_uncleanable_and_escaping_targets() {
+        let (_temp, paths, settings) = fixture();
+        let game = clean(&paths, &settings, &["game".into()]);
+        assert!(matches!(game, Err(KernelError::InvalidArgument(_))));
+        let unknown = clean(&paths, &settings, &["nope".into()]);
+        assert!(matches!(unknown, Err(KernelError::InvalidArgument(_))));
+
+        let data_root = paths.data_dir();
+        let inside = data_root.join("logs");
+        std::fs::create_dir_all(&inside).expect("logs");
+        let escaped = clear_allowlisted(&inside, &data_root, &data_root);
+        assert!(matches!(escaped, Err(KernelError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn walk_counts_files_and_skips_missing() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path();
+        write_bytes(&root.join("a").join("1.bin"), 100);
+        write_bytes(&root.join("b").join("2.bin"), 200);
+        let totals = walk(root, &[], &Walk::default());
+        assert_eq!(totals.bytes, 300);
+        assert_eq!(totals.files, 2);
+        let missing = walk(&root.join("missing"), &[], &Walk::default());
+        assert_eq!(missing.bytes, 0);
     }
 }

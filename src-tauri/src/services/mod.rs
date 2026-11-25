@@ -17,6 +17,7 @@ pub mod metadata_cache;
 mod levi_leveldb;
 pub mod levi_preferences;
 pub mod storage;
+pub mod storage_scan;
 pub mod storage_usage;
 pub mod registry;
 pub mod settings;
