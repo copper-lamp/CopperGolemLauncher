@@ -83,6 +83,7 @@
     "readme": "简介",
     "noReadme": "该内容未提供文档",
     "docUnavailable": "该文档当前不可用",
+    "docsFailed": "文档获取失败，版本列表不受影响",
     "download": "下载",
     "install": "安装",
     "lipInstall": "安装到版本",

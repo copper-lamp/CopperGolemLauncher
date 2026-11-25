@@ -36,7 +36,7 @@ import TipsRotator from "../../components/TipsRotator.vue";
 import CoPage from "../../components/layout/CoPage.vue";
 import CoSplitLayout from "../../components/layout/CoSplitLayout.vue";
 import CoBadge from "../../components/ui/CoBadge.vue";
-import CoTabs from "../../components/ui/CoTabs.vue";
+import CoTabStrip from "../../components/ui/CoTabStrip.vue";
 import {
   sourceBadgeLabel,
   sourceBadgeTone,
@@ -79,10 +79,14 @@ const settings = useSettings();
 
 const detail = ref<ContentDetail | null>(null);
 const readmeHtml = ref<string | null>(null);
+/** 只表示文档（readme 等）是否还在加载，不参与详情与版本列表的显示。 */
 const readmeLoading = ref(false);
 interface DetailDocument { key: string; label: string; html: string }
 const documents = ref<DetailDocument[]>([]);
-const activeDetailTab = ref("readme");
+/** 文档拉取失败：面板里给出重试入口，不拖垮版本列表。 */
+const docsError = ref(false);
+/** 默认落在版本页：版本列表是下载/安装入口，等文档毫无意义。 */
+const activeDetailTab = ref("versions");
 const documentPanelRef = ref<HTMLElement | null>(null);
 const documentSectionRef = ref<HTMLElement | null>(null);
 const translation = useTranslation();
@@ -338,13 +342,26 @@ function normalizeDocuments(value: unknown): DetailDocument[] {
 
 const documentItems = computed<DetailDocument[]>(() => documents.value.map((item) => item.key === "readme" ? { ...item, html: displayedReadme.value ?? item.html } : item));
 const activeDocument = computed(() => documentItems.value.find((item) => item.key === activeDetailTab.value) ?? null);
+/**
+ * 标签项：版本永远排第一，其后才是文档。
+ *
+ * 不用消息计数或文档数量做徽标：数量随加载变化会推挤文字，而标签条需要稳定。
+ */
 const documentTabItems = computed(() => [
-  { value: "readme", label: t(`${KB}.readme`) },
-  { value: "versions", label: t(`${KB}.versions`) },
-  ...documentItems.value.filter((item) => item.key !== "readme").map(({ key, label }) => ({ value: key, label })),
+  { value: "versions", label: t(`${KB}.versions`), panelId: "cd-sec-versions" },
+  ...documentItems.value.map(({ key, label }) => ({
+    value: key,
+    label: key === "readme" ? t(`${KB}.readme`) : label,
+    panelId: "cd-panel-" + key,
+  })),
 ]);
+/** 当前标签的显示名（面板 aria-label 与标题共用）。 */
+const activeTabLabel = computed(() =>
+  documentTabItems.value.find((item) => item.value === activeDetailTab.value)?.label ?? "",
+);
+// 内容切换后文档列表会重建：当前标签失效就回到默认的版本页。
 watch(documentItems, (items) => {
-  if (activeDetailTab.value !== "readme" && activeDetailTab.value !== "versions" && !items.some((item) => item.key === activeDetailTab.value)) activeDetailTab.value = "readme";
+  if (activeDetailTab.value !== "versions" && !items.some((item) => item.key === activeDetailTab.value)) activeDetailTab.value = "versions";
 }, { immediate: true });
 
 function readmeFormat(src: string): ReadmeFormat {
@@ -359,12 +376,29 @@ function readmeBaseUrl(d: ContentDetail): string | null {
 /** 详情请求序号：同一组件实例内切 id 时，丢弃过期响应。 */
 let loadSeq = 0;
 
+/** 写入文档列表：详情就绪后才可调用，渲染依赖来源格式与仓库基准地址。 */
+function applyDocuments(raw: unknown) {
+  documents.value = normalizeDocuments(raw);
+  const readme = documents.value.find((item) => item.key === "readme");
+  readmeHtml.value = readme?.html ?? null;
+}
+
+/** 版本默认展开首分支；分支下的文件总量很少时全展开，避免整页折叠。 */
+function openInitialVersions() {
+  const groups = versionTree.value;
+  if (!groups.length) return;
+  const totalFiles = groups.reduce((sum, group) => sum + group.files.length, 0);
+  expanded.value = new Set(totalFiles <= 8 ? groups.map((group) => group.branch) : [groups[0].branch]);
+}
+
 async function load() {
   const seq = ++loadSeq;
   resetTranslation();
   readmeHtml.value = null;
   documents.value = [];
-  activeDetailTab.value = "readme";
+  docsError.value = false;
+  activeDetailTab.value = "versions";
+  readmeLoading.value = true;
   loading.value = true;
   error.value = null;
   expanded.value = new Set();
@@ -373,6 +407,8 @@ async function load() {
   // 先清空面包屑末级：上一个内容的名字绝不能留在新页面上。
   detailCrumbTitle.value = "";
   const id = String(route.params.id ?? "");
+  // 文档与详情同时发起：文档再慢也只影响文档页，版本列表在详情到达后立刻渲染。
+  const documentsPromise = contentDownloadReadme(id, locale.value);
   try {
     const data = await contentDownloadDetail(id);
     if (seq !== loadSeq) return;
@@ -382,31 +418,53 @@ async function load() {
     if (data.item.source === "lip") {
       contentDownloadLipEnv().then((env) => (lipEnv.value = env)).catch(() => null);
     }
-    void loadReadme(id);
+    openInitialVersions();
   } catch (e) {
     if (seq === loadSeq) error.value = String(e);
   } finally {
     if (seq === loadSeq) loading.value = false;
   }
-}
-
-/** 拉取并渲染 readme：CF 与 lip 都支持，格式按来源区分。 */
-async function loadReadme(id: string) {
-  const seq = loadSeq;
-  readmeLoading.value = true;
+  // 详情失败时不渲染文档面板，但请求仍要收掉，避免悬挂的连接。
+  if (seq !== loadSeq) {
+    void documentsPromise.catch(() => null);
+    return;
+  }
   try {
-    const raw = await contentDownloadReadme(id, locale.value);
+    const raw = await documentsPromise;
     if (seq !== loadSeq) return;
-    documents.value = normalizeDocuments(raw);
-    const readme = documents.value.find((item) => item.key === "readme");
-    readmeHtml.value = readme?.html ?? null;
-    activeDetailTab.value = "readme";
+    applyDocuments(raw);
   } catch {
-    if (seq === loadSeq) { readmeHtml.value = null; documents.value = []; }
+    if (seq === loadSeq) {
+      readmeHtml.value = null;
+      documents.value = [];
+      docsError.value = true;
+    }
   } finally {
     if (seq === loadSeq) readmeLoading.value = false;
   }
-  // 必须等 loading 关掉之后再解析：加载态占着正文位置，此时 docRef 还是 null。
+  // 必须等加载态关掉之后再解析：加载态占着正文位置，此时 docRef 还是 null。
+  await buildToc();
+}
+
+/** 文档单独重试：失败面板上的按钮用，不动已经渲染好的详情与版本列表。 */
+async function reloadDocuments() {
+  if (!detail.value) return;
+  const seq = loadSeq;
+  readmeLoading.value = true;
+  docsError.value = false;
+  try {
+    const raw = await contentDownloadReadme(String(route.params.id ?? ""), locale.value);
+    if (seq !== loadSeq) return;
+    applyDocuments(raw);
+  } catch {
+    if (seq === loadSeq) {
+      readmeHtml.value = null;
+      documents.value = [];
+      docsError.value = true;
+    }
+  } finally {
+    if (seq === loadSeq) readmeLoading.value = false;
+  }
   await buildToc();
 }
 
@@ -624,7 +682,7 @@ onUnmounted(() => {
 <template>
   <CoPage ref="pageRef">
     <Teleport defer to="#copper-titlebar-actions">
-      <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || readmeLoading || !detail" @toggle="toggleTranslation" />
+      <TranslationAction :busy="translationBusy" :translated="showTranslation" :error="translationError" :disabled="loading || !detail" @toggle="toggleTranslation" />
     </Teleport>
     <div class="cd-detail">
       <CoSplitLayout aside-position="end">
@@ -700,14 +758,17 @@ onUnmounted(() => {
         </section>
 
         <section id="cd-sec-intro" ref="documentSectionRef" class="cd-doc-section">
-          <div v-if="readmeLoading" class="cd-doc__state">
-            <LoaderCircle :size="15" class="spin" />
-            {{ t(`${KB}.docLoading`) }}
+          <!-- 标签条常驻：详情到手即可切换，文档加载状态只影响文档面板 -->
+          <div class="cd-doc-tabs">
+            <CoTabStrip v-model="activeDetailTab" :items="documentTabItems" scrollable />
           </div>
-          <template v-else>
-            <CoTabs v-model="activeDetailTab" :items="documentTabItems" />
-            <section v-if="activeDetailTab === 'versions'" id="cd-sec-versions" class="cd-versions cd-detail-tab-panel">
-              <h2 class="cd-versions__title">{{ t(`${KB}.versions`) }}</h2>
+          <section
+            v-if="activeDetailTab === 'versions'"
+            id="cd-sec-versions"
+            class="cd-versions cd-detail-tab-panel"
+            role="tabpanel"
+            :aria-label="activeTabLabel"
+          >
               <p v-if="isLip" class="cd-doc__state">{{ t(`${KB}.installTarget`, { target: targetLabel }) }}</p>
               <p v-if="!versionTree.length" class="cd-doc__state">{{ t(`${MB_KEY}.empty`) }}</p>
               <div
@@ -749,25 +810,31 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-            </section>
-            <template v-else-if="activeDetailTab === 'readme'">
-              <h2 id="cd-sec-doc-readme" class="cd-block__title">{{ t(`${KB}.readme`) }}</h2>
-              <div v-if="activeDocument" ref="documentPanelRef" class="cd-doc-panel">
-                <div class="cd-doc" v-html="activeDocument.html" />
-              </div>
-              <p v-else class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
-            </template>
+          </section>
+          <section
+            v-else
+            :id="'cd-panel-' + activeDetailTab"
+            class="cd-doc-panel-wrap cd-detail-tab-panel"
+            role="tabpanel"
+            :aria-label="activeTabLabel"
+          >
+            <div v-if="readmeLoading" class="cd-doc__state">
+              <LoaderCircle :size="15" class="spin" />
+              {{ t(`${KB}.docLoading`) }}
+            </div>
             <template v-else-if="activeDocument">
-              <h2 :id="'cd-sec-doc-' + activeDocument.key" class="cd-block__title">{{ activeDocument.label }}</h2>
+              <h2 :id="'cd-sec-doc-' + activeDocument.key" class="cd-block__title">{{ activeTabLabel }}</h2>
               <div ref="documentPanelRef" class="cd-doc-panel">
                 <div class="cd-doc" v-html="activeDocument.html" />
               </div>
             </template>
-            <template v-else>
-              <h2 :id="'cd-sec-doc-' + activeDetailTab" class="cd-block__title">{{ documentTabItems.find(item => item.value === activeDetailTab)?.label }}</h2>
-              <p class="cd-doc__state">{{ t(`${KB}.docUnavailable`) }}</p>
+            <template v-else-if="docsError">
+              <p class="cd-doc__state">{{ t(`${KB}.docsFailed`) }}</p>
+              <button class="cd-btn" @click="reloadDocuments">{{ t(`${MB_KEY}.retry`) }}</button>
             </template>
-          </template>
+            <p v-else-if="activeDetailTab === 'readme'" class="cd-doc__state">{{ t(`${KB}.noReadme`) }}</p>
+            <p v-else class="cd-doc__state">{{ t(`${KB}.docUnavailable`) }}</p>
+          </section>
         </section>
       </template>
       <template #aside>
@@ -1316,14 +1383,10 @@ onUnmounted(() => {
 }
 
 /* ---- 版本区 ---- */
+/* 标签条已经写着「版本」，面板里不再重复标题。 */
 .cd-versions {
-  margin-top: var(--copper-space-5);
-}
-
-.cd-versions__title {
-  font-size: var(--copper-font-size-lg);
-  font-weight: 600;
-  margin-bottom: var(--copper-space-3);
+  display: grid;
+  gap: var(--copper-space-3);
 }
 
 .cd-version-card {
@@ -1331,10 +1394,9 @@ onUnmounted(() => {
   box-shadow: var(--copper-shadow-card);
   border-radius: var(--copper-radius-card);
   background: var(--copper-surface);
-  margin-bottom: var(--copper-space-3);
   overflow: hidden;
-  /* 锚点跳转落点留出与页面顶边的呼吸位。 */
-  scroll-margin-top: var(--copper-space-3);
+  /* 锚点跳转落点让开吸顶的标签条。 */
+  scroll-margin-top: 72px;
 }
 
 .cd-version-card__head {
@@ -1832,6 +1894,22 @@ onUnmounted(() => {
 /* ---------------------------------------------------------------- 介绍区（阅读栏，无卡片） */
 .cd-doc-section {
   margin-top: var(--copper-space-6);
+}
+
+/* 标签条：长文档滚动时吸顶，随时可切回版本页。
+ * 半透明 + 模糊，让正文从它下面滚过时仍然可读，不额外画整行轨道。 */
+.cd-doc-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-top: var(--copper-space-2);
+  background: color-mix(in srgb, var(--copper-bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.cd-detail-tab-panel {
+  margin-top: var(--copper-space-4);
 }
 
 .cd-doc {

@@ -83,6 +83,7 @@
     "readme": "README",
     "noReadme": "This content has no documentation",
     "docUnavailable": "This document is currently unavailable",
+    "docsFailed": "Document fetch failed; the version list is unaffected",
     "download": "Download",
     "install": "Install",
     "lipInstall": "Install to version",
