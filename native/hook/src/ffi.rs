@@ -312,6 +312,7 @@ extern "system" fn worker_main() -> u32 {
         let result = shared_gdk_ready(&plan);
         let status = match result { Ok(()) => "ready".to_owned(), Err(code) => format!("error:{code}") };
         if let Err(error) = publish_ready(&status) { log::line("ERROR", &format!("启动握手失败: {error}")); }
+        crate::client_loader::run_from_env();
         return 0;
     }
     load_preloader(&plan);
@@ -319,6 +320,7 @@ extern "system" fn worker_main() -> u32 {
     // 7) 预加载
     let manifest_path = paths::manifest_path(&plan, &env_reader());
     run_preload(&plan, &manifest_path);
+    crate::client_loader::run_from_env();
     0
 }
 

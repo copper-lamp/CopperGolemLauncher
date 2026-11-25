@@ -1,4 +1,4 @@
-//! 第三方客户端库：导入、存储、选择与注入（开始页模块内部能力）。
+//! 第三方客户端库：导入、存储、选择与 hook 清单编排（开始页模块内部能力）。
 //!
 //! # 归属
 //!
@@ -16,11 +16,9 @@
 //!
 //! # 注入时机
 //!
-//! 客户端不随游戏进程启动加载：游戏主模块与图形初始化尚未完成时，第三方客户端
-//! （Latite 等）的挂钩会找不到目标符号。启动器在游戏进程起来后等待一段延迟
-//! （每个客户端各自保存，默认 10 秒、可在「管理客户端」页调整）再通过远程线程
-//! LoadLibraryW 注入，并在注入后核对模块表；失败时开始页提供「重新注入」入口。
-//! 注入失败**不终止游戏**。
+//! 客户端由实例目录下的 `copper-clients.json` 交给 hook 加载。启动器保留每客户端
+//! 延迟设置并序列化为 `delay_ms`，hook 可进一步按模块就绪条件等待；启动器读取 hook
+//! 的状态文件并沿 `client.inject_result` 事件回报。手动重新注入保留远程注入实现。
 //!
 //! # 平台
 //!
@@ -32,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 #[cfg(windows)]
-use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
 use parking_lot::Mutex;
@@ -79,7 +76,91 @@ pub const MIGRATIONS: &[Migration] = &[
 pub const DEFAULT_INJECTION_DELAY_MS: u64 = 10_000;
 /// 注入延迟允许的上下界（毫秒）。
 pub const MIN_INJECTION_DELAY_MS: u64 = 1_000;
-pub const MAX_INJECTION_DELAY_MS: u64 = 120_000;
+pub const MAX_INJECTION_DELAY_MS: u64 = 600_000;
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientManifest {
+    pub version: u32,
+    pub clients: Vec<ClientManifestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientManifestEntry {
+    pub id: String,
+    pub name: String,
+    pub dll: String,
+    pub delay_ms: u64,
+    pub wait_module: Option<String>,
+    pub wait_timeout_ms: u64,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientStatusManifest {
+    pub version: u32,
+    pub clients: Vec<ClientStatusEntry>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct ClientStatusEntry {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+pub const CLIENT_STATUS_WAIT_TIMEOUT_MS: u64 = 120_000;
+
+pub fn build_manifest(plan: &ClientLaunchPlan) -> Result<ClientManifest, KernelError> {
+    let delay_ms = plan.delay_ms.min(MAX_INJECTION_DELAY_MS);
+    Ok(ClientManifest {
+        version: copper_core_hook::contract::CLIENT_MANIFEST_SCHEMA_VERSION,
+        clients: vec![ClientManifestEntry {
+            id: plan.client.id.clone(),
+            name: plan.client.name.clone(),
+            dll: std::fs::canonicalize(&plan.dll)?.to_string_lossy().into_owned(),
+            delay_ms,
+            wait_module: None,
+            wait_timeout_ms: 0,
+            required: true,
+        }],
+    })
+}
+
+pub fn parse_status(bytes: &[u8]) -> Result<ClientStatusManifest, serde_json::Error> {
+    serde_json::from_slice(bytes)
+}
+
+#[cfg(test)]
+mod hook_client_contract_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_serializes_the_hook_v1_contract() {
+        let manifest = ClientManifest {
+            version: copper_core_hook::contract::CLIENT_MANIFEST_SCHEMA_VERSION,
+            clients: vec![ClientManifestEntry {
+                id: "client-id".into(), name: "Client".into(), dll: "C:\\\\clients\\\\client.dll".into(),
+                delay_ms: 10_000, wait_module: Some("Minecraft.Windows.exe".into()),
+                wait_timeout_ms: 60_000, required: true,
+            }],
+        };
+        let value: serde_json::Value = serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["clients"][0]["delay_ms"], 10_000);
+        assert_eq!(value["clients"][0]["wait_module"], "Minecraft.Windows.exe");
+        assert_eq!(value["clients"][0]["required"], true);
+    }
+
+    #[test]
+    fn status_parser_accepts_hook_status_file_shape() {
+        let status = parse_status(br#"{"version":1,"clients":[{"id":"client-id","status":"skipped","error":"shared_gdk"}]}"#).unwrap();
+        assert_eq!(status.version, 1);
+        assert_eq!(status.clients[0].status, "skipped");
+        assert_eq!(status.clients[0].error.as_deref(), Some("shared_gdk"));
+    }
+}
+
 
 /// 单个客户端文件的大小上限（512 MiB）。超过这个体积的 DLL 不可能是客户端。
 const MAX_CLIENT_BYTES: u64 = 512 * 1024 * 1024;
@@ -529,7 +610,6 @@ pub fn launch_plan(
     }))
 }
 
-#[cfg(windows)]
 fn next_generation(instance: &str) -> u64 {
     let mut state = runtime().lock();
     let entry = state.generation.entry(instance.to_string()).or_insert(0);
@@ -537,7 +617,6 @@ fn next_generation(instance: &str) -> u64 {
     *entry
 }
 
-#[cfg(windows)]
 fn generation_is(instance: &str, expected: u64) -> bool {
     runtime()
         .lock()
@@ -547,34 +626,33 @@ fn generation_is(instance: &str, expected: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// 启动后按客户端配置的延迟自动注入（后台线程，不阻塞启动命令）。
-#[cfg(windows)]
-pub fn schedule_injection(
-    events: Arc<EventBus>,
-    instance: String,
-    pid: u32,
-    plan: ClientLaunchPlan,
-) {
-    let generation = next_generation(&instance);
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(plan.delay_ms));
-        if !generation_is(&instance, generation) {
-            log::info!("[home/client] 实例 {instance} 的自动注入已被重新注入取代");
-            return;
-        }
-        perform_injection(events.as_ref(), &instance, pid, &plan.client, &plan.dll, "auto");
-    });
-}
 
-/// 非 Windows：没有进程注入，不排任何任务。
-#[cfg(not(windows))]
-pub fn schedule_injection(
-    _events: Arc<EventBus>,
-    _instance: String,
-    _pid: u32,
-    _plan: ClientLaunchPlan,
-) {
-    log::warn!("[home/client] 当前平台不支持客户端注入，已跳过");
+pub fn watch_status(events: &EventBus, instance: &str, client: &ClientView, path: PathBuf) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(CLIENT_STATUS_WAIT_TIMEOUT_MS);
+    let status = loop {
+        match std::fs::read(&path) {
+            Ok(bytes) => match parse_status(&bytes) {
+                Ok(manifest) if manifest.version == copper_core_hook::contract::CLIENT_MANIFEST_SCHEMA_VERSION => {
+                    if let Some(entry) = manifest.clients.iter().find(|entry| entry.id == client.id) { break Some(entry.clone()); }
+                }
+                Ok(_) => log::warn!("[home/client] 客户端状态 schema 版本不符: {}", path.display()),
+                Err(error) => log::warn!("[home/client] 客户端状态解析失败: {error}"),
+            },
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => log::warn!("[home/client] 读取客户端状态失败: {error}"),
+            _ => {}
+        }
+        if std::time::Instant::now() >= deadline { break None; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let (success, error) = match status {
+        Some(entry) if entry.status == "loaded" => (true, None),
+        Some(entry) => (false, Some(entry.error.unwrap_or_else(|| format!("hook client status: {}", entry.status)))),
+        None => (false, Some("hook client status timeout".to_string())),
+    };
+    let result = InjectResult { instance: instance.to_string(), client_id: client.id.clone(), client_name: client.name.clone(), success, error, source: "auto".to_string(), at: now_millis() };
+    events.publish("client.inject_started", serde_json::json!({"instance": instance, "client_id": client.id, "client_name": client.name, "source": "auto"}));
+    events.publish("client.inject_result", serde_json::to_value(&result).unwrap_or(serde_json::Value::Null));
+    let _ = std::fs::remove_file(path);
 }
 
 /// 手动「重新注入」：取消尚未执行的自动注入，立即注入一次。
@@ -878,7 +956,9 @@ mod tests {
 
         // 注入延迟按客户端保存，越界值被拒绝。
         assert!(set_inject_delay(&paths, &db, &events, &view.id, 500).is_err());
-        assert!(set_inject_delay(&paths, &db, &events, &view.id, 600_000).is_err());
+        assert!(set_inject_delay(&paths, &db, &events, &view.id, 600_001).is_err());
+        assert!(set_inject_delay(&paths, &db, &events, &view.id, 600_000).is_ok());
+        assert!(set_inject_delay(&paths, &db, &events, &view.id, 600_001).is_err());
         let adjusted = set_inject_delay(&paths, &db, &events, &view.id, 15_000).unwrap();
         assert_eq!(adjusted.inject_delay_ms, 15_000);
         let plan = launch_plan(&paths, &db, Some("client"), Some(&view.id))

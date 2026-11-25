@@ -33,6 +33,15 @@ pub const ENV_PRELOAD: &str = "COPPER_HOOK_PRELOAD";
 /// 版本目录下的实例元数据文件名（非本启动器启动时 DLL 的回退依据）。
 pub const VERSION_META_FILE: &str = "version.json";
 
+/// 内建客户端清单路径环境变量（绝对路径）。
+pub const ENV_CLIENTS: &str = "COPPER_HOOK_CLIENTS";
+/// 内建客户端状态文件路径环境变量（绝对路径）。
+pub const ENV_CLIENT_STATUS: &str = "COPPER_HOOK_CLIENT_STATUS";
+/// 内建客户端清单文件名（相对实例目录）。
+pub const CLIENT_MANIFEST_FILE_NAME: &str = "copper-clients.json";
+/// 内建客户端清单 schema 版本。
+pub const CLIENT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 /// 预加载清单文件名（相对版本目录）。
 pub const MANIFEST_FILE_NAME: &str = "copper-preload.json";
 /// 预加载清单 schema 版本。DLL 只接受该版本，其余一律拒绝加载并记日志 ——
@@ -90,7 +99,7 @@ mod tests {
     #[test]
     fn env_names_are_namespaced() {
         // 环境变量名是跨进程契约，改名等于静默失效；这里钉死字面量。
-        for name in [ENV_DATA_DIR, ENV_ROOT, ENV_CHANNEL, ENV_PRELOAD, ENV_TEMP] {
+        for name in [ENV_DATA_DIR, ENV_ROOT, ENV_CHANNEL, ENV_PRELOAD, ENV_TEMP, ENV_CLIENTS, ENV_CLIENT_STATUS] {
             assert!(name.starts_with("COPPER_HOOK_"), "{name} 未走统一前缀");
         }
     }

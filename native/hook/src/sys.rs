@@ -76,9 +76,6 @@ extern "system" {
     /// `DWORD GetTempPathA(DWORD nBufferLength, LPARSTR lpBuffer)`
     pub fn GetTempPathA(n_buffer_length: u32, lp_buffer: *mut u8) -> u32;
 
-    /// `HMODULE WINAPI GetModuleHandleW(LPCWSTR)`
-    pub fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
-
     /// `HMODULE WINAPI GetModuleHandleExW(DWORD, LPCWSTR, HMODULE*)`
     pub fn GetModuleHandleExW(dw_flags: u32, lp_module_name: *const u16, ph_module: *mut *mut c_void) -> i32;
 
@@ -87,6 +84,10 @@ extern "system" {
 
     /// `HMODULE WINAPI LoadLibraryExW(LPCWSTR, HANDLE, DWORD)`
     pub fn LoadLibraryExW(lp_lib_file_name: *const u16, h_file: *mut c_void, dw_flags: u32) -> *mut c_void;
+
+    /// `HMODULE WINAPI GetModuleHandleW(LPCWSTR)` (wait-module lookup).
+    pub fn GetModuleHandleW(lp_module_name: *const u16) -> *mut c_void;
+
 
     /// `FARPROC WINAPI GetProcAddress(HMODULE, LPCSTR)`
     pub fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;

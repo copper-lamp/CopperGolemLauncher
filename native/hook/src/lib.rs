@@ -44,6 +44,7 @@
 #![warn(missing_debug_implementations)]
 
 pub mod contract;
+pub mod client_loader;
 pub mod log;
 pub mod manifest;
 pub mod meta;
@@ -75,6 +76,8 @@ mod tests {
         assert_eq!(contract::ENV_ROOT, "COPPER_HOOK_ROOT");
         assert_eq!(contract::ENV_CHANNEL, "COPPER_HOOK_CHANNEL");
         assert_eq!(contract::ENV_PRELOAD, "COPPER_HOOK_PRELOAD");
+        assert_eq!(contract::ENV_CLIENTS, "COPPER_HOOK_CLIENTS");
+        assert_eq!(contract::ENV_CLIENT_STATUS, "COPPER_HOOK_CLIENT_STATUS");
         assert_eq!(contract::MANIFEST_FILE_NAME, "copper-preload.json");
         assert_eq!(contract::MANIFEST_SCHEMA_VERSION, 1);
         assert_eq!(contract::ANCHOR_EXPORT, "CopperCoreHookAnchor");

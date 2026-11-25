@@ -495,27 +495,29 @@ pub fn launch_game_with_quick_play(
     let mut env = user_env(&global_env);
     env = merge_env(env, user_env(&meta.env_vars));
     env = merge_env(env, hook_env(&dir, &meta));
+    let status_path = if let Some(plan) = &client_plan {
+        let manifest = super::client::build_manifest(plan)?;
+        let manifest_path = dir.join(copper_core_hook::contract::CLIENT_MANIFEST_FILE_NAME);
+        write_json_atomic(&manifest_path, &manifest)?;
+        let status_path = dir.join(format!("copper-client-status-{}.json", uuid::Uuid::new_v4()));
+        env.retain(|(key, _)| key != copper_core_hook::contract::ENV_CLIENTS && key != copper_core_hook::contract::ENV_CLIENT_STATUS);
+        env.push((copper_core_hook::contract::ENV_CLIENTS.to_string(), manifest_path.to_string_lossy().into_owned()));
+        env.push((copper_core_hook::contract::ENV_CLIENT_STATUS.to_string(), status_path.to_string_lossy().into_owned()));
+        Some(status_path)
+    } else { None };
 
-    // 3) 挂起启动 → 远程 LoadLibraryW → 恢复主线程。
-    //
-    //    包身份/协议激活由 AppModel 托管，拿不到进程句柄，也就无法远程注入；
-    //    这里统一走自己的 CreateProcess，exe 保持原版。
+    // hook DLL starts before the game main thread; it consumes the client manifest asynchronously.
     let console = meta.enable_console;
-    log::info!(
-        "[home/launch] 版本 `{name}` 以远程注入启动（console={console}）"
-    );
+    log::info!("[home/launch] 版本 `{name}` 启动并由 hook 管理客户端加载（console={console}）");
     let pid = spawn_game(&exe, &dir, &args, &env, &dll, true, console)?;
 
-    // 4) 客户端注入：游戏进程起来 5s 后再加载第三方 DLL（见 home::client）。
-    //    失败不终止游戏；结果经 client.inject_result 事件回传，开始页同时提供
-    //    「重新注入」按钮作为兜底。
-    if let Some(plan) = client_plan {
-        log::info!(
-            "[home/launch] 版本 `{name}` 将在启动 {}ms 后注入客户端 `{}`",
-            plan.delay_ms,
-            plan.client.name
-        );
-        super::client::schedule_injection(ctx.events.clone(), name.to_string(), pid, plan);
+    if let (Some(plan), Some(status_path)) = (client_plan, status_path) {
+        let client = plan.client;
+        let instance = name.to_string();
+        std::thread::spawn({
+            let events = ctx.events.clone();
+            move || super::client::watch_status(events.as_ref(), &instance, &client, status_path)
+        });
     }
 
     monitor_after_launch(ctx, name, dir, pid);
@@ -739,6 +741,15 @@ fn prepare_instance(
 }
 
 
+/// 将 JSON 文件通过临时文件原子替换写入。
+fn write_json_atomic(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(), KernelError> {
+    let bytes = serde_json::to_vec(value)?;
+    let temporary = path.with_extension(format!("{}.pending", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, path)?;
+    Ok(())
+}
+
 /// 交接给注入侧的环境变量。
 ///
 /// **数据根目录由启动器显式下发**（`COPPER_HOOK_DATA_DIR`）：注入侧不再自己
@@ -944,7 +955,7 @@ mod tests {
         ));
     }
 
-    /// 交接变量必须齐备且指向实例目录：少一个变量，注入侧就静默退化成不隔离。
+    /// 通用 hook 交接变量必须齐备；客户端清单变量只在客户端模式额外追加。
     #[test]
     fn hook_env_carries_the_full_handover() {
         use copper_core_hook::contract as contract;
@@ -974,7 +985,9 @@ mod tests {
             get(contract::ENV_TEMP),
             super::super::isolate::data_dir(dir, &meta).to_string_lossy()
         );
-        assert_eq!(env.len(), 5, "交接变量数量固定，多了会让交接内容漂移");
+        assert_eq!(env.len(), 5, "默认交接变量数量固定，多了会让交接内容漂移");
+        assert!(!env.iter().any(|(key, _)| key == contract::ENV_CLIENTS));
+        assert!(!env.iter().any(|(key, _)| key == contract::ENV_CLIENT_STATUS));
     }
 
     /// 纠正 `registered` 幂等，且只动这一个字段。
