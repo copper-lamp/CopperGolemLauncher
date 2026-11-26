@@ -241,36 +241,50 @@
         "percent": "{percent}%",
         "scanIdle": "Not scanned yet",
         "scanning": "Scanning",
+        "scanningCategory": "Scanning {name}",
         "scannedAt": "Last scanned at {time}",
         "scanFailed": "Scan failed",
         "scanFiles": "{count} files scanned",
         "files": "{count} files",
         "pendingValue": "Scanning",
         "retry": "Rescan",
+        "group": {
+          "cache": "Caches",
+          "temp": "Temporary files",
+          "logs": "Logs"
+        },
         "category": {
-          "content": "Content",
-          "downloads": "Download temporary files",
-          "loaders": "Loaders",
-          "index": "Indexes",
-          "logs": "Logs",
-          "game": "Game data",
-          "other": "Other"
+          "translation": "Translation cache",
+          "metadata": "Metadata cache",
+          "loaders": "Loader components",
+          "registry": "Registry cache",
+          "installers": "Installer cache",
+          "temp": "Download temporary files",
+          "logs": "Logs"
+        },
+        "hint": {
+          "translation": "Models and translated strings; re-downloaded when next needed",
+          "metadata": "Version manifests and resource indexes; refreshed online after removal",
+          "loaders": "Component packages for each loader; reinstalled on next launch",
+          "registry": "Metadata cache for mods and modpacks",
+          "installers": "Downloaded installers; must be downloaded again after removal",
+          "temp": "Leftover files from interrupted downloads and extraction; safe to delete",
+          "logs": "Runtime logs; deleting them does not affect the game"
         }
       },
       "cleanup": {
         "title": "Clean storage",
-        "back": "Back to usage",
-        "desc": "Choose cache categories to remove. Game data and other files are not cleaned.",
-        "select_all": "Select all cleanable items",
+        "back": "Back",
+        "lead": "Caches, temporary files and logs are safe to clean; game files and saves are not included.",
+        "desc": "Only caches, temporary files and logs are removed. Game files, saves and settings are kept.",
+        "select_all": "Select all",
         "selected": "{count} selected",
         "free": "Estimated space to free",
-        "confirm": "Clean selected items",
+        "confirm": "Clean selected",
         "cancel": "Cancel",
-        "confirm_text": "Selected items will be cleaned, freeing an estimated {size}. This action cannot be undone.",
-        "success": "Freed {size} of storage.",
-        "empty": "There are no cleanable items right now.",
-        "scanning": "Storage usage is still being scanned. Caches can be cleaned once it finishes.",
-        "not_cleanable_hint": "This category cannot be cleaned."
+        "confirm_text": "This removes {size} of selected caches and cannot be undone.",
+        "success": "Freed {size}.",
+        "scanning": "Counting usage in the background. Finished categories can be selected now; cleaning waits for the scan to finish."
       }
     },
     "modules": {

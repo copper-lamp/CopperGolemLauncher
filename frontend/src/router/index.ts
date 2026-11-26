@@ -22,6 +22,22 @@ const router = createRouter({
       name: "settings",
       component: () => import("../views/SettingsView.vue"),
       meta: { titleKey: "settings.title" },
+      // 储存有独立的二级页：一级页只显示用量与入口，清理在 /settings/storage/cleanup。
+      // 其余分类仍是一级页里的面板，靠 query.tab 记忆，不占用路由。
+      children: [
+        {
+          path: "storage",
+          name: "settings-storage",
+          component: () => import("../views/settings/StorageTab.vue"),
+          meta: { titleKey: "settings.tabs.storage" },
+        },
+        {
+          path: "storage/cleanup",
+          name: "settings-storage-cleanup",
+          component: () => import("../views/settings/StorageCleanupPage.vue"),
+          meta: { titleKey: "settings.storage.cleanup.title" },
+        },
+      ],
     },
   ],
 });

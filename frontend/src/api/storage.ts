@@ -26,8 +26,6 @@ export interface StorageScanSnapshot {
   totalBytes: number | null;
   files: number;
   categories: StorageCategoryScan[];
-  bodyBytes: number | null;
-  dataBytes: number | null;
   startedAt: number | null;
   finishedAt: number | null;
   error: string | null;

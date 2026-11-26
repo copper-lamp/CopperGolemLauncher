@@ -61,6 +61,19 @@
    * 它不是描边：只在深色里提亮边缘，浅色里几乎不可见。 */
   --copper-segment-thumb-ring: inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
 
+  /* 数据可视化色阶（存储用量环形图等多分类图表）。
+   * 7 个色相在深色底上保持相近的感知亮度与饱和度，任意相邻两片都能分辨；
+   * 顺序即分类固定顺序，新增分类请追加而不是插入，避免已有图表换色。
+   * --copper-chart-track 是「尚未统计」的底环，只比卡片亮一档。 */
+  --copper-chart-1: #e39a4d;
+  --copper-chart-2: #b96a1f;
+  --copper-chart-3: #4ea1e0;
+  --copper-chart-4: #57b37f;
+  --copper-chart-5: #9b7ce0;
+  --copper-chart-6: #e0705f;
+  --copper-chart-7: #3fc1b0;
+  --copper-chart-track: #262d36;
+
   /* 圆角 */
   --copper-radius-sm: 6px;
   --copper-radius-md: 10px;
@@ -224,6 +237,16 @@ html[data-theme="light"] {
     0 1px 3px rgba(31, 35, 40, 0.14),
     0 1px 1px rgba(31, 35, 40, 0.06);
   --copper-segment-thumb-ring: inset 0 0 0 0.5px rgba(31, 35, 40, 0.04);
+
+  /* 浅色下同一组色相压深、提饱和：白底会把中间调洗淡，直接复用深色值会糊成一片。 */
+  --copper-chart-1: #b96a20;
+  --copper-chart-2: #8a5a10;
+  --copper-chart-3: #2277b3;
+  --copper-chart-4: #2f8a5b;
+  --copper-chart-5: #6b4fb8;
+  --copper-chart-6: #bf4a3a;
+  --copper-chart-7: #18796d;
+  --copper-chart-track: #e9edf1;
 
   --copper-success: #1a7f37;
   --copper-warning: #9a6700;

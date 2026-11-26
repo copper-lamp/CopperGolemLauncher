@@ -140,6 +140,8 @@ const ready = computed(() => state.value === "ready");
 const failed = computed(() => state.value === "failed");
 const categories = computed<StorageCategoryScan[]>(() => snapshot.value?.categories ?? []);
 const totalBytes = computed(() => (ready.value ? (snapshot.value?.totalBytes ?? null) : null));
+/** 扫描中也保留上一轮总量：环形图用它做分母，扫盘时弧线不会忽大忽小。 */
+const snapshotTotal = computed(() => snapshot.value?.totalBytes ?? null);
 const files = computed(() => snapshot.value?.files ?? 0);
 const error = computed(() => requestError.value ?? snapshot.value?.error ?? null);
 const startedAt = computed(() => snapshot.value?.startedAt ?? null);
@@ -151,6 +153,7 @@ export function useStorageScan() {
     progress: readonly(progress),
     categories,
     totalBytes,
+    snapshotTotal,
     files,
     state,
     scanning,

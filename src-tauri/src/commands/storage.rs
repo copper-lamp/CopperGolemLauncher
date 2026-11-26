@@ -51,6 +51,7 @@ pub fn storage_scan_start(
     Ok(storage_scan::start(
         std::sync::Arc::clone(kernel.paths()),
         std::sync::Arc::clone(kernel.settings()),
+        std::sync::Arc::clone(kernel.db()),
         std::sync::Arc::clone(kernel.events()),
         force.unwrap_or(false),
     ))
@@ -68,6 +69,12 @@ pub fn storage_clean(
     kernel: State<'_, KernelContext>,
     categories: Vec<String>,
 ) -> CommandResult<CleanReport> {
-    storage_scan::clean(kernel.paths(), kernel.settings(), kernel.events(), &categories)
-        .map_err(super::into_command_error)
+    storage_scan::clean(
+        kernel.paths(),
+        kernel.settings(),
+        kernel.db(),
+        kernel.events(),
+        &categories,
+    )
+    .map_err(super::into_command_error)
 }

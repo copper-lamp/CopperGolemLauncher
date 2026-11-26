@@ -241,36 +241,50 @@
         "percent": "{percent}%",
         "scanIdle": "尚未统计",
         "scanning": "扫描中",
+        "scanningCategory": "正在统计{name}",
         "scannedAt": "上次统计于 {time}",
         "scanFailed": "扫描失败",
         "scanFiles": "已扫描 {count} 个文件",
         "files": "{count} 个文件",
         "pendingValue": "统计中",
         "retry": "重新扫描",
+        "group": {
+          "cache": "缓存",
+          "temp": "临时文件",
+          "logs": "日志"
+        },
         "category": {
-          "content": "内容",
-          "downloads": "下载临时文件",
-          "loaders": "加载器",
-          "index": "索引",
-          "logs": "日志",
-          "game": "游戏数据",
-          "other": "其他"
+          "translation": "翻译缓存",
+          "metadata": "元数据缓存",
+          "loaders": "加载器组件",
+          "registry": "注册表缓存",
+          "installers": "安装包缓存",
+          "temp": "下载临时文件",
+          "logs": "日志"
+        },
+        "hint": {
+          "translation": "模型与词条译文，删除后下次打开会重新下载",
+          "metadata": "版本清单与资源索引，删除后需要联网刷新",
+          "loaders": "各加载器的组件包，删除后首次启动会重新安装",
+          "registry": "模组与整合包的元数据缓存",
+          "installers": "已下载的安装器，删除后需要重新下载",
+          "temp": "中断的下载与解压临时文件，可安全删除",
+          "logs": "运行日志，删除不影响游戏"
         }
       },
       "cleanup": {
-        "title": "清理存储",
-        "back": "返回用量",
-        "desc": "选择要删除的缓存类别。游戏数据与其他文件不会被清理。",
-        "select_all": "选择全部可清理项",
+        "title": "清理储存",
+        "back": "返回",
+        "lead": "缓存、临时文件与日志可以安全清理；游戏本体与存档不在此处。",
+        "desc": "只清理缓存、临时文件与日志。游戏本体、存档与配置不会被删除。",
+        "select_all": "全选",
         "selected": "已选 {count} 项",
         "free": "预计释放",
-        "confirm": "清理所选项目",
+        "confirm": "清理所选",
         "cancel": "取消",
-        "confirm_text": "将尝试清理所选内容，预计释放 {size}。此操作无法撤销。",
-        "success": "已释放 {size} 存储空间。",
-        "empty": "当前没有可清理的项目。",
-        "scanning": "正在统计存储占用，完成后即可清理缓存。",
-        "not_cleanable_hint": "此类别不可清理。"
+        "confirm_text": "将删除选中的 {size} 缓存，此操作无法撤销。",
+        "success": "已释放 {size}。",
+        "scanning": "正在后台统计占用，已完成分类可以先勾选；全部统计完成后才能清理。"
       }
     },
     "modules": {

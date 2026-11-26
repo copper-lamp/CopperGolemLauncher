@@ -10,12 +10,11 @@
 // 为什么先改设置页：它是「左导航 + 右内容」最纯粹的一屏，不依赖模块数据，
 // 用它验证分栏原语的吸顶、折叠与滚动归属，风险最低。
 
-import { ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { computed } from "vue";
+import { RouterView, useRoute, useRouter } from "vue-router";
 import { SlidersHorizontal, FolderOpen, Rocket, Palette, Blocks, Info, Download, Languages, Puzzle, ShieldCheck, RefreshCw } from "@lucide/vue";
 
 import GeneralTab from "./settings/GeneralTab.vue";
-import StorageTab from "./settings/StorageTab.vue";
 import DownloadTab from "./settings/DownloadTab.vue";
 import TranslationTab from "./settings/TranslationTab.vue";
 import UpdateTab from "./settings/UpdateTab.vue";
@@ -39,6 +38,7 @@ import { usePlatform } from "../composables/usePlatform";
 const { t } = useI18n();
 const { isAndroid } = usePlatform();
 const route = useRoute();
+const router = useRouter();
 
 /** 分类导航：图标与文案一一对应，文案仍走 i18n，不写死。 */
 const tabs = [
@@ -55,12 +55,34 @@ const tabs = [
   { id: "about", titleKey: "settings.tabs.about", icon: Info },
 ] as const;
 
-const active = ref<(typeof tabs)[number]["id"]>("general");
-watch(() => route.query.tab, (value) => {
-  const requested = typeof value === "string" ? value : "";
-  if (tabs.some((tab) => tab.id === requested)) active.value = requested as (typeof tabs)[number]["id"];
-}, { immediate: true });
-function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const index=tabs.findIndex(tab=>tab.id===id);const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:['ArrowDown','ArrowRight'].includes(event.key)?(index+1)%tabs.length:['ArrowUp','ArrowLeft'].includes(event.key)?(index+tabs.length-1)%tabs.length:-1;if(next<0)return;event.preventDefault();active.value=tabs[next]!.id;const buttons=(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]');buttons?.[next]?.focus();}
+type TabId = (typeof tabs)[number]["id"];
+
+/**
+ * 二级页由路由渲染（储存位置 → 清理储存），父级只保留左侧导航。
+ * 用 matched 长度判断，新增二级页不必再改这里。
+ */
+const childPage = computed(() => route.matched.length > 1);
+
+/**
+ * 当前分类：二级页都归属 storage，其余分类由 query.tab 决定。
+ * 之前是本地 ref，切到二级页再返回会丢失分类，也记不住浏览器前进/后退。
+ */
+const active = computed<TabId>(() => {
+  if (childPage.value) return "storage";
+  const requested = typeof route.query.tab === "string" ? route.query.tab : "";
+  return tabs.some((tab) => tab.id === requested) ? (requested as TabId) : "general";
+});
+
+/**
+ * 切换分类：storage 走自己的路由，其余分类回到父路由并带上 query。
+ * general 是默认页，把 tab 从 query 里去掉，地址栏保持干净。
+ */
+function selectTab(id: TabId) {
+  if (id === "storage") void router.push({ name: "settings-storage" });
+  else void router.push({ name: "settings", query: id === "general" ? {} : { tab: id } });
+}
+
+function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const index=tabs.findIndex(tab=>tab.id===id);const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:['ArrowDown','ArrowRight'].includes(event.key)?(index+1)%tabs.length:['ArrowUp','ArrowLeft'].includes(event.key)?(index+tabs.length-1)%tabs.length:-1;if(next<0)return;event.preventDefault();selectTab(tabs[next]!.id);const buttons=(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]');buttons?.[next]?.focus();}
 </script>
 
 <template>
@@ -77,10 +99,11 @@ function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const i
           令牌会被设成 0ms，过渡自然消失，不需要在这里再判一次）。
         -->
         <Transition name="settings-swap" mode="out-in">
-          <div :key="loaded ? active : 'loading'" class="settings__panel">
+          <!-- 二级页自己负责加载（例如储存扫描），不等设置服务，避免整屏骨架拖延。 -->
+          <RouterView v-if="childPage" />
+          <div v-else :key="loaded ? active : 'loading'" class="settings__panel">
             <CoSkeleton v-if="!loaded" variant="settings" :label="t('common.loading')" />
             <GeneralTab v-else-if="active === 'general'" />
-            <StorageTab v-else-if="active === 'storage'" />
             <DownloadTab v-else-if="active === 'download'" />
             <TranslationTab v-else-if="active === 'translation'" />
             <PrivacyTab v-else-if="active === 'privacy'" />
@@ -106,7 +129,7 @@ function navigateTab(event:KeyboardEvent,id:(typeof tabs)[number]['id']){const i
             :tabindex="active === tab.id ? 0 : -1"
             @keydown="navigateTab($event,tab.id)"
             :class="['settings__nav-item', { 'settings__nav-item--active': active === tab.id }]"
-            @click="active = tab.id"
+            @click="selectTab(tab.id)"
           >
             <component :is="tab.icon" :size="15" class="settings__nav-icon" />
             <span class="settings__nav-label">{{ st(tab.id) }}</span>

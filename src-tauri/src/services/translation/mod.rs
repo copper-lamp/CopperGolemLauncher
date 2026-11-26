@@ -33,6 +33,10 @@ pub struct TranslationRequest {pub request_id:String,pub texts:Vec<String>,pub s
 pub struct TranslationResponse {pub request_id:String,pub texts:Vec<String>,pub provider:String,pub generation:u64,pub cached:bool}
 #[derive(Serialize)]
 pub struct ConnectionTest {pub provider:String,pub text:String,pub elapsed_ms:u64}
+/// 翻译缓存占用：条目数与正文字节数（存储页统计用）。
+#[derive(Clone,Debug,Default,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct CacheUsage {pub entries:u64,pub bytes:u64}
 struct Health {failures:u32,until:Instant,next_request:Instant}
 pub struct TranslationService {
     db:Arc<DatabaseService>,settings:Arc<SettingsService>,secret:SharedSecretStore,
@@ -44,7 +48,7 @@ pub struct TranslationService {
 }
 struct CancelOnDrop {cancel:Option<watch::Sender<bool>>,armed:bool}
 impl Drop for CancelOnDrop {fn drop(&mut self){if self.armed{if let Some(cancel)=&self.cancel{cancel.send_replace(true);}}}}
-const MIGRATIONS:&[Migration]=&[Migration{version:1,name:"translation_cache",sql:"CREATE TABLE IF NOT EXISTS core_translation_cache (identity TEXT PRIMARY KEY, translated TEXT NOT NULL, expires INTEGER NOT NULL, accessed INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS translation_cache_expiry ON core_translation_cache(expires);"}];
+pub(crate) const MIGRATIONS:&[Migration]=&[Migration{version:1,name:"translation_cache",sql:"CREATE TABLE IF NOT EXISTS core_translation_cache (identity TEXT PRIMARY KEY, translated TEXT NOT NULL, expires INTEGER NOT NULL, accessed INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS translation_cache_expiry ON core_translation_cache(expires);"}];
 fn now()->i64{SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64}
 fn account(id:&str)->String{format!("translation.api_key:{id}")}
 impl TranslationService {
@@ -281,4 +285,30 @@ pub fn split_text(text:&str,max:usize)->Vec<&str>{
         out.push(&rest[..end]);rest=&rest[end..];
     }
     if !rest.is_empty(){out.push(rest);}out
+}
+
+/// 翻译缓存正文占用（供存储页统计）。表还没建时按 0 处理。
+pub fn cache_usage(db:&DatabaseService)->std::result::Result<CacheUsage,KernelError>{
+    db.with_conn(|conn|{
+        if !cache_table_exists(conn)?{return Ok(CacheUsage::default());}
+        let (entries,bytes):(i64,i64)=conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(translated AS BLOB))),0) FROM core_translation_cache",
+            [],|row| Ok((row.get(0)?,row.get(1)?)))?;
+        Ok(CacheUsage{entries:entries.max(0) as u64,bytes:bytes.max(0) as u64})
+    })
+}
+/// 清空翻译缓存并返回释放的字节数；表还没建时返回 0。
+pub fn clear_cache_bytes(db:&DatabaseService)->std::result::Result<u64,KernelError>{
+    db.with_conn(|conn|{
+        if !cache_table_exists(conn)?{return Ok(0);}
+        let bytes:i64=conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(CAST(translated AS BLOB))),0) FROM core_translation_cache",
+            [],|row| row.get(0))?;
+        conn.execute("DELETE FROM core_translation_cache",[])?;
+        Ok(bytes.max(0) as u64)
+    })
+}
+fn cache_table_exists(conn:&rusqlite::Connection)->rusqlite::Result<bool>{
+    conn.query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='core_translation_cache'",[],|row| row.get::<_,i64>(0))
+        .optional().map(|found| found.is_some())
 }

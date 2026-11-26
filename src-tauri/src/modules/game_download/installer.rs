@@ -1792,8 +1792,6 @@ pub async fn run_batch(
                         target.instance
                     );
                 }
-                // 本体内容变了：下一次存储扫描不再信任清单里的旧指纹。
-                crate::services::storage_scan::invalidate_instance(&target.instance);
             }
             Err(error) => {
                 let message = error.to_string();

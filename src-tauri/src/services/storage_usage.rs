@@ -3,6 +3,10 @@
 //! 这里只做「量」和「删」两件事，不带任何状态：
 //! 扫描编排、快照与清单缓存都在 storage_scan 里，清理入口也由它转调本模块。
 //!
+//! 只统计**可清理**的东西：缓存、临时文件、日志、翻译缓存。
+//! 游戏本体与实例用户数据不属于可清理范围，因此不再出现在分类表里，
+//! 扫描也不会再走版本目录（上一版 90% 的时间花在那里）。
+//!
 //! 遍历刻意避开两次全盘：
 //! - 分类各自遍历自己的根，不再为求 total 再扫一遍整盘；
 //! - 根路径只做一次 symlink_metadata，递归里不再逐目录 canonicalize；
@@ -16,32 +20,52 @@ use serde::Serialize;
 
 use crate::error::KernelError;
 
+use super::database::DatabaseService;
 use super::paths::Paths;
 use super::settings::SettingsService;
+use super::translation;
 
 /// 分类 ID 的固定顺序：先小后大，界面上先出结果的就是先扫完的。
 pub const CATEGORY_IDS: [&str; 7] = [
-    "content",
-    "downloads",
-    "loaders",
-    "index",
+    "translation",
     "logs",
-    "game",
-    "other",
+    "metadata",
+    "loaders",
+    "registry",
+    "temp",
+    "installers",
 ];
 
-/// 允许清理的分类（缓存、临时文件、日志、索引）。
-pub const CLEANABLE_IDS: [&str; 5] = ["content", "downloads", "loaders", "index", "logs"];
+/// 允许清理的分类。当前分类表整体可清理，保留这个常量给界面与校验共用。
+pub const CLEANABLE_IDS: [&str; 7] = CATEGORY_IDS;
 
 /// 每遍历多少条目录项检查一次取消与进度。
 const CHECK_INTERVAL: u64 = 2048;
 
-/// 一个分类的根路径定义。
+/// 分类的度量方式：目录树，还是数据库里的翻译缓存表。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CategoryKind {
+    Tree,
+    Translation,
+}
+
+/// 一个分类的定义。
 #[derive(Debug, Clone)]
 pub struct CategoryDef {
     pub id: &'static str,
+    pub kind: CategoryKind,
     pub roots: Vec<PathBuf>,
     pub cleanable: bool,
+}
+
+/// 目录分类的构造器。
+fn tree(id: &'static str, roots: Vec<PathBuf>) -> CategoryDef {
+    CategoryDef {
+        id,
+        kind: CategoryKind::Tree,
+        roots,
+        cleanable: true,
+    }
 }
 
 /// 遍历控制：取消信号与进度回调（回调按目录项节奏调用，天然节流）。
@@ -73,6 +97,14 @@ pub struct WalkTotals {
     pub bytes: u64,
     pub files: u64,
     pub skipped: u64,
+}
+
+impl WalkTotals {
+    fn add(&mut self, other: WalkTotals) {
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.files = self.files.saturating_add(other.files);
+        self.skipped = self.skipped.saturating_add(other.skipped);
+    }
 }
 
 /// 是否重解析点（Windows junction / symlink，Unix symlink）。
@@ -174,8 +206,8 @@ pub fn walk(root: &Path, excludes: &[PathBuf], control: &Walk) -> WalkTotals {
 
 /// 遍历一个可能是重解析点的根：先解析到真实目录再走。
 ///
-/// 实例的数据目录在 GDK / UWP 实例里常是指向 LocalState 的 junction，
-/// 直接按路径走会停在链接本身上；这里只对根做一次 canonicalize。
+/// 清理目标本身在数据根内、由 clear_allowlisted 拦住重解析点；
+/// 这里只对根做一次 canonicalize，允许用户把缓存目录放成链接。
 pub fn walk_following_root(root: &Path, excludes: &[PathBuf], control: &Walk) -> WalkTotals {
     match std::fs::canonicalize(root) {
         Ok(real) => walk(&real, excludes, control),
@@ -188,88 +220,50 @@ pub fn walk_following_root(root: &Path, excludes: &[PathBuf], control: &Walk) ->
     }
 }
 
-/// 分类根定义（顺序即扫描顺序的前 6 个，other 由剩余部分推导）。
+/// 分类表：全部可清理，全部是「缓存 / 临时文件 / 日志」。
+///
+/// 每个分类都写清了自己是什么，界面直接把 id 映射成文案，
+/// 注释里的用途是文案的唯一定义来源（文案见 settings.storage.usage.category.*）。
 pub fn categories(paths: &Paths, settings: &SettingsService) -> Vec<CategoryDef> {
     let cache = paths.cache_dir();
-    let logs = paths.logs_dir();
-    let versions = paths.versions_root(settings);
-    let packages = paths.package_root(settings);
     vec![
+        // 翻译缓存：copper.db 的 core_translation_cache 表。
         CategoryDef {
-            id: "content",
-            roots: vec![cache.join("content"), cache.join("global-import")],
+            id: "translation",
+            kind: CategoryKind::Translation,
+            roots: Vec::new(),
             cleanable: true,
         },
-        CategoryDef {
-            id: "downloads",
-            roots: vec![
+        // 日志：logs 目录（崩溃日志、安装日志）。
+        tree("logs", vec![paths.logs_dir().to_path_buf()]),
+        // 内容市场缓存：列表 / 标签 / 详情 / 简介 / 游戏版本清单，72 小时硬过期。
+        tree("metadata", vec![cache.join("metadata.sqlite")]),
+        // 加载器缓存：LeviLamina 版本库与下载索引。
+        tree("loaders", vec![cache.join("lip")]),
+        // 版本元数据缓存：注册表镜像与 GDK 共享元数据。
+        tree(
+            "registry",
+            vec![cache.join("registry"), cache.join("gdkshared")],
+        ),
+        // 临时文件：更新包暂存、内容安装 staging、整合包导入暂存。
+        tree(
+            "temp",
+            vec![
+                cache.join("updates"),
+                cache.join("content"),
+                cache.join("global-import"),
+            ],
+        ),
+        // 安装包缓存：游戏压缩包、系统安装器、setup 包。
+        tree(
+            "installers",
+            vec![
                 cache.join("game-download"),
                 cache.join("system-installers"),
-                packages,
+                paths.package_root(settings),
             ],
-            cleanable: true,
-        },
-        CategoryDef {
-            id: "loaders",
-            roots: vec![cache.join("lip")],
-            cleanable: true,
-        },
-        CategoryDef {
-            id: "index",
-            roots: vec![
-                cache.join("registry"),
-                cache.join("gdkshared"),
-                cache.join("metadata.sqlite"),
-            ],
-            cleanable: true,
-        },
-        CategoryDef {
-            id: "logs",
-            roots: vec![logs.to_path_buf()],
-            cleanable: true,
-        },
-        CategoryDef {
-            id: "game",
-            roots: vec![versions],
-            cleanable: false,
-        },
-        CategoryDef {
-            id: "other",
-            roots: Vec::new(),
-            cleanable: false,
-        },
+        ),
     ]
-}
-
-/// 需要统计全部占用时的顶层根（去重、去掉被另一个根包含的根）。
-pub fn managed_roots(paths: &Paths, settings: &SettingsService) -> Vec<PathBuf> {
-    let mut roots = vec![
-        paths.data_dir().clone(),
-        paths.cache_dir().clone(),
-        paths.versions_root(settings),
-        paths.package_root(settings),
-    ];
-    roots.sort();
-    roots.dedup();
-    let mut kept: Vec<PathBuf> = Vec::new();
-    for root in roots {
-        if kept.iter().any(|parent| root.starts_with(parent)) {
-            continue;
-        }
-        kept.push(root);
-    }
-    kept
-}
-
-/// 分类根路径的扁平集合（供 other 排除）。
-pub fn category_roots(paths: &Paths, settings: &SettingsService) -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = categories(paths, settings)
-        .into_iter()
-        .flat_map(|def| def.roots)
-        .collect();
-    roots.sort();
-    roots.dedup();
-    roots
 }
 
 /// 清理结果：释放字节数与各分类实际删除的字节数。
@@ -280,13 +274,14 @@ pub struct CleanReport {
     pub cleared: HashMap<String, u64>,
 }
 
-/// 按分类清理白名单目录。
+/// 按分类清理白名单目标。
 ///
 /// 只删 cleanable 分类，且每个目标都要通过 clear_allowlisted 的边界校验；
 /// 释放字节数直接累加每个目标实际删掉的字节数，不再前后全盘对比。
 pub fn clean(
     paths: &Paths,
     settings: &SettingsService,
+    db: &DatabaseService,
     requested: &[String],
 ) -> Result<CleanReport, KernelError> {
     let defs = categories(paths, settings);
@@ -310,10 +305,16 @@ pub fn clean(
         cleared: HashMap::new(),
     };
     for def in wanted {
-        let mut freed = 0u64;
-        for root in &def.roots {
-            freed = freed.saturating_add(clear_allowlisted(root, &data_root, root)?);
-        }
+        let freed = match def.kind {
+            CategoryKind::Translation => translation::clear_cache_bytes(db)?,
+            CategoryKind::Tree => {
+                let mut freed = 0u64;
+                for root in &def.roots {
+                    freed = freed.saturating_add(clear_allowlisted(root, &data_root, root)?);
+                }
+                freed
+            }
+        };
         report.freed_bytes = report.freed_bytes.saturating_add(freed);
         report.cleared.insert(def.id.to_string(), freed);
     }
@@ -405,15 +406,19 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    fn fixture() -> (tempfile::TempDir, Paths, SettingsService) {
+    fn fixture() -> (tempfile::TempDir, Paths, SettingsService, Arc<DatabaseService>) {
         let temp = tempfile::tempdir().expect("temp dir");
         let paths = Paths::with_root(temp.path().join("data"));
-        let db = DatabaseService::open(paths.db_file()).expect("db");
+        let db = Arc::new(DatabaseService::open(paths.db_file()).expect("db"));
         db.migrate_scope("core", crate::services::database::CORE_MIGRATIONS)
             .expect("migrations");
-        let settings = SettingsService::new(Arc::new(db), Arc::new(EventBus::new()), HashMap::new())
-            .expect("settings");
-        (temp, paths, settings)
+        let settings = SettingsService::new(
+            Arc::clone(&db),
+            Arc::new(EventBus::new()),
+            HashMap::new(),
+        )
+        .expect("settings");
+        (temp, paths, settings, db)
     }
 
     fn write_bytes(path: &Path, len: usize) {
@@ -425,37 +430,67 @@ mod tests {
 
     #[test]
     fn categories_keep_stable_order() {
-        let (_temp, paths, settings) = fixture();
+        let (_temp, paths, settings, _db) = fixture();
         let defs = categories(&paths, &settings);
         let ids: Vec<&str> = defs.iter().map(|def| def.id).collect();
         assert_eq!(ids, CATEGORY_IDS.to_vec());
+        assert!(defs.iter().all(|def| def.cleanable));
     }
 
     #[test]
     fn clean_accumulates_freed_bytes_per_category() {
-        let (_temp, paths, settings) = fixture();
+        let (_temp, paths, settings, db) = fixture();
         let cache = paths.cache_dir();
         write_bytes(&cache.join("content").join("a.bin"), 4096);
         write_bytes(&cache.join("lip").join("b.bin"), 2048);
 
-        let report =
-            clean(&paths, &settings, &["content".into(), "loaders".into()]).expect("clean");
+        let report = clean(
+            &paths,
+            &settings,
+            &db,
+            &["temp".into(), "loaders".into()],
+        )
+        .expect("clean");
         assert_eq!(report.freed_bytes, 6144);
-        assert_eq!(report.cleared.get("content").copied(), Some(4096));
+        assert_eq!(report.cleared.get("temp").copied(), Some(4096));
         assert_eq!(report.cleared.get("loaders").copied(), Some(2048));
         assert!(!cache.join("content").join("a.bin").exists());
 
-        let again = clean(&paths, &settings, &["content".into()]).expect("idempotent");
+        let again = clean(&paths, &settings, &db, &["temp".into()]).expect("idempotent");
         assert_eq!(again.freed_bytes, 0);
     }
 
     #[test]
-    fn clean_refuses_uncleanable_and_escaping_targets() {
-        let (_temp, paths, settings) = fixture();
-        let game = clean(&paths, &settings, &["game".into()]);
-        assert!(matches!(game, Err(KernelError::InvalidArgument(_))));
-        let unknown = clean(&paths, &settings, &["nope".into()]);
+    fn clean_removes_translation_cache_rows() {
+        let (_temp, paths, settings, db) = fixture();
+        db.migrate_scope("translation", translation::MIGRATIONS)
+            .expect("translation migrations");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO core_translation_cache(identity, translated, expires, accessed) VALUES ('a','hello',1,1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed");
+
+        let report = clean(&paths, &settings, &db, &["translation".into()]).expect("clean");
+        assert_eq!(report.freed_bytes, 5);
+        let rows: i64 = db
+            .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM core_translation_cache", [], |row| row.get(0))?))
+            .expect("count");
+        assert_eq!(rows, 0);
+        let again = clean(&paths, &settings, &db, &["translation".into()]).expect("idempotent");
+        assert_eq!(again.freed_bytes, 0);
+    }
+
+    #[test]
+    fn clean_refuses_unknown_and_escaping_targets() {
+        let (_temp, paths, settings, db) = fixture();
+        let unknown = clean(&paths, &settings, &db, &["game".into()]);
         assert!(matches!(unknown, Err(KernelError::InvalidArgument(_))));
+        let escaped_id = clean(&paths, &settings, &db, &["nope".into()]);
+        assert!(matches!(escaped_id, Err(KernelError::InvalidArgument(_))));
 
         let data_root = paths.data_dir();
         let inside = data_root.join("logs");

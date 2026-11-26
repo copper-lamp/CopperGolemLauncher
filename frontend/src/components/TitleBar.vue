@@ -3,7 +3,7 @@
 // Existing route metadata supplies localized/dynamic labels; pages inject actions via Teleport.
 
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope, FolderOpen, Download, Languages } from "@lucide/vue";
+import { Minus, Square, Copy, X, ArrowLeft, ArrowRight, Search, Bell, ChevronRight, Stethoscope, FolderOpen, Download, Languages, Trash2 } from "@lucide/vue";
 import { useNavigationTrail } from "../composables/useNavigationTrail";
 import { showToast } from "../composables/useToast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -81,18 +81,22 @@ function goBack() {
   if (canBack.value) router.back();
 }
 
-interface SearchItem { id: "translation" | "download" | "storage"; icon: typeof Languages; terms: string[]; }
+interface SearchItem { id: "translation" | "download" | "storage" | "storage-cleanup"; icon: typeof Languages; terms: string[]; }
 const searchOpen = ref(false);
 const searchQuery = ref("");
 const searchItems: SearchItem[] = [
   { id: "translation", icon: Languages, terms: ["翻译", "语言", "translation", "language"] },
   { id: "download", icon: Download, terms: ["下载", "下载设置", "download", "downloads"] },
   { id: "storage", icon: FolderOpen, terms: ["储存", "存储", "储存位置", "存储位置", "storage", "location"] },
+  { id: "storage-cleanup", icon: Trash2, terms: ["清理", "清理储存", "clean", "cleanup", "cache"] },
 ];
 const searchResults = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase();
   return searchItems
-    .map((item) => ({ ...item, label: t(`settings.tabs.${item.id}`) }))
+    .map((item) => ({
+      ...item,
+      label: item.id === "storage-cleanup" ? t("settings.storage.cleanup.title") : t(`settings.tabs.${item.id}`),
+    }))
     .filter((item) => !query || [item.label, ...item.terms].some((term) => term.toLocaleLowerCase().includes(query)))
     .slice(0, 5);
 });
@@ -106,6 +110,10 @@ function closeSearch() {
 }
 function goSearchResult(id: SearchItem["id"]) {
   closeSearch();
+  if (id === "storage" || id === "storage-cleanup") {
+    void router.push({ name: id === "storage" ? "settings-storage" : "settings-storage-cleanup" });
+    return;
+  }
   void router.push({ path: "/settings", query: { tab: id } });
 }
 function onSearchKeydown(event: KeyboardEvent) {

@@ -1,15 +1,23 @@
 <script setup lang="ts">
-// 存储占用总览与清理二级页。游戏目录仍写入 game.directory，由内核统一解析。
+// 储存位置（一级页）：游戏数据目录 + 存储用量图表。
+//
+// 清理是独立子路由 settings-storage-cleanup，面包屑因此能拼出
+// 「设置 → 储存位置 → 清理储存」；本页只负责目录设置与图表，不阻塞扫描。
 //
 // 用量扫描完全交给后端后台线程：本页只订阅快照与事件，进入页面时投递一次扫描，
 // 分类结果谁先完成谁先显示，页面本身从不等待整轮扫盘。
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { Trash2 } from "@lucide/vue";
 
 import StorageUsageCard from "../../components/ui/StorageUsageCard.vue";
-import StorageCleanupPanel from "../../components/ui/StorageCleanupPanel.vue";
+import CoButton from "../../components/ui/CoButton.vue";
+import CoTextField from "../../components/ui/CoTextField.vue";
+import SettingSection from "./SettingSection.vue";
+import SettingRow from "./SettingRow.vue";
 import { useSettings } from "../../composables/useSettings";
 import { useI18n } from "../../i18n";
 import { showToast } from "../../composables/useToast";
@@ -17,17 +25,15 @@ import { homeVersionsRoot } from "../../api/home";
 import { storageStatus } from "../../api/storage";
 import { useStorageScan } from "../../composables/useStorageScan";
 import { usePlatform } from "../../composables/usePlatform";
-import { formatBytes } from "../../api/download";
-import CoButton from "../../components/ui/CoButton.vue";
 
 const { t } = useI18n();
 const { get, set } = useSettings();
+const router = useRouter();
 
 const resolvedRoot = ref("");
 const environmentOverride = ref(false);
-const cleanupView = ref(false);
 const { isAndroid } = usePlatform();
-const { categories, scanning, init: initScan, rescan, clean: cleanScan } = useStorageScan();
+const { init: initScan } = useStorageScan();
 
 const gameDir = computed({
   get: () => get<string>("game.directory", ""),
@@ -54,16 +60,6 @@ async function pickFolder() {
 function resetDir() {
   gameDir.value = "";
   void loadRootState();
-  void rescan(true);
-}
-
-async function clean(categoriesToClean: string[]) {
-  try {
-    const freed = await cleanScan(categoriesToClean);
-    showToast(t("settings.storage.cleanup.success", { size: formatBytes(freed) }), "success");
-  } catch (e) {
-    showToast(String(e), "error");
-  }
 }
 
 async function reveal(path: string) {
@@ -75,17 +71,18 @@ async function reveal(path: string) {
   }
 }
 
-// 逐字符输入时不需要每次扫盘；去抖后只刷新一次生效路径。
+function openCleanup() {
+  void router.push({ name: "settings-storage-cleanup" });
+}
+
+// 用量只统计缓存与日志，不包含游戏本体与存档，所以目录变化只需要刷新解析结果。
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 watch(isAndroid, () => {
   if (!isAndroid.value) void loadRootState();
 });
 watch(gameDir, () => {
   if (refreshTimer !== undefined) clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => {
-    void loadRootState();
-    void rescan(true);
-  }, 300);
+  refreshTimer = setTimeout(() => void loadRootState(), 300);
 });
 onBeforeUnmount(() => {
   if (refreshTimer !== undefined) clearTimeout(refreshTimer);
@@ -99,31 +96,43 @@ onMounted(() => {
 
 <template>
   <div class="storage-tab">
-    <template v-if="!cleanupView">
-      <StorageUsageCard />
-      <div class="storage-tab__actions">
-        <CoButton variant="primary" @click="cleanupView = true">{{ t("settings.storage.cleanup.title") }}</CoButton>
-      </div>
-    </template>
-    <StorageCleanupPanel
-      v-else
-      :categories="categories"
-      :scanning="scanning"
-      :resolved-root="resolvedRoot"
-      :game-dir="gameDir"
-      :environment-override="environmentOverride"
-      :is-android="isAndroid"
-      @back="cleanupView = false"
-      @clean="clean"
-      @update:game-dir="gameDir = $event"
-      @browse="pickFolder"
-      @reset="resetDir"
-      @open="reveal(resolvedRoot)"
-    />
+    <SettingSection v-if="!isAndroid" title-key="settings.storage.game_dir">
+      <SettingRow label-key="settings.storage.game_dir" hint-key="settings.storage.game_dir_hint">
+        <div class="game-dir__row">
+          <CoTextField
+            class="game-dir__field"
+            :model-value="gameDir"
+            :placeholder="t('settings.storage.game_dir_default')"
+            :disabled="environmentOverride"
+            @update:model-value="gameDir = $event"
+          />
+          <CoButton variant="secondary" size="sm" :disabled="environmentOverride" @click="pickFolder"><span>{{ t("settings.storage.browse") }}</span></CoButton>
+          <CoButton variant="ghost" size="sm" :disabled="environmentOverride" @click="resetDir"><span>{{ t("settings.storage.reset") }}</span></CoButton>
+          <CoButton variant="secondary" size="sm" @click="reveal(resolvedRoot)"><span>{{ t("settings.storage.open") }}</span></CoButton>
+        </div>
+      </SettingRow>
+      <p class="game-dir__resolved">{{ t("settings.storage.resolved", { path: resolvedRoot || "—" }) }}</p>
+      <p v-if="(gameDir.trim() && resolvedRoot !== gameDir.trim()) || environmentOverride" class="game-dir__warn">{{ t("settings.storage.overridden") }}</p>
+    </SettingSection>
+
+    <StorageUsageCard />
+
+    <div class="storage-tab__footer">
+      <p class="storage-tab__note">{{ t("settings.storage.cleanup.lead") }}</p>
+      <CoButton variant="primary" @click="openCleanup">
+        <Trash2 :size="16" /><span>{{ t("settings.storage.cleanup.title") }}</span>
+      </CoButton>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.storage-tab{max-width:760px}
-.storage-tab__actions{display:flex;justify-content:flex-end;margin-top:var(--copper-space-3)}
+.storage-tab{display:grid;gap:var(--copper-space-4);max-width:840px}
+.game-dir__row{display:flex;align-items:center;gap:var(--copper-space-2);flex-wrap:wrap}
+.game-dir__field{flex:1 1 240px;min-width:180px}
+.game-dir__resolved,.game-dir__warn{margin:0 var(--copper-space-2) var(--copper-space-2);font-size:var(--copper-font-size-xs);overflow-wrap:anywhere}
+.game-dir__resolved{color:var(--copper-text-secondary)}
+.game-dir__warn{color:var(--copper-warning)}
+.storage-tab__footer{display:flex;align-items:center;justify-content:space-between;gap:var(--copper-space-3);flex-wrap:wrap}
+.storage-tab__note{margin:0;font-size:var(--copper-font-size-sm);color:var(--copper-text-secondary)}
 </style>
