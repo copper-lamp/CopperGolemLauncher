@@ -28,6 +28,7 @@ pub mod account_check;
 /// 第三方客户端库：导入、存储、选择与注入编排。
 pub mod client;
 pub mod client_catalog;
+pub mod client_compatibility;
 /// 注入编排：hook DLL 落位 + 导入表改写 + 原始文件备份与还原。
 pub mod inject;
 /// 挂起启动 + 远程线程注入：游戏 exe 不改一个字节。
